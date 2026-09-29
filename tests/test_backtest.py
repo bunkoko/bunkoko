@@ -137,3 +137,38 @@ def test_spread_stress_reduces_profit(oil_df):
         {"WTI": oil_df}, BASE, sleeves, default_config(costs=CostModel(spread_mult=3.0, slippage_mult=3.0))
     )
     assert stressed.trades["pnl"].sum() < base.trades["pnl"].sum()
+
+
+def _random_walk_bars(seed, n=2500, sub=100):
+    """連続的なパスから作ったランダムウォークの OHLC（期待値ゼロの相場）。"""
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    idx = pd.date_range("2020-01-06 22:00", periods=n, freq="4h", tz="UTC")
+    path = np.log(70) + np.cumsum(rng.normal(0, 0.008 / np.sqrt(sub), n * sub)).reshape(n, sub)
+    c = path[:, -1]
+    o = np.r_[np.log(70), c[:-1]]
+    return pd.DataFrame(
+        {"open": np.exp(o), "high": np.exp(np.maximum(path.max(1), o)),
+         "low": np.exp(np.minimum(path.min(1), o)), "close": np.exp(c)},
+        index=idx,
+    )
+
+
+@pytest.mark.parametrize("name", ["donchian", "squeeze", "pullback", "reversion"])
+def test_no_edge_on_random_walk(name):
+    """先読みバグがあるとランダムウォークでも大きく勝ってしまう。その検出用。"""
+    import numpy as np
+
+    from cfdbot.strategies import make_strategy
+
+    inst = {"SILVER": replace(TEST_INST["SILVER"], spread=0.0, slippage=0.0, tick_size=1e-9)}
+    cfg = _cfg(exit=ExitConfig(), risk=RiskConfig(max_drawdown_halt=1.0, daily_loss_limit=1.0,
+                                                  min_lot_overshoot=100))
+    r = np.concatenate([
+        run_backtest({"SILVER": _random_walk_bars(s)}, inst, [Sleeve("SILVER", make_strategy(name))], cfg)
+        .trades["r_multiple"].to_numpy()
+        for s in range(3)
+    ])
+    assert len(r) > 50
+    assert abs(r.mean()) < 0.15

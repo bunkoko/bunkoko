@@ -1,0 +1,98 @@
+{
+  "SILVER": {
+    "description": "銀 (XAG/USD)",
+    "unit": "oz",
+    "min_qty": 10,
+    "qty_step": 10,
+    "max_qty": 5000,
+    "margin_rate": 0.05,
+    "spread": 0.03,
+    "slippage": 0.01,
+    "tick_size": 0.001,
+    "point": null,
+    "stop_level": 0.0,
+    "financing_long": 0.03,
+    "financing_short": 0.03,
+    "cluster": "metals",
+    "event_tags": [
+      "usd_macro"
+    ],
+    "has_expiry": false,
+    "quote_ccy": "USD",
+    "mt5_symbol": "",
+    "verified": false,
+    "note": "スプレッド・スリッページ・金利は仮置き。デモ口座で実測して置き換えること"
+  },
+  "GOLD": {
+    "description": "金 (XAU/USD)",
+    "unit": "oz",
+    "min_qty": 1,
+    "qty_step": 1,
+    "max_qty": 500,
+    "margin_rate": 0.05,
+    "spread": 0.4,
+    "slippage": 0.1,
+    "tick_size": 0.01,
+    "point": null,
+    "stop_level": 0.0,
+    "financing_long": 0.03,
+    "financing_short": 0.03,
+    "cluster": "metals",
+    "event_tags": [
+      "usd_macro"
+    ],
+    "has_expiry": false,
+    "quote_ccy": "USD",
+    "mt5_symbol": "",
+    "verified": false,
+    "note": "最小単位は未確認（仮に1oz）。スプレッド・スリッページ・金利は仮置き。デモ口座で実測して置き換えること"
+  },
+  "WTI": {
+    "description": "WTI原油",
+    "unit": "bbl",
+    "min_qty": 10,
+    "qty_step": 10,
+    "max_qty": 5000,
+    "margin_rate": 0.05,
+    "spread": 0.04,
+    "slippage": 0.02,
+    "tick_size": 0.01,
+    "point": null,
+    "stop_level": 0.0,
+    "financing_long": 0.03,
+    "financing_short": 0.03,
+    "cluster": "energy",
+    "event_tags": [
+      "oil"
+    ],
+    "has_expiry": false,
+    "quote_ccy": "USD",
+    "mt5_symbol": "",
+    "verified": false,
+    "note": "スプレッド・スリッページ・金利は仮置き。デモ口座で実測して置き換えること"
+  },
+  "BRENT": {
+    "description": "ブレント原油",
+    "unit": "bbl",
+    "min_qty": 10,
+    "qty_step": 10,
+    "max_qty": 5000,
+    "margin_rate": 0.05,
+    "spread": 0.04,
+    "slippage": 0.02,
+    "tick_size": 0.01,
+    "point": null,
+    "stop_level": 0.0,
+    "financing_long": 0.03,
+    "financing_short": 0.03,
+    "cluster": "energy",
+    "event_tags": [
+      "oil"
+    ],
+    "has_expiry": false,
+    "quote_ccy": "USD",
+    "mt5_symbol": "",
+    "verified": false,
+    "note": "スプレッド・スリッページ・金利は仮置き。デモ口座で実測して置き換えること"
+  }
+}

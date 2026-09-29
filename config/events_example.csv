@@ -1,0 +1,15 @@
+# 指標イベントの登録用 CSV（--events で指定。EA は Common/Files/cfdbot_events.csv を読む）
+#
+# 列: time_utc（UTC）または time_jst（日本時間）, name, tag
+#   tag = 銘柄仕様の event_tags（"oil" = 原油, "usd_macro" = 金・銀）か銘柄キー（例: WTI）
+#
+# 日程は毎年・毎回変わるので、必ず公式サイトで確認して登録すること:
+#   FOMC            … 米連邦準備制度理事会の公表スケジュール（声明は 14:00 ET）
+#   CPI / 雇用統計   … 米労働統計局の公表スケジュール（8:30 ET）
+#   EIA（祝日ずれ）  … 米エネルギー情報局の公表スケジュール（祝日週は曜日・時刻が変わる）
+#
+# 下の行は書き方の例（先頭の # を外すと有効になる。日時は架空の例）:
+# 2026-11-04 19:00,FOMC,usd_macro
+# 2026-11-06 13:30,NFP,usd_macro
+# 2026-11-25 15:30,EIA_holiday_shift,oil
+time_utc,name,tag

@@ -311,7 +311,7 @@ class Backtester:
         peak = cfg.initial_equity
         halted = False
         day_key = None
-        day_start_eq = cfg.initial_equity
+        day_start_eq = prev_equity = cfg.initial_equity
         last_i: dict[str, int] = {}
 
         fx = float(self.fx[0]) if len(self.fx) else 1.0
@@ -344,8 +344,9 @@ class Backtester:
 
             equity = self._equity(fx)
             dk = trading_day(pd.Timestamp(tc, tz="UTC"))
-            if dk != day_key:
-                day_key, day_start_eq = dk, equity
+            if dk != day_key:  # 取引日の開始時点（＝前の足の終了時点）の資産を基準にする
+                day_key, day_start_eq = dk, prev_equity
+            prev_equity = equity
             peak = max(peak, equity)
             if not halted and equity <= peak * (1 - rc.max_drawdown_halt):
                 halted = True
