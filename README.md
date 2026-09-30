@@ -4,6 +4,7 @@
 **Mac で研究・最適化（Python）→ Windows の MT5 で発注（EA）** する構成のツール一式。
 
 - アルゴリズムの設計と選定理由: **[docs/algorithms.md](docs/algorithms.md)**（まずこれを読む）
+- 証券会社の決定・口座開設・データ取得から本番までの手順: **[docs/roadmap.md](docs/roadmap.md)**
 - 戦略は差し替え式。`cfdbot/strategies/` に追加するだけで、バックテスト・最適化・テストの対象になる
 
 | 銘柄 | 主力 | 副 |
@@ -64,7 +65,7 @@ python scripts/demo.py      # 合成データで一通り動かす（成績は�
 ```bash
 # 推奨構成（原油: ドンチャン+押し目、銀: スクイーズ+押し目）
 python scripts/backtest.py --csv WTI=data/WTI_H4.csv --csv SILVER=data/XAGUSD_H4.csv \
-    --equity 1000000 --fx 150 --events config/events_example.csv
+    --equity 1000000 --fx-csv data/USDJPY_H4.csv --events config/events_example.csv
 
 # 戦略を指定、コスト 2 倍のストレステスト
 python scripts/backtest.py --csv SILVER=data/XAGUSD_H4.csv --strategy squeeze \

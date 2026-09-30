@@ -25,7 +25,8 @@ def add_common_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--instruments", help="銘柄仕様 JSON（実測スプレッド等で上書き）")
     p.add_argument("--events", help="指標イベント CSV（FOMC/CPI/祝日でずれた EIA など）")
     p.add_argument("--equity", type=float, default=1_000_000, help="初期資金（円）")
-    p.add_argument("--fx", type=float, default=150.0, help="USD/JPY")
+    p.add_argument("--fx", type=float, default=150.0, help="USD/JPY（定数）")
+    p.add_argument("--fx-csv", help="USD/JPY の MT5 書き出し CSV（指定すると時系列で円換算）")
     p.add_argument("--spread-mult", type=float, default=1.0)
     p.add_argument("--slippage-mult", type=float, default=1.0)
     p.add_argument("--start", help="売買開始日（それ以前は指標計算のみ）")
@@ -33,11 +34,15 @@ def add_common_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--out", default="output", help="結果の保存先")
 
 
-def parse_csv_args(items: list[str], server_tz) -> dict[str, pd.DataFrame]:
+def _tz(server_tz):
     try:
-        server_tz = float(server_tz)
+        return float(server_tz)
     except (TypeError, ValueError):
-        pass
+        return server_tz
+
+
+def parse_csv_args(items: list[str], server_tz) -> dict[str, pd.DataFrame]:
+    server_tz = _tz(server_tz)
     data = {}
     for item in items:
         if "=" not in item:
@@ -60,6 +65,8 @@ def config_from_args(args, base: BacktestConfig | None = None) -> BacktestConfig
     cfg = base or BacktestConfig()
     cfg.initial_equity = args.equity
     cfg.fx_rate = args.fx
+    if getattr(args, "fx_csv", None):
+        cfg.fx_rate = load_mt5_csv(args.fx_csv, server_tz=_tz(args.server_tz))["close"]
     cfg.costs = replace(cfg.costs, spread_mult=args.spread_mult, slippage_mult=args.slippage_mult)
     if args.events:
         cfg.filters = replace(cfg.filters, extra_events=tuple(load_events_csv(args.events)))
