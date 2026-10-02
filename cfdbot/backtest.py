@@ -28,7 +28,7 @@ from .events import (
 )
 from .exits import ExitConfig, ExitState, on_bar_close
 from .instruments import Instrument
-from .risk import RiskConfig, open_risk, position_size, required_margin
+from .risk import RiskConfig, leverage_room, notional, open_risk, position_size, required_margin
 from .strategies.base import Strategy
 
 DAY_NS = 86_400 * 10**9
@@ -150,10 +150,21 @@ class _SleeveData:
     cfg_cache: dict[str | None, ExitConfig]
 
 
+@dataclass
+class _Exposure:
+    heat: float                       # 全ポジションの損切り時損失（円）
+    cluster_heat: dict[str, float]
+    margin: float                     # 必要証拠金（円）
+    notional: dict[str, float]        # 銘柄ごとの名目建玉（円）
+    notional_total: float
+
+
 class BacktestResult:
-    def __init__(self, trades, equity, rejections, signals, config, timeframe):
+    def __init__(self, trades, equity, rejections, signals, config, timeframe, leverage=None):
         self.trades: pd.DataFrame = trades
         self.equity: pd.Series = equity
+        #: 足ごとの実効レバレッジ（名目建玉の合計 ÷ 資産）
+        self.leverage: pd.Series = leverage if leverage is not None else pd.Series(dtype=float)
         self.rejections: pd.DataFrame = rejections
         self.signals: dict[str, pd.DataFrame] = signals
         self.config: BacktestConfig = config
@@ -162,7 +173,7 @@ class BacktestResult:
     def metrics(self) -> dict[str, float]:
         from .metrics import compute_metrics
 
-        return compute_metrics(self.equity, self.trades, self.config.initial_equity)
+        return compute_metrics(self.equity, self.trades, self.config.initial_equity, self.leverage)
 
     def summary_by(self, key: str = "sleeve") -> pd.DataFrame:
         from .metrics import trade_stats
@@ -303,6 +314,7 @@ class Backtester:
         self.last_spread: dict[str, float] = {}
         equity_t: list[int] = []
         equity_v: list[float] = []
+        lev_v: list[float] = []
         ptr = {k: 0 for k in self.sym}
         sleeves_by_sym: dict[str, list[_SleeveData]] = {}
         for sd in self.sl.values():
@@ -363,6 +375,8 @@ class Backtester:
             if start_ns is None or tc >= start_ns:
                 equity_t.append(tc)
                 equity_v.append(equity)
+                gross = sum(notional(p.qty, self.last_close[p.symbol], fx) for p in self.positions.values())
+                lev_v.append(gross / equity if equity > 0 else 0.0)
 
         # 最後に残ったポジションは最終足の終値で決済
         for name in list(self.positions):
@@ -374,11 +388,13 @@ class Backtester:
         if equity_v:
             equity_v[-1] = self.cash
 
-        equity = pd.Series(equity_v, index=pd.to_datetime(np.array(equity_t), utc=True), name="equity")
+        index = pd.to_datetime(np.array(equity_t), utc=True)
+        equity = pd.Series(equity_v, index=index, name="equity")
+        leverage = pd.Series(lev_v, index=index, name="leverage")
         trades = pd.DataFrame(self.trades)
         rejections = pd.DataFrame(self.rejections, columns=["time", "sleeve", "side", "reason"])
         signals = {n: sd.signals for n, sd in self.sl.items()}
-        return BacktestResult(trades, equity, rejections, signals, cfg, self.tf)
+        return BacktestResult(trades, equity, rejections, signals, cfg, self.tf, leverage)
 
     # ------------------------------------------------------------------ 各処理
     def _on_open(self, sym, d: _SymbolData, i, ts, fx, max_delay) -> None:
@@ -546,12 +562,12 @@ class Backtester:
         atr = sd.atr[i]
         stop_dist = cfg.clip_stop(sd.stop_dist[i], atr)
 
-        heat, cluster_heat, margin_used = self._exposure(fx)
-        budget = rc.max_total_risk * equity - heat
+        exp = self._exposure(fx)
+        budget = rc.max_total_risk * equity - exp.heat
         reason = "heat"
         cap = rc.cluster_max_risk.get(inst.cluster)
         if cap is not None:
-            c_budget = cap * equity - cluster_heat.get(inst.cluster, 0.0)
+            c_budget = cap * equity - exp.cluster_heat.get(inst.cluster, 0.0)
             if c_budget < budget:
                 budget, reason = c_budget, "cluster"
         if budget <= 0:
@@ -560,7 +576,13 @@ class Backtester:
         if size.qty <= 0:
             return self._reject(when, name, side, size.reason or reason)
         qty = size.qty
-        avail = rc.max_margin_utilization * equity - margin_used
+        # レバレッジ上限（超える分は数量を減らす）
+        room = leverage_room(equity, rc, exp.notional.get(inst.symbol, 0.0), exp.notional_total)
+        if notional(qty, d.c[i], fx) > room:
+            qty = inst.round_qty_down(room / notional(1.0, d.c[i], fx)) if room > 0 else 0
+            if qty < inst.min_qty:
+                return self._reject(when, name, side, "leverage")
+        avail = rc.max_margin_utilization * equity - exp.margin
         need = required_margin(qty, d.c[i], inst, fx)
         if need > avail:
             qty = inst.round_qty_down(avail / required_margin(1.0, d.c[i], inst, fx)) if avail > 0 else 0
@@ -572,23 +594,22 @@ class Backtester:
         )
 
     # ------------------------------------------------------------------ 補助
-    def _exposure(self, fx) -> tuple[float, dict[str, float], float]:
-        heat = 0.0
-        cluster: dict[str, float] = {}
-        margin = 0.0
-        for p in self.positions.values():
-            inst = self.instruments[p.symbol]
-            r = open_risk(p.side, p.qty, p.entry, p.stop, fx)
-            heat += r
-            cluster[inst.cluster] = cluster.get(inst.cluster, 0.0) + r
-            margin += required_margin(p.qty, self.last_close.get(p.symbol, p.entry), inst, fx)
-        for p in self.pending.values():
-            inst = self.instruments[p.symbol]
-            r = p.stop_dist * p.qty * fx
-            heat += r
-            cluster[inst.cluster] = cluster.get(inst.cluster, 0.0) + r
-            margin += required_margin(p.qty, self.last_close.get(p.symbol, 0.0), inst, fx)
-        return heat, cluster, margin
+    def _exposure(self, fx) -> _Exposure:
+        """保有中 + 約定待ちのポジションのリスク・証拠金・名目建玉を集計する。"""
+        exp = _Exposure(0.0, {}, 0.0, {}, 0.0)
+        items = [(p.symbol, open_risk(p.side, p.qty, p.entry, p.stop, fx), p.qty, self.last_close.get(p.symbol, p.entry))
+                 for p in self.positions.values()]
+        items += [(p.symbol, p.stop_dist * p.qty * fx, p.qty, self.last_close.get(p.symbol, 0.0))
+                  for p in self.pending.values()]
+        for symbol, risk, qty, price in items:
+            inst = self.instruments[symbol]
+            exp.heat += risk
+            exp.cluster_heat[inst.cluster] = exp.cluster_heat.get(inst.cluster, 0.0) + risk
+            exp.margin += required_margin(qty, price, inst, fx)
+            n = notional(qty, price, fx)
+            exp.notional[symbol] = exp.notional.get(symbol, 0.0) + n
+            exp.notional_total += n
+        return exp
 
     def _equity(self, fx) -> float:
         eq = self.cash

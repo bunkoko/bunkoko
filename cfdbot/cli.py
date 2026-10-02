@@ -27,6 +27,9 @@ def add_common_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--equity", type=float, default=1_000_000, help="初期資金（円）")
     p.add_argument("--fx", type=float, default=150.0, help="USD/JPY（定数）")
     p.add_argument("--fx-csv", help="USD/JPY の MT5 書き出し CSV（指定すると時系列で円換算）")
+    p.add_argument("--risk", type=float, help="1回の損失（資産比）。例: 0.015 = 1.5%%")
+    p.add_argument("--max-leverage-symbol", type=float, help="1銘柄のレバレッジ上限（0=無効）")
+    p.add_argument("--max-leverage-total", type=float, help="全銘柄合計のレバレッジ上限（0=無効）")
     p.add_argument("--spread-mult", type=float, default=1.0)
     p.add_argument("--slippage-mult", type=float, default=1.0)
     p.add_argument("--start", help="売買開始日（それ以前は指標計算のみ）")
@@ -68,6 +71,12 @@ def config_from_args(args, base: BacktestConfig | None = None) -> BacktestConfig
     if getattr(args, "fx_csv", None):
         cfg.fx_rate = load_mt5_csv(args.fx_csv, server_tz=_tz(args.server_tz))["close"]
     cfg.costs = replace(cfg.costs, spread_mult=args.spread_mult, slippage_mult=args.slippage_mult)
+    risk = {
+        "risk_per_trade": args.risk,
+        "max_leverage_symbol": args.max_leverage_symbol,
+        "max_leverage_total": args.max_leverage_total,
+    }
+    cfg.risk = replace(cfg.risk, **{k: v for k, v in risk.items() if v is not None})
     if args.events:
         cfg.filters = replace(cfg.filters, extra_events=tuple(load_events_csv(args.events)))
     if args.start:

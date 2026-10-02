@@ -101,6 +101,8 @@ input int    rk_max_positions_per_symbol = 1;
 input double rk_daily_loss_limit         = 0.03;
 input double rk_max_drawdown_halt        = 0.25;
 input double rk_max_margin_utilization   = 0.5;
+input double rk_max_leverage_symbol      = 1.0;  // 1銘柄のレバレッジ上限（名目÷資産、0=無効）
+input double rk_max_leverage_total       = 2.0;  // 全銘柄合計のレバレッジ上限（0=無効）
 input double rk_min_lot_overshoot        = 1.0;
 input double rk_max_lots                 = 0.0;  // 自主上限ロット（0=証券会社上限のみ）
 
@@ -148,6 +150,7 @@ struct Params
    bool   ex_flatten_before_weekend, ex_flatten_before_events;
    double rk_risk_per_trade, rk_max_total_risk, rk_cluster_max_risk, rk_daily_loss_limit;
    double rk_max_drawdown_halt, rk_max_margin_utilization, rk_min_lot_overshoot, rk_max_lots;
+   double rk_max_leverage_symbol, rk_max_leverage_total;
    int    rk_cluster_id, rk_max_positions_per_symbol;
    bool   ft_oil_events;
    string ft_event_tags;
@@ -813,9 +816,20 @@ void ExecuteEntry(const CfdSignal &s, const double atr)
          return;
         }
      }
-   // 証拠金チェック（証券会社が証拠金率を変えても自動で追従する）
    ENUM_ORDER_TYPE type = side > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
    double price = side > 0 ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   // レバレッジ上限（名目建玉 ÷ 資産）。超える分は数量を減らす
+   double cap_lots = LeverageCapLots(equity);
+   if(cap_lots >= 0 && lots > cap_lots)
+     {
+      lots = NormalizeVolumeDown(cap_lots);
+      if(lots < vmin)
+        {
+         PrintFormat("entry rejected: leverage (cap=%.2f lots)", cap_lots);
+         return;
+        }
+     }
+   // 証拠金チェック（証券会社が証拠金率を変えても自動で追従する）
    double margin = 0, margin1 = 0;
    double avail = P.rk_max_margin_utilization * equity - AccountInfoDouble(ACCOUNT_MARGIN);
    if(OrderCalcMargin(type, _Symbol, lots, price, margin) && margin > avail)
@@ -971,6 +985,45 @@ double LossPerLot(const string sym, const double price_dist)
    if(tick_size <= 0 || tick_value <= 0)
       return(0);
    return(price_dist / tick_size * tick_value);
+  }
+
+// 1ロットの名目建玉（口座通貨）。価格 ÷ ティックサイズ × ティック価値
+double NotionalPerLot(const string sym)
+  {
+   double tick_size = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
+   double tick_value = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE_PROFIT);
+   double price = SymbolInfoDouble(sym, SYMBOL_BID);
+   if(tick_size <= 0 || tick_value <= 0 || price <= 0)
+      return(0);
+   return(price / tick_size * tick_value);
+  }
+
+// レバレッジ上限まで、この銘柄をあと何ロット持てるか（上限なしなら -1）
+double LeverageCapLots(const double equity)
+  {
+   if(P.rk_max_leverage_symbol <= 0 && P.rk_max_leverage_total <= 0)
+      return(-1);
+   double sym_notional = 0, total_notional = 0;
+   for(int p = PositionsTotal() - 1; p >= 0; p--)
+     {
+      ulong ticket = PositionGetTicket(p);
+      if(ticket == 0 || !IsGroupPosition())
+         continue;
+      string sym = PositionGetString(POSITION_SYMBOL);
+      double n = NotionalPerLot(sym) * PositionGetDouble(POSITION_VOLUME);
+      total_notional += n;
+      if(sym == _Symbol)
+         sym_notional += n;
+     }
+   double room = DBL_MAX;
+   if(P.rk_max_leverage_symbol > 0)
+      room = MathMin(room, P.rk_max_leverage_symbol * equity - sym_notional);
+   if(P.rk_max_leverage_total > 0)
+      room = MathMin(room, P.rk_max_leverage_total * equity - total_notional);
+   double per_lot = NotionalPerLot(_Symbol);
+   if(per_lot <= 0)
+      return(-1);
+   return(MathMax(room, 0.0) / per_lot);
   }
 
 double MaxLotsAllowed()
@@ -1276,6 +1329,8 @@ void LoadDefaults()
    P.rk_daily_loss_limit = rk_daily_loss_limit;
    P.rk_max_drawdown_halt = rk_max_drawdown_halt;
    P.rk_max_margin_utilization = rk_max_margin_utilization;
+   P.rk_max_leverage_symbol = rk_max_leverage_symbol;
+   P.rk_max_leverage_total = rk_max_leverage_total;
    P.rk_min_lot_overshoot = rk_min_lot_overshoot;
    P.rk_max_lots = rk_max_lots;
    P.ft_oil_events = ft_oil_events;
@@ -1357,6 +1412,8 @@ bool SetParam(const string key, const string v)
    else if(key == "rk_daily_loss_limit") P.rk_daily_loss_limit = d;
    else if(key == "rk_max_drawdown_halt") P.rk_max_drawdown_halt = d;
    else if(key == "rk_max_margin_utilization") P.rk_max_margin_utilization = d;
+   else if(key == "rk_max_leverage_symbol") P.rk_max_leverage_symbol = d;
+   else if(key == "rk_max_leverage_total") P.rk_max_leverage_total = d;
    else if(key == "rk_min_lot_overshoot") P.rk_min_lot_overshoot = d;
    else if(key == "rk_max_lots") P.rk_max_lots = d;
    else if(key == "ft_oil_events") P.ft_oil_events = ToBool(v);

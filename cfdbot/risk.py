@@ -23,6 +23,9 @@ class RiskConfig:
     daily_loss_limit: float = 0.03        # 取引日の損失がこれを超えたら当日は新規停止
     max_drawdown_halt: float = 0.25       # 高値からの下落がこれを超えたら新規停止（手動で解除）
     max_margin_utilization: float = 0.5   # 必要証拠金の合計 ≤ 資産 × これ
+    # レバレッジ上限（名目建玉 ÷ 資産、0 で無効）。損切りが効かない窓開けへの備え
+    max_leverage_symbol: float = 1.0      # 1銘柄あたり
+    max_leverage_total: float = 2.0       # 全銘柄の合計
     min_lot_overshoot: float = 1.0        # 最小単位に切り上げたとき許容するリスク超過倍率
     max_qty: dict[str, float] = field(default_factory=dict)  # 銘柄ごとの自主上限（単位）
 
@@ -65,6 +68,21 @@ def position_size(
 
 def required_margin(qty: float, price: float, inst: Instrument, fx: float) -> float:
     return qty * price * inst.margin_rate * fx
+
+
+def notional(qty: float, price: float, fx: float) -> float:
+    """名目建玉（口座通貨）。"""
+    return qty * price * fx
+
+
+def leverage_room(equity: float, cfg: RiskConfig, symbol_notional: float, total_notional: float) -> float:
+    """レバレッジ上限まであといくら（口座通貨）の名目建玉を持てるか。上限なしなら inf。"""
+    room = float("inf")
+    if cfg.max_leverage_symbol > 0:
+        room = min(room, cfg.max_leverage_symbol * equity - symbol_notional)
+    if cfg.max_leverage_total > 0:
+        room = min(room, cfg.max_leverage_total * equity - total_notional)
+    return room
 
 
 def open_risk(side: int, qty: float, entry: float, stop: float, fx: float) -> float:

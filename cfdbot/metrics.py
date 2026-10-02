@@ -39,7 +39,9 @@ def trade_stats(trades: pd.DataFrame) -> dict[str, float]:
     }
 
 
-def compute_metrics(equity: pd.Series, trades: pd.DataFrame, initial: float) -> dict[str, float]:
+def compute_metrics(
+    equity: pd.Series, trades: pd.DataFrame, initial: float, leverage: pd.Series | None = None
+) -> dict[str, float]:
     out: dict[str, float] = {}
     if equity.empty:
         return {"trades": 0}
@@ -66,11 +68,19 @@ def compute_metrics(equity: pd.Series, trades: pd.DataFrame, initial: float) -> 
         "years": years,
     })
     out.update(trade_stats(trades))
+    out["trades_per_year"] = out.get("trades", 0) / years
+    if leverage is not None and not leverage.empty:
+        exposed = leverage[leverage > 0]
+        out.update({
+            "time_in_market": float(len(exposed) / len(leverage)),
+            "avg_leverage": float(exposed.mean()) if len(exposed) else 0.0,
+            "max_leverage": float(leverage.max()),
+        })
     return out
 
 
 def format_metrics(m: dict[str, float]) -> str:
-    pct = {"total_return", "cagr", "max_drawdown", "win_rate"}
+    pct = {"total_return", "cagr", "max_drawdown", "win_rate", "time_in_market"}
     lines = []
     for k, v in m.items():
         if isinstance(v, float):

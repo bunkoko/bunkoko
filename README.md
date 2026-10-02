@@ -67,6 +67,10 @@ python scripts/demo.py      # 合成データで一通り動かす（成績は�
 python scripts/backtest.py --csv WTI=data/WTI_H4.csv --csv SILVER=data/XAGUSD_H4.csv \
     --equity 1000000 --fx-csv data/USDJPY_H4.csv --events config/events_example.csv
 
+# 1回の損失 1.5%、レバレッジ上限 1銘柄 1.5 倍・合計 3 倍で試す（0 で上限なし）
+python scripts/backtest.py --csv WTI=data/WTI_H4.csv --csv SILVER=data/XAGUSD_H4.csv \
+    --risk 0.015 --max-leverage-symbol 1.5 --max-leverage-total 3
+
 # 戦略を指定、コスト 2 倍のストレステスト
 python scripts/backtest.py --csv SILVER=data/XAGUSD_H4.csv --strategy squeeze \
     --params '{"box_period": 24}' --exit '{"trail_atr": 3.5}' --spread-mult 2 --slippage-mult 2

@@ -41,6 +41,8 @@ def ea_params(sleeve: Sleeve, inst: Instrument, config: BacktestConfig) -> dict[
         "rk_daily_loss_limit": rc.daily_loss_limit,
         "rk_max_drawdown_halt": rc.max_drawdown_halt,
         "rk_max_margin_utilization": rc.max_margin_utilization,
+        "rk_max_leverage_symbol": rc.max_leverage_symbol,
+        "rk_max_leverage_total": rc.max_leverage_total,
         "rk_min_lot_overshoot": rc.min_lot_overshoot,
         "ft_oil_events": fc.oil_events and "oil" in inst.event_tags,
         "ft_event_tags": ",".join(inst.event_tags),

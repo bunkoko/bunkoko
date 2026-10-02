@@ -124,10 +124,33 @@ def test_friday_cutoff_blocks_entry():
 def test_daily_loss_limit_blocks_new_entries():
     rows = [(100, 101, 99, 100), (100, 100, 96, 96), (96, 97, 95, 96), (96, 97, 95, 96), (96, 97, 95, 96)]
     cfg = _cfg(risk=RiskConfig(risk_per_trade=0.05, daily_loss_limit=0.03, max_total_risk=0.1,
-                               cluster_max_risk={}))
+                               cluster_max_risk={}, max_leverage_symbol=0, max_leverage_total=0))
     res = _run(rows, {0: 1, 2: 1}, cfg=cfg)
     assert len(res.trades) == 1
     assert "daily_loss" in set(res.rejections["reason"])
+
+
+def test_leverage_cap_reduces_size():
+    # 1% リスク・損切り幅 0.2 → 500 単位 = 名目 500×100×100円 = 500万円（資産の5倍）
+    rows = [(100, 101, 99, 100), (100, 100.5, 99.5, 100), (100, 100.5, 99.5, 100)]
+    cfg = _cfg(risk=RiskConfig(max_leverage_symbol=1.0, max_leverage_total=2.0))
+    t = _run(rows, {0: 1}, stop_dist=0.2, cfg=cfg).trades.iloc[0]
+    assert t.qty == 100                               # 資産100万円 × 1倍 ÷ (100ドル × 100円)
+    off = _cfg(risk=RiskConfig(max_leverage_symbol=0, max_leverage_total=0))
+    assert _run(rows, {0: 1}, stop_dist=0.2, cfg=off).trades.iloc[0].qty == 500
+
+
+def test_leverage_cap_total_across_symbols():
+    rows = [(100, 101, 99, 100), (100, 100.5, 100.0, 100.2), (100.2, 100.5, 100.0, 100.2)]
+    df = make_bars(rows)
+    sleeves = [Sleeve("SILVER", FixedSignals(entries={0: 1}, stop_dist=0.2)),
+               Sleeve("WTI", FixedSignals(entries={0: 1}, stop_dist=0.2))]
+    cfg = _cfg(risk=RiskConfig(max_leverage_symbol=1.0, max_leverage_total=1.5, cluster_max_risk={}))
+    res = run_backtest({"SILVER": df, "WTI": df}, TEST_INST, sleeves, cfg)
+    assert sorted(res.trades["qty"]) == [50, 100]     # 2銘柄目は合計 1.5 倍までの残り
+    assert res.metrics()["max_leverage"] == pytest.approx(1.5, rel=0.01)
+    rej = _run(rows, {0: 1}, stop_dist=0.2, cfg=_cfg(risk=RiskConfig(max_leverage_symbol=0.005)))
+    assert list(rej.rejections["reason"]) == ["leverage"]   # 最小単位すら持てない
 
 
 def test_spread_stress_reduces_profit(oil_df):

@@ -51,6 +51,7 @@ def test_export_set_and_txt(tmp_path):
     assert "ex_time_stop_bars=12" in txt
     params = ea_params(sleeve, INST["SILVER"], BacktestConfig())
     assert params["rk_cluster_id"] == 2 and params["ft_oil_events"] is False
+    assert params["rk_max_leverage_symbol"] == 1.0 and params["rk_max_leverage_total"] == 2.0
 
 
 def test_export_rejects_python_only_strategy():
