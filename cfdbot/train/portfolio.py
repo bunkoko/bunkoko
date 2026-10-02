@@ -34,10 +34,12 @@ class SleeveCandidates:
     dims: tuple[int, ...]        # グリッドの各軸の大きさ
     returns: np.ndarray          # [パラメータ数, 日数] の日次リターン（基準リスク）
     entries: list[np.ndarray]    # 取引ごとのエントリー日（日数の添字）
+    timeframe: str = "H1"        # 売買の足
+    htfs: list[dict] | None = None  # パラメータごとの上位足フィルタ
 
     @property
     def key(self) -> str:
-        return f"{self.symbol}:{self.strategy}"
+        return f"{self.symbol}:{self.strategy}@{self.timeframe}"
 
     def trade_counts(self, a: int, b: int) -> np.ndarray:
         return np.array([np.count_nonzero((e >= a) & (e < b)) for e in self.entries])
@@ -54,6 +56,17 @@ class Pick:
     raw_score: float
     trades: int
     multiplier: float = 0.0   # 1回の損失の倍率（基準リスク × これ）
+    timeframe: str = "H1"
+    htf: dict = field(default_factory=dict)
+
+    @property
+    def key(self) -> str:
+        return f"{self.symbol}:{self.strategy}@{self.timeframe}"
+
+    @property
+    def label(self) -> str:
+        htf = f"+{self.htf['timeframe']}EMA{self.htf['ema']}" if self.htf else ""
+        return f"{self.symbol}:{self.strategy}@{self.timeframe}{htf}"
 
 
 @dataclass
@@ -118,7 +131,8 @@ def select_params(c: SleeveCandidates, a: int, b: int, wf: WalkForwardConfig) ->
     smooth = neighbor_mean(ok, c.dims) if wf.plateau else ok
     best_pos = max(smooth, key=smooth.get)
     i = c.pos.index(best_pos)
-    return Pick(c.symbol, c.strategy, c.params[i], c.exits[i], i, smooth[best_pos], float(scores[i]), int(counts[i]))
+    return Pick(c.symbol, c.strategy, c.params[i], c.exits[i], i, smooth[best_pos], float(scores[i]),
+                int(counts[i]), timeframe=c.timeframe, htf=dict(c.htfs[i]) if c.htfs else {})
 
 
 # --------------------------------------------------------------------------- 配分
@@ -182,13 +196,14 @@ def build_portfolio(cands: list[SleeveCandidates], a: int, b: int, wf: WalkForwa
     by_symbol: dict[str, list[Pick]] = {}
     for p in sorted(picks, key=lambda p: -p.score):
         lst = by_symbol.setdefault(p.symbol, [])
-        if len(lst) < pc.max_strategies_per_symbol:
+        # 同じ銘柄に複数の戦略を使う場合も、時間足は 1 つに揃える（EA・バックテストとも 1 銘柄 1 時間足）
+        if len(lst) < pc.max_strategies_per_symbol and all(x.timeframe == p.timeframe for x in lst):
             lst.append(p)
     chosen = [p for lst in by_symbol.values() for p in lst]
     if not chosen:
         return [], 0.0, 0.0
     lookup = {c.key: c for c in cands}
-    r = np.vstack([lookup[f"{p.symbol}:{p.strategy}"].returns[p.index, a:b] for p in chosen])
+    r = np.vstack([lookup[p.key].returns[p.index, a:b] for p in chosen])
     mult, vol, dd = allocate(r, np.array([p.score for p in chosen]), pc, min_mult, max_mult)
     for p, m in zip(chosen, mult):
         p.multiplier = float(m)
@@ -199,7 +214,7 @@ def portfolio_returns(cands: list[SleeveCandidates], picks: list[Pick], a: int, 
     lookup = {c.key: c for c in cands}
     out = np.zeros(b - a)
     for p in picks:
-        out += p.multiplier * lookup[f"{p.symbol}:{p.strategy}"].returns[p.index, a:b]
+        out += p.multiplier * lookup[p.key].returns[p.index, a:b]
     return out
 
 

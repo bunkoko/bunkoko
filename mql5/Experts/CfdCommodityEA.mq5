@@ -73,6 +73,10 @@ input double mr_rsi_high   = 90.0;
 input int    mr_adx_period = 14;
 input double mr_adx_max    = 20.0;
 
+input group "上位足フィルタ"
+input int    htf_minutes = 0;   // 上位足（分。240=H4, 1440=D1）。0=使わない
+input int    htf_ema     = 0;   // 上位足の終値が EMA より上なら買いだけ、下なら売りだけ
+
 //--- 出口 --------------------------------------------------------------
 input group "出口管理"
 input int    ex_atr_period             = 20;
@@ -143,6 +147,7 @@ struct Params
    int    pb_fast_ema, pb_slow_ema, pb_slope_bars, pb_adx_period, pb_setup_bars, pb_swing_bars;
    double pb_adx_min, pb_touch_atr, pb_stop_buffer_atr;
    int    mr_period, mr_rsi_period, mr_adx_period;
+   int    htf_minutes, htf_ema;
    double mr_z_entry, mr_exit_z, mr_rsi_low, mr_rsi_high, mr_adx_max;
    int    ex_atr_period, ex_time_stop_bars, ex_max_hold_bars;
    double ex_init_stop_atr, ex_min_stop_atr, ex_max_stop_atr, ex_breakeven_trigger_atr;
@@ -544,6 +549,58 @@ void ComputeSignal(const int k, CfdSignal &s)
          s.entry = -1;
          s.stop_dist = stop_s;
         }
+   // 上位足フィルタ（Python の Sleeve.htf_* と同じ: 確定済みの上位足の終値と EMA を比べる）
+   if(s.entry != 0 && P.htf_minutes > 0 && P.htf_ema > 0)
+     {
+      int trend = HigherTimeframeTrend();
+      if((s.entry > 0 && trend <= 0) || (s.entry < 0 && trend >= 0))
+        {
+         s.entry = 0;
+         s.stop_dist = -1;
+        }
+     }
+  }
+
+ENUM_TIMEFRAMES MinutesToTimeframe(const int m)
+  {
+   switch(m)
+     {
+      case 1:
+         return(PERIOD_M1);
+      case 5:
+         return(PERIOD_M5);
+      case 10:
+         return(PERIOD_M10);
+      case 15:
+         return(PERIOD_M15);
+      case 30:
+         return(PERIOD_M30);
+      case 60:
+         return(PERIOD_H1);
+      case 240:
+         return(PERIOD_H4);
+      case 1440:
+         return(PERIOD_D1);
+     }
+   return(PERIOD_CURRENT);
+  }
+
+// +1: 上位足の終値 > EMA、-1: 終値 < EMA、0: 判定できない（データ不足など。この場合は新規を出さない）
+int HigherTimeframeTrend()
+  {
+   ENUM_TIMEFRAMES tf = MinutesToTimeframe(P.htf_minutes);
+   if(tf == PERIOD_CURRENT || PeriodSeconds(tf) <= PeriodSeconds(_Period))
+      return(0);
+   MqlRates r[];
+   int n = CopyRates(_Symbol, tf, 1, MathMax(P.htf_ema * 4, 300), r);  // 1 = 確定済みの足から
+   if(n < P.htf_ema)
+      return(0);
+   double a = 2.0 / (P.htf_ema + 1.0);
+   double e = r[0].close;
+   for(int i = 1; i < n; i++)
+      e = e + a * (r[i].close - e);
+   double c = r[n - 1].close;
+   return(c > e ? 1 : (c < e ? -1 : 0));
   }
 
 double ClipStop(double stop_dist, const double atr)
@@ -1312,6 +1369,8 @@ void LoadDefaults()
    P.mr_rsi_high = mr_rsi_high;
    P.mr_adx_period = mr_adx_period;
    P.mr_adx_max = mr_adx_max;
+   P.htf_minutes = htf_minutes;
+   P.htf_ema = htf_ema;
    P.ex_atr_period = ex_atr_period;
    P.ex_init_stop_atr = ex_init_stop_atr;
    P.ex_min_stop_atr = ex_min_stop_atr;
@@ -1395,6 +1454,8 @@ bool SetParam(const string key, const string v)
    else if(key == "mr_rsi_high") P.mr_rsi_high = d;
    else if(key == "mr_adx_period") P.mr_adx_period = i;
    else if(key == "mr_adx_max") P.mr_adx_max = d;
+   else if(key == "htf_minutes") P.htf_minutes = i;
+   else if(key == "htf_ema") P.htf_ema = i;
    else if(key == "ex_atr_period") P.ex_atr_period = i;
    else if(key == "ex_init_stop_atr") P.ex_init_stop_atr = d;
    else if(key == "ex_min_stop_atr") P.ex_min_stop_atr = d;

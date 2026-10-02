@@ -31,7 +31,7 @@ from ..instruments import Instrument
 from ..metrics import daily_equity
 from ..risk import RiskConfig
 from ..strategies import make_strategy
-from .dataset import trading_days
+from .dataset import Dataset
 
 TRAIN_EQUITY = 10_000_000.0
 
@@ -43,14 +43,17 @@ class Task:
     params: dict[str, Any]
     exit: dict[str, Any] = field(default_factory=dict)
     pos: tuple[int, ...] = ()       # グリッド上の位置（隣接平均に使う）
+    timeframe: str = "H1"           # 売買の足
+    htf: dict[str, Any] = field(default_factory=dict)  # 上位足フィルタ {"timeframe": "H4", "ema": 50}
 
     @property
     def sleeve(self) -> str:
-        return f"{self.symbol}:{self.strategy}"
+        return f"{self.symbol}:{self.strategy}@{self.timeframe}"
 
     @property
     def id(self) -> str:
-        key = json.dumps([self.symbol, self.strategy, self.params, self.exit], sort_keys=True, default=str)
+        key = json.dumps([self.symbol, self.strategy, self.params, self.exit, self.timeframe, self.htf],
+                         sort_keys=True, default=str)
         return hashlib.sha1(key.encode()).hexdigest()[:20]
 
     def to_dict(self) -> dict[str, Any]:
@@ -61,7 +64,8 @@ class Task:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Task":
-        return cls(d["symbol"], d["strategy"], dict(d["params"]), dict(d.get("exit", {})), tuple(d.get("pos", ())))
+        return cls(d["symbol"], d["strategy"], dict(d["params"]), dict(d.get("exit", {})),
+                   tuple(d.get("pos", ())), d.get("timeframe", "H1"), dict(d.get("htf", {})))
 
 
 def encode_array(a: np.ndarray, dtype: str) -> str:
@@ -127,24 +131,39 @@ class EvalSettings:
         )
 
 
+def pick_task(p) -> Task:
+    """学習で選ばれた候補（portfolio.Pick）を Task に戻す。"""
+    return Task(p.symbol, p.strategy, p.params, p.exit, (), p.timeframe, p.htf)
+
+
+def make_sleeve(task: Task, ds: Dataset, risk_weight: float = 1.0) -> Sleeve:
+    htf_frame, htf_ema, htf_tf = None, 0, ""
+    if task.htf:
+        htf_tf, htf_ema = task.htf["timeframe"], int(task.htf["ema"])
+        htf_frame = ds.context_frame(task.symbol, htf_tf)
+        if htf_frame is None:
+            raise ValueError(f"{task.symbol}: 上位足 {htf_tf} のデータを用意できない")
+    return Sleeve(task.symbol, make_strategy(task.strategy, **task.params), dict(task.exit),
+                  risk_weight=risk_weight, htf_frame=htf_frame, htf_ema=htf_ema, htf_timeframe=htf_tf)
+
+
 class Evaluator:
-    def __init__(self, prices: dict[str, pd.DataFrame], fx: pd.Series | None, settings: EvalSettings):
-        self.prices = prices
+    def __init__(self, ds: Dataset, settings: EvalSettings):
+        self.ds = ds
         self.settings = settings
         self.instruments = settings.instrument_map(uncapped=True)
-        tf = next(iter(prices.values())).index
-        from ..backtest import infer_timeframe
-
-        self.timeframe = infer_timeframe(tf)
-        self.calendar = trading_days(prices, self.timeframe)
-        self.cfg = settings.backtest_config(fx if fx is not None else settings.fx_const)
+        self.calendar = ds.calendar()
+        self.cfg = settings.backtest_config(ds.fx if ds.fx is not None else settings.fx_const)
 
     def run(self, task: Task) -> dict[str, Any]:
         t0 = time.perf_counter()
-        strat = make_strategy(task.strategy, **task.params)
+        frame = self.ds.signal_frame(task.symbol, task.timeframe)
+        if frame is None:
+            raise ValueError(f"{task.symbol} の {task.timeframe} のデータが無い")
+        fine = self.ds.fine_frame(task.symbol, task.timeframe)
         res = run_backtest(
-            {task.symbol: self.prices[task.symbol]}, self.instruments,
-            [Sleeve(task.symbol, strat, dict(task.exit))], self.cfg,
+            {task.symbol: frame}, self.instruments, [make_sleeve(task, self.ds)], self.cfg,
+            fine_data={task.symbol: fine} if fine is not None else None,
         )
         daily = daily_equity(res.equity)
         ret = daily.pct_change().reindex(self.calendar).fillna(0.0).to_numpy()

@@ -2,8 +2,11 @@
 # 書かなかった項目は既定値（cfdbot/train/config.py）が使われる。
 
 [data]
-dir = "data"                 # MT5 から書き出した CSV を置くフォルダ
-timeframe = "H1"             # 学習する時間足。ファイル名に別の時間足が入っているものは読み飛ばす
+dir = "data"                 # MT5 から書き出した CSV を置くフォルダ（同じ銘柄の時間足違いも全部置いてよい）
+signal_timeframes = ["H1"]   # 売買の足。複数指定すると時間足も学習で選ぶ（例: ["H1", "H4"]）
+fill_timeframe = "auto"      # 約定の再現に使う細かい足。"auto" = 売買の足より細かいファイルのうち最も細かいもの
+                             # （M5 や M1 を置けば自動で使う）/ "none" = 使わない / "M5" など指定
+grid_timeframe = "H1"        # 下の grid の本数がどの時間足の本数か（他の時間足では同じ時間幅に自動換算）
 server_tz = "ny_close"       # MT5 サーバー時刻の方式（docs/roadmap.md 1-3 で確認）
 broker = "phillip"
 instruments = ""             # 実測スプレッド等の銘柄仕様 JSON（例: "config/instruments_phillip.json"）
@@ -47,9 +50,17 @@ listen = "127.0.0.1"         # "0.0.0.0" で iPad など他の端末も参加で
 port = 8765
 
 # ---------------------------------------------------------------------------
-# 探索する戦略と範囲（本数は H1 の足数。H4 の 4 倍で同じ時間幅）
+# 探索する戦略と範囲（本数は grid_timeframe の足数。H4 なら 1/4、M15 なら 4 倍に自動換算される）
 # "exit." で始まるものは出口設定（trail_atr など）。enabled = false で無効。
 # 範囲を広げるほど偶然良く見えるものを選びやすくなるので、むやみに増やさない。
+#
+# 上位足フィルタ（上位足の終値が EMA より上なら買いだけ・下なら売りだけ）も学習で選ばせる例:
+#   "htf.timeframe" = ["none", "H4", "D1"]     # 組み合わせが最大 5 倍になる
+#   "htf.ema" = [50, 100]
+# 戦略ごとに売買の足を変える例:   timeframes = ["H4"]
+# 時間足ごとに範囲を個別指定する例（自動換算を使わない）:
+#   [strategies.donchian.grid_H4]
+#   entry_period = [20, 30, 45]
 
 [strategies.donchian]
 symbols = ["WTI", "BRENT", "SILVER", "GOLD"]

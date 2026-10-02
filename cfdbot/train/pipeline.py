@@ -16,8 +16,7 @@ import random
 import secrets
 import socket
 import time
-from concurrent.futures import ProcessPoolExecutor
-from dataclasses import asdict, replace
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -25,17 +24,18 @@ from typing import Any, Callable
 import numpy as np
 import pandas as pd
 
-from ..backtest import BacktestConfig, CostModel, FilterConfig, Sleeve, run_backtest
+from ..backtest import BacktestConfig, CostModel, FilterConfig, run_backtest
 from ..events import ET, load_events_csv
 from ..exits import ExitConfig
 from ..export import EA_STRATEGIES
 from ..instruments import get_instruments, load_instruments
 from ..risk import RiskConfig
 from ..strategies import make_strategy
-from .config import TrainConfig
+from .config import TIMEFRAMES, TrainConfig, scale_grid, tf_minutes
 from .dataset import Dataset, load_dataset
 from .distributed import Coordinator, ResultStore, _local_worker_entry
-from .evaluate import EvalSettings, Evaluator, Task, decode_array
+from .costs import timeframe_costs
+from .evaluate import EvalSettings, Evaluator, Task, decode_array, make_sleeve, pick_task
 from .portfolio import (
     SleeveCandidates,
     WindowResult,
@@ -48,33 +48,64 @@ Log = Callable[[str], None]
 
 
 # --------------------------------------------------------------------------- タスク
-def build_tasks(cfg: TrainConfig, symbols: list[str]) -> tuple[list[Task], dict[str, tuple[int, ...]]]:
+def _split(values: dict[str, Any]) -> tuple[dict, dict, dict]:
+    """grid / fixed の 1 組を (戦略パラメータ, 出口設定, 上位足フィルタ) に分ける。"""
+    params, ex, htf = {}, {}, {}
+    for k, v in values.items():
+        if k.startswith("exit."):
+            ex[k[5:]] = v
+        elif k.startswith("htf."):
+            htf[k[4:]] = v
+        else:
+            params[k] = v
+    return params, ex, htf
+
+
+def _normalize_htf(htf: dict, tf: str) -> dict | None:
+    """上位足フィルタの指定を整える。使えない組み合わせは None。"""
+    name = str(htf.get("timeframe", "none")).upper()
+    if name in ("NONE", "", "0"):
+        return {}
+    if name not in TIMEFRAMES or tf_minutes(name) <= tf_minutes(tf):
+        return None  # 売買の足より粗くないと意味がない
+    return {"timeframe": name, "ema": int(htf.get("ema", 50))}
+
+
+def build_tasks(cfg: TrainConfig, ds: Dataset) -> tuple[list[Task], dict[str, tuple[int, ...]]]:
+    """戦略 × 銘柄 × 売買の足 × パラメータの組み合わせを作る。"""
     tasks: list[Task] = []
     dims: dict[str, tuple[int, ...]] = {}
+    seen: set[str] = set()
     for spec in cfg.strategies:
         if spec.name not in EA_STRATEGIES:
             raise ValueError(f"学習できる戦略は {EA_STRATEGIES}（EA で動くもの）: {spec.name}")
-        keys = list(spec.grid)
-        values = [list(spec.grid[k]) for k in keys]
-        fixed_p = {k: v for k, v in spec.fixed.items() if not k.startswith("exit.")}
-        fixed_x = {k[5:]: v for k, v in spec.fixed.items() if k.startswith("exit.")}
-        for sym in spec.symbols:
-            if sym not in symbols:
-                continue
-            dims[f"{sym}:{spec.name}"] = tuple(len(v) for v in values)
-            for pos in itertools.product(*[range(len(v)) for v in values]):
-                params, ex = dict(fixed_p), dict(fixed_x)
-                for k, j in zip(keys, pos):
-                    if k.startswith("exit."):
-                        ex[k[5:]] = values[keys.index(k)][j]
-                    else:
-                        params[k] = values[keys.index(k)][j]
-                try:
-                    make_strategy(spec.name, **params)
-                    ExitConfig().with_overrides(ex)
-                except ValueError:
-                    continue  # 成り立たない組み合わせ（例: 手仕舞い期間 ≥ エントリー期間）
-                tasks.append(Task(sym, spec.name, params, ex, pos))
+        for tf in spec.timeframes or cfg.data.signal_timeframes:
+            if tf in spec.grids:
+                grid, fixed = spec.grids[tf], dict(spec.fixed)
+            else:  # 基準の時間足で書いた本数を、同じ時間幅になるよう換算
+                grid = scale_grid(spec.grid, cfg.data.grid_timeframe, tf)
+                fixed = {k: v[0] for k, v in scale_grid({k: [v] for k, v in spec.fixed.items()},
+                                                        cfg.data.grid_timeframe, tf).items()}
+            keys = list(grid)
+            values = [list(grid[k]) for k in keys]
+            for sym in spec.symbols:
+                if sym not in ds.symbols or ds.signal_frame(sym, tf) is None:
+                    continue
+                dims[f"{sym}:{spec.name}@{tf}"] = tuple(len(v) for v in values)
+                for pos in itertools.product(*[range(len(v)) for v in values]):
+                    params, ex, htf = _split({**fixed, **{k: values[n][j] for n, (k, j) in enumerate(zip(keys, pos))}})
+                    htf = _normalize_htf(htf, tf)
+                    if htf is None or (htf and ds.context_frame(sym, htf["timeframe"]) is None):
+                        continue
+                    try:
+                        make_strategy(spec.name, **params)
+                        ExitConfig().with_overrides(ex)
+                    except ValueError:
+                        continue  # 成り立たない組み合わせ（例: 手仕舞い期間 ≥ エントリー期間）
+                    task = Task(sym, spec.name, params, ex, pos, tf, htf)
+                    if task.id not in seen:  # 上位足フィルタなしの重複など
+                        seen.add(task.id)
+                        tasks.append(task)
     return tasks, dims
 
 
@@ -113,9 +144,9 @@ def _calibrate(ev: Evaluator, todo: list[Task], store: ResultStore, log: Log) ->
     secs = []
     seen = set()
     for t in todo:
-        if t.strategy in seen:
+        if (t.strategy, t.timeframe) in seen:
             continue
-        seen.add(t.strategy)
+        seen.add((t.strategy, t.timeframe))
         try:
             res = ev.run(t)
         except Exception as e:  # noqa: BLE001
@@ -208,6 +239,7 @@ def _load_candidates(tasks: list[Task], dims: dict[str, tuple[int, ...]], store:
             pos=[t.pos for t, _ in items], dims=dims[key],
             returns=np.vstack([decode_array(r["ret"], "float32").astype(float) for _, r in items]),
             entries=[decode_array(r["entries"], "int32") for _, r in items],
+            timeframe=items[0][0].timeframe, htfs=[t.htf for t, _ in items],
         ))
     return out
 
@@ -234,20 +266,30 @@ def _day_start_utc(day: pd.Timestamp) -> pd.Timestamp:
     return (day - pd.Timedelta(hours=7)).tz_localize(ET).tz_convert("UTC")
 
 
-def _validate_window(args) -> dict[str, Any]:
-    prices, instruments, picks, bt_cfg, start, end = args
-    sleeves = [Sleeve(p["symbol"], make_strategy(p["strategy"], **p["params"]), dict(p["exit"]),
-                      risk_weight=p["multiplier"]) for p in picks]
-    warm = max(s.strategy.warmup_bars() for s in sleeves) + 10
-    sliced = {}
-    for s in {p["symbol"] for p in picks}:
-        df = prices[s]
-        i0 = max(int(df.index.searchsorted(start)) - warm, 0)
-        sliced[s] = df.iloc[i0:int(df.index.searchsorted(end))]
+def _warm_time(task: Task) -> pd.Timedelta:
+    """指標が落ち着くまでに必要な時間（上位足フィルタの EMA を含む）。"""
+    t = make_strategy(task.strategy, **task.params).warmup_bars() * pd.Timedelta(TIMEFRAMES[task.timeframe])
+    if task.htf:
+        t = max(t, task.htf["ema"] * 3 * pd.Timedelta(TIMEFRAMES[task.htf["timeframe"]]))
+    return t
+
+
+def validate_window(ds: Dataset, instruments, picks, bt_cfg: BacktestConfig,
+                    start: pd.Timestamp, end: pd.Timestamp) -> dict[str, Any]:
+    """検証期間を、実際の資金・全ルール（細かい足での約定の再現を含む）でバックテストする。"""
+    tasks = [pick_task(p) for p in picks]
+    sleeves = [make_sleeve(t, ds, risk_weight=p.multiplier) for t, p in zip(tasks, picks)]
+    data, fine = {}, {}
+    for t in tasks:
+        frame = ds.signal_frame(t.symbol, t.timeframe)
+        warm = max(_warm_time(x) for x in tasks if x.symbol == t.symbol) * 1.5 + pd.Timedelta(days=7)
+        data[t.symbol] = frame[(frame.index >= start - warm) & (frame.index < end)]
+        f = ds.fine_frame(t.symbol, t.timeframe)
+        if f is not None:
+            fine[t.symbol] = f[(f.index >= start - warm) & (f.index < end)]
     # 評価のため最大DDでの停止は外す（停止に触れたかはレポートで確認）
-    cfg = replace(bt_cfg, trade_start=start, trade_end=end,
-                  risk=replace(bt_cfg.risk, max_drawdown_halt=1.0))
-    res = run_backtest(sliced, instruments, sleeves, cfg)
+    cfg = replace(bt_cfg, trade_start=start, trade_end=end, risk=replace(bt_cfg.risk, max_drawdown_halt=1.0))
+    res = run_backtest(data, instruments, sleeves, cfg, fine_data=fine or None)
     return {"equity": res.equity, "trades": res.trades, "leverage": res.leverage}
 
 
@@ -257,16 +299,25 @@ def run_training(cfg: TrainConfig, log: Log = print, config_path: str | None = N
     ds = load_dataset(cfg.data)
     for s in ds.skipped:
         log(f"読み飛ばし: {s}")
-    span = {k: (df.index[0], df.index[-1], len(df)) for k, df in ds.prices.items()}
-    for k, (a, b, n) in span.items():
-        log(f"{k}: {a:%Y-%m-%d} 〜 {b:%Y-%m-%d}（{n:,} 本）")
+    for sym in ds.symbols:
+        parts = [f"{tf} {df.index[0]:%Y-%m-%d}〜{df.index[-1]:%Y-%m-%d}（{len(df):,} 本）"
+                 for tf, df in sorted(ds.frames[sym].items(), key=lambda x: tf_minutes(x[0]))]
+        log(f"{sym}: " + " / ".join(parts))
+        for tf in cfg.data.signal_timeframes:
+            made = "" if tf in ds.frames[sym] else "（細かい足から作成）"
+            fine = ds.fine_timeframe(sym, tf)
+            if ds.signal_frame(sym, tf) is not None:
+                log(f"  売買 {tf}{made} / 約定の再現 {fine or 'なし（' + tf + ' の高値・安値で推定）'}")
     log("円換算: " + ("USDJPY のデータ" if ds.fx is not None else f"固定 {cfg.data.fx} 円"))
 
     settings = _eval_settings(cfg, ds)
-    tasks, dims = build_tasks(cfg, ds.symbols)
+    costs = timeframe_costs(ds, settings.instrument_map())
+    for _, row in costs[costs["timeframe"].isin(cfg.data.signal_timeframes)].iterrows():
+        log(f"コスト {row['symbol']}@{row['timeframe']}: 往復コスト = 損切り幅の {row['cost_per_r']:.1%}（{row['verdict']}）")
+    tasks, dims = build_tasks(cfg, ds)
     if not tasks:
-        raise ValueError("学習するタスクが無い（strategies の symbols とデータの銘柄を確認）")
-    log(f"候補: {len(dims)} 通り（銘柄×戦略）、パラメータの組み合わせ {len(tasks)} 件")
+        raise ValueError("学習するタスクが無い（strategies の symbols・timeframes とデータを確認）")
+    log(f"候補: {len(dims)} 通り（銘柄×戦略×時間足）、パラメータの組み合わせ {len(tasks)} 件")
 
     settings_hash = hashlib.sha256(json.dumps(settings.to_dict(), sort_keys=True).encode()).hexdigest()
     out_root = Path(cfg.output_dir)
@@ -274,19 +325,24 @@ def run_training(cfg: TrainConfig, log: Log = print, config_path: str | None = N
     meta = {
         "version": 1,
         "server_tz": cfg.data.server_tz,
-        "timeframe": cfg.data.timeframe,
+        "signal_timeframes": cfg.data.signal_timeframes,
+        "fill_timeframe": cfg.data.fill_timeframe,
         "files": {k: {"path": str(p.resolve()), "name": p.name, "sha256": _sha(p)} for k, p in ds.files.items()},
         "settings": settings.to_dict(),
     }
-    ev = Evaluator(ds.prices, ds.fx, settings)
+    ev = Evaluator(ds, settings)
     compute_info = _run_tasks(cfg, tasks, meta, ds, store, ev, log)
 
     cands = _load_candidates(tasks, dims, store)
     store.close()
     calendar = ev.calendar
-    warm = max(make_strategy(t.strategy, **t.params).warmup_bars() for t in tasks)
-    first = max(df.index[min(warm, len(df) - 1)] for df in ds.prices.values())
-    start_day = (first.tz_convert(ET) + pd.Timedelta(hours=7)).normalize().tz_localize(None)
+    # 全候補の指標が落ち着いた日から学習期間を始める
+    firsts = []
+    for sym, tf in {(t.symbol, t.timeframe) for t in tasks}:
+        idx = ds.signal_frame(sym, tf).index
+        warm = max(_warm_time(t) for t in tasks if t.symbol == sym and t.timeframe == tf)
+        firsts.append(idx[min(int(np.ceil(warm / pd.Timedelta(TIMEFRAMES[tf]))), len(idx) - 1)])
+    start_day = (max(firsts).tz_convert(ET) + pd.Timedelta(hours=7)).normalize().tz_localize(None)
     wf, pc, acc = cfg.walkforward, cfg.portfolio, cfg.account
     min_mult = acc.min_risk_per_trade / acc.base_risk
     max_mult = acc.max_risk_per_trade / acc.base_risk
@@ -313,25 +369,16 @@ def run_training(cfg: TrainConfig, log: Log = print, config_path: str | None = N
     fx = ds.fx if ds.fx is not None else cfg.data.fx
     bt_cfg = _account_config(cfg, fx, events)
     instruments = settings.instrument_map()
-    jobs = []
-    for w in results:
-        if not w.picks:
-            continue
-        jobs.append((w, (ds.prices, instruments, [asdict(p) for p in w.picks], bt_cfg,
-                         _day_start_utc(w.test[0]), _day_start_utc(w.test[1] + pd.Timedelta(days=1)))))
+    jobs = [(w, None) for w in results if w.picks]
     log(f"最終検証: {len(jobs)} 期間を実際の資金 {acc.equity:,.0f} 円・全ルールで再現")
-    workers = cfg.compute.workers or max((os.cpu_count() or 2) - 1, 1)
-    if jobs:
-        with ProcessPoolExecutor(min(workers, len(jobs)), mp_context=mp.get_context("spawn")) as ex:
-            validated = list(ex.map(_validate_window, [j[1] for j in jobs]))
-    else:
-        validated = []
+    validated = [validate_window(ds, instruments, w.picks, bt_cfg, _day_start_utc(w.test[0]),
+                                 _day_start_utc(w.test[1] + pd.Timedelta(days=1))) for w, _ in jobs]
 
     out = out_root / started.strftime("%Y%m%d-%H%M%S")
     out.mkdir(parents=True, exist_ok=True)
     from .report import write_outputs
 
     write_outputs(out, cfg, ds, tasks, compute_info, results, final, jobs, validated, bt_cfg, instruments,
-                  started, config_path, log)
+                  started, config_path, log, costs)
     log(f"完了: {out}")
     return out

@@ -70,17 +70,25 @@ def validate_ohlc(df: pd.DataFrame) -> None:
         raise ValueError(f"OHLC が不正な足が {int(bad.sum())} 本ある（最初: {df.index[bad.argmax()]}）")
 
 
-def resample_ohlc(df: pd.DataFrame, rule: str) -> pd.DataFrame:
-    """下位足から上位足を作る（例: H1 → H4）。17:00 ET 区切りに合わせる。"""
-    et = df.tz_convert(ET)
+def resample_ohlc(df: pd.DataFrame, rule: str | pd.Timedelta) -> pd.DataFrame:
+    """下位足から上位足を作る（例: M5 → H1、H1 → H4）。
+
+    足の区切りは米東部時間の壁時計で 17:00 起点（MT5 の「NY クローズ」方式のサーバーと同じ。
+    H4 なら 17,21,1,5,9,13 時、D1 なら 17:00〜翌 17:00）。夏時間の切り替えでもずれない。
+    """
+    td = pd.Timedelta(rule)
+    wall = df.tz_convert(ET)
+    wall.index = wall.index.tz_localize(None)
     agg = {"open": "first", "high": "max", "low": "min", "close": "last"}
     if "volume" in df:
         agg["volume"] = "sum"
     if "spread" in df:
         agg["spread"] = "median"
-    out = et.resample(rule, offset=pd.Timedelta(hours=17) if rule.upper() in ("1D", "D") else None).agg(agg)
-    out = out.dropna(subset=["open"])
-    out.index = out.index.tz_convert("UTC")
+    offset = pd.Timedelta(hours=17) % td if td <= pd.Timedelta(days=1) else pd.Timedelta(hours=17)
+    out = wall.resample(td, offset=offset, label="left", closed="left").agg(agg).dropna(subset=["open"])
+    out.index = out.index.tz_localize(ET, ambiguous="NaT", nonexistent="shift_forward").tz_convert("UTC")
+    out = out[~out.index.isna()]
+    out.index.name = df.index.name
     return out
 
 

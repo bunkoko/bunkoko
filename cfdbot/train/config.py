@@ -9,6 +9,8 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 try:
     import tomllib  # Python 3.11+
 except ModuleNotFoundError:  # pragma: no cover - 3.10 以前
@@ -23,13 +25,56 @@ DEFAULT_SYMBOL_MAP = {
     "USDJPY": "FX",
 }
 
-TIMEFRAMES = {"M15": "15min", "M30": "30min", "H1": "1h", "H4": "4h", "D1": "1D"}
+TIMEFRAMES = {
+    "M1": "1min", "M5": "5min", "M10": "10min", "M15": "15min", "M30": "30min",
+    "H1": "1h", "H4": "4h", "D1": "1D",
+}
+
+
+def tf_minutes(tf: str) -> int:
+    return int(pd.Timedelta(TIMEFRAMES[tf]).total_seconds() // 60)
+
+
+def tf_name(delta: pd.Timedelta) -> str:
+    for k, v in TIMEFRAMES.items():
+        if pd.Timedelta(v) == delta:
+            return k
+    raise ValueError(f"対応していない時間足: {delta}")
+
+
+#: 時間足を変えるとき「同じ時間幅」になるよう本数を換算するパラメータ
+#: （指標の形を決めるもの: adx_period, rsi_period, bb_period などは換算しない）
+SCALED_KEYS = {
+    "entry_period", "exit_period", "trend_ema", "box_period", "min_squeeze_bars",
+    "fast_ema", "slow_ema", "period", "exit.time_stop_bars", "exit.max_hold_bars",
+}
+
+
+def scale_grid(grid: dict[str, list], from_tf: str, to_tf: str) -> dict[str, list]:
+    """grid_timeframe の本数で書いた探索範囲を、別の時間足の本数に換算する。"""
+    ratio = tf_minutes(from_tf) / tf_minutes(to_tf)
+    if ratio == 1:
+        return {k: list(v) for k, v in grid.items()}
+    out = {}
+    for k, values in grid.items():
+        if k in SCALED_KEYS:
+            scaled = [v if v == 0 else max(2, int(round(v * ratio))) for v in values]
+            out[k] = list(dict.fromkeys(scaled))  # 重複を除く（順番は保つ）
+        else:
+            out[k] = list(values)
+    return out
 
 
 @dataclass
 class DataConfig:
     dir: str = "data"
-    timeframe: str = "H1"
+    #: 売買判断に使う時間足（複数可）。学習で銘柄ごとに最も良い時間足が選ばれる
+    signal_timeframes: list[str] = field(default_factory=lambda: ["H1"])
+    #: 約定の再現に使う細かい足。"auto" = 売買の足より細かいファイルのうち最も細かいもの、"none" = 使わない
+    fill_timeframe: str = "auto"
+    #: [strategies.*.grid] の本数がどの時間足の本数か（他の時間足では同じ時間幅に換算）
+    grid_timeframe: str = "H1"
+    timeframe: str = ""          # 旧形式（signal_timeframes = [timeframe] と同じ）
     server_tz: Any = "ny_close"
     broker: str = "phillip"
     instruments: str = ""        # 銘柄仕様の JSON（実測スプレッドなど）。空なら証券会社の既定値
@@ -86,6 +131,8 @@ class StrategySearch:
     symbols: list[str]
     grid: dict[str, list]
     fixed: dict[str, Any] = field(default_factory=dict)
+    timeframes: list[str] | None = None            # None = data.signal_timeframes
+    grids: dict[str, dict[str, list]] = field(default_factory=dict)  # 時間足ごとの個別指定（grid_H4 など）
 
 
 def default_strategies() -> list[StrategySearch]:
@@ -149,7 +196,7 @@ def _fill(cls, raw: dict[str, Any], section: str):
 def load_train_config(path: str | Path | None) -> TrainConfig:
     cfg = TrainConfig()
     if path is None or not Path(path).exists():
-        return cfg
+        return normalize(cfg)
     raw = tomllib.loads(Path(path).read_text(encoding="utf-8"))
     sections = {"data": DataConfig, "account": AccountConfig, "walkforward": WalkForwardConfig,
                 "portfolio": PortfolioConfig, "compute": ComputeConfig}
@@ -159,13 +206,33 @@ def load_train_config(path: str | Path | None) -> TrainConfig:
     if "output_dir" in raw:
         cfg.output_dir = raw["output_dir"]
     if "strategies" in raw:
-        cfg.strategies = [
-            StrategySearch(name=name, symbols=list(spec.get("symbols", [])),
-                           grid=dict(spec.get("grid", {})), fixed=dict(spec.get("fixed", {})))
-            for name, spec in raw["strategies"].items()
-            if spec.get("enabled", True)
-        ]
+        cfg.strategies = []
+        for name, spec in raw["strategies"].items():
+            if not spec.get("enabled", True):
+                continue
+            grids = {k[len("grid_"):].upper(): dict(v) for k, v in spec.items() if k.startswith("grid_")}
+            tfs = spec.get("timeframes")
+            cfg.strategies.append(StrategySearch(
+                name=name, symbols=list(spec.get("symbols", [])), grid=dict(spec.get("grid", {})),
+                fixed=dict(spec.get("fixed", {})), timeframes=[t.upper() for t in tfs] if tfs else None,
+                grids=grids,
+            ))
     unknown = set(raw) - set(sections) - {"strategies", "output_dir"}
     if unknown:
         raise ValueError(f"不明なセクション: {sorted(unknown)}")
+    normalize(cfg)
+    return cfg
+
+
+def normalize(cfg: TrainConfig) -> TrainConfig:
+    d = cfg.data
+    if d.timeframe:
+        d.signal_timeframes = [d.timeframe]
+        d.timeframe = ""
+    d.signal_timeframes = [t.upper() for t in d.signal_timeframes]
+    d.grid_timeframe = d.grid_timeframe.upper()
+    d.fill_timeframe = d.fill_timeframe.upper() if d.fill_timeframe.lower() not in ("auto", "none") else d.fill_timeframe.lower()
+    for t in [*d.signal_timeframes, d.grid_timeframe] + ([d.fill_timeframe] if d.fill_timeframe not in ("auto", "none") else []):
+        if t not in TIMEFRAMES:
+            raise ValueError(f"対応していない時間足: {t}（{list(TIMEFRAMES)}）")
     return cfg

@@ -12,11 +12,11 @@ from typing import Any, Callable
 import numpy as np
 import pandas as pd
 
-from ..backtest import BacktestConfig, Sleeve
+from ..backtest import BacktestConfig
 from ..export import export_sleeve
 from ..metrics import compute_metrics
-from ..strategies import make_strategy
-from .config import TIMEFRAMES, TrainConfig
+from .config import TrainConfig, tf_minutes
+from .evaluate import make_sleeve, pick_task
 from .portfolio import WindowResult, max_drawdown
 
 
@@ -45,13 +45,13 @@ def _chain(curves: list[pd.Series], initial: float) -> pd.Series:
 
 
 def _fmt_pick(p) -> str:
-    return f"{p.symbol}:{p.strategy}×{p.multiplier:.2f}"
+    return f"{p.label}×{p.multiplier:.2f}"
 
 
 def write_outputs(out: Path, cfg: TrainConfig, ds, tasks, compute_info: dict[str, Any],
                   results: list[WindowResult], final: WindowResult, jobs, validated,
                   bt_cfg: BacktestConfig, instruments, started: datetime, config_path: str | None,
-                  log: Callable[[str], None]) -> None:
+                  log: Callable[[str], None], costs: pd.DataFrame | None = None) -> None:
     acc = cfg.account
     # ---- 検証期間をつないだ成績（近似: 日次リターンの合成 / 実際: 全ルールでの再現）
     approx = pd.concat([w.oos for w in results if w.oos is not None]) if results else pd.Series(dtype=float)
@@ -88,17 +88,19 @@ def write_outputs(out: Path, cfg: TrainConfig, ds, tasks, compute_info: dict[str
     final_rows = []
     ea_dir = out / "ea"
     for p in final.picks:
-        sleeve = Sleeve(p.symbol, make_strategy(p.strategy, **p.params), dict(p.exit), risk_weight=p.multiplier)
-        minutes = int(pd.Timedelta(TIMEFRAMES[cfg.data.timeframe]).total_seconds() // 60)
-        paths = export_sleeve(sleeve, instruments[p.symbol], bt_cfg, ea_dir, minutes)
+        sleeve = make_sleeve(pick_task(p), ds, risk_weight=p.multiplier)
+        paths = export_sleeve(sleeve, instruments[p.symbol], bt_cfg, ea_dir, tf_minutes(p.timeframe),
+                              suffix=p.timeframe)
         final_rows.append({
-            "symbol": p.symbol, "strategy": p.strategy, "params": p.params, "exit": p.exit,
+            "symbol": p.symbol, "strategy": p.strategy, "timeframe": p.timeframe, "htf": p.htf,
+            "fill_timeframe": ds.fine_timeframe(p.symbol, p.timeframe),
+            "params": p.params, "exit": p.exit,
             "risk_per_trade": round(acc.base_risk * p.multiplier, 5), "multiplier": round(p.multiplier, 4),
             "train_score": round(p.score, 3), "train_trades": p.trades,
             "ea_files": [str(x.relative_to(out)) for x in paths],
         })
     (out / "final.json").write_text(json.dumps({
-        "timeframe": cfg.data.timeframe,
+        "signal_timeframes": cfg.data.signal_timeframes,
         "train_period": [str(final.train[0].date()), str(final.train[1].date())],
         "train_vol": final.train_vol, "train_dd": final.train_dd,
         "sleeves": final_rows,
@@ -144,11 +146,15 @@ def write_outputs(out: Path, cfg: TrainConfig, ds, tasks, compute_info: dict[str
         "",
     ]
     if final_rows:
-        lines += ["| 銘柄 | 戦略 | 1回の損失 | 学習期間の評価 | パラメータ |", "|---|---|---|---|---|"]
+        lines += ["| 銘柄 | 戦略 | 時間足 | 上位足フィルタ | 1回の損失 | 学習期間の評価 | パラメータ |",
+                  "|---|---|---|---|---|---|---|"]
         for r in final_rows:
             params = ", ".join(f"{k}={v}" for k, v in {**r["params"], **{f"exit.{k}": v for k, v in r["exit"].items()}}.items())
-            lines.append(f"| {r['symbol']} | {r['strategy']} | {r['risk_per_trade']:.2%} | {r['train_score']:.2f} | {params} |")
-        lines += ["", f"EA 用ファイル: `ea/`（{cfg.data.timeframe} のチャートに貼る。1 銘柄 1 チャート・ea_magic は別々に）"]
+            htf = f"{r['htf']['timeframe']} EMA{r['htf']['ema']}" if r["htf"] else "–"
+            lines.append(f"| {r['symbol']} | {r['strategy']} | {r['timeframe']} | {htf} | {r['risk_per_trade']:.2%} "
+                         f"| {r['train_score']:.2f} | {params} |")
+        lines += ["", "EA 用ファイル: `ea/`（ファイル名の時間足のチャートに貼る。違う時間足では EA が起動しない。"
+                  "1 銘柄 1 チャート・ea_magic は別々に）"]
     else:
         lines.append("条件を満たす戦略が無かった（全銘柄見送り）。")
     lines += [
@@ -157,9 +163,18 @@ def write_outputs(out: Path, cfg: TrainConfig, ds, tasks, compute_info: dict[str
         "",
         _md_table(win_df),
         "",
+        "## 時間足ごとのコスト",
+        "",
+        "往復コスト（スプレッド＋スリッページ×2）が損切り幅（2.5 ATR）の何 % か。"
+        "5% 未満は良好、5〜10% は注意、10% 超は不向き（1 回の取引の期待値の多くがコストで消える）。",
+        "",
+        _md_table(_cost_table(costs)) if costs is not None and not costs.empty else "（計算なし）",
+        "",
         "## 計算",
         "",
-        f"- データ: {', '.join(f'{k}={p.name}' for k, p in ds.files.items())}（{cfg.data.timeframe}）",
+        f"- データ: {', '.join(f'{k}={p.name}' for k, p in ds.files.items())}",
+        f"- 売買の足: {', '.join(cfg.data.signal_timeframes)} / 約定の再現: "
+        + ", ".join(f"{s}@{t}←{ds.fine_timeframe(s, t) or 'なし'}" for s, t in ds.signal_pairs()),
         f"- パラメータの組み合わせ: {len(tasks)} 件（キャッシュ {compute_info.get('cached', 0)} 件、"
         f"間引き {compute_info.get('subsampled', 0)} 件、失敗 {compute_info.get('failed', 0)} 件）",
         f"- 計算した端末: {compute_info.get('completed_by', {})}",
@@ -172,6 +187,18 @@ def write_outputs(out: Path, cfg: TrainConfig, ds, tasks, compute_info: dict[str
         "- 次はこの構成を EA でデモ口座に載せ、1〜3 か月の実績と比べる（docs/roadmap.md フェーズ 7）",
     ]
     (out / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _cost_table(costs: pd.DataFrame) -> pd.DataFrame:
+    t = costs.copy()
+    t["timeframe"] = [tf if f else f"{tf}（作成）" for tf, f in zip(t["timeframe"], t["from_file"])]
+    t["spread"] = t["spread"].map(lambda v: f"{v:.4g}")
+    t["atr"] = t["atr"].map(lambda v: f"{v:.4g}")
+    t["spread_atr"] = t["spread_atr"].map(lambda v: f"{v:.1%}")
+    t["cost_per_r"] = t["cost_per_r"].map(lambda v: f"{v:.1%}")
+    t = t.drop(columns=["from_file"])
+    t.columns = ["銘柄", "時間足", "スプレッド", "ATR", "スプレッド/ATR", "往復コスト/損切り幅", "判定"]
+    return t
 
 
 def _md_table(df: pd.DataFrame) -> str:

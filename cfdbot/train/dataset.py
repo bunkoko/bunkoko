@@ -1,8 +1,11 @@
-"""data/ フォルダの CSV を自動で見つけて読み込む。
+"""data/ フォルダの CSV を自動で見つけて読み込む（複数の時間足に対応）。
 
-ファイル名の先頭が MT5 のシンボル名（例: XAGUSD_H1.csv, XTIUSD-H1.csv, xauusd.csv）なら、
-config の symbol_map で銘柄キーに変換する。時間足がファイル名に入っていれば、
-設定の時間足（既定 H1）と違うファイルは読み飛ばす。
+ファイル名の先頭が MT5 のシンボル名（例: XAGUSD_H1.csv, XTIUSD-M5.csv, xauusd_d1.csv）なら、
+config の symbol_map で銘柄キーに変換する。同じ銘柄の時間足違いは全部読み込み、用途ごとに使い分ける:
+
+- 売買の足（signal_timeframes）: ファイルが無くても、より細かい足があれば自動で作る（例: M5 → H1）
+- 約定の再現（fill_timeframe）: 売買の足より細かい足のファイル（例: H1 で売買し M5 で約定を再現）
+- 上位足フィルタ: 上位足のファイル。無ければ売買の足から作る（例: H1 → D1）
 """
 
 from __future__ import annotations
@@ -16,25 +19,11 @@ import numpy as np
 import pandas as pd
 
 from ..backtest import infer_timeframe
-from ..data import load_mt5_csv
+from ..data import load_mt5_csv, resample_ohlc
 from ..events import ET, TRADING_DAY_ROLL_ET
-from .config import TIMEFRAMES, DataConfig
+from .config import TIMEFRAMES, DataConfig, tf_minutes, tf_name
 
 _TF_TOKEN = re.compile(r"^(M\d+|H\d+|D1|W1|MN1)$")
-
-
-@dataclass
-class Dataset:
-    prices: dict[str, pd.DataFrame]         # 銘柄キー → OHLC（UTC）
-    files: dict[str, Path]                  # 銘柄キー（と "FX"）→ ファイル
-    fx: pd.Series | None                    # USD/JPY の終値（無ければ None）
-    timeframe: pd.Timedelta
-    digest: str                             # データの指紋（キャッシュのキー）
-    skipped: list[str] = field(default_factory=list)
-
-    @property
-    def symbols(self) -> list[str]:
-        return sorted(self.prices)
 
 
 def _parse_name(path: Path, symbol_map: dict[str, str]) -> tuple[str | None, str | None]:
@@ -55,48 +44,129 @@ def file_digest(paths: list[Path], extra: str = "") -> str:
     return h.hexdigest()
 
 
+@dataclass
+class Dataset:
+    frames: dict[str, dict[str, pd.DataFrame]]   # 銘柄キー → {時間足: OHLC}（ファイルから読んだもの）
+    fx: pd.Series | None                         # USD/JPY の終値（無ければ None）
+    signal_timeframes: list[str]
+    fill_timeframe: str = "auto"
+    files: dict[str, Path] = field(default_factory=dict)  # "銘柄@時間足" → ファイル
+    digest: str = ""
+    skipped: list[str] = field(default_factory=list)
+    _derived: dict[tuple[str, str], pd.DataFrame] = field(default_factory=dict, repr=False)
+
+    # -- 時間足の取り出し
+    def file_timeframes(self, symbol: str) -> list[str]:
+        """ファイルがある時間足（細かい順）。"""
+        return sorted(self.frames.get(symbol, {}), key=tf_minutes)
+
+    def _derive(self, symbol: str, tf: str) -> pd.DataFrame | None:
+        if tf in self.frames.get(symbol, {}):
+            return self.frames[symbol][tf]
+        finer = [t for t in self.file_timeframes(symbol) if tf_minutes(t) < tf_minutes(tf)
+                 and tf_minutes(tf) % tf_minutes(t) == 0]
+        if not finer:
+            return None
+        key = (symbol, tf)
+        if key not in self._derived:
+            # 細かい中で最も粗い足から作る（計算が軽く、結果は同じ）
+            self._derived[key] = resample_ohlc(self.frames[symbol][finer[-1]], TIMEFRAMES[tf])
+        return self._derived[key]
+
+    def signal_frame(self, symbol: str, tf: str) -> pd.DataFrame | None:
+        return self._derive(symbol, tf)
+
+    def context_frame(self, symbol: str, tf: str) -> pd.DataFrame | None:
+        """上位足フィルタ用。ファイルが無ければ細かい足から作る。"""
+        return self._derive(symbol, tf)
+
+    def fine_timeframe(self, symbol: str, tf: str) -> str | None:
+        """約定の再現に使う時間足（売買の足より細かいファイル）。"""
+        if self.fill_timeframe == "none":
+            return None
+        finer = [t for t in self.file_timeframes(symbol) if tf_minutes(t) < tf_minutes(tf)]
+        if self.fill_timeframe == "auto":
+            return finer[0] if finer else None
+        return self.fill_timeframe if self.fill_timeframe in finer else None
+
+    def fine_frame(self, symbol: str, tf: str) -> pd.DataFrame | None:
+        t = self.fine_timeframe(symbol, tf)
+        return self.frames[symbol][t] if t else None
+
+    # -- 一覧
+    @property
+    def symbols(self) -> list[str]:
+        """どれかの売買の足が用意できる銘柄。"""
+        return sorted(s for s in self.frames if any(self.signal_frame(s, t) is not None for t in self.signal_timeframes))
+
+    def signal_pairs(self) -> list[tuple[str, str]]:
+        return [(s, t) for s in self.symbols for t in self.signal_timeframes if self.signal_frame(s, t) is not None]
+
+    def calendar(self) -> pd.DatetimeIndex:
+        """全銘柄・全売買足の足の終了時刻から取引日（17:00 ET 区切り）の一覧を作る。"""
+        keys = []
+        for s, t in self.signal_pairs():
+            df = self.signal_frame(s, t)
+            close_et = (df.index + pd.Timedelta(TIMEFRAMES[t])).tz_convert(ET)
+            keys.append((close_et + pd.Timedelta(hours=24 - TRADING_DAY_ROLL_ET)).normalize().tz_localize(None).values)
+        return pd.DatetimeIndex(np.unique(np.concatenate(keys)))
+
+
+def _read(path: Path, server_tz) -> tuple[pd.DataFrame, str]:
+    df = load_mt5_csv(path, server_tz=server_tz)
+    return df, tf_name(infer_timeframe(df.index))
+
+
 def load_dataset(cfg: DataConfig, base_dir: Path | None = None) -> Dataset:
     root = Path(cfg.dir) if base_dir is None else base_dir / cfg.dir
     if not root.exists():
         raise FileNotFoundError(f"データフォルダが無い: {root}（MT5 から書き出した CSV を置く）")
-    want_tf = cfg.timeframe.upper()
-    tf_delta = pd.Timedelta(TIMEFRAMES[want_tf])
+    frames: dict[str, dict[str, pd.DataFrame]] = {}
     files: dict[str, Path] = {}
+    fx_frames: dict[str, pd.DataFrame] = {}
     skipped: list[str] = []
     for path in sorted(root.glob("*.csv")):
-        key, tf = _parse_name(path, cfg.symbol_map)
+        key, tf_hint = _parse_name(path, cfg.symbol_map)
         if key is None:
             skipped.append(f"{path.name}: 銘柄名が分からない（symbol_map に追加）")
             continue
-        if tf is not None and tf != want_tf:
-            skipped.append(f"{path.name}: 時間足 {tf} は対象外（{want_tf} を学習）")
+        try:
+            df, tf = _read(path, cfg.server_tz)
+        except ValueError as e:
+            skipped.append(f"{path.name}: {e}")
             continue
-        if key in files:
-            skipped.append(f"{path.name}: {key} は {files[key].name} を使用")
+        if tf_hint and tf_hint in TIMEFRAMES and tf_hint != tf:
+            raise ValueError(f"{path.name}: ファイル名は {tf_hint} だが中身は {tf}")
+        target = fx_frames if key == "FX" else frames.setdefault(key, {})
+        if tf in target:
+            skipped.append(f"{path.name}: {key} の {tf} は {files[f'{key}@{tf}'].name} を使用")
             continue
-        files[key] = path
-    if not [k for k in files if k != "FX"]:
-        raise FileNotFoundError(f"{root} に学習できる {want_tf} の CSV が無い")
-
-    prices: dict[str, pd.DataFrame] = {}
+        target[tf] = df
+        files[f"{key}@{tf}"] = path
     fx = None
-    for key, path in files.items():
-        df = load_mt5_csv(path, server_tz=cfg.server_tz)
-        actual = infer_timeframe(df.index)
-        if actual != tf_delta:
-            raise ValueError(f"{path.name}: 時間足が {actual}（設定は {want_tf}）")
-        if key == "FX":
-            fx = df["close"]
+    if fx_frames:  # 円換算は H1 があれば H1、無ければ最も粗い足
+        tf = "H1" if "H1" in fx_frames else max(fx_frames, key=tf_minutes)
+        fx = fx_frames[tf]["close"]
+    ds = Dataset(frames, fx, list(cfg.signal_timeframes), cfg.fill_timeframe, files,
+                 file_digest(list(files.values()), extra=str(cfg.server_tz)), skipped)
+    if not ds.symbols:
+        raise FileNotFoundError(f"{root} に、売買の足（{cfg.signal_timeframes}）を用意できる CSV が無い")
+    return ds
+
+
+def dataset_from_frames(files_meta: dict[str, dict], loaded: dict[str, pd.DataFrame],
+                        signal_timeframes: list[str], fill_timeframe: str) -> Dataset:
+    """ワーカー側: 読み込んだ "銘柄@時間足" → DataFrame から Dataset を組み立てる。"""
+    frames: dict[str, dict[str, pd.DataFrame]] = {}
+    fx = None
+    fx_frames = {}
+    for key, df in loaded.items():
+        sym, tf = key.split("@")
+        if sym == "FX":
+            fx_frames[tf] = df
         else:
-            prices[key] = df
-    digest = file_digest(list(files.values()), extra=f"{cfg.server_tz}|{want_tf}")
-    return Dataset(prices, files, fx, tf_delta, digest, skipped)
-
-
-def trading_days(prices: dict[str, pd.DataFrame], timeframe: pd.Timedelta) -> pd.DatetimeIndex:
-    """全銘柄の足の終了時刻から取引日（17:00 ET 区切り）の一覧を作る。"""
-    keys = []
-    for df in prices.values():
-        close_et = (df.index + timeframe).tz_convert(ET)
-        keys.append((close_et + pd.Timedelta(hours=24 - TRADING_DAY_ROLL_ET)).normalize().tz_localize(None))
-    return pd.DatetimeIndex(np.unique(np.concatenate([k.values for k in keys])))
+            frames.setdefault(sym, {})[tf] = df
+    if fx_frames:
+        tf = "H1" if "H1" in fx_frames else max(fx_frames, key=tf_minutes)
+        fx = fx_frames[tf]["close"]
+    return Dataset(frames, fx, signal_timeframes, fill_timeframe)

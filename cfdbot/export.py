@@ -53,9 +53,21 @@ def ea_params(sleeve: Sleeve, inst: Instrument, config: BacktestConfig,
         "ft_weekend_flatten_fri_et": fc.weekend_flatten_fri_et,
         "ft_max_spread_points": round(inst.spread * fc.max_spread_mult / inst.point_size),
     })
+    if sleeve.htf_ema > 0 and sleeve.htf_timeframe:
+        out["htf_minutes"] = _tf_minutes(sleeve.htf_timeframe)  # 上位足フィルタ
+        out["htf_ema"] = int(sleeve.htf_ema)
+    else:
+        out["htf_minutes"] = 0
+        out["htf_ema"] = 0
     if timeframe_minutes:
         out["ea_timeframe_minutes"] = int(timeframe_minutes)  # 違う時間足のチャートでは EA が起動しない
     return out
+
+
+def _tf_minutes(name: str) -> int:
+    from .train.config import tf_minutes
+
+    return tf_minutes(name)
 
 
 def _fmt(v: Any) -> str:
@@ -88,11 +100,12 @@ def write_set_file(params: dict[str, Any], path: str | Path) -> Path:
 def export_sleeve(
     sleeve: Sleeve, inst: Instrument, config: BacktestConfig, out_dir: str | Path,
     timeframe_minutes: int | None = None,
+    suffix: str = "",
 ) -> tuple[Path, Path]:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     params = ea_params(sleeve, inst, config, timeframe_minutes)
-    base = f"cfdbot_{inst.symbol}_{sleeve.strategy.name}"
+    base = f"cfdbot_{inst.symbol}_{sleeve.strategy.name}" + (f"_{suffix}" if suffix else "")
     return (
         write_set_file(params, out_dir / f"{base}.set"),
         write_param_txt(params, out_dir / f"{base}.txt"),

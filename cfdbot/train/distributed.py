@@ -261,13 +261,14 @@ class _Client:
         return self._req(path)
 
 
-def _load_prices(client: _Client, meta: dict[str, Any], allow_local: bool):
+def _load_dataset(client: _Client, meta: dict[str, Any], allow_local: bool):
     """データを読む。同じ Mac ならローカルのファイル、外部端末ならダウンロードしたもの。"""
     import hashlib
 
     from ..data import load_mt5_csv
+    from .dataset import dataset_from_frames
 
-    prices, fx = {}, None
+    loaded = {}
     tmp = Path(tempfile.mkdtemp(prefix="cfdbot_"))
     for key, info in meta["files"].items():
         path = Path(info["path"])
@@ -278,12 +279,8 @@ def _load_prices(client: _Client, meta: dict[str, Any], allow_local: bool):
                 raise RuntimeError(f"{key}: ダウンロードしたデータが壊れている")
             path = tmp / info["name"]
             path.write_bytes(raw)
-        df = load_mt5_csv(path, server_tz=meta["server_tz"])
-        if key == "FX":
-            fx = df["close"]
-        else:
-            prices[key] = df
-    return prices, fx
+        loaded[key] = load_mt5_csv(path, server_tz=meta["server_tz"])
+    return dataset_from_frames(meta["files"], loaded, meta["signal_timeframes"], meta["fill_timeframe"])
 
 
 def run_worker(server: str, token: str, name: str, allow_local: bool = True, batch: int = 1,
@@ -293,10 +290,10 @@ def run_worker(server: str, token: str, name: str, allow_local: bool = True, bat
 
     client = _Client(server, token)
     meta = client.get_json("/meta")
-    prices, fx = _load_prices(client, meta, allow_local)
-    ev = Evaluator(prices, fx, EvalSettings.from_dict(meta["settings"]))
+    ds = _load_dataset(client, meta, allow_local)
+    ev = Evaluator(ds, EvalSettings.from_dict(meta["settings"]))
     if log:
-        log(f"[{name}] 準備完了（{len(prices)} 銘柄）")
+        log(f"[{name}] 準備完了（{len(ds.symbols)} 銘柄、{len(meta['files'])} ファイル）")
     count = 0
     idle = 0
     while True:

@@ -78,7 +78,7 @@ def test_config_defaults_and_overrides(tmp_path):
     cfg = load_train_config(p)
     assert cfg.account.equity == 2_000_000
     assert cfg.account.cluster_max_risk == {"energy": 0.01, "metals": 0.02}
-    assert cfg.data.timeframe == "H1" and len(cfg.strategies) == 4
+    assert cfg.data.signal_timeframes == ["H1"] and len(cfg.strategies) == 4
     p.write_text("[account]\nequityy = 1\n", encoding="utf-8")
     with pytest.raises(ValueError):
         load_train_config(p)
@@ -88,9 +88,11 @@ def test_dataset_discovery(data_dir):
     cfg = load_train_config(None).data
     cfg.dir = str(data_dir)
     ds = load_dataset(cfg)
+    # 金は H4 しか無いので H1 の売買はできない（H4 から H1 は作れない）
     assert ds.symbols == ["SILVER", "WTI"]
-    assert ds.fx is None and ds.timeframe == pd.Timedelta("1h")
-    assert len(ds.skipped) == 2
+    assert ds.file_timeframes("GOLD") == ["H4"]
+    assert ds.fx is None
+    assert len(ds.skipped) == 1  # notes.csv
 
 
 def test_erc_equalizes_risk_contributions():
@@ -164,8 +166,8 @@ def test_remote_worker_bootstrap(tmp_path, data_dir):
 
     cfg = load_train_config(tiny_config(tmp_path, data_dir))
     ds = load_dataset(cfg.data)
-    tasks, _ = build_tasks(cfg, ds.symbols)
-    meta = {"version": 1, "server_tz": cfg.data.server_tz, "timeframe": "H1",
+    tasks, _ = build_tasks(cfg, ds)
+    meta = {"version": 1, "server_tz": cfg.data.server_tz, "signal_timeframes": ["H1"], "fill_timeframe": "auto",
             "files": {k: {"path": "/nonexistent/" + p.name, "name": p.name, "sha256": _sha(p)}
                       for k, p in ds.files.items()},
             "settings": _eval_settings(cfg, ds).to_dict()}

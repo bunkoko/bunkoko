@@ -5,6 +5,8 @@
 - シグナルは足の終値で判断し、次の足の始値で成行執行（スリッページ込み）
 - 損切り/利確は足の高値・安値で判定。始値で逆指値を飛び越えた（窓開け）場合は始値で約定
 - 同じ足で損切りと利確の両方に届いた場合は損切りを優先（保守的）
+- 細かい足（fine_data。例: H1 で売買し M5）を渡すと、足の中の値動きを小足ごとにたどって
+  損切り・利確の順番と約定価格、時間帯ごとのスプレッドを再現する（足の確定時の判断は変わらない）
 - 逆指値の書き換え（建値・トレーリング）は足の確定時のみ
 - 金利調整額/キャリングコストは保有時間に比例して日割りで差し引く
 - 損益は口座通貨（円）。建値通貨(USD)からの換算に fx_rate を使う
@@ -79,6 +81,10 @@ class Sleeve:
     exit_overrides: dict[str, Any] = field(default_factory=dict)
     name: str = ""
     risk_weight: float = 1.0   # 1回の損失 = risk_per_trade × これ（ポートフォリオ学習で配分）
+    # 上位足フィルタ: 上位足の終値が EMA より上なら買いだけ、下なら売りだけ（htf_ema=0 で無効）
+    htf_frame: pd.DataFrame | None = field(default=None, repr=False)
+    htf_ema: int = 0
+    htf_timeframe: str = ""    # 表示・EA 書き出し用の名前（"H4" など）
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -136,6 +142,16 @@ class _SymbolData:
     spread: np.ndarray         # 足ごとのスプレッド（価格単位、倍率適用後）
     data_spread: np.ndarray | None
     slip: float
+    tf: pd.Timedelta = pd.Timedelta(hours=1)   # この銘柄の時間足
+    tf_ns: int = 0
+    # 約定の再現に使う細かい足（無ければ None）。fj0[i]:fj1[i] が足 i の中の小足
+    ft: np.ndarray | None = None
+    fo: np.ndarray | None = None
+    fh: np.ndarray | None = None
+    fl: np.ndarray | None = None
+    fsp: np.ndarray | None = None
+    fj0: np.ndarray | None = None
+    fj1: np.ndarray | None = None
 
 
 @dataclass
@@ -199,8 +215,10 @@ class Backtester:
         instruments: dict[str, Instrument],
         sleeves: list[Sleeve],
         config: BacktestConfig | None = None,
+        fine_data: dict[str, pd.DataFrame] | None = None,
     ):
         self.cfg = config or BacktestConfig()
+        self.fine_data = fine_data or {}
         missing = {s.symbol for s in sleeves} - set(data)
         if missing:
             raise ValueError(f"no data for {sorted(missing)}")
@@ -240,6 +258,11 @@ class Backtester:
                 data_spread=data_spread,
                 slip=inst.slippage * cfg.costs.slippage_mult,
             )
+            tf = cfg.timeframe or infer_timeframe(df.index)
+            self.sym[symbol].tf, self.sym[symbol].tf_ns = tf, tf.value
+            fine = self.fine_data.get(symbol)
+            if fine is not None and len(fine):
+                self._attach_fine(self.sym[symbol], fine, inst)
 
         atr_cache: dict[tuple[str, int], pd.Series] = {}
         self.sl: dict[str, _SleeveData] = {}
@@ -260,6 +283,10 @@ class Backtester:
                         sig[f"exit_short:{tag}"].to_numpy(bool),
                     )
             exit_cols[None] = (sig["exit_long"].to_numpy(bool), sig["exit_short"].to_numpy(bool))
+            warmup = s.strategy.warmup_bars()
+            if s.htf_frame is not None and s.htf_ema > 0:
+                sig, htf_warm = self._apply_htf_filter(s, sig)
+                warmup = max(warmup, htf_warm)
             self.sl[s.name] = _SleeveData(
                 sleeve=s,
                 sd=self.sym[s.symbol],
@@ -269,30 +296,65 @@ class Backtester:
                 tags=sig["tag"].to_numpy(object) if "tag" in sig else None,
                 exit_cols=exit_cols,
                 atr=atr.to_numpy(float),
-                warmup=s.strategy.warmup_bars(),
+                warmup=warmup,
                 cfg_cache={},
             )
 
-        all_times = np.unique(np.concatenate([d.times for d in self.sym.values()]))
-        self.timeline = all_times
-        # 足の終了時刻ごとの取引日（17:00 ET 区切り）。ループ内で毎回計算すると遅いので先に求める
-        close_et = pd.DatetimeIndex(pd.to_datetime(all_times + self.tf_ns, utc=True)).tz_convert(ET)
-        self.day_keys = (close_et + pd.Timedelta(hours=24 - TRADING_DAY_ROLL_ET)).normalize().asi8
-        start, end = all_times[0], all_times[-1] + self.tf_ns
+        start = min(d.times[0] for d in self.sym.values())
+        end = max(d.times[-1] + d.tf_ns for d in self.sym.values())
         events: list[Event] = list(cfg.filters.extra_events)
         if cfg.filters.oil_events:
             events += recurring_oil_events(pd.Timestamp(start, tz="UTC"), pd.Timestamp(end, tz="UTC"))
         self.events = EventIndex(events)
 
-        fx = cfg.fx_rate
-        if isinstance(fx, pd.Series):
-            idx = pd.DatetimeIndex(pd.to_datetime(all_times, utc=True))
-            s = fx.copy()
-            if s.index.tz is None:
-                s.index = s.index.tz_localize("UTC")
-            self.fx = s.sort_index().reindex(idx, method="ffill").bfill().to_numpy(float)
-        else:
-            self.fx = np.full(len(all_times), float(fx))
+
+
+    def _fx_series(self, times: np.ndarray) -> np.ndarray:
+        """各時刻の USD/JPY（定数 or 時系列の直前の値）。"""
+        fx = self.cfg.fx_rate
+        if not isinstance(fx, pd.Series):
+            return np.full(len(times), float(fx))
+        s = fx[~fx.index.duplicated(keep="last")].sort_index()
+        if s.index.tz is None:
+            s.index = s.index.tz_localize("UTC")
+        idx = pd.DatetimeIndex(pd.to_datetime(times, utc=True))
+        return s.reindex(idx, method="ffill").bfill().to_numpy(float)
+
+    def _attach_fine(self, d: _SymbolData, fine: pd.DataFrame, inst: Instrument) -> None:
+        cfg = self.cfg
+        if infer_timeframe(fine.index) >= d.tf:
+            raise ValueError(f"{inst.symbol}: 約定の再現に使う足は売買の足より細かくする")
+        ft = fine.index.tz_convert("UTC").as_unit("ns").asi8
+        sp = np.full(len(fine), inst.spread * cfg.costs.spread_mult)
+        if cfg.costs.use_data_spread and "spread" in fine:
+            sp = np.maximum(sp, fine["spread"].to_numpy(float) * inst.point_size * cfg.costs.spread_mult)
+        d.ft, d.fsp = ft, sp
+        d.fo, d.fh, d.fl = (fine[c].to_numpy(float) for c in ("open", "high", "low"))
+        d.fj0 = np.searchsorted(ft, d.times, side="left")
+        d.fj1 = np.searchsorted(ft, d.times + d.tf_ns, side="left")
+
+    def _apply_htf_filter(self, s: Sleeve, sig: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+        """上位足の向きと逆のエントリーを消す。使うのは判断時点で確定済みの上位足だけ。"""
+        hf = s.htf_frame
+        htf_td = infer_timeframe(hf.index)
+        tf = self.sym[s.symbol].tf
+        if htf_td <= tf:
+            raise ValueError(f"{s.name}: 上位足フィルタの足は売買の足より粗くする")
+        close = hf["close"].to_numpy(float)
+        trend = np.sign(close - ind.ema(hf["close"], s.htf_ema).to_numpy(float))
+        htf_close_time = hf.index.tz_convert("UTC").as_unit("ns").asi8 + htf_td.value
+        decide = self.data[s.symbol].index.tz_convert("UTC").as_unit("ns").asi8 + tf.value
+        k = np.searchsorted(htf_close_time, decide, side="right") - 1
+        tr = np.where(k >= 0, trend[np.clip(k, 0, None)], 0.0)
+        entry = sig["entry"].to_numpy(np.int8)
+        blocked = ((entry > 0) & (tr <= 0)) | ((entry < 0) & (tr >= 0))
+        sig = sig.copy()
+        sig["entry"] = np.where(blocked, 0, entry).astype(np.int8)
+        sig["htf_trend"] = tr
+        # 上位足の EMA が落ち着くまで（3倍の本数）は売買しない
+        warm = int(np.ceil(s.htf_ema * 3 * htf_td / tf))
+        first = np.searchsorted(decide, htf_close_time[0])
+        return sig, warm + int(first)
 
     def _exit_cfg(self, sd: _SleeveData, tag: str | None) -> ExitConfig:
         if tag not in sd.cfg_cache:
@@ -307,8 +369,6 @@ class Backtester:
         fc = cfg.filters
         start_ns = pd.Timestamp(cfg.trade_start).value if cfg.trade_start is not None else None
         end_ns = pd.Timestamp(cfg.trade_end).value if cfg.trade_end is not None else None
-        max_delay = (fc.max_fill_delay or 2 * self.tf).value
-        flatten_lead = fc.event_flatten_lead or self.tf
 
         self.cash = cfg.initial_equity
         self.positions: dict[str, _Position] = {}
@@ -320,7 +380,6 @@ class Backtester:
         equity_t: list[int] = []
         equity_v: list[float] = []
         lev_v: list[float] = []
-        ptr = {k: 0 for k in self.sym}
         sleeves_by_sym: dict[str, list[_SleeveData]] = {}
         for sd in self.sl.values():
             sleeves_by_sym.setdefault(sd.sleeve.symbol, []).append(sd)
@@ -330,58 +389,80 @@ class Backtester:
         day_key = None
         day_start_eq = prev_equity = cfg.initial_equity
         last_i: dict[str, int] = {}
+        syms = list(self.sym)
 
-        fx = float(self.fx[0]) if len(self.fx) else 1.0
-        for k, ts in enumerate(self.timeline):
-            if end_ns is not None and ts >= end_ns:
-                break
-            fx = self.fx[k]
-            active = []
-            for sym, d in self.sym.items():
-                i = ptr[sym]
-                if i < len(d.times) and d.times[i] == ts:
-                    active.append((sym, d, i))
-                    ptr[sym] = i + 1
+        # 出来事（足の終了 / 足の開始）を時刻順に処理する。同じ時刻では終了を先に処理し、
+        # その判断を直後の開始で執行する。時間足が銘柄ごとに違っても先読みにならない
+        ev_t, ev_kind, ev_sym, ev_i = [], [], [], []
+        for si, sym in enumerate(syms):
+            d = self.sym[sym]
+            n = len(d.times) if end_ns is None else int(np.searchsorted(d.times, end_ns))
+            idx = np.arange(n)
+            for kind, times in ((1, d.times[:n]), (0, d.times[:n] + d.tf_ns)):
+                ev_t.append(times)
+                ev_kind.append(np.full(n, kind))
+                ev_sym.append(np.full(n, si))
+                ev_i.append(idx)
+        ev_t, ev_kind, ev_sym, ev_i = (np.concatenate(x) if x else np.zeros(0, int) for x in (ev_t, ev_kind, ev_sym, ev_i))
+        order = np.lexsort((ev_sym, ev_kind, ev_t))
+        ev_t, ev_kind, ev_sym, ev_i = ev_t[order], ev_kind[order], ev_sym[order], ev_i[order]
+        bounds = np.flatnonzero(np.diff(ev_t)) + 1
+        groups = np.split(np.arange(len(ev_t)), bounds) if len(ev_t) else []
+        uniq_t = ev_t[np.r_[0, bounds]] if len(ev_t) else ev_t
+        fx_at = self._fx_series(uniq_t)
+        close_et = pd.DatetimeIndex(pd.to_datetime(uniq_t, utc=True)).tz_convert(ET)
+        day_keys = (close_et + pd.Timedelta(hours=24 - TRADING_DAY_ROLL_ET)).normalize().asi8
+
+        fx = float(fx_at[0]) if len(fx_at) else 1.0
+        for g, members in enumerate(groups):
+            t = int(uniq_t[g])
+            fx = fx_at[g]
+            closing = [(syms[ev_sym[e]], self.sym[syms[ev_sym[e]]], int(ev_i[e])) for e in members if ev_kind[e] == 0]
+            opening = [(syms[ev_sym[e]], self.sym[syms[ev_sym[e]]], int(ev_i[e])) for e in members if ev_kind[e] == 1]
+
+            if closing:
+                tc = t  # 足の終了時刻
+                # 1) 足の中の損切り/利確（細かい足があれば小足ごとに）
+                for sym, d, i in closing:
                     last_i[sym] = i
+                    self._intrabar(sym, d, i, d.times[i], fx)
+                for sym, d, i in closing:
+                    self.last_close[sym] = d.c[i]
+                    self.last_spread[sym] = d.spread[i]
+                    if cfg.costs.financing:
+                        self._accrue_financing(sym, d, i, tc, fx)
 
-            # 1) 始値: 予約済みの決済 → 予約済みの新規 → 足中の損切り/利確
-            for sym, d, i in active:
-                self._on_open(sym, d, i, ts, fx, max_delay)
-                self._intrabar(sym, d, i, ts, fx)
-            tc = ts + self.tf_ns  # 足の終了時刻
-            for sym, d, i in active:
-                self.last_close[sym] = d.c[i]
-                self.last_spread[sym] = d.spread[i]
-                if cfg.costs.financing:
-                    self._accrue_financing(sym, d, i, tc, fx)
+                # 2) 終値: ポジション管理（逆指値更新・強制決済・手仕舞いシグナル）
+                for sym, d, i in closing:
+                    self._on_close_manage(sym, d, i, tc, fx, fc.event_flatten_lead or d.tf)
 
-            # 2) 終値: ポジション管理（逆指値更新・強制決済・手仕舞いシグナル）
-            for sym, d, i in active:
-                self._on_close_manage(sym, d, i, tc, fx, flatten_lead)
+                equity = self._equity(fx)
+                dk = day_keys[g]
+                if dk != day_key:  # 取引日の開始時点（＝前の足の終了時点）の資産を基準にする
+                    day_key, day_start_eq = dk, prev_equity
+                prev_equity = equity
+                peak = max(peak, equity)
+                if not halted and equity <= peak * (1 - rc.max_drawdown_halt):
+                    halted = True
+                    self.rejections.append({"time": pd.Timestamp(tc, tz="UTC"), "sleeve": "*",
+                                            "side": 0, "reason": "halt_triggered"})
+                daily_blocked = equity <= day_start_eq * (1 - rc.daily_loss_limit)
 
-            equity = self._equity(fx)
-            dk = self.day_keys[k]
-            if dk != day_key:  # 取引日の開始時点（＝前の足の終了時点）の資産を基準にする
-                day_key, day_start_eq = dk, prev_equity
-            prev_equity = equity
-            peak = max(peak, equity)
-            if not halted and equity <= peak * (1 - rc.max_drawdown_halt):
-                halted = True
-                self.rejections.append({"time": pd.Timestamp(tc, tz="UTC"), "sleeve": "*",
-                                        "side": 0, "reason": "halt_triggered"})
-            daily_blocked = equity <= day_start_eq * (1 - rc.daily_loss_limit)
+                # 3) 終値: 新規シグナル → フィルタ → リスク判定 → 次の始値で執行を予約
+                in_range = (start_ns is None or tc >= start_ns) and (end_ns is None or tc < end_ns)
+                if in_range:
+                    for sym, d, i in closing:
+                        for sd in sleeves_by_sym[sym]:
+                            self._consider_entry(sd, d, i, tc, fx, equity, halted, daily_blocked)
+                if start_ns is None or tc >= start_ns:
+                    equity_t.append(tc)
+                    equity_v.append(equity)
+                    gross = sum(notional(p.qty, self.last_close[p.symbol], fx) for p in self.positions.values())
+                    lev_v.append(gross / equity if equity > 0 else 0.0)
 
-            # 3) 終値: 新規シグナル → フィルタ → リスク判定 → 次の始値で執行を予約
-            in_range = (start_ns is None or tc >= start_ns) and (end_ns is None or tc < end_ns)
-            if in_range:
-                for sym, d, i in active:
-                    for sd in sleeves_by_sym[sym]:
-                        self._consider_entry(sd, d, i, tc, fx, equity, halted, daily_blocked)
-            if start_ns is None or tc >= start_ns:
-                equity_t.append(tc)
-                equity_v.append(equity)
-                gross = sum(notional(p.qty, self.last_close[p.symbol], fx) for p in self.positions.values())
-                lev_v.append(gross / equity if equity > 0 else 0.0)
+            # 4) 始値: 予約済みの決済 → 予約済みの新規
+            for sym, d, i in opening:
+                self._on_open(sym, d, i, d.times[i], fx, (fc.max_fill_delay or 2 * d.tf).value)
 
         # 最後に残ったポジションは最終足の終値で決済
         for name in list(self.positions):
@@ -389,7 +470,7 @@ class Backtester:
             d = self.sym[pos.symbol]
             i = last_i[pos.symbol]
             price = self._exit_price_close(pos.side, d, i)
-            self._close(name, price, pd.Timestamp(d.times[i] + self.tf_ns, tz="UTC"), "end", fx)
+            self._close(name, price, pd.Timestamp(d.times[i] + d.tf_ns, tz="UTC"), "end", fx)
         if equity_v:
             equity_v[-1] = self.cash
 
@@ -404,6 +485,8 @@ class Backtester:
     # ------------------------------------------------------------------ 各処理
     def _on_open(self, sym, d: _SymbolData, i, ts, fx, max_delay) -> None:
         o, sp, slip = d.o[i], d.spread[i], d.slip
+        if d.fj0 is not None and d.fj1[i] > d.fj0[i]:
+            sp = d.fsp[d.fj0[i]]  # 足の最初の小足のスプレッド（再開直後の広がりなど）
         for name, pos in list(self.positions.items()):
             if pos.symbol == sym and pos.pending_exit:
                 price = o - slip if pos.side > 0 else o + sp + slip
@@ -445,6 +528,10 @@ class Backtester:
             )
 
     def _intrabar(self, sym, d: _SymbolData, i, ts, fx) -> None:
+        if d.fj0 is not None and d.fj1[i] > d.fj0[i]:
+            if any(p.symbol == sym for p in self.positions.values()):
+                self._intrabar_fine(sym, d, int(d.fj0[i]), int(d.fj1[i]), fx)
+            return
         o, h, l, sp, slip = d.o[i], d.h[i], d.l[i], d.spread[i], d.slip
         when = pd.Timestamp(ts, tz="UTC")
         for name, pos in list(self.positions.items()):
@@ -481,6 +568,48 @@ class Backtester:
                 if (side > 0 and h >= pos.tp) or (side < 0 and l + sp <= pos.tp):
                     self._partial(name, pos, pos.tp, when, fx)
 
+    def _intrabar_fine(self, sym, d: _SymbolData, j0: int, j1: int, fx) -> None:
+        """小足を順にたどって損切り・利確を判定する（同じ小足で両方なら損切りを優先）。"""
+        so, sh, sl, ssp, st = d.fo[j0:j1], d.fh[j0:j1], d.fl[j0:j1], d.fsp[j0:j1], d.ft[j0:j1]
+        n = j1 - j0
+        slip = d.slip
+        for name, pos in list(self.positions.items()):
+            if pos.symbol != sym:
+                continue
+            side = pos.side
+            k, end, exit_at = 0, n, None
+            while k < n:
+                if side > 0:
+                    s_hit = np.flatnonzero(sl[k:] <= pos.stop)
+                    t_hit = np.flatnonzero(sh[k:] >= pos.tp) if pos.tp is not None else s_hit[:0]
+                else:
+                    s_hit = np.flatnonzero(sh[k:] + ssp[k:] >= pos.stop)
+                    t_hit = np.flatnonzero(sl[k:] + ssp[k:] <= pos.tp) if pos.tp is not None else s_hit[:0]
+                s = k + int(s_hit[0]) if len(s_hit) else n
+                t = k + int(t_hit[0]) if len(t_hit) else n
+                if t < s:  # 利確の方が先の小足（指値なのでスリッページなし。窓なら始値）
+                    o_t = so[t] if side > 0 else so[t] + ssp[t]
+                    gapped = o_t >= pos.tp if side > 0 else o_t <= pos.tp
+                    self._partial(name, pos, o_t if gapped else pos.tp, pd.Timestamp(st[t], tz="UTC"), fx)
+                    k = t  # 同じ小足の中で損切りに届く場合も確認する
+                    continue
+                if s < n:
+                    o_s = so[s] if side > 0 else so[s] + ssp[s]
+                    if (side > 0 and o_s <= pos.stop) or (side < 0 and o_s >= pos.stop):
+                        price, reason = (o_s - slip if side > 0 else o_s + slip), "stop_gap"
+                    else:
+                        price, reason = (pos.stop - slip if side > 0 else pos.stop + slip), "stop"
+                    end, exit_at = s + 1, (price, reason, pd.Timestamp(st[s], tz="UTC"))
+                break
+            if side > 0:
+                pos.mfe = max(pos.mfe, float(sh[:end].max()) - pos.entry)
+                pos.mae = max(pos.mae, pos.entry - float(sl[:end].min()))
+            else:
+                pos.mfe = max(pos.mfe, pos.entry - float((sl[:end] + ssp[:end]).min()))
+                pos.mae = max(pos.mae, float((sh[:end] + ssp[:end]).max()) - pos.entry)
+            if exit_at is not None:
+                self._close(name, exit_at[0], exit_at[2], exit_at[1], fx)
+
     @staticmethod
     def _tp_gap(pos: _Position, o: float, sp: float) -> bool:
         return (pos.side > 0 and o >= pos.tp) or (pos.side < 0 and o + sp <= pos.tp)
@@ -515,7 +644,7 @@ class Backtester:
             cfg = pos.cfg
             if cfg.flatten_before_weekend and (
                 friday_cutoff_passed(when, fc.weekend_flatten_fri_et)
-                or friday_cutoff_passed(when + self.tf, fc.weekend_flatten_fri_et)
+                or friday_cutoff_passed(when + d.tf, fc.weekend_flatten_fri_et)
             ):
                 self._close(name, self._exit_price_close(pos.side, d, i), when, "weekend", fx)
                 continue
@@ -666,5 +795,6 @@ def run_backtest(
     instruments: dict[str, Instrument],
     sleeves: list[Sleeve],
     config: BacktestConfig | None = None,
+    fine_data: dict[str, pd.DataFrame] | None = None,
 ) -> BacktestResult:
-    return Backtester(data, instruments, sleeves, config).run()
+    return Backtester(data, instruments, sleeves, config, fine_data).run()
