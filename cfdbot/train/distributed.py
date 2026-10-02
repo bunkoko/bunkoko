@@ -18,6 +18,7 @@ import sqlite3
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 import zipfile
 from collections import deque
@@ -214,7 +215,7 @@ def _make_handler(coord: Coordinator):
             elif self.path == "/package.zip":
                 self._send(coord.package, "application/zip")
             elif self.path.startswith("/data/"):
-                key = self.path[len("/data/"):]
+                key = urllib.parse.unquote(self.path[len("/data/"):])
                 if key not in coord.files:
                     self.send_error(404)
                     return
@@ -274,7 +275,7 @@ def _load_dataset(client: _Client, meta: dict[str, Any], allow_local: bool):
         path = Path(info["path"])
         ok = allow_local and path.exists() and hashlib.sha256(path.read_bytes()).hexdigest() == info["sha256"]
         if not ok:
-            raw = client.get_bytes(f"/data/{key}")
+            raw = client.get_bytes("/data/" + urllib.parse.quote(key, safe=""))
             if hashlib.sha256(raw).hexdigest() != info["sha256"]:
                 raise RuntimeError(f"{key}: ダウンロードしたデータが壊れている")
             path = tmp / info["name"]

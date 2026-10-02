@@ -138,8 +138,10 @@ def load_dataset(cfg: DataConfig, base_dir: Path | None = None) -> Dataset:
         if tf_hint and tf_hint in TIMEFRAMES and tf_hint != tf:
             raise ValueError(f"{path.name}: ファイル名は {tf_hint} だが中身は {tf}")
         target = fx_frames if key == "FX" else frames.setdefault(key, {})
-        if tf in target:
-            skipped.append(f"{path.name}: {key} の {tf} は {files[f'{key}@{tf}'].name} を使用")
+        if tf in target:  # 期間を分けて書き出したファイルはつなげる（重なりは後のファイルを優先）
+            merged = pd.concat([target[tf], df])
+            target[tf] = merged[~merged.index.duplicated(keep="last")].sort_index()
+            files[f"{key}@{tf}#{path.name}"] = path
             continue
         target[tf] = df
         files[f"{key}@{tf}"] = path
@@ -160,12 +162,14 @@ def dataset_from_frames(files_meta: dict[str, dict], loaded: dict[str, pd.DataFr
     frames: dict[str, dict[str, pd.DataFrame]] = {}
     fx = None
     fx_frames = {}
-    for key, df in loaded.items():
-        sym, tf = key.split("@")
-        if sym == "FX":
-            fx_frames[tf] = df
-        else:
-            frames.setdefault(sym, {})[tf] = df
+    for key in sorted(loaded):  # 分割ファイル（"銘柄@時間足#ファイル名"）は順につなげる
+        df = loaded[key]
+        sym, tf = key.split("#")[0].split("@")
+        target = fx_frames if sym == "FX" else frames.setdefault(sym, {})
+        if tf in target:
+            merged = pd.concat([target[tf], df])
+            df = merged[~merged.index.duplicated(keep="last")].sort_index()
+        target[tf] = df
     if fx_frames:
         tf = "H1" if "H1" in fx_frames else max(fx_frames, key=tf_minutes)
         fx = fx_frames[tf]["close"]

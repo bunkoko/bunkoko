@@ -6,6 +6,7 @@
 - アルゴリズムの設計と選定理由: **[docs/algorithms.md](docs/algorithms.md)**（まずこれを読む）
 - 証券会社の決定・口座開設・データ取得から本番までの手順: **[docs/roadmap.md](docs/roadmap.md)**
 - 複数銘柄の組み合わせと資金配分をデータから学習（H1、iPad も計算に参加可）: **[docs/training.md](docs/training.md)**
+- **これから何を・どの画面で・どうするか（作業手順書）: [docs/operations.md](docs/operations.md)**
 - 戦略は差し替え式。`cfdbot/strategies/` に追加するだけで、バックテスト・最適化・テストの対象になる
 
 | 銘柄 | 主力 | 副 |
@@ -59,7 +60,9 @@ M5 などの細かい足も置くと約定を細かく再現し、H4・D1 など
 
 ```bash
 python scripts/train.py --demo          # まず合成データで動作確認
+python scripts/check_data.py            # data/ の CSV を点検（時刻・M5 の範囲・実際のスプレッド）
 python scripts/train.py                 # data/ の CSV で学習（設定: config/train.toml）
+python scripts/replay.py --final output/train/<日時>/final.json --start 2026-11-01   # 期間を指定して再現
 python scripts/train.py --listen 0.0.0.0   # iPad など他の端末も計算に参加させる
 ```
 

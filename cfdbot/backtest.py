@@ -203,6 +203,26 @@ class BacktestResult:
         ).T
 
 
+def htf_trend(signal_index: pd.DatetimeIndex, tf: pd.Timedelta, htf_frame: pd.DataFrame,
+              ema: int) -> tuple[np.ndarray, int]:
+    """各足の判断時点（足の終了時刻）で確定済みの上位足の向き（+1 / -1 / 0）と、必要なウォームアップ本数。
+
+    上位足の終値が EMA より上なら +1。EA の HigherTimeframeTrend と同じ判定。
+    """
+    htf_td = infer_timeframe(htf_frame.index)
+    if htf_td <= tf:
+        raise ValueError("上位足フィルタの足は売買の足より粗くする")
+    close = htf_frame["close"].to_numpy(float)
+    trend = np.sign(close - ind.ema(htf_frame["close"], ema).to_numpy(float))
+    htf_close_time = htf_frame.index.tz_convert("UTC").as_unit("ns").asi8 + htf_td.value
+    decide = signal_index.tz_convert("UTC").as_unit("ns").asi8 + tf.value
+    k = np.searchsorted(htf_close_time, decide, side="right") - 1
+    tr = np.where(k >= 0, trend[np.clip(k, 0, None)], 0.0)
+    # 上位足の EMA が落ち着くまで（3倍の本数）は売買しない
+    warm = int(np.ceil(ema * 3 * htf_td / tf)) + int(np.searchsorted(decide, htf_close_time[0]))
+    return tr, warm
+
+
 def infer_timeframe(index: pd.DatetimeIndex) -> pd.Timedelta:
     diffs = pd.Series(index[1:] - index[:-1])
     return diffs.mode().iloc[0]
@@ -335,26 +355,14 @@ class Backtester:
 
     def _apply_htf_filter(self, s: Sleeve, sig: pd.DataFrame) -> tuple[pd.DataFrame, int]:
         """上位足の向きと逆のエントリーを消す。使うのは判断時点で確定済みの上位足だけ。"""
-        hf = s.htf_frame
-        htf_td = infer_timeframe(hf.index)
         tf = self.sym[s.symbol].tf
-        if htf_td <= tf:
-            raise ValueError(f"{s.name}: 上位足フィルタの足は売買の足より粗くする")
-        close = hf["close"].to_numpy(float)
-        trend = np.sign(close - ind.ema(hf["close"], s.htf_ema).to_numpy(float))
-        htf_close_time = hf.index.tz_convert("UTC").as_unit("ns").asi8 + htf_td.value
-        decide = self.data[s.symbol].index.tz_convert("UTC").as_unit("ns").asi8 + tf.value
-        k = np.searchsorted(htf_close_time, decide, side="right") - 1
-        tr = np.where(k >= 0, trend[np.clip(k, 0, None)], 0.0)
+        tr, warm = htf_trend(self.data[s.symbol].index, tf, s.htf_frame, s.htf_ema)
         entry = sig["entry"].to_numpy(np.int8)
         blocked = ((entry > 0) & (tr <= 0)) | ((entry < 0) & (tr >= 0))
         sig = sig.copy()
         sig["entry"] = np.where(blocked, 0, entry).astype(np.int8)
         sig["htf_trend"] = tr
-        # 上位足の EMA が落ち着くまで（3倍の本数）は売買しない
-        warm = int(np.ceil(s.htf_ema * 3 * htf_td / tf))
-        first = np.searchsorted(decide, htf_close_time[0])
-        return sig, warm + int(first)
+        return sig, warm
 
     def _exit_cfg(self, sd: _SleeveData, tag: str | None) -> ExitConfig:
         if tag not in sd.cfg_cache:

@@ -123,6 +123,7 @@ input int    ft_max_spread_points      = 0;     // 0=チェックしない
 //--- EA 固有 -----------------------------------------------------------
 input group "EA"
 input long           ea_magic            = 2609001;
+input double         ea_risk_scale       = 1.0;     // 1回の損失の倍率（本番開始直後は 0.25〜0.5 にする）
 input string         ea_param_file       = "";      // Common\Files の key=value（空=inputのみ）
 input int            ea_param_reload_min = 60;
 input string         ea_events_file      = "cfdbot_events.csv"; // Common\Files（無ければ無視）
@@ -858,7 +859,7 @@ void ExecuteEntry(const CfdSignal &s, const double atr)
       Print("entry rejected: heat");
       return;
      }
-   double target = MathMin(equity * P.rk_risk_per_trade, budget);
+   double target = MathMin(equity * P.rk_risk_per_trade * MathMax(ea_risk_scale, 0.0), budget);
    double loss_per_lot = LossPerLot(_Symbol, stop_dist);
    if(loss_per_lot <= 0)
      {
@@ -1032,7 +1033,7 @@ void GroupHeat(double &heat, double &cluster_heat)
       double vol = PositionGetDouble(POSITION_VOLUME);
       double r;
       if(sl <= 0)
-         r = AccountInfoDouble(ACCOUNT_EQUITY) * P.rk_risk_per_trade;  // 逆指値なし → 1回分とみなす
+         r = AccountInfoDouble(ACCOUNT_EQUITY) * P.rk_risk_per_trade * MathMax(ea_risk_scale, 0.0);  // 逆指値なし → 1回分とみなす
       else
          r = LossPerLot(sym, MathMax(0.0, side * (entry - sl))) * vol;
       heat += r;
