@@ -95,6 +95,14 @@
 
 ## フェーズ 3. 検証（Mac、2〜4週目）
 
+**まずはポートフォリオ学習**（H1 の CSV を `data/` に置いて実行。詳しくは [training.md](training.md)）:
+
+```bash
+python scripts/train.py      # config/train.toml の instruments・events に実測値のファイルを指定しておく
+```
+
+戦略を個別に深掘りする場合:
+
 ```bash
 # 1. 推奨構成で全体を見る（実測コスト・実レートで）
 python scripts/backtest.py --csv WTI=data/XTIUSD_H4.csv --csv SILVER=data/XAGUSD_H4.csv \

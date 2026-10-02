@@ -20,11 +20,12 @@ import pandas as pd
 
 from . import indicators as ind
 from .events import (
+    ET,
+    TRADING_DAY_ROLL_ET,
     Event,
     EventIndex,
     friday_cutoff_passed,
     recurring_oil_events,
-    trading_day,
 )
 from .exits import ExitConfig, ExitState, on_bar_close
 from .instruments import Instrument
@@ -77,6 +78,7 @@ class Sleeve:
     strategy: Strategy
     exit_overrides: dict[str, Any] = field(default_factory=dict)
     name: str = ""
+    risk_weight: float = 1.0   # 1回の損失 = risk_per_trade × これ（ポートフォリオ学習で配分）
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -273,6 +275,9 @@ class Backtester:
 
         all_times = np.unique(np.concatenate([d.times for d in self.sym.values()]))
         self.timeline = all_times
+        # 足の終了時刻ごとの取引日（17:00 ET 区切り）。ループ内で毎回計算すると遅いので先に求める
+        close_et = pd.DatetimeIndex(pd.to_datetime(all_times + self.tf_ns, utc=True)).tz_convert(ET)
+        self.day_keys = (close_et + pd.Timedelta(hours=24 - TRADING_DAY_ROLL_ET)).normalize().asi8
         start, end = all_times[0], all_times[-1] + self.tf_ns
         events: list[Event] = list(cfg.filters.extra_events)
         if cfg.filters.oil_events:
@@ -355,7 +360,7 @@ class Backtester:
                 self._on_close_manage(sym, d, i, tc, fx, flatten_lead)
 
             equity = self._equity(fx)
-            dk = trading_day(pd.Timestamp(tc, tz="UTC"))
+            dk = self.day_keys[k]
             if dk != day_key:  # 取引日の開始時点（＝前の足の終了時点）の資産を基準にする
                 day_key, day_start_eq = dk, prev_equity
             prev_equity = equity
@@ -572,7 +577,7 @@ class Backtester:
                 budget, reason = c_budget, "cluster"
         if budget <= 0:
             return self._reject(when, name, side, reason)
-        size = position_size(equity, stop_dist, inst, fx, rc, budget)
+        size = position_size(equity, stop_dist, inst, fx, rc, budget, sd.sleeve.risk_weight)
         if size.qty <= 0:
             return self._reject(when, name, side, size.reason or reason)
         qty = size.qty

@@ -21,7 +21,8 @@ EA_STRATEGIES = ["donchian", "squeeze", "pullback", "reversion"]
 EA_CLUSTER_IDS = {"energy": 1, "metals": 2}
 
 
-def ea_params(sleeve: Sleeve, inst: Instrument, config: BacktestConfig) -> dict[str, Any]:
+def ea_params(sleeve: Sleeve, inst: Instrument, config: BacktestConfig,
+              timeframe_minutes: int | None = None) -> dict[str, Any]:
     strat = sleeve.strategy
     if strat.name not in EA_STRATEGIES:
         raise NotImplementedError(f"戦略 '{strat.name}' は EA 未対応（{EA_STRATEGIES} のみ）")
@@ -33,7 +34,7 @@ def ea_params(sleeve: Sleeve, inst: Instrument, config: BacktestConfig) -> dict[
     for k, v in exit_cfg.to_dict().items():
         out[f"ex_{k}"] = v
     out.update({
-        "rk_risk_per_trade": rc.risk_per_trade,
+        "rk_risk_per_trade": round(rc.risk_per_trade * sleeve.risk_weight, 6),
         "rk_max_total_risk": rc.max_total_risk,
         "rk_cluster_id": EA_CLUSTER_IDS.get(inst.cluster, 0),
         "rk_cluster_max_risk": rc.cluster_max_risk.get(inst.cluster, rc.max_total_risk),
@@ -52,6 +53,8 @@ def ea_params(sleeve: Sleeve, inst: Instrument, config: BacktestConfig) -> dict[
         "ft_weekend_flatten_fri_et": fc.weekend_flatten_fri_et,
         "ft_max_spread_points": round(inst.spread * fc.max_spread_mult / inst.point_size),
     })
+    if timeframe_minutes:
+        out["ea_timeframe_minutes"] = int(timeframe_minutes)  # 違う時間足のチャートでは EA が起動しない
     return out
 
 
@@ -83,11 +86,12 @@ def write_set_file(params: dict[str, Any], path: str | Path) -> Path:
 
 
 def export_sleeve(
-    sleeve: Sleeve, inst: Instrument, config: BacktestConfig, out_dir: str | Path
+    sleeve: Sleeve, inst: Instrument, config: BacktestConfig, out_dir: str | Path,
+    timeframe_minutes: int | None = None,
 ) -> tuple[Path, Path]:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    params = ea_params(sleeve, inst, config)
+    params = ea_params(sleeve, inst, config, timeframe_minutes)
     base = f"cfdbot_{inst.symbol}_{sleeve.strategy.name}"
     return (
         write_set_file(params, out_dir / f"{base}.set"),

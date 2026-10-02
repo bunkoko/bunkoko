@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .backtest import BacktestConfig, BacktestResult, CostModel
+from .backtest import BacktestConfig, BacktestResult
 from .data import load_mt5_csv
 from .events import load_events_csv
 from .instruments import Instrument, get_instruments, load_instruments

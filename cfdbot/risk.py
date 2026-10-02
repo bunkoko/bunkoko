@@ -46,11 +46,12 @@ def position_size(
     fx: float,
     cfg: RiskConfig,
     risk_budget: float | None = None,
+    risk_mult: float = 1.0,
 ) -> SizeResult:
-    """1回のリスクが equity × risk_per_trade（または risk_budget）に収まる数量を返す。"""
+    """1回のリスクが equity × risk_per_trade × risk_mult（または risk_budget）に収まる数量を返す。"""
     if stop_dist <= 0 or equity <= 0:
         return SizeResult(0.0, "invalid")
-    target = equity * cfg.risk_per_trade
+    target = equity * cfg.risk_per_trade * risk_mult
     if risk_budget is not None:
         target = min(target, risk_budget)
     loss_per_unit = stop_dist * fx

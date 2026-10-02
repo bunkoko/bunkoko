@@ -124,7 +124,8 @@ input int            ea_param_reload_min = 60;
 input string         ea_events_file      = "cfdbot_events.csv"; // Common\Files（無ければ無視）
 input ENUM_SERVER_TZ ea_server_tz        = TZ_NY_CLOSE;
 input double         ea_server_offset    = 2.0;     // TZ_FIXED のときのUTCからの時差
-input int            ea_calc_bars        = 2000;    // 指標計算に使う本数
+input int            ea_calc_bars        = 4000;    // 指標計算に使う本数（長い EMA ほど多く必要）
+input int            ea_timeframe_minutes = 0;      // 学習した時間足（分）。違うチャートでは起動しない（0=確認しない）
 input int            ea_spread_wait_min  = 0;       // スプレッド拡大時に待つ分数（0=見送り）
 input int            ea_deviation_points = 50;
 input bool           ea_push_notify      = true;    // MT5 プッシュ通知（iPhone）
@@ -199,6 +200,11 @@ datetime g_pend_expire = 0;
 //+------------------------------------------------------------------+
 int OnInit()
   {
+   if(ea_timeframe_minutes > 0 && PeriodSeconds(_Period) != ea_timeframe_minutes * 60)
+     {
+      Alert(StringFormat("CfdCommodityEA: このパラメータは %d 分足用。チャートの時間足を合わせること", ea_timeframe_minutes));
+      return(INIT_PARAMETERS_INCORRECT);
+     }
    LoadDefaults();
    if(ea_param_file != "")
       LoadParamFile(ea_param_file);
@@ -1423,6 +1429,7 @@ bool SetParam(const string key, const string v)
    else if(key == "ft_no_entry_after_fri_et") P.ft_no_entry_after_fri_et = d;
    else if(key == "ft_weekend_flatten_fri_et") P.ft_weekend_flatten_fri_et = d;
    else if(key == "ft_max_spread_points") P.ft_max_spread_points = i;
+   else if(key == "ea_timeframe_minutes") return(true);  // 起動時のみ確認（.set で指定）
    else return(false);
    return(true);
   }

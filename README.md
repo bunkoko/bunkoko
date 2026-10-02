@@ -5,6 +5,7 @@
 
 - アルゴリズムの設計と選定理由: **[docs/algorithms.md](docs/algorithms.md)**（まずこれを読む）
 - 証券会社の決定・口座開設・データ取得から本番までの手順: **[docs/roadmap.md](docs/roadmap.md)**
+- 複数銘柄の組み合わせと資金配分をデータから学習（H1、iPad も計算に参加可）: **[docs/training.md](docs/training.md)**
 - 戦略は差し替え式。`cfdbot/strategies/` に追加するだけで、バックテスト・最適化・テストの対象になる
 
 | 銘柄 | 主力 | 副 |
@@ -31,6 +32,7 @@ cfdbot/                 Python パッケージ（Mac で研究・バックテス
   backtest.py           4. 発注・約定の模擬（Bid/Ask・窓開け・金利込み）
   events.py                EIA/API・指標イベント・週末・サーバー時刻
   walkforward.py           ウォークフォワード最適化（並列）
+  train/                   複数銘柄のポートフォリオ学習（配分・分散計算・レポート）
   export.py                EA 用パラメータ（.set / .txt）の書き出し
   notify.py             5. 監視・通知（n8n などの Webhook）
 mql5/Experts/CfdCommodityEA.mq5   本番用 EA（Windows の MT5 で 24 時間稼働）
@@ -48,6 +50,19 @@ pip install -e ".[dev]"
 pytest                      # テスト
 python scripts/demo.py      # 合成データで一通り動かす（成績は無意味）
 ```
+
+## ポートフォリオ学習（おすすめ）
+
+MT5 から書き出した H1 の CSV を `data/` に置いて実行するだけ。銘柄×戦略×パラメータの組み合わせと
+資金配分をウォークフォワードで決め、レポートと EA 用ファイルを `output/train/<日時>/` に出す。
+
+```bash
+python scripts/train.py --demo          # まず合成データで動作確認
+python scripts/train.py                 # data/ の CSV で学習（設定: config/train.toml）
+python scripts/train.py --listen 0.0.0.0   # iPad など他の端末も計算に参加させる
+```
+
+詳しくは [docs/training.md](docs/training.md)。以下は戦略を個別に検証する場合の使い方。
 
 ## 実データでの使い方
 

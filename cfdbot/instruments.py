@@ -11,7 +11,7 @@ lots = qty / contract_size の関係。EA 側は MT5 のシンボル情報
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 
@@ -44,6 +44,8 @@ class Instrument:
         return self.point if self.point is not None else self.tick_size
 
     def round_qty_down(self, qty: float) -> float:
+        if qty == float("inf"):
+            return qty
         steps = int(qty / self.qty_step + 1e-9)
         return round(steps * self.qty_step, 10)
 
