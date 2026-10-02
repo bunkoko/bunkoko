@@ -2,8 +2,9 @@
 
 手順:
 1. MT5 のストラテジーテスターで EA を ea_log_signals=true にして実行
+   （scripts/mt5_files.py install が置くテスター用プリセットはオンになっている）
    → MT5 の共通フォルダ（Common\\Files）に cfdbot_signals_<MT5の銘柄名>_<magic>.csv ができる
-2. そのファイルを Mac にコピー（例: output/compare/）
+2. python scripts/mt5_files.py fetch-logs で output/compare/ に取り込む
 3. 学習結果（final.json）を指定して比べる（データは config/train.toml の [data] dir から読む）:
 
     python scripts/compare_signals.py --final output/train/<日時>/final.json --symbol SILVER \\

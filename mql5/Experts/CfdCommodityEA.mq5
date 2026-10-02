@@ -12,10 +12,14 @@
 //| rk_max_positions_per_symbol まで。既定 1）。                        |
 //| ea_magic の上位桁 (ea_magic / 1000) が同じ EA 同士でリスクを合算。  |
 //|                                                                  |
+//| MQL5 VPS ではファイルとグローバル変数が引き継がれないため、          |
+//| input（プリセット）だけで動き、指標の日時は ea_events_utc_* から、   |
+//| DD 停止の基準と建玉の初期損切り幅は口座履歴から復元する。            |
+//|                                                                  |
 //| ※ MetaEditor でコンパイル・デモ口座で動作確認してから使うこと。      |
 //+------------------------------------------------------------------+
 #property copyright "cfdbot"
-#property version   "0.10"
+#property version   "0.11"
 #property description "ATR-based commodity CFD EA (Donchian / Squeeze / Pullback / Reversion)"
 
 #include <Trade\Trade.mqh>
@@ -127,6 +131,10 @@ input double         ea_risk_scale       = 1.0;     // 1回の損失の倍率（
 input string         ea_param_file       = "";      // Common\Files の key=value（空=inputのみ）
 input int            ea_param_reload_min = 60;
 input string         ea_events_file      = "cfdbot_events.csv"; // Common\Files（無ければ無視）
+input string         ea_events_utc_1     = "";      // 指標の日時（UTC "2026.11.04 18:00" をカンマ区切り）。VPS ではファイルが無いのでこちら
+input string         ea_events_utc_2     = "";      // 同上の続き（scripts/mt5_files.py が書き込む）
+input string         ea_events_utc_3     = "";      // 同上の続き
+input string         ea_peak_since       = "";      // DD の基準（最高資産）を測り始める日 "2027.03.06"（空=口座の最初から）。DD 停止から再開するとき
 input ENUM_SERVER_TZ ea_server_tz        = TZ_NY_CLOSE;
 input double         ea_server_offset    = 2.0;     // TZ_FIXED のときのUTCからの時差
 input int            ea_calc_bars        = 4000;    // 指標計算に使う本数（長い EMA ほど多く必要）
@@ -634,11 +642,8 @@ void ManagePositions(const int k, const datetime tc, const CfdSignal &s)
          continue;  // 形成中の足で建てたものは次の確定足から管理
       int e = BarIndexOf(ptime);
       string pk = PosKey(ticket);
-      if(!GlobalVariableCheck(pk + "r"))  // 記録が無い（手動建て・再起動など）→ 現在の逆指値から復元
-        {
-         GlobalVariableSet(pk + "r", sl > 0 ? MathAbs(entry - sl) : ClipStop(-1, g_atr[k]));
-         GlobalVariableSet(pk + "a", g_atr[e > 0 ? e - 1 : 0]);
-        }
+      if(!GlobalVariableCheck(pk + "r"))  // 記録が無い（VPS へ移した・手動建てなど）→ 口座履歴から復元
+         RestorePositionState(pk, PositionGetInteger(POSITION_IDENTIFIER), side, entry, sl, g_atr[e > 0 ? e - 1 : 0], k);
       double r_dist = GlobalVariableGet(pk + "r");
       double atr_entry = GlobalVariableGet(pk + "a");
       bool be_done = GVGet(pk + "be", 0) > 0;
@@ -956,6 +961,41 @@ void SendEntry(const int side, double lots, const double stop_dist, const double
      }
   }
 
+// 管理情報（グローバル変数）が無い建玉を口座履歴から復元する。
+// グローバル変数は VPS へ移すときに引き継がれないため、初期損切り幅は建てたときの注文の逆指値から求める。
+void RestorePositionState(const string pk, const long pos_id, const int side, const double entry,
+                          const double sl, const double atr_entry, const int k)
+  {
+   double r = 0;
+   bool partial = false;
+   if(HistorySelectByPosition(pos_id))
+     {
+      for(int i = 0; i < HistoryOrdersTotal(); i++)
+        {
+         ulong o = HistoryOrderGetTicket(i);
+         double osl = o > 0 ? HistoryOrderGetDouble(o, ORDER_SL) : 0;
+         if(osl > 0)  // 逆指値付きの最初の注文 = 建てたときの注文
+           {
+            r = MathAbs(entry - osl);
+            break;
+           }
+        }
+      for(int i = 0; i < HistoryDealsTotal(); i++)
+        {
+         ulong d = HistoryDealGetTicket(i);
+         if(d > 0 && HistoryDealGetInteger(d, DEAL_ENTRY) == DEAL_ENTRY_OUT)
+            partial = true;  // 一部決済済み
+        }
+     }
+   if(r <= 0)
+      r = sl > 0 ? MathAbs(entry - sl) : ClipStop(-1, g_atr[k]);
+   GlobalVariableSet(pk + "r", r);
+   GlobalVariableSet(pk + "a", atr_entry);
+   GlobalVariableSet(pk + "be", (sl > 0 && (side > 0 ? sl >= entry : sl <= entry)) ? 1 : 0);
+   GlobalVariableSet(pk + "pt", partial ? 1 : 0);
+   PrintFormat("%s position %I64d: state restored from history (r=%.5f partial=%d)", _Symbol, pos_id, r, partial);
+  }
+
 void RegisterNewPosition(const double stop_dist, const double atr)
   {
    for(int p = PositionsTotal() - 1; p >= 0; p--)
@@ -1120,13 +1160,48 @@ void UpdateAccountGuards()
       GlobalVariableSet(g_gv_group + "daykey", day_key);
       GlobalVariableSet(g_gv_group + "daystart", eq);
      }
+   if(!GlobalVariableCheck(g_gv_group + "peak"))  // 初回・VPS へ移した直後（グローバル変数は引き継がれない）
+     {
+      datetime since = ea_peak_since == "" ? 0 : StringToTime(ea_peak_since);
+      double base = MathMax(eq, HistoryPeakBalance(since));
+      GlobalVariableSet(g_gv_group + "peak", base);
+      PrintFormat("DD 停止の基準（最高資産）= %.0f", base);
+     }
    double peak = MathMax(GVGet(g_gv_group + "peak", eq), eq);
    GlobalVariableSet(g_gv_group + "peak", peak);
    if(GVGet(g_gv_group + "halt", 0) == 0 && eq <= peak * (1.0 - P.rk_max_drawdown_halt))
      {
       GlobalVariableSet(g_gv_group + "halt", 1);
-      Notify(StringFormat("最大DD到達のため新規停止（equity=%.0f peak=%.0f）。解除は GV %shalt を削除", eq, peak, g_gv_group));
+      Notify(StringFormat("最大DD到達のため新規停止（equity=%.0f peak=%.0f）。再開は ea_peak_since に今日の日付を入れ、"
+                          "GV %speak と %shalt を削除（VPS は移し直す）", eq, peak, g_gv_group, g_gv_group));
      }
+  }
+
+// 口座履歴から確定損益ベースの最高残高を求める（入出金は基準も同じだけ動かし、DD に数えない）。
+// since より前の高値は数えない（その時点の残高から測り始める）
+double HistoryPeakBalance(const datetime since)
+  {
+   if(!HistorySelect(0, TimeCurrent()))
+      return(0);
+   double bal = 0, peak = 0;
+   for(int i = 0; i < HistoryDealsTotal(); i++)
+     {
+      ulong d = HistoryDealGetTicket(i);
+      if(d == 0)
+         continue;
+      double amt = HistoryDealGetDouble(d, DEAL_PROFIT) + HistoryDealGetDouble(d, DEAL_SWAP) +
+                   HistoryDealGetDouble(d, DEAL_COMMISSION) + HistoryDealGetDouble(d, DEAL_FEE);
+      bal += amt;
+      if((datetime)HistoryDealGetInteger(d, DEAL_TIME) < since)
+        {
+         peak = bal;
+         continue;
+        }
+      if(HistoryDealGetInteger(d, DEAL_TYPE) == DEAL_TYPE_BALANCE)
+         peak += amt;
+      peak = MathMax(peak, bal);
+     }
+   return(peak);
   }
 
 bool DailyLossBlocked()
@@ -1287,6 +1362,44 @@ void LoadEvents()
    ArrayResize(g_tags, 0);
    if(tags != "")
       StringSplit(tags, ',', g_tags);
+   AddInlineEvents(ea_events_utc_1);
+   AddInlineEvents(ea_events_utc_2);
+   AddInlineEvents(ea_events_utc_3);
+   LoadEventsFile();
+   PrintFormat("loaded %d events", ArraySize(g_events));
+  }
+
+void AddEvent(const datetime utc, const string name, const string tag)
+  {
+   int n = ArraySize(g_events);
+   ArrayResize(g_events, n + 1);
+   g_events[n].et = UtcToET(utc);
+   g_events[n].name = name;
+   g_events[n].tag = tag;
+  }
+
+// ea_events_utc_* の "2026.11.04 18:00,2026.11.06 13:30" 形式（この銘柄向けに絞り込み済み）
+void AddInlineEvents(const string list)
+  {
+   string items[];
+   int n = StringSplit(list, ',', items);
+   for(int i = 0; i < n; i++)
+     {
+      string ts = items[i];
+      StringTrimLeft(ts);
+      StringTrimRight(ts);
+      if(ts == "")
+         continue;
+      datetime t = StringToTime(ts);
+      if(t > 0)
+         AddEvent(t, "inline", _Symbol);  // タグを銘柄名にすると HasTag が常に真になる
+      else
+         PrintFormat("ea_events_utc: 読めない日時 '%s'", ts);
+     }
+  }
+
+void LoadEventsFile()
+  {
    if(ea_events_file == "" || !FileIsExist(ea_events_file, FILE_COMMON))
       return;
    int h = FileOpen(ea_events_file, FILE_READ | FILE_TXT | FILE_ANSI | FILE_COMMON);
@@ -1324,17 +1437,12 @@ void LoadEvents()
       if(t == 0)
          continue;
       datetime utc = jst ? (datetime)(t - 9 * 3600) : t;
-      int n = ArraySize(g_events);
-      ArrayResize(g_events, n + 1);
-      g_events[n].et = UtcToET(utc);
-      g_events[n].name = f[1];
       string tag = f[2];
       StringTrimLeft(tag);
       StringTrimRight(tag);
-      g_events[n].tag = tag;
+      AddEvent(utc, f[1], tag);
      }
    FileClose(h);
-   PrintFormat("loaded %d events", ArraySize(g_events));
   }
 
 //+------------------------------------------------------------------+

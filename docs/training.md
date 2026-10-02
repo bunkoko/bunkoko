@@ -168,7 +168,8 @@ Mac 側に回されるので結果は失われない。同じ手順で別の Mac
 
 ## 運用の流れ
 
-1. 毎月、MT5 から H1 を書き出して `data/` を上書き → `python scripts/train.py`
+1. 毎月（週末）、MT5 のスクリプト `CfdExportBars` で M5・H1 を書き出し、`python scripts/mt5_files.py fetch-data`
+   で `data/` に取り込む → `python scripts/train.py`
 2. `report.md` の判定と、本番用の構成が前回から大きく変わっていないかを確認
-3. 問題なければ `ea/*.txt` を Windows の `Common\Files` に置き換える（EA が定期的に読み直す）。
-   戦略や銘柄の組み合わせが変わった場合は、チャートへの EA の貼り直しが必要
+3. 問題なければ `python scripts/mt5_files.py install --run output/train/<日時>` でプリセットを作り直し、
+   各チャートの EA に読み込んで MQL5 VPS に移し直す（手順は [operations.md](operations.md) 手順 16）

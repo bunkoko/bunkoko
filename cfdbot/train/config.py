@@ -95,6 +95,7 @@ class AccountConfig:
     max_leverage_total: float = 2.0
     daily_loss_limit: float = 0.03
     max_drawdown_halt: float = 0.25
+    peak_since: str = ""                # DD の基準（最高資産）を測り始める日。DD 停止から再開するときだけ入れる
 
 
 @dataclass

@@ -24,6 +24,7 @@ max_leverage_symbol = 1.0    # 1銘柄のレバレッジ上限（名目建玉 ÷
 max_leverage_total = 2.0     # 全銘柄合計のレバレッジ上限
 daily_loss_limit = 0.03
 max_drawdown_halt = 0.25
+peak_since = ""              # DD 停止から再開するときだけ、再開する日（例 "2027-03-06"）。それ以前の高値を基準にしない
 
 [account.cluster_max_risk]
 energy = 0.02                # WTI + ブレント

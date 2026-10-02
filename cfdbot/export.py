@@ -1,9 +1,10 @@
-"""Mac で最適化したパラメータを Windows の EA に渡すためのファイルを書き出す。
+"""Mac で最適化したパラメータを MT5 の EA に渡すためのファイルを書き出す。
 
 2種類を出力する:
 - <name>.set : MT5 の「パラメータ読み込み」で使うプリセット（UTF-16LE）
-- <name>.txt : EA が定期的に読み直す key=value ファイル。
-               MT5 の データフォルダ/../Common/Files/ に置く（EA は FILE_COMMON で読む）
+- <name>.txt : EA が定期的に読み直す key=value ファイル（Windows で動かす場合）。
+               MT5 の共通フォルダ Common/Files/ に置く（EA は FILE_COMMON で読む）。
+               MQL5 VPS ではファイルが引き継がれないので、cfdbot.mt5files で .set に全部入れて使う
 
 キー名は EA の input 変数名と同じ（例: dc_entry_period, ex_trail_atr, rk_risk_per_trade）。
 """
