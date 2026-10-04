@@ -100,3 +100,15 @@ def test_local_config_overrides_train_toml(tmp_path):
     assert cfg.data.instruments == "config/instruments_measured.json" and cfg.data.dir == "data"
     assert cfg.data.fx == 150.0 and cfg.account.equity == 500000
     assert 'instruments = ""' in cfg_path.read_text()          # train.toml は書き換えない
+
+
+def test_local_config_nested_tables(tmp_path):
+    """./cfd risk が書くグループ別の上限（[account.cluster_max_risk]）を読み戻せる。"""
+    from cfdbot.train.config import load_train_config
+
+    cfg_path = tmp_path / "train.toml"
+    cfg_path.write_text('[account]\nbase_risk = 0.01\n[account.cluster_max_risk]\nenergy = 0.02\nmetals = 0.02\n')
+    set_local_option(cfg_path, "account", "base_risk", 0.015)
+    set_local_option(cfg_path, "account", "cluster_max_risk", {"energy": 0.03, "metals": 0.03})
+    acc = load_train_config(cfg_path).account
+    assert acc.base_risk == 0.015 and acc.cluster_max_risk == {"energy": 0.03, "metals": 0.03}

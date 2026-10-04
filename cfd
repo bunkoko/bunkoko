@@ -30,6 +30,17 @@ case "$cmd" in
   check)  need_venv; exec "$PY" scripts/check_data.py "$@" ;;
   train)  need_venv; exec "$PY" scripts/train.py "$@" ;;
   ea)     need_venv; need_run; exec "$PY" scripts/mt5_files.py install --run "$RUN" "$@" ;;
+  risk)   need_venv; exec "$PY" scripts/set_risk.py --risk "$@" ;;
+  preset) need_venv
+          [ $# -ge 1 ] || { echo "使い方: ./cfd preset config/baselines/turtle55_d1.json [--risk-scale 0.5]"; exit 1; }
+          CONF="$1"; shift
+          OUT="output/live/$(basename "$CONF" .json)"
+          "$PY" scripts/make_ea.py --final "$CONF" --out "$OUT"
+          exec "$PY" scripts/mt5_files.py install --run "$OUT" "$@" ;;
+  table)  need_venv; exec "$PY" scripts/risk_table.py "$@" ;;
+  compare) need_venv
+          [ $# -ge 1 ] || { echo "使い方: ./cfd compare output/live/turtle55_d1/final.json"; exit 1; }
+          exec "$PY" scripts/compare_all.py --final "$@" ;;
   logs)   need_venv; exec "$PY" scripts/mt5_files.py fetch-logs "$@" ;;
   replay) need_venv; need_run; exec "$PY" scripts/replay.py --final "$RUN/final.json" "$@" ;;
   py)     need_venv; exec "$PY" "$@" ;;
@@ -44,7 +55,11 @@ case "$cmd" in
   check    データの点検だけ
   train    学習（結果は output/train/<日時>/report.md）
   ea       最新の学習結果からプリセットを作って MT5 に置く（--risk-scale 0.5 など）
+  risk     1回の損失（と資金）を保存（例: ./cfd risk 0.015 --equity 1000000）
+  preset   決めた構成からプリセットを作って MT5 に置く（例: ./cfd preset config/baselines/turtle55_d1.json）
+  table    資金と 1回の損失ごとの成績の表（例: ./cfd table --final ... --start 2021-06-01）
   logs     テスターのシグナル記録を取り込む
+  compare  テスターの記録を取り込み、全銘柄で EA と Python を突き合わせる（例: ./cfd compare output/live/turtle55_d1/final.json）
   replay   最新の学習結果で期間を再現（--start 2026-11-01 など）
   py       仮想環境の Python で実行（例: ./cfd py scripts/compare_signals.py ...）
 HELP

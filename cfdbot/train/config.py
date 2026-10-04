@@ -272,10 +272,15 @@ def set_local_option(config_path: str | Path, section: str, key: str, value: Any
     if data.get(section, {}).get(key) == value:
         return False
     data.setdefault(section, {})[key] = value
-    lines = ["# この Mac だけの設定（./cfd data などのツールが書く）。config/train.toml より優先される", ""]
+    lines = ["# この Mac だけの設定（./cfd data・./cfd risk などのツールが書く）。config/train.toml より優先される", ""]
     for sec, items in data.items():
         lines.append(f"[{sec}]")
-        lines += [f"{k} = {_toml_value(v)}" for k, v in items.items()]
+        lines += [f"{k} = {_toml_value(v)}" for k, v in items.items() if not isinstance(v, dict)]
         lines.append("")
+        for k, v in items.items():
+            if isinstance(v, dict):  # 例: [account.cluster_max_risk]
+                lines.append(f"[{sec}.{k}]")
+                lines += [f"{kk} = {_toml_value(vv)}" for kk, vv in v.items()]
+                lines.append("")
     p.write_text("\n".join(lines), encoding="utf-8")
     return True

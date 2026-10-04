@@ -220,6 +220,29 @@ Mac 版 MT5 のフォルダは `~/Library/Application Support/…/drive_c/…` �
 **判定が満たない場合**: 設定を少しずつ変えて何度も学習し直すと、それ自体が「偶然良く見える設定探し」になる。
 変えるのは根拠があるもの（実測コストの反映漏れ、明らかに不向きな時間足の除外など）だけにする。
 
+## 8b. 学習が基準に届かないとき: 調整しない定番ルールで進める（ターミナル）
+
+2026-10 の実データでは、学習（H4・H4+日足）は検証期間で基準に届かず、
+数値をいじらない定番のトレンドルール（`config/baselines/turtle55_d1.json`: 55 日ブレイクで入り 20 日で手仕舞い、日足、4 銘柄）
+のほうが成績が良かった。この場合は学習結果ではなく、この構成で進める。
+
+1. 資金と 1 回の損失ごとの成績を比べる
+   ```bash
+   ./cfd table --final config/baselines/turtle55_d1.json --start 2021-06-01
+   ```
+   最大DD が停止（25%）より十分小さく、最悪の月を受け入れられる組み合わせを選ぶ
+   （2026-10 の結果では資金 100 万円なら 1 回の損失 1.5%: シャープ 0.65・最大DD 14%）
+2. 選んだ値を保存する（合計・グループの上限も同じ比率で上がる）
+   ```bash
+   ./cfd risk 0.015 --equity 1000000
+   ```
+3. EA のプリセットを作って MT5 に置く（手順 9 の 1. の代わり）
+   ```bash
+   ./cfd preset config/baselines/turtle55_d1.json
+   ```
+   以降の手順 9〜16 は、`output/train/<日時>/final.json` を `output/live/turtle55_d1/final.json` に読み替える
+   （`./cfd ea` の代わりに `./cfd preset config/baselines/turtle55_d1.json`、本番開始時は `--risk-scale 0.5` を付ける）
+
 ## 9. プリセットを置き、EA と Python を突き合わせる（ターミナル → ストラテジーテスター）
 
 1. **ターミナル**: 学習結果からプリセットを作って MT5 に置く
@@ -240,13 +263,12 @@ Mac 版 MT5 のフォルダは `~/Library/Application Support/…/drive_c/…` �
 
 3. 「パラメータの入力」タブ → 表の上で右クリック →「読み込み」→ 表のプリセット名の `.set`
    （テスター用。シグナル記録 `ea_log_signals` がオンになっている）→「スタート」
-4. 終わったら **ターミナル**: 記録を取り込んで比べる
+4. 表の全行（銘柄）について 2〜3 を繰り返す（テスターの銘柄・時間足とプリセットを替えて「スタート」）
+5. 終わったら **ターミナル**: 記録を取り込んで全銘柄をまとめて比べる
    ```bash
-   ./cfd logs
-   ./cfd py scripts/compare_signals.py --final output/train/<日時>/final.json --symbol SILVER \
-       --ea-log output/compare/cfdbot_signals_XAGUSD_2609003.csv
+   ./cfd compare output/train/<日時>/final.json      # 定番ルールなら output/live/turtle55_d1/final.json
    ```
-5. 「結果: 一致」になれば OK。表の全行（銘柄）で繰り返す。差分が出たら出力をそのまま送ってください
+6. 最後の「まとめ」が全銘柄「一致」になれば OK。差分が出たら出力をそのまま送ってください
 
 ## 10. Mac を 24 時間動かす設定（デモ期間だけ。システム設定）
 
