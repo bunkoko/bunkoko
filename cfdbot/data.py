@@ -70,23 +70,41 @@ def validate_ohlc(df: pd.DataFrame) -> None:
         raise ValueError(f"OHLC が不正な足が {int(bad.sum())} 本ある（最初: {df.index[bad.argmax()]}）")
 
 
-def resample_ohlc(df: pd.DataFrame, rule: str | pd.Timedelta) -> pd.DataFrame:
-    """下位足から上位足を作る（例: M5 → H1、H1 → H4）。
+def resample_ohlc(df: pd.DataFrame, rule: str | pd.Timedelta,
+                  server_tz: str | int | float = "ny_close") -> pd.DataFrame:
+    """下位足から上位足を作る（例: M5 → H1、H1 → H4）。足の区切りは MT5 と同じくサーバー時刻の 0 時起点。
 
-    足の区切りは米東部時間の壁時計で 17:00 起点（MT5 の「NY クローズ」方式のサーバーと同じ。
-    H4 なら 17,21,1,5,9,13 時、D1 なら 17:00〜翌 17:00）。夏時間の切り替えでもずれない。
+    - "ny_close"（サーバー = 米東部時間 + 7 時間）: 米東部時間の 17:00 起点
+      （H4 なら 17,21,1,5,9,13 時、D1 なら 17:00〜翌 17:00）。夏時間の切り替えでもずれない
+    - 数値（UTC からの時差。例: 9 = 日本時間）: その時差の 0 時起点（日本時間なら H4 は 0,4,8,12,16,20 時）
+    - タイムゾーン名: その地域の 0 時起点
+    EA は MT5 のチャートの足で判断するので、ここがずれると学習と EA の足が食い違う。
     """
     td = pd.Timedelta(rule)
-    wall = df.tz_convert(ET)
-    wall.index = wall.index.tz_localize(None)
+    utc = df.index.tz_convert("UTC")
+    if isinstance(server_tz, (int, float)):
+        shift = pd.Timedelta(hours=float(server_tz))
+        wall_index, start = (utc + shift).tz_localize(None), pd.Timedelta(0)
+
+        def back(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
+            return (idx - shift).tz_localize("UTC")
+    else:
+        zone = ET if server_tz == "ny_close" else server_tz
+        wall_index = utc.tz_convert(zone).tz_localize(None)
+        start = pd.Timedelta(hours=17) if server_tz == "ny_close" else pd.Timedelta(0)
+
+        def back(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
+            return idx.tz_localize(zone, ambiguous="NaT", nonexistent="shift_forward").tz_convert("UTC")
+    wall = df.copy()
+    wall.index = wall_index
     agg = {"open": "first", "high": "max", "low": "min", "close": "last"}
     if "volume" in df:
         agg["volume"] = "sum"
     if "spread" in df:
         agg["spread"] = "median"
-    offset = pd.Timedelta(hours=17) % td if td <= pd.Timedelta(days=1) else pd.Timedelta(hours=17)
+    offset = start % td if td <= pd.Timedelta(days=1) else start
     out = wall.resample(td, offset=offset, label="left", closed="left").agg(agg).dropna(subset=["open"])
-    out.index = out.index.tz_localize(ET, ambiguous="NaT", nonexistent="shift_forward").tz_convert("UTC")
+    out.index = back(out.index)
     out = out[~out.index.isna()]
     out.index.name = df.index.name
     return out

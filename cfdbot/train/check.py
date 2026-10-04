@@ -47,8 +47,9 @@ def _week_starts(df: pd.DataFrame) -> pd.DatetimeIndex:
 
 
 # 取引所ごとの時間（米東部時間）: (日曜の再開の時, 毎日の休止の始まりの時, 休止の長さ)
-# CME（金・銀・WTI）は日曜 18 時再開・毎日 17〜18 時休止。ICE ブレントは日曜 20 時再開・毎日 18〜20 時休止
-SESSIONS = {"BRENT": (20, 18, 2)}
+# CME（金・銀・WTI）は日曜 18 時再開・毎日 17〜18 時休止。ICE ブレントは日曜 20 時再開で、毎日の休止は
+# 取引所では 18〜20 時、フィリップでは 17〜20 時（2026-10 のデータ）。休止の中のどの時台が最少でもよいとする
+SESSIONS = {"BRENT": (20, 17, 3)}
 DEFAULT_SESSION = (18, 17, 1)
 WEEKDAYS_JA = ["月", "火", "水", "木", "金", "土", "日"]
 
@@ -71,7 +72,7 @@ def _fix_hint(shift: int, server_tz) -> str:
 
 
 def check_time(sym: str, tf: str, df: pd.DataFrame, res: CheckResult, server_tz="ny_close") -> None:
-    open_h, break_h, _ = SESSIONS.get(sym, DEFAULT_SESSION)
+    open_h, break_h, length = SESSIONS.get(sym, DEFAULT_SESSION)
     starts = _week_starts(df)
     if len(starts) >= 4:
         # 再開は日曜 open_h 時 ET（足の時刻の付け方で 1 時間前になる業者もある）
@@ -90,8 +91,8 @@ def check_time(sym: str, tf: str, df: pd.DataFrame, res: CheckResult, server_tz=
         counts = pd.Series(et.hour[weekday]).value_counts().reindex(range(24), fill_value=0)
         quiet = int(counts.idxmin())
         if counts.min() < counts.median() * 0.5:
-            if quiet == break_h:
-                res.info(f"  時刻: 毎日の休止は米東部時間 {break_h} 時台 → OK")
+            if break_h <= quiet < break_h + length:
+                res.info(f"  時刻: 毎日の休止は米東部時間 {quiet} 時台 → OK")
             else:
                 res.warn(f"{sym} {tf}: 毎日の休止が米東部時間 {quiet} 時台にある（{break_h} 時台のはず）。"
                          + _fix_hint(_wrap(break_h - quiet, 24), server_tz))
@@ -130,6 +131,11 @@ def check_spread(sym: str, tf: str, df: pd.DataFrame, inst: Instrument, res: Che
     wide_txt = "、".join(f"米東部 {h} 時台（日本 {jst(h)} 時台）{v:.4g}" for h, v in wide.items())
     res.info(f"  スプレッド: 中央値 {med:.4g} / 上位10% {p90:.4g}（銘柄仕様の値 {inst.spread:.4g}）")
     res.info(f"  広がる時間帯: {wide_txt}")
+    if p90 > med * 3:  # 一部の期間だけ広いことが多いので、年ごとに分けて見せる
+        by_year = pd.Series(sp, index=df.index.year).groupby(level=0)
+        yearly = "、".join(f"{y} 年 {m:.4g}（上位10% {q:.4g}）" for (y, m), q in
+                          zip(by_year.median().items(), by_year.quantile(0.9)))
+        res.info(f"  年ごと: {yearly}")
     if not point_from_mt5 and (med > inst.spread * 1.5 or med < inst.spread * 0.5):
         res.warn(f"{sym}: 実測スプレッド {med:.4g} が銘柄仕様 {inst.spread:.4g} と大きく違う。"
                  "point（桁数）が MT5 の仕様と合っているかも確認する")

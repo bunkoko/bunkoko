@@ -70,7 +70,7 @@ def python_signals_from_csv(csv: str, server_tz, strategy: str, params: dict, ti
                             atr_period: int) -> pd.DataFrame:
     df = load_mt5_csv(csv, server_tz=server_tz)
     if timeframe and infer_timeframe(df.index) != pd.Timedelta(TIMEFRAMES[timeframe]):
-        df = resample_ohlc(df, TIMEFRAMES[timeframe])  # 細かい足のファイルから作る
+        df = resample_ohlc(df, TIMEFRAMES[timeframe], server_tz)  # 細かい足のファイルから作る（MT5 と同じ区切り）
     atr = ind.atr(df, atr_period)
     sig = make_strategy(strategy, **params).generate(df, atr)
     sig["atr"] = atr

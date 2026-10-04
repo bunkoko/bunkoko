@@ -281,7 +281,8 @@ def _load_dataset(client: _Client, meta: dict[str, Any], allow_local: bool):
             path = tmp / info["name"]
             path.write_bytes(raw)
         loaded[key] = load_mt5_csv(path, server_tz=meta["server_tz"])
-    return dataset_from_frames(meta["files"], loaded, meta["signal_timeframes"], meta["fill_timeframe"])
+    return dataset_from_frames(meta["files"], loaded, meta["signal_timeframes"], meta["fill_timeframe"],
+                               meta["server_tz"])
 
 
 def run_worker(server: str, token: str, name: str, allow_local: bool = True, batch: int = 1,

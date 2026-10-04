@@ -249,3 +249,41 @@ enabled = false
         tf = f.stem.rsplit("_", 1)[1]
         assert f"ea_timeframe_minutes={ {'H1': 60, 'H4': 240}[tf] }" in text
         assert "htf_minutes=" in text
+
+
+def test_resample_on_server_midnight_jst():
+    """日本時間のサーバー（フィリップ）では、MT5 の H4・D1 は日本時間の 0 時起点。学習の足も同じ区切りにする。"""
+    from cfdbot.data import resample_ohlc
+
+    m5 = random_walk_m5(5, start="2024-06-03", end="2024-06-20")
+    h4 = resample_ohlc(m5, "4h", server_tz=9)
+    jst = h4.index.tz_convert("Asia/Tokyo")
+    assert set(jst.hour) <= {0, 4, 8, 12, 16, 20} and (jst.minute == 0).all()
+    d1 = resample_ohlc(m5, "1D", server_tz=9)
+    assert set(d1.index.tz_convert("Asia/Tokyo").hour) == {0}
+    # 中身は元の足の集計どおり
+    first = h4.index[1]
+    part = m5[(m5.index >= first) & (m5.index < first + pd.Timedelta(hours=4))]
+    assert h4.loc[first, "high"] == part["high"].max() and h4.loc[first, "open"] == part["open"].iloc[0]
+    # NY クローズ方式のサーバーでは従来どおり米東部 17 時起点
+    ny = resample_ohlc(m5, "4h").index.tz_convert("America/New_York")
+    assert set(ny.hour) <= {17, 21, 1, 5, 9, 13}
+
+
+def test_dataset_uses_server_grid(tmp_path):
+    from cfdbot.train.config import TrainConfig, normalize
+    from cfdbot.train.dataset import load_dataset
+
+    write_mt5(random_walk_m5(6, start="2024-06-03", end="2024-06-20"), tmp_path / "XAGUSD_M5.csv")
+    digests = {}
+    for tz in ("ny_close", 9.0):
+        cfg = TrainConfig()
+        cfg.data.dir = str(tmp_path)
+        cfg.data.server_tz = tz
+        cfg.data.signal_timeframes = ["H4"]
+        ds = load_dataset(normalize(cfg).data)
+        h4 = ds.signal_frame("SILVER", "H4")
+        hours = set(h4.index.tz_convert("Asia/Tokyo" if tz == 9.0 else "America/New_York").hour)
+        assert hours <= ({0, 4, 8, 12, 16, 20} if tz == 9.0 else {17, 21, 1, 5, 9, 13})
+        digests[tz] = ds.digest
+    assert digests["ny_close"] != digests[9.0]      # 足の作り方が違えば計算結果のキャッシュも別

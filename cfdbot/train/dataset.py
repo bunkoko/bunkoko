@@ -53,6 +53,7 @@ class Dataset:
     files: dict[str, Path] = field(default_factory=dict)  # "銘柄@時間足" → ファイル
     digest: str = ""
     skipped: list[str] = field(default_factory=list)
+    server_tz: str | float = "ny_close"          # 上位足をサーバー時刻の 0 時起点で作る（MT5 のチャートと同じ足）
     _derived: dict[tuple[str, str], pd.DataFrame] = field(default_factory=dict, repr=False)
 
     # -- 時間足の取り出し
@@ -70,7 +71,7 @@ class Dataset:
         key = (symbol, tf)
         if key not in self._derived:
             # 細かい中で最も粗い足から作る（計算が軽く、結果は同じ）
-            self._derived[key] = resample_ohlc(self.frames[symbol][finer[-1]], TIMEFRAMES[tf])
+            self._derived[key] = resample_ohlc(self.frames[symbol][finer[-1]], TIMEFRAMES[tf], self.server_tz)
         return self._derived[key]
 
     def signal_frame(self, symbol: str, tf: str) -> pd.DataFrame | None:
@@ -149,15 +150,18 @@ def load_dataset(cfg: DataConfig, base_dir: Path | None = None) -> Dataset:
     if fx_frames:  # 円換算は H1 があれば H1、無ければ最も粗い足
         tf = "H1" if "H1" in fx_frames else max(fx_frames, key=tf_minutes)
         fx = fx_frames[tf]["close"]
+    # 足の作り方（サーバー時刻の 0 時起点）を変えたら計算結果のキャッシュも別にする
     ds = Dataset(frames, fx, list(cfg.signal_timeframes), cfg.fill_timeframe, files,
-                 file_digest(list(files.values()), extra=str(cfg.server_tz)), skipped)
+                 file_digest(list(files.values()), extra=f"{cfg.server_tz}|bars=server-midnight"), skipped,
+                 server_tz=cfg.server_tz)
     if not ds.symbols:
         raise FileNotFoundError(f"{root} に、売買の足（{cfg.signal_timeframes}）を用意できる CSV が無い")
     return ds
 
 
 def dataset_from_frames(files_meta: dict[str, dict], loaded: dict[str, pd.DataFrame],
-                        signal_timeframes: list[str], fill_timeframe: str) -> Dataset:
+                        signal_timeframes: list[str], fill_timeframe: str,
+                        server_tz: str | float = "ny_close") -> Dataset:
     """ワーカー側: 読み込んだ "銘柄@時間足" → DataFrame から Dataset を組み立てる。"""
     frames: dict[str, dict[str, pd.DataFrame]] = {}
     fx = None
@@ -173,4 +177,4 @@ def dataset_from_frames(files_meta: dict[str, dict], loaded: dict[str, pd.DataFr
     if fx_frames:
         tf = "H1" if "H1" in fx_frames else max(fx_frames, key=tf_minutes)
         fx = fx_frames[tf]["close"]
-    return Dataset(frames, fx, signal_timeframes, fill_timeframe)
+    return Dataset(frames, fx, signal_timeframes, fill_timeframe, server_tz=server_tz)
