@@ -55,6 +55,11 @@ def main() -> None:
     settings = _eval_settings(cfg, ds)
     fx = ds.fx if ds.fx is not None else cfg.data.fx
     bt_cfg = _account_config(cfg, fx, settings.event_list())
+    def clean(v: str) -> str:  # コピーで紛れ込みやすい全角の記号・空白を取り除く
+        return v.strip().strip("「」『』\"'`、。　 ")
+
+    args.start = clean(args.start)
+    args.end = clean(args.end) if args.end else args.end
     start = pd.Timestamp(args.start, tz="UTC")
     last = max(ds.signal_frame(p.symbol, p.timeframe).index[-1] for p in picks)
     end = pd.Timestamp(args.end, tz="UTC") + pd.Timedelta(days=1) if args.end else last + pd.Timedelta(days=1)
