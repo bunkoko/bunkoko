@@ -37,6 +37,7 @@ def main() -> None:
     p.add_argument("--equity", type=float, help="資金（円）。省略時は config の [account] equity")
     p.add_argument("--risk-scale", type=float, default=1.0, help="EA の ea_risk_scale と同じ値にする")
     p.add_argument("--out", default="output/replay")
+    p.add_argument("--summary", action="store_true", help="取引の一覧を表示しない（成績と見送りの理由だけ）")
     args = p.parse_args()
 
     cfg = load_train_config(args.config)
@@ -85,16 +86,17 @@ def main() -> None:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     name = f"{start:%Y%m%d}-{(end - pd.Timedelta(days=1)):%Y%m%d}"
-    if not res["trades"].empty:
-        cols = ["symbol", "side", "qty", "entry_time", "entry_price", "exit_time", "exit_price", "reason", "pnl"]
-        t = res["trades"][cols].copy()
-        for c in ("entry_time", "exit_time"):
-            t[c] = t[c].dt.tz_convert("Asia/Tokyo").dt.strftime("%Y-%m-%d %H:%M")
-        print("\n取引（時刻は日本時間。MT5 の口座履歴と比べる）:")
-        print(t.to_string(index=False))
-        res["trades"].to_csv(out / f"{name}_trades.csv", index=False)
-    else:
+    if res["trades"].empty:
         print("\nこの期間の取引は無い")
+    else:
+        res["trades"].to_csv(out / f"{name}_trades.csv", index=False)
+        if not args.summary:
+            cols = ["symbol", "side", "qty", "entry_time", "entry_price", "exit_time", "exit_price", "reason", "pnl"]
+            t = res["trades"][cols].copy()
+            for c in ("entry_time", "exit_time"):
+                t[c] = t[c].dt.tz_convert("Asia/Tokyo").dt.strftime("%Y-%m-%d %H:%M")
+            print("\n取引（時刻は日本時間。MT5 の口座履歴と比べる）:")
+            print(t.to_string(index=False))
     res["equity"].rename("equity").to_csv(out / f"{name}_equity.csv")
     print(f"\n保存先: {out}/{name}_*.csv")
 
