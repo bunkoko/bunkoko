@@ -85,6 +85,8 @@ class Sleeve:
     htf_frame: pd.DataFrame | None = field(default=None, repr=False)
     htf_ema: int = 0
     htf_timeframe: str = ""    # 表示・EA 書き出し用の名前（"H4" など）
+    # 外部データなどによる絞り込み: 列 long / short（その足で買い・売りの新規を許すか）。足の並びと同じ index
+    entry_gate: pd.DataFrame | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -223,6 +225,19 @@ def htf_trend(signal_index: pd.DatetimeIndex, tf: pd.Timedelta, htf_frame: pd.Da
     return tr, warm
 
 
+def apply_entry_gate(sig: pd.DataFrame, gate: pd.DataFrame) -> pd.DataFrame:
+    """gate（列 long / short）で許されていない向きのエントリーを消す。gate に無い足は許す。"""
+    g = gate.reindex(sig.index)
+    no_long = g["long"].eq(False).to_numpy(bool)     # 欠けている足（NaN）は許す
+    no_short = g["short"].eq(False).to_numpy(bool)
+    entry = sig["entry"].to_numpy(np.int8)
+    blocked = ((entry > 0) & no_long) | ((entry < 0) & no_short)
+    sig = sig.copy()
+    sig["entry"] = np.where(blocked, 0, entry).astype(np.int8)
+    sig["gate_blocked"] = blocked
+    return sig
+
+
 def infer_timeframe(index: pd.DatetimeIndex) -> pd.Timedelta:
     diffs = pd.Series(index[1:] - index[:-1])
     return diffs.mode().iloc[0]
@@ -307,6 +322,8 @@ class Backtester:
             if s.htf_frame is not None and s.htf_ema > 0:
                 sig, htf_warm = self._apply_htf_filter(s, sig)
                 warmup = max(warmup, htf_warm)
+            if s.entry_gate is not None:
+                sig = apply_entry_gate(sig, s.entry_gate)
             self.sl[s.name] = _SleeveData(
                 sleeve=s,
                 sd=self.sym[s.symbol],

@@ -36,6 +36,8 @@ cfdbot/                 Python パッケージ（Mac で研究・バックテス
   walkforward.py           ウォークフォワード最適化（並列）
   train/                   複数銘柄のポートフォリオ学習（配分・分散計算・レポート）
   export.py                EA 用パラメータ（.set / .txt）の書き出し
+  context.py               外部データ（金利・ドル・株価・他の商品・投機筋の建玉）の取得と、公表時刻に合わせた参照
+  features.py              外部データによる絞り込みの仮説と、全部の入力を使う予測（研究用）
   notify.py             5. 監視・通知（n8n などの Webhook）
 mql5/Experts/CfdCommodityEA.mq5   本番用 EA（MQL5 VPS などで 24 時間稼働。プリセットだけで動く）
 mql5/Scripts/CfdExportBars.mq5    学習用のバーを全銘柄まとめて CSV に書き出す
@@ -73,6 +75,16 @@ python scripts/mt5_files.py install --run output/train/<日時>   # EA とプリ
 ```
 
 詳しくは [docs/training.md](docs/training.md)。以下は戦略を個別に検証する場合の使い方。
+
+## 外部データで絞り込む研究
+
+金利・ドル・株価・他の商品・為替・国債・投機筋の建玉を集め、売買の絞り込みに役立つかを 20 年の先物データと
+フィリップのデータの両方で確かめる（方針は [docs/cross_asset.md](docs/cross_asset.md)）。
+
+```bash
+./cfd context    # 外部データを data/context/ に取得（FRED・Yahoo・CFTC。無料・登録不要）
+./cfd study      # 13 の仮説と、全部の入力を使う予測を、偶然との比較つきで検証（5 分前後）
+```
 
 ## 実データでの使い方
 

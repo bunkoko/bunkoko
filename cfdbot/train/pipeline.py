@@ -275,22 +275,30 @@ def _warm_time(task: Task) -> pd.Timedelta:
 
 
 def validate_window(ds: Dataset, instruments, picks, bt_cfg: BacktestConfig,
-                    start: pd.Timestamp, end: pd.Timestamp) -> dict[str, Any]:
-    """検証期間を、実際の資金・全ルール（細かい足での約定の再現を含む）でバックテストする。"""
+                    start: pd.Timestamp, end: pd.Timestamp, gates: dict[str, pd.DataFrame] | None = None,
+                    use_fine: bool = True) -> dict[str, Any]:
+    """検証期間を、実際の資金・全ルール（細かい足での約定の再現を含む）でバックテストする。
+
+    gates: 銘柄キー → エントリーの絞り込み（列 long / short。外部データの研究用）
+    """
     tasks = [pick_task(p) for p in picks]
     sleeves = [make_sleeve(t, ds, risk_weight=p.multiplier) for t, p in zip(tasks, picks)]
+    for s in sleeves:
+        if gates and s.symbol in gates:
+            s.entry_gate = gates[s.symbol]
     data, fine = {}, {}
     for t in tasks:
         frame = ds.signal_frame(t.symbol, t.timeframe)
         warm = max(_warm_time(x) for x in tasks if x.symbol == t.symbol) * 1.5 + pd.Timedelta(days=7)
         data[t.symbol] = frame[(frame.index >= start - warm) & (frame.index < end)]
-        f = ds.fine_frame(t.symbol, t.timeframe)
+        f = ds.fine_frame(t.symbol, t.timeframe) if use_fine else None
         if f is not None:
             fine[t.symbol] = f[(f.index >= start - warm) & (f.index < end)]
     # 評価のため最大DDでの停止は外す（停止に触れたかはレポートで確認）
     cfg = replace(bt_cfg, trade_start=start, trade_end=end, risk=replace(bt_cfg.risk, max_drawdown_halt=1.0))
     res = run_backtest(data, instruments, sleeves, cfg, fine_data=fine or None)
-    return {"equity": res.equity, "trades": res.trades, "leverage": res.leverage, "rejections": res.rejections}
+    return {"equity": res.equity, "trades": res.trades, "leverage": res.leverage, "rejections": res.rejections,
+            "signals": res.signals}
 
 
 # --------------------------------------------------------------------------- 本体

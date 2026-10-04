@@ -136,10 +136,12 @@ def cmd_fetch_data(args) -> None:
         raise SystemExit(f"{term.common / args.folder} に CSV が無い。MT5 で CfdExportBars を実行したか確認する")
     for p in got:
         print(f"  {p}（{p.stat().st_size / 1e6:.1f} MB）")
-    meta = fetch(term.common / args.folder, "*.txt", dest)   # 銘柄仕様・口座情報
+    meta = fetch(term.common / args.folder, "*.txt", dest)   # 銘柄仕様・口座情報・全銘柄の一覧
     for p in meta:
         print(f"  {p}")
-    print(f"{len(got)} ファイルを {dest}/ に取り込んだ")
+    ctx_src = term.common / args.folder / "context"
+    ctx = fetch(ctx_src, "*.csv", dest / "context" / "mt5") if ctx_src.is_dir() else []
+    print(f"{len(got)} ファイルを {dest}/ に取り込んだ" + (f"（関連銘柄の日足 {len(ctx)} 個は {dest}/context/mt5/）" if ctx else ""))
 
 
 def cmd_fetch_logs(args) -> None:

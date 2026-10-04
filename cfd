@@ -42,6 +42,8 @@ case "$cmd" in
           [ $# -ge 1 ] || { echo "使い方: ./cfd compare output/live/turtle55_d1/final.json [--clean / --clean-wrong]"; exit 1; }
           exec "$PY" scripts/compare_all.py --final "$@" ;;
   logs)   need_venv; exec "$PY" scripts/mt5_files.py fetch-logs "$@" ;;
+  context) need_venv; exec "$PY" scripts/fetch_context.py "$@" ;;
+  study)  need_venv; exec "$PY" scripts/feature_study.py "$@" ;;
   replay) need_venv; need_run; exec "$PY" scripts/replay.py --final "$RUN/final.json" "$@" ;;
   py)     need_venv; exec "$PY" "$@" ;;
   help|*) cat <<'HELP'
@@ -61,6 +63,8 @@ case "$cmd" in
   logs     テスターのシグナル記録を取り込む
   compare  テスターの記録を取り込み、全銘柄で EA と Python を突き合わせる（例: ./cfd compare output/live/turtle55_d1/final.json）
   replay   最新の学習結果で期間を再現（--start 2026-11-01 など）
+  context  外部データ（金利・ドル・株価・他の商品・投機筋の建玉）を取得し、MT5 にある関連銘柄も表示
+  study    外部データで絞り込むと成績が良くなるかを検証（./cfd context の後。5 分前後）
   py       仮想環境の Python で実行（例: ./cfd py scripts/compare_signals.py ...）
 HELP
           ;;

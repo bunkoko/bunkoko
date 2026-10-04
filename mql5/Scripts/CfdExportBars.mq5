@@ -6,13 +6,15 @@
 //| （<DATE> <TIME> <OPEN> ... <SPREAD>、時刻はサーバー時刻）を          |
 //| 共通フォルダ Common\Files\<out_folder>\<銘柄>_<時間足>.csv に作る。  |
 //| 銘柄仕様（symbol_specs.txt）と口座情報（account_info.txt）も書く。   |
+//| サーバーの全銘柄の一覧（symbols_all.txt）と、関連銘柄の日足         |
+//| （context\<銘柄>_D1.csv。外部データの研究用）も書く。               |
 //| Mac では python scripts/mt5_files.py fetch-data で data/ に取り込む。|
 //|                                                                  |
 //| 使い方: ナビゲータ → スクリプト → CfdExportBars を任意のチャートへ    |
 //| ドラッグ → 入力を確認して OK。終わると「エキスパート」タブに結果。     |
 //+------------------------------------------------------------------+
 #property copyright "cfdbot"
-#property version   "0.13"
+#property version   "0.14"
 #property description "Export bars of several symbols/timeframes to Common\\Files for cfdbot"
 #property script_show_inputs
 
@@ -22,6 +24,10 @@ input string   fx_symbol  = "USDJPY";                             // 円換算�
 input datetime from_date  = D'2020.12.01 00:00';                  // この日から
 input string   out_folder = "cfdbot_data";                        // Common\Files の下のフォルダ
 input int      wait_sec   = 300;                                  // 履歴のダウンロードを待つ最大秒数（1 組あたり）
+input bool     catalog    = true;                                 // サーバーの全銘柄の一覧を書く（symbols_all.txt）
+input string   context    = "auto";                               // 日足だけ書き出す関連銘柄（auto=上の銘柄以外の全部 / 空=なし / カンマ区切りで指定）
+input int      context_max = 80;                                  // auto で全銘柄がこれより多いときは書き出さない（一覧から選んで指定する）
+input int      context_wait = 60;                                 // 関連銘柄 1 つあたり履歴を待つ最大秒数
 
 ENUM_TIMEFRAMES ParseTimeframe(const string s)
   {
@@ -58,10 +64,10 @@ datetime ServerFirstDate(const string sym)
 
 // target（指定日とサーバーの最初の日の遅い方）まで遡れるまで、履歴のダウンロードを待ってコピーする。
 // 最大バー数で頭打ちになったとき・30 秒増えないとき・wait_sec 秒たったときはそこまでで返す
-int CopyAll(const string sym, const ENUM_TIMEFRAMES tf, const datetime target, MqlRates &rates[])
+int CopyAll(const string sym, const ENUM_TIMEFRAMES tf, const datetime target, MqlRates &rates[], const int wait)
   {
    int last = -1, same = 0;
-   for(int i = 0; i < wait_sec && !IsStopped(); i++)
+   for(int i = 0; i < wait && !IsStopped(); i++)
      {
       ResetLastError();
       int n = CopyRates(sym, tf, from_date, TimeCurrent(), rates);
@@ -78,7 +84,7 @@ int CopyAll(const string sym, const ENUM_TIMEFRAMES tf, const datetime target, M
    return(last);
   }
 
-bool ExportOne(const string sym, const string tf_name, bool &warned)
+bool ExportOne(const string sym, const string tf_name, bool &warned, const string folder = "", const int wait = 0)
   {
    ENUM_TIMEFRAMES tf = ParseTimeframe(tf_name);
    if(tf == PERIOD_CURRENT)
@@ -90,13 +96,14 @@ bool ExportOne(const string sym, const string tf_name, bool &warned)
    datetime target = server_first > from_date ? server_first : from_date;
    MqlRates rates[];
    ArraySetAsSeries(rates, false);
-   int n = CopyAll(sym, tf, target, rates);
+   int n = CopyAll(sym, tf, target, rates, wait > 0 ? wait : wait_sec);
    if(n <= 0)
      {
       PrintFormat("%s %s: バーを取得できない（error %d）", sym, tf_name, GetLastError());
       return(false);
      }
-   string path = out_folder + "\\" + sym + "_" + tf_name + ".csv";
+   string dir = folder == "" ? out_folder : out_folder + "\\" + folder;
+   string path = dir + "\\" + sym + "_" + tf_name + ".csv";
    int h = FileOpen(path, FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_COMMON);
    if(h == INVALID_HANDLE)
      {
@@ -246,6 +253,94 @@ string ResolveSymbol(const string want)
    return(hit);
   }
 
+// サーバーにある全銘柄の一覧（気配値表示に出していないものも）。どの関連銘柄を EA で使えるかを調べる
+bool WriteCatalog()
+  {
+   string path = out_folder + "\\symbols_all.txt";
+   int h = FileOpen(path, FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_COMMON);
+   if(h == INVALID_HANDLE)
+      return(false);
+   FileWriteString(h, "symbol\tpath\tdescription\ttrade_mode\tcalc_mode\tcurrency_base\tcurrency_profit\tdigits\tcontract_size\r\n");
+   int total = SymbolsTotal(false);
+   for(int i = 0; i < total; i++)
+     {
+      string sym = SymbolName(i, false);
+      string row = sym;
+      row += "\t" + SymbolInfoString(sym, SYMBOL_PATH);
+      row += "\t" + SymbolInfoString(sym, SYMBOL_DESCRIPTION);
+      row += "\t" + EnumToString((ENUM_SYMBOL_TRADE_MODE)SymbolInfoInteger(sym, SYMBOL_TRADE_MODE));
+      row += "\t" + EnumToString((ENUM_SYMBOL_CALC_MODE)SymbolInfoInteger(sym, SYMBOL_TRADE_CALC_MODE));
+      row += "\t" + SymbolInfoString(sym, SYMBOL_CURRENCY_BASE);
+      row += "\t" + SymbolInfoString(sym, SYMBOL_CURRENCY_PROFIT);
+      row += "\t" + IntegerToString(SymbolInfoInteger(sym, SYMBOL_DIGITS));
+      row += "\t" + Dbl(SymbolInfoDouble(sym, SYMBOL_TRADE_CONTRACT_SIZE));
+      FileWriteString(h, row + "\r\n");
+     }
+   FileClose(h);
+   PrintFormat("サーバーの全銘柄 %d → Common\\Files\\%s", total, path);
+   return(true);
+  }
+
+bool InList(const string name, string &list[])
+  {
+   for(int i = 0; i < ArraySize(list); i++)
+      if(list[i] == name)
+         return(true);
+   return(false);
+  }
+
+// 関連銘柄（為替・株価指数・他の商品など、サーバーにあるもの）の日足を context フォルダに書く
+void ExportContext(string &done[], int &ok, int &total)
+  {
+   string want = Trimmed(context);
+   if(want == "")
+      return;
+   string names[];
+   if(want == "auto")
+     {
+      int n = SymbolsTotal(false);
+      if(n > context_max + ArraySize(done))
+        {
+         PrintFormat("関連銘柄: サーバーに %d 銘柄あるので自動では書き出さない。symbols_all.txt から選んで context に書く", n);
+         return;
+        }
+      for(int i = 0; i < n; i++)
+        {
+         string sym = SymbolName(i, false);
+         if(InList(sym, done))
+            continue;
+         ArrayResize(names, ArraySize(names) + 1);
+         names[ArraySize(names) - 1] = sym;
+        }
+     }
+   else
+     {
+      string parts[];
+      StringSplit(want, ',', parts);
+      for(int i = 0; i < ArraySize(parts); i++)
+        {
+         string sym = ResolveSymbol(Trimmed(parts[i]));
+         if(sym == "" || InList(sym, done))
+            continue;
+         ArrayResize(names, ArraySize(names) + 1);
+         names[ArraySize(names) - 1] = sym;
+        }
+     }
+   if(ArraySize(names) == 0)
+      return;
+   FolderCreate(out_folder + "\\context", FILE_COMMON);
+   PrintFormat("関連銘柄 %d 個の日足を書き出す（1 つ最大 %d 秒）", ArraySize(names), context_wait);
+   for(int i = 0; i < ArraySize(names) && !IsStopped(); i++)
+     {
+      if(!SymbolSelect(names[i], true))
+         continue;
+      total++;
+      bool w = false;
+      if(ExportOne(names[i], "D1", w, "context", context_wait))
+         ok++;
+     }
+  }
+
 void OnStart()
   {
    string syms[], tfs[];
@@ -298,8 +393,13 @@ void OnStart()
      }
    WriteSpecs(found);
    WriteAccount();
-   string msg = StringFormat("CfdExportBars: %d / %d ファイルを書き出した（Common\\Files\\%s）%s", ok, total, out_folder,
-                             warn > 0 ? StringFormat("。⚠ %d 件は期間が足りない（エキスパートタブを見る）", warn) : "");
+   int ctx_ok = 0, ctx_total = 0;
+   if(catalog)
+      WriteCatalog();
+   ExportContext(found, ctx_ok, ctx_total);
+   string msg = StringFormat("CfdExportBars: %d / %d ファイルを書き出した（Common\\Files\\%s）%s%s", ok, total, out_folder,
+                             warn > 0 ? StringFormat("。⚠ %d 件は期間が足りない（エキスパートタブを見る）", warn) : "",
+                             ctx_total > 0 ? StringFormat("。関連銘柄の日足 %d / %d", ctx_ok, ctx_total) : "");
    Print(msg);
    Alert(msg);
   }
