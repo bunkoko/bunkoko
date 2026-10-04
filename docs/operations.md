@@ -95,7 +95,10 @@ cd ~ && git clone https://github.com/bunkoko/bunkoko.git && cd bunkoko && git ch
 1. 名前・メールアドレスなどを入力 →「確認画面」→「申込」（本人確認書類は不要）
 2. メールで届く **ログイン ID・パスワード・サーバー名** を控える（サーバーは本番・デモとも `PhillipSecuritiesJP-PROD` と案内されている）
 3. 同じページの「MacOS 版ダウンロード」から zip を落とす → ダブルクリックで解凍 →「MetaTrader 5.pkg」をダブルクリック →
-   画面の指示どおりインストール（初回の起動は時間がかかることがある）
+   画面の指示どおりインストール（初回の起動は時間がかかることがある）。
+   M シリーズの Mac で「Rosetta をインストール」の案内（Apple のサポートページ 102527）が出たら「インストール」を押す
+   （Mac 版 MT5 は Windows 版を Intel 用の互換レイヤーで動かしているため Rosetta が要る。ターミナルなら
+   `softwareupdate --install-rosetta --agree-to-license`）
 4. **有効期限は 1 か月**。手順 5（データの書き出し）は期限内に済ませる
 
 **Mac 版 MT5 の操作の注意**: メニュー（ファイル・表示・ツール…）は Mac の画面上端ではなく **MT5 のウィンドウの中** にある。
@@ -387,6 +390,11 @@ Mac 版 MT5 のフォルダは `~/Library/Application Support/…/drive_c/…` �
 | `install` で「指標カレンダーの最後の予定が…」 | `config/events.csv` に翌月以降の FOMC・CPI・雇用統計を追加して、もう一度 `install` |
 
 ## 別の選択肢（Windows が必要になったら）
+
+> **macOS 28 に注意**: Apple は macOS 28（2027 年の予定）で Rosetta をほぼ廃止すると発表している。今の Mac 版 MT5 は
+> Rosetta で動いているので、MetaQuotes が対応版を出すまでは **macOS 28 に上げない**（手順 10 で自動アップデートは止めてある）。
+> 本番は MQL5 VPS で動くので影響しないが、データの書き出し・コンパイル・VPS への移行に Mac 版 MT5 を使っている。
+> 対応版が出なければ、下の Windows の VPS（Mac の Windows App から操作）か、Parallels などの Windows 11（ARM 版）に移す
 
 MQL5 VPS が使えない・合わない場合の代わり。どちらも、中で動かすのは Windows 版 MT5 で、手順 4・9・11 はほぼ同じ。
 
