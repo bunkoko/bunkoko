@@ -46,53 +46,71 @@ def _week_starts(df: pd.DataFrame) -> pd.DatetimeIndex:
     return df.index[gaps.to_numpy()].tz_convert(ET)
 
 
+# 取引所ごとの時間（米東部時間）: (日曜の再開の時, 毎日の休止の始まりの時, 休止の長さ)
+# CME（金・銀・WTI）は日曜 18 時再開・毎日 17〜18 時休止。ICE ブレントは日曜 20 時再開・毎日 18〜20 時休止
+SESSIONS = {"BRENT": (20, 18, 2)}
+DEFAULT_SESSION = (18, 17, 1)
+WEEKDAYS_JA = ["月", "火", "水", "木", "金", "土", "日"]
+
+
+def _wrap(hours: int, period: int) -> int:
+    """時間差を -period/2 〜 period/2 に収める（24 時間・1 週間の周期）。"""
+    return (hours + period // 2) % period - period // 2
+
+
 def _fix_hint(shift: int, server_tz) -> str:
     """表示が shift 時間早い（正）/遅い（負）ときの直し方。"""
     way = f"{abs(shift)} 時間{'早く' if shift > 0 else '遅く'}読まれている"
     if isinstance(server_tz, (int, float)):
         return (f"{way}。[data] server_tz を {server_tz - shift:g} にして再点検する"
                 "（夏と冬で 1 時間ずれるなら \"ny_close\" が正しい）")
-    return f"{way}。[data] server_tz を数値（UTC からの時差。例: 2 や 3）にして再点検する"
+    if server_tz == "ny_close":  # 期間の大半を占める夏時間では UTC+3 と同じ
+        return (f"{way}。[data] server_tz を {3 - shift:g} にして再点検する"
+                "（日本の業者は 9 = 日本時間のことが多い）")
+    return f"{way}。[data] server_tz を数値（UTC からの時差。例: 2 や 3、日本時間なら 9）にして再点検する"
 
 
 def check_time(sym: str, tf: str, df: pd.DataFrame, res: CheckResult, server_tz="ny_close") -> None:
+    open_h, break_h, _ = SESSIONS.get(sym, DEFAULT_SESSION)
     starts = _week_starts(df)
     if len(starts) >= 4:
-        # 再開は日曜 18:00 ET（足の時刻の付け方で 17 時台になる業者もある）
-        ok = ((starts.weekday == 6) & (starts.hour >= 17) & (starts.hour <= 18)).mean()
-        common = pd.Series([f"{['月','火','水','木','金','土','日'][d]} {h}時" for d, h in
-                            zip(starts.weekday, starts.hour)]).value_counts().index[0]
+        # 再開は日曜 open_h 時 ET（足の時刻の付け方で 1 時間前になる業者もある）
+        ok = ((starts.weekday == 6) & (starts.hour >= open_h - 1) & (starts.hour <= open_h)).mean()
+        weekly = pd.Series(starts.weekday * 24 + starts.hour)
+        mode = int(weekly.mode().iloc[0])
+        common = f"{WEEKDAYS_JA[mode // 24]} {mode % 24}時"
         if ok >= 0.8:
-            res.info(f"  時刻: 週の始まりは米東部時間の日曜夕方（最多 {common}）→ OK")
+            res.info(f"  時刻: 週の始まりは米東部時間の日曜 {open_h} 時前後（最多 {common}）→ OK")
         else:
-            mode = pd.Series(starts.hour[starts.weekday == 6]).mode()
-            hint = _fix_hint(18 - int(mode.iloc[0]), server_tz) if len(mode) else "[data] server_tz を見直す"
-            res.warn(f"{sym} {tf}: 週の始まりが米東部時間の日曜 18 時前後になっていない（最多 {common}）。{hint}")
+            hint = _fix_hint(_wrap(6 * 24 + open_h - mode, 168), server_tz)
+            res.warn(f"{sym} {tf}: 週の始まりが米東部時間の日曜 {open_h} 時前後になっていない（最多 {common}）。{hint}")
     if tf_minutes(tf) <= 60:
         et = df.index.tz_convert(ET)
         weekday = (et.weekday <= 3)  # 月〜木
         counts = pd.Series(et.hour[weekday]).value_counts().reindex(range(24), fill_value=0)
         quiet = int(counts.idxmin())
         if counts.min() < counts.median() * 0.5:
-            if quiet == 17:
-                res.info("  時刻: 毎日の休止は米東部時間 17 時台 → OK")
+            if quiet == break_h:
+                res.info(f"  時刻: 毎日の休止は米東部時間 {break_h} 時台 → OK")
             else:
-                res.warn(f"{sym} {tf}: 毎日の休止が米東部時間 {quiet} 時台にある（17 時台のはず）。"
-                         + _fix_hint(17 - quiet, server_tz))
+                res.warn(f"{sym} {tf}: 毎日の休止が米東部時間 {quiet} 時台にある（{break_h} 時台のはず）。"
+                         + _fix_hint(_wrap(break_h - quiet, 24), server_tz))
 
 
 def check_gaps(sym: str, tf: str, df: pd.DataFrame, res: CheckResult) -> None:
+    _, break_h, length = SESSIONS.get(sym, DEFAULT_SESSION)
     step = pd.Timedelta(TIMEFRAMES[tf])
     diff = df.index.to_series().diff()
     et = df.index.tz_convert(ET)
     big = (diff > max(step * 3, pd.Timedelta(hours=2))) & (diff < pd.Timedelta(hours=24))
-    # 毎日の休止（17〜18 時台）明けは除く
-    big &= ~pd.Series((et.hour >= 17) & (et.hour <= 19), index=df.index)
+    # 毎日の休止明けの足は除く（夏冬の切り替えのずれも見込んで 2 時間広めに）
+    after_break = (et.hour >= break_h) & (et.hour <= break_h + length + 2)
+    big &= ~pd.Series(after_break, index=df.index)
     n = int(big.sum())
     if n > 10:
         worst = diff[big].sort_values(ascending=False).head(3)
         ex = ", ".join(f"{t.tz_convert(ET):%Y-%m-%d %H:%M}（{d}）" for t, d in worst.items())
-        res.warn(f"{sym} {tf}: 平日に 2 時間以上の欠けが {n} か所（例: {ex}）。祝日なら問題ない")
+        res.warn(f"{sym} {tf}: 平日に 2 時間以上の欠けが {n} か所（例: {ex}）。祝日・早仕舞いなら問題ない")
 
 
 def check_spread(sym: str, tf: str, df: pd.DataFrame, inst: Instrument, res: CheckResult,

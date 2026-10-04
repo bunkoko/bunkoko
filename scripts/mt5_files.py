@@ -83,7 +83,7 @@ def cmd_install(args) -> None:
         if not ea_dir.is_dir():
             raise SystemExit(f"{ea_dir} が無い（--run には学習結果のフォルダ output/train/<日時> を指定）")
         presets = build_presets(ea_dir, events, now - pd.Timedelta(days=1), now + pd.Timedelta(days=args.event_days),
-                                args.magic_base, args.risk_scale, peak_since)
+                                args.magic_base, args.risk_scale, peak_since, cfg.data.server_tz)
         if not presets:
             raise SystemExit(f"{ea_dir} に cfdbot_*.set が無い（学習で全銘柄見送り？）")
     term = _terminal(args)

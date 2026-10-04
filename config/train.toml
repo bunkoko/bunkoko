@@ -3,12 +3,14 @@
 
 [data]
 dir = "data"                 # MT5 から書き出した CSV を置くフォルダ（同じ銘柄の時間足違いも全部置いてよい）
-# 方針: 売買の判断は粒度の大きい足（H1・H4。銘柄ごとに学習で選ぶ）、約定の再現は M5
-signal_timeframes = ["H1", "H4"]  # 売買の足。H4 のファイルが無くても H1 や M5 から自動で作る
+# 方針: 売買の判断は粒度の大きい足、約定の再現は M5。
+# フィリップの実測コストでは H1 は往復コストが損切り幅の 10〜19%（銀・WTI・ブレント）で不向きなので H4 にする
+# （2026-10 の check_data。H4 は 2.5〜9.5%）。H1 も比べたいときは ["H1", "H4"]
+signal_timeframes = ["H4"]   # 売買の足。H4 のファイルが無くても H1 や M5 から自動で作る
 fill_timeframe = "M5"        # 約定の再現に使う細かい足（M5 が無い銘柄は売買の足の高値・安値で推定）
                              # "auto" = 一番細かいファイル / "none" = 使わない
 grid_timeframe = "H1"        # 下の grid の本数がどの時間足の本数か（他の時間足では同じ時間幅に自動換算）
-server_tz = "ny_close"       # MT5 サーバー時刻の方式（docs/roadmap.md 1-3 で確認）
+server_tz = 9                # MT5 サーバー時刻。フィリップは日本時間（UTC+9、夏時間なし）。"ny_close" = 米東部+7時間の業者
 broker = "phillip"
 instruments = ""             # 実測スプレッド等の銘柄仕様 JSON（例: "config/instruments_phillip.json"）
 events = "config/events.csv"  # 指標イベント CSV（FOMC・CPI・雇用統計・祝日でずれた EIA。毎月 4 か月先まで追加）

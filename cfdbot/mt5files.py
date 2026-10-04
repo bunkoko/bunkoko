@@ -161,6 +161,15 @@ def inline_events(events: list[Event], symbol: str, tags: list[str], start: pd.T
     return out, used, cut
 
 
+def ea_server_tz_inputs(server_tz: str | float) -> dict[str, str]:
+    """[data] server_tz を EA の入力に変換する（EA の ENUM_SERVER_TZ: 0 = NY クローズ方式、1 = 固定の時差）。"""
+    if isinstance(server_tz, (int, float)):
+        return {"ea_server_tz": "1", "ea_server_offset": f"{float(server_tz):g}"}
+    if server_tz == "ny_close":
+        return {"ea_server_tz": "0"}
+    raise ValueError(f"server_tz = {server_tz!r} は EA に渡せない（\"ny_close\" か数値。日本時間なら 9）")
+
+
 def _mt5_date(s: str) -> str:
     return pd.Timestamp(s).strftime("%Y.%m.%d") if s else ""
 
@@ -180,7 +189,9 @@ _SET_NAME = re.compile(r"^cfdbot_([A-Za-z0-9]+)_[a-z]+_([A-Z]+\d+)$")
 
 
 def build_presets(ea_dir: str | Path, events: list[Event], start: pd.Timestamp, end: pd.Timestamp,
-                  magic_base: int = 2609000, risk_scale: float = 1.0, peak_since: str = "") -> list[Preset]:
+                  magic_base: int = 2609000, risk_scale: float = 1.0, peak_since: str = "",
+                  server_tz: str | float = "ny_close") -> list[Preset]:
+    tz_inputs = ea_server_tz_inputs(server_tz)
     out = []
     for path in sorted(Path(ea_dir).glob("cfdbot_*.set")):
         m = _SET_NAME.match(path.stem)
@@ -196,6 +207,7 @@ def build_presets(ea_dir: str | Path, events: list[Event], start: pd.Timestamp, 
             "ea_param_file": "",          # VPS ではファイルを読めないので input だけで動かす
             "ea_peak_since": _mt5_date(peak_since),  # 空 = 口座の最初から。DD 停止から再開した日
             "ea_log_signals": "false",
+            **tz_inputs,
             **ev,
         })
         out.append(Preset(path.stem, symbol, tf, params, n, cut))

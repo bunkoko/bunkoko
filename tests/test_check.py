@@ -92,3 +92,34 @@ def test_compare_signals_with_final(tmp_path):
                        capture_output=True, text=True, timeout=120)
     assert p.returncode == 0, p.stderr
     assert "結果: 一致" in p.stdout
+
+
+def _write_jst(df, path):
+    """フィリップのように日本時間（UTC+9）のサーバー時刻で書き出す。"""
+    srv = df.index.tz_convert("Asia/Tokyo").tz_localize(None)
+    pd.DataFrame({"<DATE>": srv.strftime("%Y.%m.%d"), "<TIME>": srv.strftime("%H:%M:%S"),
+                  "<OPEN>": df["open"].values, "<HIGH>": df["high"].values, "<LOW>": df["low"].values,
+                  "<CLOSE>": df["close"].values, "<TICKVOL>": 1, "<VOL>": 0,
+                  "<SPREAD>": df["spread"].astype(int).values}).to_csv(path, sep="\t", index=False)
+
+
+def test_jst_server_and_ice_brent_hours(tmp_path):
+    """CME（17 時休止・日曜 18 時再開）と ICE ブレント（18〜20 時休止・日曜 20 時再開）を日本時間で書き出したデータ。"""
+    cme = random_walk_m5(1, start="2024-01-01", end="2024-12-31")
+    cme = cme[cme.index.tz_convert("America/New_York").hour != 17]
+    cme["spread"] = 30.0
+    _write_jst(cme, tmp_path / "XAGUSD.ps01_M5.csv")
+    ice = random_walk_m5(2, start="2024-01-01", end="2024-12-31")
+    et = ice.index.tz_convert("America/New_York")
+    ice = ice[~et.hour.isin([18, 19]) & ~((et.weekday == 6) & (et.hour < 20))]
+    _write_jst(ice, tmp_path / "XBRUSD.ps01_M5.csv")
+
+    wrong = run_check(_cfg(tmp_path, server_tz="ny_close"))
+    msgs = " ".join(wrong.warnings)
+    assert "月 0時" in msgs and "6 時間遅く" in msgs and "server_tz を 9" in msgs
+
+    ok = run_check(_cfg(tmp_path, server_tz=9.0))
+    time_warns = [w for w in ok.warnings if "時刻" in w or "休止" in w or "週の始まり" in w or "欠け" in w]
+    assert not time_warns, time_warns
+    assert any("日曜 20 時前後" in line and "OK" in line for line in ok.lines)        # ブレント
+    assert any("休止は米東部時間 18 時台" in line for line in ok.lines)

@@ -92,7 +92,9 @@ def test_build_presets_and_install(tmp_path):
     s = by["SILVER"].params
     assert s["ea_magic"] == "2609003" and s["ea_risk_scale"] == "0.5" and s["ea_param_file"] == ""
     assert s["ea_timeframe_minutes"] == "60" and by["SILVER"].events == 3 and by["WTI"].events == 2
-    assert s["ea_peak_since"] == ""
+    assert s["ea_peak_since"] == "" and s["ea_server_tz"] == "0"
+    jst = build_presets(ea, [], pd.Timestamp("2026-10-01", tz=UTC), pd.Timestamp("2027-01-31", tz=UTC), server_tz=9.0)
+    assert jst[0].params["ea_server_tz"] == "1" and jst[0].params["ea_server_offset"] == "9"
     again = build_presets(ea, [], pd.Timestamp("2026-10-01", tz=UTC), pd.Timestamp("2027-01-31", tz=UTC),
                           peak_since="2027-03-06")
     assert again[0].params["ea_peak_since"] == "2027.03.06"
