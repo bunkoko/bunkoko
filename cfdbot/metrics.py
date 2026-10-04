@@ -14,10 +14,10 @@ def max_drawdown(equity: pd.Series) -> float:
 
 
 def daily_equity(equity: pd.Series) -> pd.Series:
-    """17:00 ET 区切りの取引日ごとの終値ベース資産。"""
-    et = equity.index.tz_convert("America/New_York")
-    key = (et + pd.Timedelta(hours=7)).normalize().tz_localize(None)
-    return equity.groupby(key).last()
+    """17:00 ET 区切りの取引日ごとの終値ベース資産（土日の時刻は金曜に寄せる）。"""
+    from .events import trading_day_keys
+
+    return equity.groupby(trading_day_keys(equity.index)).last()
 
 
 def trade_stats(trades: pd.DataFrame) -> dict[str, float]:

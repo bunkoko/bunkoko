@@ -23,7 +23,7 @@ import pandas as pd
 from . import indicators as ind
 from .events import (
     ET,
-    TRADING_DAY_ROLL_ET,
+    trading_day_keys,
     Event,
     EventIndex,
     friday_cutoff_passed,
@@ -419,7 +419,7 @@ class Backtester:
         uniq_t = ev_t[np.r_[0, bounds]] if len(ev_t) else ev_t
         fx_at = self._fx_series(uniq_t)
         close_et = pd.DatetimeIndex(pd.to_datetime(uniq_t, utc=True)).tz_convert(ET)
-        day_keys = (close_et + pd.Timedelta(hours=24 - TRADING_DAY_ROLL_ET)).normalize().asi8
+        day_keys = trading_day_keys(close_et).asi8
 
         fx = float(fx_at[0]) if len(fx_at) else 1.0
         for g, members in enumerate(groups):

@@ -20,7 +20,7 @@ import pandas as pd
 
 from ..backtest import infer_timeframe
 from ..data import load_mt5_csv, resample_ohlc
-from ..events import ET, TRADING_DAY_ROLL_ET
+from ..events import ET, trading_day_keys
 from .config import TIMEFRAMES, DataConfig, tf_minutes, tf_name
 
 _TF_TOKEN = re.compile(r"^(M\d+|H\d+|D1|W1|MN1)$")
@@ -109,7 +109,7 @@ class Dataset:
         for s, t in self.signal_pairs():
             df = self.signal_frame(s, t)
             close_et = (df.index + pd.Timedelta(TIMEFRAMES[t])).tz_convert(ET)
-            keys.append((close_et + pd.Timedelta(hours=24 - TRADING_DAY_ROLL_ET)).normalize().tz_localize(None).values)
+            keys.append(trading_day_keys(close_et).values)
         return pd.DatetimeIndex(np.unique(np.concatenate(keys)))
 
 

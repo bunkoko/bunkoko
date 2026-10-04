@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 
 from ..backtest import BacktestConfig, CostModel, FilterConfig, run_backtest
-from ..events import ET, load_events_csv
+from ..events import ET, load_events_csv, trading_day_keys
 from ..exits import ExitConfig
 from ..export import EA_STRATEGIES
 from ..instruments import get_instruments, load_instruments
@@ -321,7 +321,9 @@ def run_training(cfg: TrainConfig, log: Log = print, config_path: str | None = N
 
     settings_hash = hashlib.sha256(json.dumps(settings.to_dict(), sort_keys=True).encode()).hexdigest()
     out_root = Path(cfg.output_dir)
-    store = ResultStore(out_root / "cache" / f"{ds.digest[:16]}-{settings_hash[:8]}.sqlite")
+    # 日次リターンはカレンダー（取引日の並び）に合わせて保存するので、カレンダーが変われば別のキャッシュにする
+    cal_hash = hashlib.sha256(ds.calendar().values.tobytes()).hexdigest()
+    store = ResultStore(out_root / "cache" / f"{ds.digest[:16]}-{settings_hash[:8]}-{cal_hash[:8]}.sqlite")
     meta = {
         "version": 1,
         "server_tz": cfg.data.server_tz,
@@ -343,7 +345,7 @@ def run_training(cfg: TrainConfig, log: Log = print, config_path: str | None = N
         warm = max(_warm_time(t) for t in tasks
                    if t.symbol == c.symbol and t.strategy == c.strategy and t.timeframe == c.timeframe)
         first = idx[min(int(np.ceil(warm / pd.Timedelta(TIMEFRAMES[c.timeframe]))), len(idx) - 1)]
-        day = (first.tz_convert(ET) + pd.Timedelta(hours=7)).normalize().tz_localize(None)
+        day = trading_day_keys(pd.DatetimeIndex([first]))[0]
         c.ready = int(calendar.searchsorted(day))
     start_day = calendar[min((c.ready for c in cands), default=0)]
     wf, pc, acc = cfg.walkforward, cfg.portfolio, cfg.account

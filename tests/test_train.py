@@ -205,3 +205,41 @@ def test_candidates_not_ready_are_skipped():
     late, _, _ = build_portfolio([h4, d1], 300, 550, wf, pc, 0.25, 2.0)
     assert {p.symbol for p in early} == {"GOLD"}
     assert {p.symbol for p in late} == {"GOLD", "WTI"}
+
+
+def test_jst_server_h4_then_d1_reuses_cache_safely(tmp_path):
+    """フィリップ（日本時間）のデータで H4 だけ学習した後、H4+D1 で学習し直しても落ちない（実際に起きた不具合）。
+
+    日本時間のサーバーでは金曜の米国午後の分が土曜の足になる。取引日は金曜に寄せ、カレンダーに土日を入れない。
+    """
+    from cfdbot.train.config import load_train_config
+    from cfdbot.train.dataset import load_dataset
+    from cfdbot.train.pipeline import run_training
+
+    d = tmp_path / "data"
+    d.mkdir()
+    for name, kind, seed in (("XTIUSD.ps01", "oil", 1), ("XAUUSD.ps01", "gold", 3)):
+        df = synthetic_ohlc(kind, start="2022-01-02", end="2024-06-30", hours=1, seed=seed)
+        srv = df.index.tz_convert("Asia/Tokyo").tz_localize(None)        # 日本時間で書き出す
+        pd.DataFrame({"<DATE>": srv.strftime("%Y.%m.%d"), "<TIME>": srv.strftime("%H:%M:%S"),
+                      "<OPEN>": df["open"], "<HIGH>": df["high"], "<LOW>": df["low"], "<CLOSE>": df["close"],
+                      "<TICKVOL>": 1, "<VOL>": 0, "<SPREAD>": df["spread"].astype(int)}
+                     ).to_csv(d / f"{name}_H1.csv", sep="\t", index=False)
+    text = tiny_config(tmp_path, d).read_text(encoding="utf-8")
+    text = text.replace(f'dir = "{d}"', f'dir = "{d}"\nserver_tz = 9\nsignal_timeframes = ["H4"]')
+    text = text.replace('symbols = ["WTI", "SILVER"]', 'symbols = ["WTI", "GOLD"]')
+    text += '[strategies.donchian.grid_D1]\nentry_period = [20, 40]\nexit_period = [10]\n'
+    cfg_path = tmp_path / "train.toml"
+    cfg_path.write_text(text, encoding="utf-8")
+
+    run_training(load_train_config(cfg_path), log=lambda m: None)
+    cfg_path.write_text(text.replace('signal_timeframes = ["H4"]', 'signal_timeframes = ["H4", "D1"]'),
+                        encoding="utf-8")
+    cfg = load_train_config(cfg_path)
+    out = run_training(cfg, log=lambda m: None)
+    assert (out / "report.md").exists()
+
+    ds = load_dataset(cfg.data)
+    assert set(ds.calendar().weekday) <= {0, 1, 2, 3, 4}                # 土日が無い
+    d1 = ds.signal_frame("GOLD", "D1")
+    assert (d1.index.tz_convert("Asia/Tokyo").weekday == 5).any()       # 土曜の短い日足はある

@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 
 from ..backtest import BacktestConfig, CostModel, FilterConfig, Sleeve, run_backtest
-from ..events import Event
+from ..events import Event, trading_day_keys
 from ..exits import ExitConfig
 from ..instruments import Instrument
 from ..metrics import daily_equity
@@ -168,8 +168,7 @@ class Evaluator:
         daily = daily_equity(res.equity)
         ret = daily.pct_change().reindex(self.calendar).fillna(0.0).to_numpy()
         if len(res.trades):
-            et = res.trades["entry_time"].dt.tz_convert("America/New_York")
-            days = (et + pd.Timedelta(hours=7)).dt.normalize().dt.tz_localize(None)
+            days = trading_day_keys(pd.DatetimeIndex(res.trades["entry_time"]))
             entry_idx = np.searchsorted(self.calendar.values, days.values)
             r = res.trades["r_multiple"].to_numpy()
         else:

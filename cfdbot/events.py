@@ -100,10 +100,22 @@ def to_et(t: pd.Timestamp) -> pd.Timestamp:
     return pd.Timestamp(t).tz_convert(ET)
 
 
+def trading_day_keys(index) -> pd.DatetimeIndex:
+    """時刻の列 → 17:00 ET 区切りの取引日（日付、tz なし）。
+
+    土日に当たる時刻は金曜に寄せる。日本時間のサーバーでは金曜の米国午後の分が「土曜の日足・H4」になり、
+    その足の終了時刻（土曜）を取引日にすると、カレンダーに土曜が入ったり金曜の損益が別の日に分かれたりするため。
+    """
+    et = pd.DatetimeIndex(index).tz_convert(ET)
+    day = (et + pd.Timedelta(hours=24 - TRADING_DAY_ROLL_ET)).normalize().tz_localize(None)
+    wd = np.asarray(day.weekday)
+    back = np.where(wd == 5, 1, np.where(wd == 6, 2, 0))
+    return day - pd.to_timedelta(back, unit="D")
+
+
 def trading_day(t: pd.Timestamp) -> pd.Timestamp:
-    """17:00 ET 区切りの取引日（日付）。"""
-    et = to_et(t)
-    return (et + pd.Timedelta(hours=24 - TRADING_DAY_ROLL_ET)).normalize().tz_localize(None)
+    """17:00 ET 区切りの取引日（日付）。土日は金曜に寄せる。"""
+    return trading_day_keys(pd.DatetimeIndex([pd.Timestamp(t)]))[0]
 
 
 def friday_cutoff_passed(t: pd.Timestamp, cutoff_hour_et: float) -> bool:
