@@ -72,9 +72,13 @@
 
 ## 1. Mac の準備（ターミナル）
 
-**画面**: Launchpad →「その他」→「ターミナル」
+**画面**: ターミナル（⌘ + スペース で Spotlight を開き「ターミナル」と入力して Enter。
+または Finder → アプリケーション → ユーティリティ → ターミナル）
 
-1. Homebrew を入れる（https://brew.sh の 1 行のコマンドを貼り付けて実行）
+1. Homebrew を入れる: https://brew.sh を開き、「Install Homebrew」の 1 行をコピーしてターミナルに貼り付けて Enter。
+   Mac のログインパスワードを聞かれたら入力（画面には表示されない）。
+   **最後に出る「Next steps」の 2〜3 行（`echo … >> ~/.zprofile` と `eval …`）もそのまま貼り付けて実行**し、
+   `brew --version` でバージョンが出ることを確認
 2. Python と Git を入れる
    ```bash
    brew install python@3.12 git
@@ -84,23 +88,29 @@
    cd ~
    git clone https://github.com/bunkoko/bunkoko.git
    cd bunkoko
-   git checkout claude/gracious-gates-f8a38x      # main に取り込まれるまではこのブランチ
+   git checkout claude/gracious-gates-f8a38x      # master に取り込まれるまではこのブランチ
    python3.12 -m venv .venv
    source .venv/bin/activate                      # ターミナルを開き直したら毎回これを実行
    pip install -e ".[dev]"
    pytest -q                                      # 全部 passed になること
    python scripts/train.py --demo                 # 合成データで最後まで動くこと（数分〜10分）
    ```
-4. VS Code で `bunkoko` フォルダを開く（ファイル → フォルダーを開く）。以降の設定ファイルの編集はここで行う
+4. VS Code を入れて（https://code.visualstudio.com から、または `brew install --cask visual-studio-code`）、
+   `bunkoko` フォルダを開く（ファイル → フォルダーを開く → ホームの `bunkoko`）。以降の設定ファイルの編集はここで行う
 
 ## 2. デモ口座を申し込む（ブラウザ）
 
-**画面**: フィリップ・キャピタル証券の公式サイト → FX → 取引ツール・ダウンロード →「Phillip MT5 デモ口座のご案内」→ 申込フォーム
+**画面**: フィリップの公式サイト（phillip.co.jp）→ CFD の MT5 のページ（証券CFD・商品CFD のフィリップMT5）→
+デモ口座の申込フォーム
 
-1. 必要事項を入力して申し込む
-2. 表示される **口座 ID・パスワード・サーバー名** を控える（メールにも届く）
-3. 同じページから **Mac 版 MT5** をダウンロードしてインストール（初回の起動は時間がかかることがある）
+1. 名前・メールアドレスなどを入力 →「確認画面」→「申込」（本人確認書類は不要）
+2. メールで届く **ログイン ID・パスワード・サーバー名** を控える（サーバーは本番・デモとも `PhillipSecuritiesJP-PROD` と案内されている）
+3. 同じページの「MacOS 版ダウンロード」から zip を落とす → ダブルクリックで解凍 →「MetaTrader 5.pkg」をダブルクリック →
+   画面の指示どおりインストール（初回の起動は時間がかかることがある）
 4. **有効期限は 1 か月**。手順 5（データの書き出し）は期限内に済ませる
+
+**Mac 版 MT5 の操作の注意**: メニュー（ファイル・表示・ツール…）は Mac の画面上端ではなく **MT5 のウィンドウの中** にある。
+ショートカットは Windows と同じく **control** キー（⌘ ではない）。F4・F7 などは **fn** を押しながら
 
 ## 3. MT5 の初期設定（MT5）
 
