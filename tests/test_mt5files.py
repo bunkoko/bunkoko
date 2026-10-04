@@ -170,3 +170,26 @@ def test_broker_suffix_ps01(tmp_path):
     spec.loader.exec_module(cli)
     assert cli._mt5_name("SILVER", DEFAULT_SYMBOL_MAP, tmp_path) == "XAGUSD.ps01"
     assert cli._mt5_name("WTI", DEFAULT_SYMBOL_MAP, tmp_path) == "XTIUSD"     # ファイルが無ければ標準の名前
+
+
+def test_compare_all_diagnoses_tester_mistakes(tmp_path):
+    """テスターの記録から、別銘柄のプリセット・短い期間・複数回の実行を見つける。"""
+    import importlib.util
+
+    from cfdbot.train.config import DEFAULT_SYMBOL_MAP
+
+    spec = importlib.util.spec_from_file_location("compare_all", ROOT / "scripts" / "compare_all.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    days = pd.bdate_range("2021-06-01", "2023-06-01")
+    rows = pd.DataFrame({"time_utc": days.strftime("%Y.%m.%d 21:00"), "close": 1.0, "atr": 1.0, "entry": 0,
+                         "stop_dist": 0.0, "exit_long": 0, "exit_short": 0})
+    good = tmp_path / "cfdbot_signals_XAUUSD.ps01_2609004.csv"
+    rows.to_csv(good, index=False)
+    wrong = tmp_path / "cfdbot_signals_XAGUSD.ps01_2609001.csv"
+    pd.concat([rows.iloc[:30], rows]).to_csv(wrong, index=False)
+    expected = {"GOLD": "D1", "SILVER": "D1", "WTI": "D1"}
+    ok = mod.diagnose(good, expected, DEFAULT_SYMBOL_MAP, 2609000)
+    assert len(ok) == 1 and "プリセット GOLD / D1" in ok[0]
+    bad = " ".join(mod.diagnose(wrong, expected, DEFAULT_SYMBOL_MAP, 2609000))
+    assert "WTI のプリセット" in bad and "2 回実行" in bad
