@@ -121,7 +121,10 @@ def cmd_fetch_data(args) -> None:
         raise SystemExit(f"{term.common / args.folder} に CSV が無い。MT5 で CfdExportBars を実行したか確認する")
     for p in got:
         print(f"  {p}（{p.stat().st_size / 1e6:.1f} MB）")
-    print(f"{len(got)} ファイルを {dest}/ に取り込んだ。次: python scripts/check_data.py")
+    meta = fetch(term.common / args.folder, "*.txt", dest)   # 銘柄仕様・口座情報
+    for p in meta:
+        print(f"  {p}")
+    print(f"{len(got)} ファイルを {dest}/ に取り込んだ")
 
 
 def cmd_fetch_logs(args) -> None:

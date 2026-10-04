@@ -4,6 +4,7 @@
 - サーバー時刻の方式が合っているか（週の始まりが日曜夕方・毎日の休止が 17 時台か。米東部時間）
 - 平日の大きな欠け
 - 実際のスプレッド（M5 のスプレッド列から。時間帯ごとの広がりも）→ 銘柄仕様ファイルに書き出せる
+- MT5 の銘柄仕様・口座情報（CfdExportBars が書き出した symbol_specs.txt / account_info.txt）があれば反映
 - 時間足ごとのコスト
 """
 
@@ -18,6 +19,8 @@ import pandas as pd
 
 from ..events import ET
 from ..instruments import Instrument, get_instruments, load_instruments
+from ..mt5specs import (ACCOUNT_FILE, SPECS_FILE, apply_spec, describe_account, describe_spec, load_account,
+                        load_specs, spec_for)
 from .config import TIMEFRAMES, TrainConfig, tf_minutes
 from .costs import timeframe_costs
 from .dataset import Dataset, load_dataset
@@ -92,7 +95,8 @@ def check_gaps(sym: str, tf: str, df: pd.DataFrame, res: CheckResult) -> None:
         res.warn(f"{sym} {tf}: 平日に 2 時間以上の欠けが {n} か所（例: {ex}）。祝日なら問題ない")
 
 
-def check_spread(sym: str, tf: str, df: pd.DataFrame, inst: Instrument, res: CheckResult) -> float | None:
+def check_spread(sym: str, tf: str, df: pd.DataFrame, inst: Instrument, res: CheckResult,
+                 point_from_mt5: bool = False) -> float | None:
     if "spread" not in df:
         res.warn(f"{sym} {tf}: スプレッド列が無い。デモ口座で実測して銘柄仕様に入れる")
         return None
@@ -108,7 +112,7 @@ def check_spread(sym: str, tf: str, df: pd.DataFrame, inst: Instrument, res: Che
     wide_txt = "、".join(f"米東部 {h} 時台（日本 {jst(h)} 時台）{v:.4g}" for h, v in wide.items())
     res.info(f"  スプレッド: 中央値 {med:.4g} / 上位10% {p90:.4g}（銘柄仕様の値 {inst.spread:.4g}）")
     res.info(f"  広がる時間帯: {wide_txt}")
-    if med > inst.spread * 1.5 or med < inst.spread * 0.5:
+    if not point_from_mt5 and (med > inst.spread * 1.5 or med < inst.spread * 0.5):
         res.warn(f"{sym}: 実測スプレッド {med:.4g} が銘柄仕様 {inst.spread:.4g} と大きく違う。"
                  "point（桁数）が MT5 の仕様と合っているかも確認する")
     return med
@@ -120,6 +124,10 @@ def run_check(cfg: TrainConfig) -> CheckResult:
     inst = get_instruments(cfg.data.broker)
     if cfg.data.instruments:
         inst.update(load_instruments(cfg.data.instruments))
+    root = Path(cfg.data.dir)
+    specs = load_specs(root / SPECS_FILE)
+    for line in describe_account(load_account(root / ACCOUNT_FILE)):
+        res.info(line)
     for s in ds.skipped:
         res.warn(f"読み飛ばし: {s}")
     res.info("円換算: " + ("USDJPY のデータを使う" if ds.fx is not None else f"固定 {cfg.data.fx} 円（USDJPY を置くと実レート）"))
@@ -128,6 +136,15 @@ def run_check(cfg: TrainConfig) -> CheckResult:
             res.warn(f"{sym}: 銘柄仕様が無い（config の instruments に追加）")
             continue
         res.info(f"\n■ {sym}")
+        row = spec_for(sym, specs, cfg.data.symbol_map) if specs else None
+        if row is not None:
+            inst[sym], notes = apply_spec(inst[sym], row)
+            res.info(describe_spec(inst[sym], row))
+            for n in notes:
+                res.warn(f"{sym}: {n}")
+            res.measured[sym] = inst[sym]
+        elif specs:
+            res.warn(f"{sym}: {SPECS_FILE} にこの銘柄の仕様が無い（CfdExportBars の symbols を確認）")
         for tf in ds.file_timeframes(sym):
             df = ds.frames[sym][tf]
             res.info(f"  {tf}: {df.index[0]:%Y-%m-%d} 〜 {df.index[-1]:%Y-%m-%d}（{len(df):,} 本）")
@@ -148,10 +165,11 @@ def run_check(cfg: TrainConfig) -> CheckResult:
                 res.info(f"  売買 {tf}（{src}）/ 約定の再現 {fine_tf}{cover}")
             else:
                 res.warn(f"{sym}: 売買 {tf} の約定を再現する細かい足（{cfg.data.fill_timeframe}）が無い")
-        med = check_spread(sym, finest, ds.frames[sym][finest], inst[sym], res)
+        med = check_spread(sym, finest, ds.frames[sym][finest], inst[sym], res, point_from_mt5=row is not None)
         if med is not None:
+            base_note = inst[sym].note if row is not None else "slippage・金利は要実測"
             res.measured[sym] = replace(inst[sym], spread=round(med, 6),
-                                        note=f"spread は {finest} のスプレッド列の中央値。slippage・金利は要実測")
+                                        note=f"spread は {finest} のスプレッド列の中央値。{base_note}")
     res.costs = timeframe_costs(ds, inst)
     return res
 

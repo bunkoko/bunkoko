@@ -199,6 +199,9 @@ def load_train_config(path: str | Path | None) -> TrainConfig:
     if path is None or not Path(path).exists():
         return normalize(cfg)
     raw = tomllib.loads(Path(path).read_text(encoding="utf-8"))
+    local = local_config_path(path)
+    if local.exists():  # この Mac だけの設定（ツールが書く。git の更新とぶつからないよう別ファイル）
+        raw = _merge(raw, tomllib.loads(local.read_text(encoding="utf-8")))
     sections = {"data": DataConfig, "account": AccountConfig, "walkforward": WalkForwardConfig,
                 "portfolio": PortfolioConfig, "compute": ComputeConfig}
     for name, cls in sections.items():
@@ -237,3 +240,42 @@ def normalize(cfg: TrainConfig) -> TrainConfig:
         if t not in TIMEFRAMES:
             raise ValueError(f"対応していない時間足: {t}（{list(TIMEFRAMES)}）")
     return cfg
+
+
+
+def local_config_path(config_path: str | Path) -> Path:
+    """config/train.toml と同じフォルダの local.toml。あれば train.toml より優先する（git では管理しない）。"""
+    return Path(config_path).with_name("local.toml")
+
+
+def _merge(base: dict, over: dict) -> dict:
+    out = dict(base)
+    for k, v in over.items():
+        out[k] = _merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+    return out
+
+
+def _toml_value(v: Any) -> str:
+    import json
+
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return repr(v)
+    return json.dumps(v, ensure_ascii=False)
+
+
+def set_local_option(config_path: str | Path, section: str, key: str, value: Any) -> bool:
+    """local.toml の [section] key を設定する。変えたら True。"""
+    p = local_config_path(config_path)
+    data = tomllib.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    if data.get(section, {}).get(key) == value:
+        return False
+    data.setdefault(section, {})[key] = value
+    lines = ["# この Mac だけの設定（./cfd data などのツールが書く）。config/train.toml より優先される", ""]
+    for sec, items in data.items():
+        lines.append(f"[{sec}]")
+        lines += [f"{k} = {_toml_value(v)}" for k, v in items.items()]
+        lines.append("")
+    p.write_text("\n".join(lines), encoding="utf-8")
+    return True

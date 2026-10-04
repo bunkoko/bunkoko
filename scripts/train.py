@@ -1,7 +1,7 @@
 """データを入れてすぐ学習する。
 
     python scripts/train.py                 # data/ の CSV と config/train.toml で学習
-    python scripts/train.py --demo          # 合成データで一通り動かす（動作確認用）
+    python scripts/train.py --demo          # 合成データで一通り動かす（動作確認用。結果は output/train/demo/）
     python scripts/train.py --listen 0.0.0.0   # iPad など他の端末も計算に参加させる
 
 結果は output/train/<日時>/ に出る（report.md・EA 用ファイル・検証期間の成績）。
@@ -56,6 +56,7 @@ def main() -> None:
 
     cfg = load_train_config(args.config)
     if args.demo:
+        cfg.output_dir = str(Path(cfg.output_dir) / "demo")   # 本番用の学習結果と混ざらないように分ける
         demo_dir = Path(cfg.output_dir) / "demo_data"
         make_demo_data(demo_dir)
         cfg.data.dir = str(demo_dir)

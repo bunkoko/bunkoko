@@ -9,3 +9,7 @@ output/
 *.ex5
 # 証券会社から取得した価格データはコミットしない
 data/
+.python/
+# この Mac だけの設定・口座の実測値（ツールが作る）
+config/local.toml
+config/instruments_measured.json

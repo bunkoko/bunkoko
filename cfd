@@ -1,0 +1,52 @@
+#!/bin/bash
+# よく使う作業をまとめたコマンド。仮想環境 .venv の Python で動く（activate は不要）。
+#   ./cfd help で一覧
+set -euo pipefail
+cd "$(dirname "$0")"
+PY=.venv/bin/python
+
+need_venv() { [ -x "$PY" ] || { echo "仮想環境が無い。先に ./cfd setup を実行する"; exit 1; }; }
+latest_run() { ls -1d output/train/2*/ 2>/dev/null | sort | tail -1 | sed 's:/$::' || true; }
+need_run() {
+  RUN="$(latest_run)"
+  [ -n "$RUN" ] || { echo "学習結果が無い。先に ./cfd train を実行する"; exit 1; }
+  echo "学習結果: $RUN"
+}
+
+cmd="${1:-help}"
+[ $# -gt 0 ] && shift
+case "$cmd" in
+  setup)  exec scripts/setup_mac.sh "$@" ;;
+  update) git pull --ff-only
+          need_venv
+          UV_PYTHON_INSTALL_DIR="$PWD/.python" uv pip install --python "$PY" -e ".[dev]" -q
+          "$PY" scripts/mt5_files.py install
+          echo "更新した。MT5 の MetaEditor で CfdCommodityEA と CfdExportBars をコンパイルし直す（F7）" ;;
+  where)  need_venv; exec "$PY" scripts/mt5_files.py where "$@" ;;
+  mt5)    need_venv; exec "$PY" scripts/mt5_files.py install "$@" ;;
+  data)   need_venv
+          "$PY" scripts/mt5_files.py fetch-data "$@"
+          exec "$PY" scripts/check_data.py --write-instruments config/instruments_measured.json --set-config ;;
+  check)  need_venv; exec "$PY" scripts/check_data.py "$@" ;;
+  train)  need_venv; exec "$PY" scripts/train.py "$@" ;;
+  ea)     need_venv; need_run; exec "$PY" scripts/mt5_files.py install --run "$RUN" "$@" ;;
+  logs)   need_venv; exec "$PY" scripts/mt5_files.py fetch-logs "$@" ;;
+  replay) need_venv; need_run; exec "$PY" scripts/replay.py --final "$RUN/final.json" "$@" ;;
+  py)     need_venv; exec "$PY" "$@" ;;
+  help|*) cat <<'HELP'
+使い方: ./cfd <コマンド>
+
+  setup    初回準備（uv・仮想環境・パッケージ・テスト・動作確認）。何度実行してもよい
+  update   最新版を取得して入れ直す（EA も MT5 に置き直す）
+  where    MT5 のフォルダを表示
+  mt5      EA とスクリプトを MT5 に置く（MetaEditor でコンパイルする）
+  data     MT5 の書き出しを取り込み → 点検 → 銘柄仕様を作って設定に反映
+  check    データの点検だけ
+  train    学習（結果は output/train/<日時>/report.md）
+  ea       最新の学習結果からプリセットを作って MT5 に置く（--risk-scale 0.5 など）
+  logs     テスターのシグナル記録を取り込む
+  replay   最新の学習結果で期間を再現（--start 2026-11-01 など）
+  py       仮想環境の Python で実行（例: ./cfd py scripts/compare_signals.py ...）
+HELP
+          ;;
+esac

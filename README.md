@@ -49,11 +49,12 @@ tests/                  pytest（先読み検査・約定計算・リスク計�
 ## Mac でのセットアップ
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-pytest                      # テスト
-python scripts/demo.py      # 合成データで一通り動かす（成績は無意味）
+./cfd setup                 # uv で Python 3.12 と仮想環境 .venv を作り、パッケージ・テスト・動作確認まで（Homebrew が必要）
+./cfd help                  # よく使う作業の一覧（data / train / ea / replay など。activate は不要）
 ```
+
+Python 本体とパッケージは、このフォルダの中（`.python` と `.venv`）だけに入る。
+この Mac だけの設定はツールが `config/local.toml` に書く（`config/train.toml` より優先。git では管理しない）。
 
 ## ポートフォリオ学習（おすすめ）
 

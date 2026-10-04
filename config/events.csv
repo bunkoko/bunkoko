@@ -1,0 +1,21 @@
+# 指標カレンダー（時刻は UTC）。EA の新規停止（前 4 時間・後 1 時間）と学習の再現に使う。
+# 2026-10-04 時点で公表済みの予定から作成。「推定」は過去の例からの推定なので、公式の予定が出たら確認して直す。
+#   FOMC 声明 14:00 ET / 米 CPI・雇用統計 8:30 ET / EIA 週間石油統計 通常は水 10:30 ET（祝日の週はずれる）
+# 原油の EIA（水 10:30 ET）・API（火 16:30 ET）の定例は EA と学習に組み込み済みなので書かない。ずれた回だけ書く。
+# 毎月 1 回、4 か月先まで追加する（docs/operations.md 手順 16）
+time_utc,name,tag
+2026-10-14 12:30,US_CPI,usd_macro
+2026-10-14 20:30,API_holiday_shift(Columbus Day 推定),oil
+2026-10-15 16:00,EIA_holiday_shift(Columbus Day),oil
+2026-10-28 18:00,FOMC,usd_macro
+2026-11-06 13:30,US_NFP,usd_macro
+2026-11-10 13:30,US_CPI,usd_macro
+2026-11-12 17:00,EIA_holiday_shift(Veterans Day),oil
+2026-12-04 13:30,US_NFP,usd_macro
+2026-12-09 19:00,FOMC,usd_macro
+2026-12-10 13:30,US_CPI,usd_macro
+2027-01-08 13:30,US_NFP(推定),usd_macro
+2027-01-13 13:30,US_CPI(推定),usd_macro
+2027-01-20 21:30,API_holiday_shift(MLK Day 推定),oil
+2027-01-21 17:00,EIA_holiday_shift(MLK Day 推定),oil
+2027-01-27 19:00,FOMC,usd_macro

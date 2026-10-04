@@ -3,8 +3,10 @@
     python scripts/check_data.py
     python scripts/check_data.py --write-instruments config/instruments_measured.json
 
---write-instruments を付けると、M5 のスプレッド列から測ったスプレッドを銘柄仕様ファイルに書き出す。
-そのファイルを config/train.toml の [data] instruments に指定すると、学習が実測値を使う。
+--write-instruments を付けると、M5 のスプレッド列から測ったスプレッドと、MT5 の銘柄仕様
+（CfdExportBars が書き出した data/symbol_specs.txt）を銘柄仕様ファイルに書き出す。
+--set-config も付けると、config/local.toml（この Mac だけの設定）の [data] instruments にそのファイルを設定する
+（学習が実測値を使う。config/train.toml は書き換えないので、git で最新版を取り込んでもぶつからない）。
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from cfdbot.instruments import get_instruments, load_instruments  # noqa: E402
 from cfdbot.train.check import run_check, write_measured  # noqa: E402
-from cfdbot.train.config import load_train_config  # noqa: E402
+from cfdbot.train.config import load_train_config, local_config_path, set_local_option  # noqa: E402
 
 
 def main() -> None:
@@ -26,6 +28,7 @@ def main() -> None:
     p.add_argument("--data", help="データフォルダ（設定より優先）")
     p.add_argument("--server-tz", help="サーバー時刻の方式（設定より優先。ny_close / 数値）")
     p.add_argument("--write-instruments", metavar="PATH", help="実測スプレッドを入れた銘柄仕様 JSON を書き出す")
+    p.add_argument("--set-config", action="store_true", help="書き出したファイルを config/local.toml の [data] instruments に設定する")
     args = p.parse_args()
 
     cfg = load_train_config(args.config)
@@ -49,7 +52,13 @@ def main() -> None:
         if cfg.data.instruments:
             base.update(load_instruments(cfg.data.instruments))
         path = write_measured(res, base, args.write_instruments)
-        print(f"実測スプレッドを書き出した: {path}（config/train.toml の [data] instruments に指定する）")
+        print(f"銘柄仕様（MT5 の仕様・実測スプレッド）を書き出した: {path}")
+        if args.set_config:
+            changed = set_local_option(args.config, "data", "instruments", args.write_instruments)
+            print(f"{local_config_path(args.config)} の [data] instruments = \"{args.write_instruments}\""
+                  + ("（設定した）" if changed else "（設定済み）"))
+        else:
+            print("config/train.toml の [data] instruments に指定すると学習が使う")
 
 
 if __name__ == "__main__":

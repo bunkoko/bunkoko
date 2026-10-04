@@ -1172,7 +1172,7 @@ void UpdateAccountGuards()
    if(GVGet(g_gv_group + "halt", 0) == 0 && eq <= peak * (1.0 - P.rk_max_drawdown_halt))
      {
       GlobalVariableSet(g_gv_group + "halt", 1);
-      Notify(StringFormat("最大DD到達のため新規停止（equity=%.0f peak=%.0f）。再開は ea_peak_since に今日の日付を入れ、"
+      Notify(StringFormat("最大DD到達のため新規停止（equity=%.0f peak=%.0f）。再開は ea_peak_since に今日の日付を入れ、" +
                           "GV %speak と %shalt を削除（VPS は移し直す）", eq, peak, g_gv_group, g_gv_group));
      }
   }
