@@ -72,6 +72,8 @@ def main() -> None:
     p.add_argument("--magic-base", type=int, default=2609000)
     p.add_argument("--config", default="config/train.toml")
     p.add_argument("--clean", action="store_true", help="これまでのテスターの記録を消す（テストをやり直す前に）")
+    p.add_argument("--clean-wrong", action="store_true",
+                   help="別の銘柄のプリセットで実行した記録だけを消す（正しい記録は残す）")
     args = p.parse_args()
 
     dest = Path(args.dest)
@@ -85,10 +87,21 @@ def main() -> None:
                 n += 1
         print(f"テスターの記録を {n} 個消した。テスターで各銘柄を実行してから、--clean を付けずにもう一度実行する")
         return
+    cfg = load_train_config(args.config)
+    if args.clean_wrong:
+        reverse = {v: k for k, v in MAGIC_SLOTS.items()}
+        n = 0
+        for d in [dest] + ([term.common] if term and term.common else []):
+            for f in sorted(d.glob("cfdbot_signals_*.csv")) if d.is_dir() else []:
+                m = _LOG_NAME.match(f.name)
+                preset = reverse.get(int(m.group(2)) - args.magic_base) if m else None
+                if m and preset and chart_key(m.group(1), cfg.data.symbol_map) not in (None, preset):
+                    f.unlink()
+                    n += 1
+        print(f"別の銘柄のプリセットで実行した記録を {n} 個消した")
     if term and term.common is not None:
         fetch(term.common, "cfdbot_signals_*.csv", dest)
     sleeves = json.loads(Path(args.final).read_text(encoding="utf-8"))["sleeves"]
-    cfg = load_train_config(args.config)
     expected = {s["symbol"]: s["timeframe"] for s in sleeves}
     logs_all = sorted(dest.glob("cfdbot_signals_*.csv"))
     print("===== テスターの設定の点検")

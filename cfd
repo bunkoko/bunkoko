@@ -39,7 +39,7 @@ case "$cmd" in
           exec "$PY" scripts/mt5_files.py install --run "$OUT" "$@" ;;
   table)  need_venv; exec "$PY" scripts/risk_table.py "$@" ;;
   compare) need_venv
-          [ $# -ge 1 ] || { echo "使い方: ./cfd compare output/live/turtle55_d1/final.json [--clean]"; exit 1; }
+          [ $# -ge 1 ] || { echo "使い方: ./cfd compare output/live/turtle55_d1/final.json [--clean / --clean-wrong]"; exit 1; }
           exec "$PY" scripts/compare_all.py --final "$@" ;;
   logs)   need_venv; exec "$PY" scripts/mt5_files.py fetch-logs "$@" ;;
   replay) need_venv; need_run; exec "$PY" scripts/replay.py --final "$RUN/final.json" "$@" ;;

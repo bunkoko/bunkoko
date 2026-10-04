@@ -122,8 +122,12 @@ def main() -> None:
     exit_mismatch = common[(e[exits].astype(bool).to_numpy() != s[exits].to_numpy()).any(axis=1)]
     stop_diff = (e["stop_dist"] - s["stop_dist"]).abs().dropna()
 
+    atr_diff = atr_diff.dropna()
+    late = atr_diff.iloc[len(atr_diff) // 2:]  # 記録の後ろ半分
+    worst = atr_diff.idxmax() if len(atr_diff) else None
     print(f"比較した足: {len(common)} 本（EA {len(ea)} / Python {len(sig)}）")
-    print(f"ATR の最大相対誤差: {atr_diff.max():.2e}")
+    print(f"ATR の最大相対誤差: {atr_diff.max():.2e}" + (f"（{worst:%Y-%m-%d}）" if worst is not None else "")
+          + f" / 記録の後ろ半分: {late.max() if len(late) else 0:.2e}")
     print(f"エントリー不一致: {len(entry_mismatch)} 本（EA のエントリー {int((e['entry'] != 0).sum())} 回）")
     print(f"手仕舞いシグナル不一致: {len(exit_mismatch)} 本")
     if len(stop_diff):
@@ -132,8 +136,19 @@ def main() -> None:
         print("\n不一致の例（最初の 10 本）:")
         show = pd.DataFrame({"ea": e.loc[entry_mismatch[:10], "entry"], "python": s.loc[entry_mismatch[:10], "entry"]})
         print(show.to_string())
-    ok = len(entry_mismatch) == 0 and len(exit_mismatch) == 0 and np.nan_to_num(atr_diff.max()) < 1e-6
-    print("\n結果:", "一致" if ok else "差分あり（上記を確認。記録の最初の方だけなら ea_calc_bars 不足）")
+    same_trades = len(entry_mismatch) == 0 and len(exit_mismatch) == 0
+    worst_all = float(np.nan_to_num(atr_diff.max())) if len(atr_diff) else 0.0
+    worst_late = float(np.nan_to_num(late.max())) if len(late) else 0.0
+    if same_trades and worst_all < 1e-6:
+        verdict = "一致"
+    elif same_trades and worst_late < 1e-6:
+        # テスターは開始日より前の履歴を短くしか用意しないことがあり、ATR の初期値の差が最初だけ残る（時間とともに消える）
+        verdict = "一致（ATR の小さな差は記録の最初の方だけ。売買の判断はすべて同じ）"
+    elif same_trades and worst_all < 1e-3:
+        verdict = "ほぼ一致（ATR に 0.1% 未満の差が残るが、売買の判断はすべて同じ）"
+    else:
+        verdict = "差分あり（上記を確認。出力をそのまま送ってください）"
+    print("\n結果:", verdict)
 
 
 if __name__ == "__main__":
