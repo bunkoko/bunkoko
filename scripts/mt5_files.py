@@ -38,6 +38,14 @@ def _terminal(args) -> Terminal:
     return choose_terminal(find_terminals(), args.terminal, args.mql5, args.common)
 
 
+def _pad(text: str, width: int) -> str:
+    """全角は 2 文字分として、表示幅 width までスペースで埋める。"""
+    import unicodedata
+
+    shown = sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
+    return text + " " * max(1, width - shown)
+
+
 def _mt5_name(key: str, symbol_map: dict[str, str], data_dir: Path) -> str:
     """チャートに使う MT5 の銘柄名。書き出したファイル名（XAGUSD.ps01_M5.csv など）があればその名前。"""
     if data_dir.is_dir():
@@ -96,11 +104,14 @@ def cmd_install(args) -> None:
               "次: MetaEditor で CfdCommodityEA と CfdExportBars をコンパイル（F7）")
         return
     print("\nチャートと EA の対応（気配値表示の銘柄でチャートを開き、時間足を合わせて EA を貼る）:")
-    print(f"  {'プリセット':<36}{'チャート':<10}{'時間足':<6}{'magic':<9}指標")
+    charts = {p.name: _mt5_name(p.symbol, cfg.data.symbol_map, Path(cfg.data.dir)) for p in presets}
+    w_name = max(len(n) for n in charts) + 6
+    w_chart = max(len(c) for c in charts.values()) + 2
+    print("  " + _pad("プリセット", w_name) + _pad("チャート", w_chart) + _pad("時間足", 6) + _pad("magic", 9) + "指標")
     for p in presets:
         cut = f"（〜{p.events_cut:%Y-%m-%d} まで。以降は次の更新で）" if p.events_cut is not None else ""
-        print(f"  {p.name + '.set':<36}{_mt5_name(p.symbol, cfg.data.symbol_map, Path(cfg.data.dir)):<10}"
-              f"{p.timeframe:<6}{p.params['ea_magic']:<9}{p.events} 件{cut}")
+        print(f"  {p.name + '.set':<{w_name}}{charts[p.name]:<{w_chart}}{p.timeframe:<6}{p.params['ea_magic']:<9}"
+              f"{p.events} 件{cut}")
     print(f"\nリスク倍率 ea_risk_scale = {args.risk_scale:g}（デモは 1、本番の最初は 0.25〜0.5）")
     if peak_since:
         print(f"DD の基準は {peak_since} 以降の最高資産から測る（[account] peak_since）")
@@ -110,8 +121,8 @@ def cmd_install(args) -> None:
         last = max(e.time for e in events)
         if last < now + pd.Timedelta(days=35):
             print(f"⚠ {events_path} の最後の予定が {last:%Y-%m-%d}。翌月以降の FOMC・CPI・雇用統計を追加する")
-    print("\n次: MetaEditor で CfdCommodityEA と CfdExportBars をコンパイル（F7）→ チャートに EA を貼り、"
-          "「パラメータの入力」→「読み込み」でプリセットを選ぶ（docs/operations.md）")
+    print("\n次: テスターかチャートの EA の「パラメータの入力」→「読み込み」でプリセットを選ぶ（docs/operations.md 手順 9・11）。"
+          "EA を更新したときだけ MetaEditor でコンパイルし直す（F7）")
 
 
 def cmd_fetch_data(args) -> None:
