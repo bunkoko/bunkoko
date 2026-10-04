@@ -1,0 +1,69 @@
+{
+  "note": "調整しない基準の戦略（タートル・システム2: 55日高値・安値のブレイクで入り、20日安値・高値で手仕舞い）。学習では選ばず、決めた値のまま全期間を再現して、そもそも優位性があるかを測る。4銘柄とも 1回の損失 1%（標準）",
+  "sleeves": [
+    {
+      "symbol": "GOLD",
+      "strategy": "donchian",
+      "timeframe": "D1",
+      "htf": {},
+      "params": {
+        "entry_period": 55,
+        "exit_period": 20,
+        "trend_ema": 0,
+        "buffer_atr": 0.0
+      },
+      "exit": {},
+      "multiplier": 1.0,
+      "train_score": 0.0,
+      "train_trades": 0
+    },
+    {
+      "symbol": "SILVER",
+      "strategy": "donchian",
+      "timeframe": "D1",
+      "htf": {},
+      "params": {
+        "entry_period": 55,
+        "exit_period": 20,
+        "trend_ema": 0,
+        "buffer_atr": 0.0
+      },
+      "exit": {},
+      "multiplier": 1.0,
+      "train_score": 0.0,
+      "train_trades": 0
+    },
+    {
+      "symbol": "WTI",
+      "strategy": "donchian",
+      "timeframe": "D1",
+      "htf": {},
+      "params": {
+        "entry_period": 55,
+        "exit_period": 20,
+        "trend_ema": 0,
+        "buffer_atr": 0.0
+      },
+      "exit": {},
+      "multiplier": 1.0,
+      "train_score": 0.0,
+      "train_trades": 0
+    },
+    {
+      "symbol": "BRENT",
+      "strategy": "donchian",
+      "timeframe": "D1",
+      "htf": {},
+      "params": {
+        "entry_period": 55,
+        "exit_period": 20,
+        "trend_ema": 0,
+        "buffer_atr": 0.0
+      },
+      "exit": {},
+      "multiplier": 1.0,
+      "train_score": 0.0,
+      "train_trades": 0
+    }
+  ]
+}

@@ -68,6 +68,15 @@ def main() -> None:
     for pk in picks:
         print(f"  {pk.label}: 1回の損失 {cfg.account.base_risk * pk.multiplier:.2%}")
     print(format_metrics(m))
+    rej = res.get("rejections")
+    if rej is not None and not rej.empty:
+        labels = {"min_lot": "最小単位でも損失が上限を超える", "weekend": "金曜午後〜週末", "event": "指標の前後",
+                  "spread": "スプレッドが広い", "symbol_limit": "同じ銘柄を保有中", "daily_loss": "日次の損失上限",
+                  "heat": "合計リスクの上限", "cluster": "グループのリスク上限", "leverage": "レバレッジ上限",
+                  "position_exists": "保有中", "invalid": "損切り幅が不正",
+                  "margin": "証拠金", "halt": "最大DDで停止中", "stale": "約定が遅れた"}
+        counts = rej[rej["reason"] != "halt_triggered"]["reason"].value_counts()
+        print("\n見送ったエントリー: " + "、".join(f"{labels.get(k, k)} {v} 回" for k, v in counts.items()))
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     name = f"{start:%Y%m%d}-{(end - pd.Timedelta(days=1)):%Y%m%d}"

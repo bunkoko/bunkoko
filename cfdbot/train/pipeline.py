@@ -290,7 +290,7 @@ def validate_window(ds: Dataset, instruments, picks, bt_cfg: BacktestConfig,
     # 評価のため最大DDでの停止は外す（停止に触れたかはレポートで確認）
     cfg = replace(bt_cfg, trade_start=start, trade_end=end, risk=replace(bt_cfg.risk, max_drawdown_halt=1.0))
     res = run_backtest(data, instruments, sleeves, cfg, fine_data=fine or None)
-    return {"equity": res.equity, "trades": res.trades, "leverage": res.leverage}
+    return {"equity": res.equity, "trades": res.trades, "leverage": res.leverage, "rejections": res.rejections}
 
 
 # --------------------------------------------------------------------------- 本体
