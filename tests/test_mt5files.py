@@ -140,3 +140,31 @@ def test_export_bars_format_loads(tmp_path):
     p.write_bytes((head + rows).encode("ascii"))
     df = load_mt5_csv(p, server_tz="ny_close")
     assert len(df) == 3 and df["spread"].iloc[0] == 25 and df["close"].iloc[-1] == 30.15
+
+
+def test_broker_suffix_ps01(tmp_path):
+    """フィリップの XAGUSD.ps01 のような名前: ファイル名・銘柄仕様・チャート名の表示がすべて通る。"""
+    import importlib.util
+
+    from cfdbot.mt5specs import load_specs, spec_for
+    from cfdbot.train.config import DEFAULT_SYMBOL_MAP, TrainConfig, normalize
+    from cfdbot.train.dataset import load_dataset
+
+    from .test_mt5specs import silver_row, write_specs
+    from .test_multitf import random_walk_m5, write_mt5
+
+    write_mt5(random_walk_m5(1, start="2024-01-01", end="2024-01-31"), tmp_path / "XAGUSD.ps01_M5.csv")
+    write_mt5(random_walk_m5(2, start="2024-01-01", end="2024-01-31"), tmp_path / "USDJPY.ps01_M5.csv")
+    cfg = TrainConfig()
+    cfg.data.dir = str(tmp_path)
+    ds = load_dataset(normalize(cfg).data)
+    assert "M5" in ds.frames["SILVER"] and ds.fx is not None and not ds.skipped
+
+    write_specs(tmp_path / "symbol_specs.txt", [silver_row(symbol="XAGUSD.ps01")])
+    assert spec_for("SILVER", load_specs(tmp_path / "symbol_specs.txt"), DEFAULT_SYMBOL_MAP)["symbol"] == "XAGUSD.ps01"
+
+    spec = importlib.util.spec_from_file_location("mt5_files_cli", ROOT / "scripts" / "mt5_files.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    assert cli._mt5_name("SILVER", DEFAULT_SYMBOL_MAP, tmp_path) == "XAGUSD.ps01"
+    assert cli._mt5_name("WTI", DEFAULT_SYMBOL_MAP, tmp_path) == "XTIUSD"     # ファイルが無ければ標準の名前

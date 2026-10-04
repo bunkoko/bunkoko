@@ -31,6 +31,7 @@ from cfdbot.events import load_events_csv  # noqa: E402
 from cfdbot.mt5files import (Terminal, build_presets, choose_terminal, fetch, find_terminals,  # noqa: E402
                              install)
 from cfdbot.train.config import load_train_config  # noqa: E402
+from cfdbot.train.dataset import _parse_name  # noqa: E402
 
 
 def _terminal(args) -> Terminal:
@@ -38,10 +39,13 @@ def _terminal(args) -> Terminal:
 
 
 def _mt5_name(key: str, symbol_map: dict[str, str], data_dir: Path) -> str:
+    """チャートに使う MT5 の銘柄名。書き出したファイル名（XAGUSD.ps01_M5.csv など）があればその名前。"""
+    if data_dir.is_dir():
+        for p in sorted(data_dir.glob("*.csv")):
+            if _parse_name(p, symbol_map)[0] == key:
+                return p.name.split("_")[0]
     names = [k for k, v in symbol_map.items() if v == key and k != key]
-    files = {p.name.split("_")[0].upper() for p in data_dir.glob("*.csv")} if data_dir.is_dir() else set()
-    hit = [n for n in names if n.upper() in files]
-    return (hit or names or [key])[0]
+    return (names or [key])[0]
 
 
 def cmd_where(args) -> None:

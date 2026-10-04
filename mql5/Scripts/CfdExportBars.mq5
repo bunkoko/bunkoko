@@ -12,11 +12,11 @@
 //| ドラッグ → 入力を確認して OK。終わると「エキスパート」タブに結果。     |
 //+------------------------------------------------------------------+
 #property copyright "cfdbot"
-#property version   "0.12"
+#property version   "0.13"
 #property description "Export bars of several symbols/timeframes to Common\\Files for cfdbot"
 #property script_show_inputs
 
-input string   symbols    = "XAGUSD,XAUUSD,XTIUSD,XBRUSD";        // 銘柄（MT5 の名前、カンマ区切り）
+input string   symbols    = "XAGUSD,XAUUSD,XTIUSD,XBRUSD";        // 銘柄（カンマ区切り。XAGUSD.ps01 のような接尾辞は自動で探す）
 input string   timeframes = "M5,H1";                              // 時間足（カンマ区切り）
 input string   fx_symbol  = "USDJPY";                             // 円換算用（H1 だけ書き出す。空=書き出さない）
 input datetime from_date  = D'2020.12.01 00:00';                  // この日から
@@ -217,6 +217,35 @@ bool WriteAccount()
    return(true);
   }
 
+// 名前どおりの銘柄が無ければ、その名前で始まる銘柄（XAGUSD → XAGUSD.ps01 など）を探す。
+// 候補が無い・2 つ以上あるときは "" を返す（symbols に正確な名前を書いてもらう）
+string ResolveSymbol(const string want)
+  {
+   if(SymbolInfoInteger(want, SYMBOL_EXIST) != 0 && SymbolSelect(want, true))
+      return(want);
+   string hit = "";
+   for(int i = 0; i < SymbolsTotal(false); i++)
+     {
+      string name = SymbolName(i, false);
+      if(StringFind(name, want) != 0)
+         continue;
+      if(hit != "")
+        {
+         PrintFormat("%s: 候補が複数ある（%s / %s）。symbols に使う方の正確な名前を書く", want, hit, name);
+         return("");
+        }
+      hit = name;
+     }
+   if(hit == "" || !SymbolSelect(hit, true))
+     {
+      PrintFormat("%s: 銘柄が見つからない（気配値表示の「すべて表示」で名前を確認）", want);
+      return("");
+     }
+   if(hit != want)
+      PrintFormat("%s → %s を使う", want, hit);
+   return(hit);
+  }
+
 void OnStart()
   {
    string syms[], tfs[];
@@ -227,12 +256,12 @@ void OnStart()
    string found[];
    for(int i = 0; i < ArraySize(syms) && !IsStopped(); i++)
      {
-      string sym = Trimmed(syms[i]);
-      if(sym == "")
+      string want = Trimmed(syms[i]);
+      if(want == "")
          continue;
-      if(!SymbolSelect(sym, true))
+      string sym = ResolveSymbol(want);
+      if(sym == "")
         {
-         PrintFormat("%s: 銘柄が見つからない（気配値表示の「すべて表示」で名前を確認）", sym);
          total += ArraySize(tfs);
          continue;
         }
@@ -251,13 +280,12 @@ void OnStart()
             warn++;
         }
      }
-   string fx = Trimmed(fx_symbol);
-   if(fx != "" && !IsStopped())
+   string fx_want = Trimmed(fx_symbol);
+   if(fx_want != "" && !IsStopped())
      {
       total++;
-      if(!SymbolSelect(fx, true))
-         PrintFormat("%s: 銘柄が見つからない（気配値表示の「すべて表示」で名前を確認）", fx);
-      else
+      string fx = ResolveSymbol(fx_want);
+      if(fx != "")
         {
          ArrayResize(found, ArraySize(found) + 1);
          found[ArraySize(found) - 1] = fx;

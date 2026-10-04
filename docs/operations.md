@@ -112,7 +112,8 @@ cd ~ && git clone https://github.com/bunkoko/bunkoko.git && cd bunkoko && git ch
    「チャートの最大バー数」を **Unlimited**（無制限）→ OK → **MT5 を終了して起動し直す**
 3. **銘柄を表示する**: 表示 → 気配値表示 → 一覧の上で右クリック →「すべて表示」。
    銀（XAGUSD）・金（XAUUSD）・WTI（XTIUSD）・ブレント（XBRUSD）・USD/JPY があるか確認。
-   **名前が違う場合だけ** 実際の名前を送ってください（手順 5 の入力と設定を直す）
+   `XAGUSD.ps01` のような後ろに記号が付いた名前でよい（ツールが自動で対応する）。
+   **同じ銘柄が 2 つ以上ある場合や、まったく違う名前の場合だけ** 実際の名前を送ってください
 
 銘柄の仕様（契約サイズ・最小ロット・証拠金率・スワップなど）と口座の種類（ネッティング/ヘッジング）は、
 手順 5 のスクリプトが自動で書き出し、手順 6 で設定に反映する。「仕様」画面を見てメモする必要は無い。
@@ -148,7 +149,7 @@ Mac 版 MT5 のフォルダは `~/Library/Application Support/…/drive_c/…` �
 
    | 項目 | 値 |
    |---|---|
-   | `symbols` | `XAGUSD,XAUUSD,XTIUSD,XBRUSD`（名前が違えば直す） |
+   | `symbols` | `XAGUSD,XAUUSD,XTIUSD,XBRUSD`（そのままでよい。`XAGUSD.ps01` のような名前は自動で探す） |
    | `timeframes` | `M5,H1` |
    | `fx_symbol` | `USDJPY`（円換算用。H1 だけ書き出す） |
    | `from_date` | `2020.12.01`（フィリップの商品 CFD は 2020 年 12 月 7 日開始） |
