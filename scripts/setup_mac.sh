@@ -5,7 +5,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PY_VERSION="${CFD_PYTHON:-3.12}"
-export UV_PYTHON_INSTALL_DIR="$PWD/.python"
+export UV_PYTHON_INSTALL_DIR="$PWD/.python"   # uv が落とす Python 本体の置き場（このフォルダの中）
+export UV_PYTHON_BIN_DIR="$PWD/.python/bin"     # python3.12 のリンクも ~/.local/bin ではなくここに置く
 
 step() { printf '\n== %s\n' "$1"; }
 
@@ -20,12 +21,21 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 uv --version
 
-step "2/5 仮想環境 .venv（Python ${PY_VERSION}）"
-if [ -x .venv/bin/python ] && .venv/bin/python -c "import sys; sys.exit(0 if '%d.%d' % sys.version_info[:2] == '${PY_VERSION}' else 1)"; then
+step "2/5 Python ${PY_VERSION} と仮想環境 .venv"
+if [ -x .venv/bin/python ] && .venv/bin/python -c "import sys; sys.exit(0 if '%d.%d' % sys.version_info[:2] == '${PY_VERSION}' else 1)" 2>/dev/null; then
   echo "作成済み: $(.venv/bin/python --version)"
 else
+  # Mac に元からある Python は探さない（古い Intel 用の python3 などがあると uv が止まるため）。
+  # uv が配布している Python をこのフォルダに入れ、その場所を直接指定する
+  uv python install --no-bin "${PY_VERSION}"
+  PY_BIN="$(ls -d "${UV_PYTHON_INSTALL_DIR}"/cpython-"${PY_VERSION}"*/bin/python"${PY_VERSION}" 2>/dev/null | sort | tail -1 || true)"
+  if [ -z "${PY_BIN}" ] || [ ! -x "${PY_BIN}" ]; then
+    echo "Python ${PY_VERSION} が ${UV_PYTHON_INSTALL_DIR} に見つからない。表示をそのまま送ってください"
+    ls -la "${UV_PYTHON_INSTALL_DIR}" || true
+    exit 1
+  fi
   rm -rf .venv
-  uv venv --python "${PY_VERSION}" .venv
+  uv venv --python "${PY_BIN}" .venv
 fi
 
 step "3/5 パッケージ（.venv の中に入る）"
