@@ -11,7 +11,7 @@
 //| ドラッグ → 入力を確認して OK。終わると「エキスパート」タブに結果。     |
 //+------------------------------------------------------------------+
 #property copyright "cfdbot"
-#property version   "0.10"
+#property version   "0.11"
 #property description "Export bars of several symbols/timeframes to Common\\Files for cfdbot"
 #property script_show_inputs
 
@@ -20,7 +20,7 @@ input string   timeframes = "M5,H1";                              // 時間足�
 input string   fx_symbol  = "USDJPY";                             // 円換算用（H1 だけ書き出す。空=書き出さない）
 input datetime from_date  = D'2020.12.01 00:00';                  // この日から
 input string   out_folder = "cfdbot_data";                        // Common\Files の下のフォルダ
-input int      wait_sec   = 120;                                  // 履歴のダウンロードを待つ最大秒数（1 組あたり）
+input int      wait_sec   = 300;                                  // 履歴のダウンロードを待つ最大秒数（1 組あたり）
 
 ENUM_TIMEFRAMES ParseTimeframe(const string s)
   {
@@ -42,26 +42,42 @@ string Trimmed(string s)
    return(s);
   }
 
-// 履歴のダウンロードが進まなくなるまで待ってから全部コピーする
-int CopyAll(const string sym, const ENUM_TIMEFRAMES tf, MqlRates &rates[])
+// サーバーにある履歴の最初の日時（MT5 はどの時間足も M1 の履歴から作るので、時間足によらない）。不明なら 0
+datetime ServerFirstDate(const string sym)
+  {
+   long first = 0;
+   for(int i = 0; i < 20 && !IsStopped(); i++)
+     {
+      if(SeriesInfoInteger(sym, PERIOD_M1, SERIES_SERVER_FIRSTDATE, first) && first > 0)
+         return((datetime)first);
+      Sleep(500);
+     }
+   return(0);
+  }
+
+// target（指定日とサーバーの最初の日の遅い方）まで遡れるまで、履歴のダウンロードを待ってコピーする。
+// 最大バー数で頭打ちになったとき・30 秒増えないとき・wait_sec 秒たったときはそこまでで返す
+int CopyAll(const string sym, const ENUM_TIMEFRAMES tf, const datetime target, MqlRates &rates[])
   {
    int last = -1, same = 0;
    for(int i = 0; i < wait_sec && !IsStopped(); i++)
      {
       ResetLastError();
       int n = CopyRates(sym, tf, from_date, TimeCurrent(), rates);
-      bool synced = SeriesInfoInteger(sym, tf, SERIES_SYNCHRONIZED) != 0;
-      if(n > 0 && (rates[0].time <= from_date + 7 * 86400 || (synced && n == last && ++same >= 3)))
+      if(n > 0 && rates[0].time <= target + 7 * 86400)
          return(n);
-      if(n != last)
-         same = 0;
+      if(n > 0 && n >= TerminalInfoInteger(TERMINAL_MAXBARS))
+         return(n);
+      same = (n == last) ? same + 1 : 0;
+      if(n > 0 && same >= 30)
+         return(n);
       last = n;
       Sleep(1000);
      }
    return(last);
   }
 
-bool ExportOne(const string sym, const string tf_name)
+bool ExportOne(const string sym, const string tf_name, bool &warned)
   {
    ENUM_TIMEFRAMES tf = ParseTimeframe(tf_name);
    if(tf == PERIOD_CURRENT)
@@ -69,9 +85,11 @@ bool ExportOne(const string sym, const string tf_name)
       PrintFormat("時間足 '%s' は使えない（M1,M5,M10,M15,M30,H1,H4,D1）", tf_name);
       return(false);
      }
+   datetime server_first = ServerFirstDate(sym);
+   datetime target = server_first > from_date ? server_first : from_date;
    MqlRates rates[];
    ArraySetAsSeries(rates, false);
-   int n = CopyAll(sym, tf, rates);
+   int n = CopyAll(sym, tf, target, rates);
    if(n <= 0)
      {
       PrintFormat("%s %s: バーを取得できない（error %d）", sym, tf_name, GetLastError());
@@ -98,10 +116,20 @@ bool ExportOne(const string sym, const string tf_name)
                                       rates[i].tick_volume, rates[i].real_volume, rates[i].spread));
      }
    FileClose(h);
-   string note = rates[0].time > from_date + 7 * 86400 ?
-                 "（指定日より新しい所から。ツール→オプション→チャート→最大バー数を Unlimited にして再実行するか、サーバーの履歴がそこまで）" : "";
-   PrintFormat("%s %s: %d 本 %s 〜 %s → Common\\Files\\%s %s", sym, tf_name, n,
-               TimeToString(rates[0].time, TIME_DATE), TimeToString(rates[n - 1].time, TIME_DATE), path, note);
+   string note = "";
+   if(n >= TerminalInfoInteger(TERMINAL_MAXBARS))
+      note = "⚠ 最大バー数で頭打ち。ツール→オプション→チャート→最大バー数を Unlimited にし、MT5 を再起動して再実行";
+   else
+      if(rates[0].time > target + 7 * 86400)
+         note = "⚠ 履歴のダウンロードが終わっていない。もう一度実行する";
+      else
+         if(server_first > from_date + 7 * 86400)
+            note = "（サーバーの履歴がこの日から。これより前は無い）";
+   if(StringFind(note, "⚠") == 0)
+      warned = true;
+   PrintFormat("%s %s: %d 本 %s 〜 %s（サーバーの履歴: %s〜）→ Common\\Files\\%s %s", sym, tf_name, n,
+               TimeToString(rates[0].time, TIME_DATE), TimeToString(rates[n - 1].time, TIME_DATE),
+               server_first > 0 ? TimeToString(server_first, TIME_DATE) : "不明", path, note);
    return(true);
   }
 
@@ -111,7 +139,7 @@ void OnStart()
    StringSplit(symbols, ',', syms);
    StringSplit(timeframes, ',', tfs);
    FolderCreate(out_folder, FILE_COMMON);
-   int ok = 0, total = 0;
+   int ok = 0, total = 0, warn = 0;
    for(int i = 0; i < ArraySize(syms) && !IsStopped(); i++)
      {
       string sym = Trimmed(syms[i]);
@@ -129,8 +157,11 @@ void OnStart()
          if(tf == "")
             continue;
          total++;
-         if(ExportOne(sym, tf))
+         bool w = false;
+         if(ExportOne(sym, tf, w))
             ok++;
+         if(w)
+            warn++;
         }
      }
    string fx = Trimmed(fx_symbol);
@@ -140,10 +171,16 @@ void OnStart()
       if(!SymbolSelect(fx, true))
          PrintFormat("%s: 銘柄が見つからない（気配値表示の「すべて表示」で名前を確認）", fx);
       else
-         if(ExportOne(fx, "H1"))
+        {
+         bool w = false;
+         if(ExportOne(fx, "H1", w))
             ok++;
+         if(w)
+            warn++;
+        }
      }
-   string msg = StringFormat("CfdExportBars: %d / %d ファイルを書き出した（Common\\Files\\%s）", ok, total, out_folder);
+   string msg = StringFormat("CfdExportBars: %d / %d ファイルを書き出した（Common\\Files\\%s）%s", ok, total, out_folder,
+                             warn > 0 ? StringFormat("。⚠ %d 件は期間が足りない（エキスパートタブを見る）", warn) : "");
    Print(msg);
    Alert(msg);
   }
