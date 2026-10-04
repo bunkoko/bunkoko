@@ -336,13 +336,16 @@ def run_training(cfg: TrainConfig, log: Log = print, config_path: str | None = N
     cands = _load_candidates(tasks, dims, store)
     store.close()
     calendar = ev.calendar
-    # 全候補の指標が落ち着いた日から学習期間を始める
-    firsts = []
-    for sym, tf in {(t.symbol, t.timeframe) for t in tasks}:
-        idx = ds.signal_frame(sym, tf).index
-        warm = max(_warm_time(t) for t in tasks if t.symbol == sym and t.timeframe == tf)
-        firsts.append(idx[min(int(np.ceil(warm / pd.Timedelta(TIMEFRAMES[tf]))), len(idx) - 1)])
-    start_day = (max(firsts).tz_convert(ET) + pd.Timedelta(hours=7)).normalize().tz_localize(None)
+    # 候補ごとに指標が落ち着く日を求め、学習期間がそれより前に始まる回ではその候補を使わない。
+    # （日足の 200 本 EMA のように長いものに合わせると、H4 の候補まで検証の回数が減るため）
+    for c in cands:
+        idx = ds.signal_frame(c.symbol, c.timeframe).index
+        warm = max(_warm_time(t) for t in tasks
+                   if t.symbol == c.symbol and t.strategy == c.strategy and t.timeframe == c.timeframe)
+        first = idx[min(int(np.ceil(warm / pd.Timedelta(TIMEFRAMES[c.timeframe]))), len(idx) - 1)]
+        day = (first.tz_convert(ET) + pd.Timedelta(hours=7)).normalize().tz_localize(None)
+        c.ready = int(calendar.searchsorted(day))
+    start_day = calendar[min((c.ready for c in cands), default=0)]
     wf, pc, acc = cfg.walkforward, cfg.portfolio, cfg.account
     min_mult = acc.min_risk_per_trade / acc.base_risk
     max_mult = acc.max_risk_per_trade / acc.base_risk

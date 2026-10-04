@@ -60,6 +60,7 @@ def main() -> None:
         demo_dir = Path(cfg.output_dir) / "demo_data"
         make_demo_data(demo_dir)
         cfg.data.dir = str(demo_dir)
+        cfg.data.server_tz = "ny_close"    # 合成データは米東部+7時間の形式で書いている
         cfg.data.events = ""
         cfg.data.instruments = ""
         print("※ 合成データです。レポートの成績は戦略の良し悪しを示しません。")

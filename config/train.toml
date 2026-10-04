@@ -4,9 +4,10 @@
 [data]
 dir = "data"                 # MT5 から書き出した CSV を置くフォルダ（同じ銘柄の時間足違いも全部置いてよい）
 # 方針: 売買の判断は粒度の大きい足、約定の再現は M5。
-# フィリップの実測コストでは H1 は往復コストが損切り幅の 10〜19%（銀・WTI・ブレント）で不向きなので H4 にする
-# （2026-10 の check_data。H4 は 2.5〜9.5%）。H1 も比べたいときは ["H1", "H4"]
-signal_timeframes = ["H4"]   # 売買の足。H4 のファイルが無くても H1 や M5 から自動で作る
+# フィリップの実測コスト（2026-10 の check_data）: 往復コスト ÷ 損切り幅は H1 10〜20%（不向き）、H4 3〜10%、D1 1〜4%。
+# H4 だけの学習は検証期間のシャープ 0.27 で基準未満だったので、コストの低い D1 と 1 回だけ比べる（下の grid_D1）。
+# 比べた結果で決め、これ以上は時間足を増やさない（候補を増やすほど偶然良く見えるものを選びやすい）
+signal_timeframes = ["H4", "D1"]  # 売買の足。ファイルが無くても H1 や M5 から自動で作る
 fill_timeframe = "M5"        # 約定の再現に使う細かい足（M5 が無い銘柄は売買の足の高値・安値で推定）
                              # "auto" = 一番細かいファイル / "none" = 使わない
 grid_timeframe = "H1"        # 下の grid の本数がどの時間足の本数か（他の時間足では同じ時間幅に自動換算）
@@ -73,6 +74,11 @@ entry_period = [60, 120, 180, 240]
 exit_period = [30, 60, 90]
 trend_ema = [0, 400, 800]
 "exit.trail_atr" = [2.5, 3.5, 4.5]
+[strategies.donchian.grid_D1]       # 日足は自動換算すると短すぎるので、日足の定番の範囲を直接書く
+entry_period = [20, 40, 55]
+exit_period = [10, 20]
+trend_ema = [0, 100, 200]
+"exit.trail_atr" = [3.0, 4.5]
 
 [strategies.squeeze]
 symbols = ["WTI", "BRENT", "SILVER", "GOLD"]
@@ -82,12 +88,24 @@ min_squeeze_bars = [6, 12, 20]
 kc_mult = [1.25, 1.5, 1.75]
 stop_box_frac = [0.5, 1.0]
 "exit.time_stop_bars" = [24, 48]
+[strategies.squeeze.grid_D1]
+box_period = [20, 40]
+min_squeeze_bars = [5, 10]
+kc_mult = [1.25, 1.5, 1.75]
+stop_box_frac = [0.5, 1.0]
+"exit.time_stop_bars" = [10, 20]
 
 [strategies.pullback]
 symbols = ["WTI", "BRENT", "SILVER", "GOLD"]
 [strategies.pullback.grid]
 fast_ema = [20, 40, 80]
 slow_ema = [100, 200, 400]
+adx_min = [15.0, 20.0, 25.0]
+touch_atr = [0.5, 1.0]
+"exit.trail_atr" = [2.5, 3.5]
+[strategies.pullback.grid_D1]
+fast_ema = [10, 20]
+slow_ema = [50, 100, 200]
 adx_min = [15.0, 20.0, 25.0]
 touch_atr = [0.5, 1.0]
 "exit.trail_atr" = [2.5, 3.5]
@@ -100,3 +118,9 @@ z_entry = [1.8, 2.2]
 rsi_period = [2, 3]
 adx_max = [15.0, 20.0, 25.0]
 "exit.max_hold_bars" = [24, 48]
+[strategies.reversion.grid_D1]
+period = [20]
+z_entry = [1.8, 2.2]
+rsi_period = [2, 3]
+adx_max = [15.0, 20.0, 25.0]
+"exit.max_hold_bars" = [5, 10]

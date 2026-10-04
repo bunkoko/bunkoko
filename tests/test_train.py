@@ -186,3 +186,22 @@ def test_remote_worker_bootstrap(tmp_path, data_dir):
     finally:
         coord.stop()
         store.close()
+
+
+def test_candidates_not_ready_are_skipped():
+    """指標が落ち着く前に学習期間が始まる回では、その候補（例: 日足の長い EMA）を使わない。"""
+    from cfdbot.train.config import PortfolioConfig
+    from cfdbot.train.portfolio import build_portfolio
+
+    days = 600
+    rng = np.random.default_rng(3)
+    rets = rng.normal(0.002, 0.01, (1, days))
+    h4 = SleeveCandidates("GOLD", "pullback", [{}], [{}], [(0,)], (1,), rets, [np.arange(0, days, 5)],
+                          timeframe="H4", ready=0)
+    d1 = SleeveCandidates("WTI", "donchian", [{}], [{}], [(0,)], (1,), rets.copy(), [np.arange(0, days, 5)],
+                          timeframe="D1", ready=300)
+    wf, pc = WalkForwardConfig(min_trades=1, plateau=False), PortfolioConfig(min_score=0.0)
+    early, _, _ = build_portfolio([h4, d1], 0, 250, wf, pc, 0.25, 2.0)
+    late, _, _ = build_portfolio([h4, d1], 300, 550, wf, pc, 0.25, 2.0)
+    assert {p.symbol for p in early} == {"GOLD"}
+    assert {p.symbol for p in late} == {"GOLD", "WTI"}

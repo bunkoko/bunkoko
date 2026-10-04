@@ -36,6 +36,7 @@ class SleeveCandidates:
     entries: list[np.ndarray]    # 取引ごとのエントリー日（日数の添字）
     timeframe: str = "H1"        # 売買の足
     htfs: list[dict] | None = None  # パラメータごとの上位足フィルタ
+    ready: int = 0               # 指標が落ち着く日（日数の添字）。学習期間がこれより前に始まる回では使わない
 
     @property
     def key(self) -> str:
@@ -192,7 +193,8 @@ def allocate(r: np.ndarray, scores: np.ndarray, pc: PortfolioConfig,
 def build_portfolio(cands: list[SleeveCandidates], a: int, b: int, wf: WalkForwardConfig,
                     pc: PortfolioConfig, min_mult: float, max_mult: float) -> tuple[list[Pick], float, float]:
     """学習期間 [a, b) で戦略・パラメータ・配分を決める。"""
-    picks = [p for c in cands if (p := select_params(c, a, b, wf)) is not None and p.score >= pc.min_score]
+    picks = [p for c in cands
+             if c.ready <= a and (p := select_params(c, a, b, wf)) is not None and p.score >= pc.min_score]
     by_symbol: dict[str, list[Pick]] = {}
     for p in sorted(picks, key=lambda p: -p.score):
         lst = by_symbol.setdefault(p.symbol, [])

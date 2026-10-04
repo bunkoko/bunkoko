@@ -136,6 +136,11 @@ def check_spread(sym: str, tf: str, df: pd.DataFrame, inst: Instrument, res: Che
         yearly = "、".join(f"{y} 年 {m:.4g}（上位10% {q:.4g}）" for (y, m), q in
                           zip(by_year.median().items(), by_year.quantile(0.9)))
         res.info(f"  年ごと: {yearly}")
+    recent = sp[df.index >= df.index[-1] - pd.Timedelta(days=90)]
+    if len(recent) and np.median(recent) > med * 2:
+        res.warn(f"{sym}: 直近 3 か月のスプレッド {np.median(recent):.4g} が全期間の中央値 {med:.4g} の "
+                 f"{np.median(recent) / med:.1f} 倍。この状態が続く間は、EA も学習もスプレッドの上限"
+                 "（中央値の 3 倍）で新規を見送る。今の実際のスプレッドを気配値表示で確認する")
     if not point_from_mt5 and (med > inst.spread * 1.5 or med < inst.spread * 0.5):
         res.warn(f"{sym}: 実測スプレッド {med:.4g} が銘柄仕様 {inst.spread:.4g} と大きく違う。"
                  "point（桁数）が MT5 の仕様と合っているかも確認する")
