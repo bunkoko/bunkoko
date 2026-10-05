@@ -29,8 +29,10 @@ sys.path.insert(0, str(ROOT))
 
 from cfdbot.backtest import Sleeve, run_backtest  # noqa: E402
 from cfdbot.context import FUTURES_FOR, ContextStore, from_bars, yahoo_frame  # noqa: E402
-from cfdbot.features import (HYPOTHESES, PARTNER, describe_inputs, feature_frame, hypothesis_gate,  # noqa: E402
-                             ml_gates, trade_rows)
+from cfdbot.context import SPECS, zchange  # noqa: E402
+from cfdbot.features import (HYPOTHESES, OTHER_MARKETS, PARTNER, POST_HOC, describe_inputs,  # noqa: E402
+                             feature_frame, hypothesis_gate, ml_gates, trade_rows)
+from cfdbot.instruments import Instrument  # noqa: E402
 from cfdbot.metrics import compute_metrics  # noqa: E402
 from cfdbot.strategies import make_strategy  # noqa: E402
 from cfdbot.train.config import TIMEFRAMES, load_train_config  # noqa: E402
@@ -174,6 +176,8 @@ def main() -> None:
     end_b = (pd.Timestamp(_clean(args.end), tz="UTC") if args.end else last) + pd.Timedelta(days=1)
 
     def resolve_b(key: str, sym: str):
+        if key == "own":
+            return from_bars(sym, frames_b[sym], tfs[sym]) if sym in frames_b else None
         if key == "partner":
             other = PARTNER.get(sym)
             f = frames_b.get(other) if other else None
@@ -191,6 +195,7 @@ def main() -> None:
 
     # ---------------- 期間A: 先物の長期データ（コストは今のスプレッドを価格に比例させる）
     frames_a = {}
+    rel_costs: list[float] = []
     for pk in picks:
         f = yahoo_frame(store, FUTURES_FOR[pk.symbol]) if pk.symbol in FUTURES_FOR else None
         if f is None or f.empty:
@@ -198,6 +203,7 @@ def main() -> None:
         inst = instruments[pk.symbol]
         ref = float(frames_b[pk.symbol]["close"].iloc[-250:].median())
         rel = (inst.spread + 2 * inst.slippage) / ref
+        rel_costs.append(rel)
         f = f[f.index < split].copy()
         f["spread"] = rel * f["close"] / inst.point_size
         frames_a[pk.symbol] = f
@@ -206,6 +212,8 @@ def main() -> None:
                    filters=replace(bt.filters, max_spread_mult=float("inf"), extra_events=()))
 
     def resolve_a(key: str, sym: str):
+        if key == "own":
+            return from_bars(sym, frames_a[sym], tfs[sym]) if sym in frames_a else None
         if key == "partner":
             other = PARTNER.get(sym)
             f = frames_a.get(other) if other else None
@@ -236,39 +244,45 @@ def main() -> None:
         say(f"  - {s}")
 
     # ---------------- 基準
-    base = {}
+    base, base_res = {}, {}
     for per in periods:
         print(f"計算: 基準 / {per.label}", flush=True)
-        base[per.name] = summarize(per.run(picks), args.equity, symbols)
+        base_res[per.name] = per.run(picks)
+        base[per.name] = summarize(base_res[per.name], args.equity, symbols)
 
     # ---------------- 仮説ごと（＋時期をずらした同じ絞り込みで「偶然でもこのくらいは出る」を測る）
     only = {s.strip() for s in args.only.split(",") if s.strip()}
     rng = np.random.default_rng(20261004)
     fracs = rng.uniform(0.15, 0.85, args.placebo)
+    def run_hypothesis(h, per, pk_list, syms, base_row):
+        """仮説 h を期間 per で試し、時期をずらした同じ絞り込み（偶然）とも比べる。データが無ければ None。"""
+        gates = {}
+        for s in syms:
+            f = per.frames.get(s)
+            g = hypothesis_gate(h, s, f.index, per.tfs[s], per.resolve) if f is not None else None
+            if g is not None:
+                gates[s] = g
+        in_period = [g[(g.index >= per.start) & (g.index < per.end)] for g in gates.values()]
+        if not any((~w["long"]).any() or (~w["short"]).any() for w in in_period):
+            return None    # この期間には外部データが無い（何も止めない）
+        print(f"計算: {h.name} / {per.label}" + (f"（偶然との比較 {len(fracs)} 回を含む）" if len(fracs) else ""),
+              flush=True)
+        r = summarize(per.run(pk_list, gates), args.equity, list(per.frames))
+        r["gated"] = sorted(gates)
+        placebo = [summarize(per.run(pk_list, shifted(gates, fr)), args.equity, list(per.frames))["sharpe"]
+                   for fr in fracs]
+        r["placebo"] = np.array(placebo) - base_row["sharpe"]
+        d = r["sharpe"] - base_row["sharpe"]
+        r["pct"] = float(np.mean(r["placebo"] < d)) if len(placebo) else None
+        return r
+
     results = []
     for h in HYPOTHESES:
         if only and h.name not in only:
             continue
         row = {"name": h.name, "label": h.label, "targets": [s for s in symbols if s in h.inputs]}
         for per in periods:
-            gates = {}
-            for s in row["targets"]:
-                f = per.frames.get(s)
-                g = hypothesis_gate(h, s, f.index, per.tfs[s], per.resolve) if f is not None else None
-                if g is not None:
-                    gates[s] = g
-            in_period = [g[(g.index >= per.start) & (g.index < per.end)] for g in gates.values()]
-            if not any((~w["long"]).any() or (~w["short"]).any() for w in in_period):
-                row[per.name] = None    # この期間には外部データが無い（何も止めない）
-                continue
-            print(f"計算: {h.name} / {per.label}" + (f"（偶然との比較 {len(fracs)} 回を含む）" if len(fracs) else ""),
-                  flush=True)
-            row[per.name] = summarize(per.run(picks, gates), args.equity, symbols)
-            row[per.name]["gated"] = sorted(gates)
-            placebo = [summarize(per.run(picks, shifted(gates, fr)), args.equity, symbols)["sharpe"] for fr in fracs]
-            d = row[per.name]["sharpe"] - base[per.name]["sharpe"]
-            row[per.name]["placebo"] = np.array(placebo) - base[per.name]["sharpe"]
-            row[per.name]["pct"] = float(np.mean(row[per.name]["placebo"] < d)) if len(placebo) else None
+            row[per.name] = run_hypothesis(h, per, picks, row["targets"], base[per.name])
         results.append(row)
 
     # ---------------- 表
@@ -344,8 +358,7 @@ def main() -> None:
         say("\n## 3. 全部の入力をまとめて使う予測（リッジ回帰。1 年ごとに、それより前の取引だけで学習）")
         feats = {per.name: {s: feature_frame(s, per.frames[s], per.tfs[s], per.resolve) for s in per.frames}
                  for per in periods}
-        base_runs = {per.name: per.run(picks) for per in periods}
-        pools = {per.name: trade_rows(base_runs[per.name]["trades"], feats[per.name]) for per in periods}
+        pools = {per.name: trade_rows(base_res[per.name]["trades"], feats[per.name]) for per in periods}
 
         # 各入力と取引の結果（R）の関係（順位相関。買いなら入力の変化そのまま、売りなら符号を反転）
         say("\n### 入力ごとの、取引の結果との相関（両方の期間で同じ向きのものが上）")
@@ -410,6 +423,96 @@ def main() -> None:
                 say(f"  {k}: {v:+.3f}")
         else:
             say("（学習に使える取引が少なく、予測を作れなかった）")
+
+    # ---------------- 4. 結果を見てから足した仮説 → 使っていない市場（他の商品）で確かめる
+    frames_c = {}
+    rel_c = float(np.median(rel_costs)) if rel_costs else 3e-4
+    for sym, key in OTHER_MARKETS.items():
+        f = yahoo_frame(store, key)
+        if f is None or f.empty:
+            continue
+        f = f[f.index >= long_start - pd.Timedelta(days=200)].copy()
+        f["spread"] = rel_c * f["close"] / 1e-4
+        frames_c[sym] = f
+    if frames_c and not only:
+        tf1 = pd.Timedelta("1D")
+        syms_c = list(frames_c)
+        inst_c = {sym: Instrument(symbol=sym, description=SPECS[OTHER_MARKETS[sym]].label, unit="unit", min_qty=1,
+                                  qty_step=1, max_qty=1e12, margin_rate=0.05, spread=0.0, slippage=0.0, tick_size=1e-4,
+                                  cluster=sym) for sym in syms_c}
+        pk0 = picks[0]
+        picks_c = [Pick(sym, pk0.strategy, pk0.params, pk0.exit, 0, 0.0, 0.0, 0, 1.0, pk0.timeframe, {})
+                   for sym in syms_c]
+
+        def resolve_c(key: str, sym: str):
+            if key == "own":
+                return from_bars(sym, frames_c[sym], tf1) if sym in frames_c else None
+            return None if key == "partner" else store.get(key)
+
+        end_c = max(f.index[-1] for f in frames_c.values()) + tf1
+        period_c = Period("C", f"期間C 他の商品 {long_start:%Y-%m}〜{end_c - tf1:%Y-%m}", frames_c,
+                          {s: tf1 for s in syms_c}, inst_c, bt_a, long_start, end_c, resolve_c, run_frames)
+        print(f"計算: 基準 / {period_c.label}", flush=True)
+        res_c = period_c.run(picks_c)
+        base_c = summarize(res_c, args.equity, syms_c)
+        all_periods = periods + [period_c]
+
+        say("\n## 4. 結果を見てから足した仮説（使っていない市場で確かめる）")
+        say("3 章の相関で、両方の期間とも「自分（own_z20）や相方（partner_z20）がすでに大きく動いた向きの取引は成績が悪い」"
+            "という同じ傾向が出た。ただし A・B を見てから作った仮説なので、A・B で良くても証拠にならない。"
+            "そこで、これまで一度も使っていない銅・プラチナ・天然ガス（期間C、同じタートル 55/20）で確かめる。"
+            "しきい値（ふだんの 1.5 倍）は期間C を見る前に決めた。")
+        say(f"\n期間C の基準: シャープ {base_c['sharpe']:.2f}、年率 {base_c['cagr']:.1%}、最大DD {base_c['mdd']:.1%}、"
+            f"取引 {base_c['trades']}（" + "、".join(f"{s} {base_c['by_symbol'][s][1]:+.2f}R×{base_c['by_symbol'][s][0]}"
+                                                for s in syms_c) + "）")
+        say("\n| 仮説 | " + " | ".join(per.label.split(" ")[0] for per in all_periods) + " | 判定 |")
+        say("|---|" + "---|" * (len(all_periods) + 1))
+        for h in POST_HOC:
+            cells, got = [], {}
+            for per in all_periods:
+                pk_list, syms_p, b = (picks_c, syms_c, base_c) if per is period_c else (picks, symbols, base[per.name])
+                targets = [s for s in syms_p if s in h.inputs]
+                r = run_hypothesis(h, per, pk_list, targets, b) if targets else None
+                got[per.name] = (r, b, targets)
+                if r is None:
+                    cells.append("データ無し")
+                else:
+                    cells.append(f"{r['sharpe']:.2f}（{r['sharpe'] - b['sharpe']:+.2f}）取引{r['trades']}"
+                                 + (f" / 偶然より良い {r['pct']:.0%}" if r.get("pct") is not None else ""))
+            rc, bc, tc = got["C"]
+            if rc is None or rc.get("pct") is None:
+                v = "他の商品で確かめられない"
+            elif rc["pct"] >= 0.95 and (improved_share(bc, rc, tc) or 0) >= 0.5 and all(
+                    (got[k][0] or {}).get("pct", 0) >= 0.5 for k in ("A", "B") if k in got):
+                v = "有望（使っていない市場でも確認）"
+            elif rc["pct"] >= 0.95:
+                v = "他の商品では効いた（A・B では弱い）"
+            else:
+                v = "偶然の範囲"
+            say(f"| {h.label} | " + " | ".join(cells) + f" | {v} |")
+
+        say("\n### エントリー時点の「直近 20 日の動き（取引の向き、ふだんの何倍か）」ごとの 1 回あたりの R")
+        bins = [-np.inf, 0.5, 1.0, 1.5, 2.0, np.inf]
+        names = ["0.5 以下", "0.5〜1", "1〜1.5", "1.5〜2", "2 超"]
+        say("| 期間 | " + " | ".join(names) + " |")
+        say("|---|" + "---|" * len(names))
+        for per, res in [(p_, base_res[p_.name]) for p_ in periods] + [(period_c, res_c)]:
+            vals = []
+            for sym, g in res["trades"].groupby("symbol") if not res["trades"].empty else []:
+                own = from_bars(sym, per.frames[sym], per.tfs[sym])
+                z = zchange(own, 20)
+                k = np.searchsorted(own.avail, pd.DatetimeIndex(g["entry_time"]).tz_convert("UTC").as_unit("ns").asi8,
+                                    side="right") - 1
+                ok = k >= 0
+                vals.append(pd.DataFrame({"z": z[k[ok]] * g["side"].to_numpy()[ok],
+                                          "r": g["r_multiple"].to_numpy(float)[ok]}))
+            if not vals:
+                continue
+            v = pd.concat(vals).dropna()
+            grp = v.groupby(pd.cut(v["z"], bins, labels=names), observed=False)["r"]
+            say(f"| {per.label.split(' ')[0]} | " + " | ".join(
+                f"{grp.mean().get(n_, np.nan):+.2f}（{int(grp.count().get(n_, 0))}）" for n_ in names) + " |")
+        say("（括弧は取引数。右の列ほど、入る前にすでに大きく動いていた取引）")
 
     say("\n## 読み方")
     say("- 仮説は 13 個あるので、偶然 1 つくらいは良く見える。そこで、同じ絞り込みを時期だけずらしたもの（偶然）と比べ、"

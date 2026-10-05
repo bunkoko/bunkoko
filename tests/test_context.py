@@ -203,3 +203,17 @@ def test_hypothesis_uses_the_fallback_series_when_the_first_is_missing():
     h = Hypothesis("usd", "test", {"GOLD": "dxy|usd_broad"}, sign=-1)
     g = hypothesis_gate(h, "GOLD", idx, pd.Timedelta("1D"), lambda k, s: up if k == "usd_broad" else None)
     assert (~g["long"]).all() and g["short"].all()     # ドル高なので買わない
+
+
+def test_extension_gate_blocks_entries_after_a_big_move():
+    days = pd.bdate_range("2024-01-01", periods=400)
+    rng = np.random.default_rng(1)
+    close = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, 400)))
+    close[-25:] = close[-26] * np.exp(np.linspace(0.01, 0.25, 25))     # 最後の 25 日で大きく上げる
+    cs = CSeries("own", pd.DataFrame({"close": close}, index=days),
+                 (days + pd.Timedelta(days=1)).tz_localize("UTC").as_unit("ns").asi8, "price")
+    idx = pd.DatetimeIndex([days[100], days[-1]]).tz_localize("UTC")
+    h = Hypothesis("ext", "test", {"GOLD": "own"}, kind="extension", threshold=1.5)
+    g = hypothesis_gate(h, "GOLD", idx, pd.Timedelta("1D"), lambda k, s: cs)
+    assert g["long"].iloc[0] and g["short"].iloc[0]              # ふだんの日はどちらも入れる
+    assert not g["long"].iloc[1] and g["short"].iloc[1]          # 大きく上げた後は買わない（売りは入れる）

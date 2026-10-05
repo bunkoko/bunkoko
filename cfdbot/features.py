@@ -34,8 +34,9 @@ class Hypothesis:
     label: str
     inputs: dict[str, str]        # 銘柄 → 系列キー（"partner" は相方の銘柄の価格。"a|b" は a が無ければ b）
     sign: int = 1                 # +1: 系列が上がっていれば買いだけ / -1: 下がっていれば買いだけ
-    kind: str = "trend"           # "trend" / "cot"
+    kind: str = "trend"           # "trend" / "cot" / "extension"（すでに大きく動いた向きには入らない）
     n: int = 20                   # 何本前からの変化を見るか（日次なら約 1 か月）
+    threshold: float = 1.5        # extension: n 本の変化がふだんの何倍（σ）を超えたら、その向きに入らないか
 
 
 HYPOTHESES: tuple[Hypothesis, ...] = (
@@ -56,6 +57,18 @@ HYPOTHESES: tuple[Hypothesis, ...] = (
                {"GOLD": "cot_gold", "SILVER": "cot_silver", "WTI": "cot_wti", "BRENT": "cot_wti"}, kind="cot"),
 )
 HYPOTHESIS_BY_NAME = {h.name: h for h in HYPOTHESES}
+
+# 他の商品（長期の先物データだけで確かめる。上の仮説作りにも、これまでの検証にも使っていない市場）
+OTHER_MARKETS = {"COPPER": "copper", "PLATINUM": "platinum", "NATGAS": "natgas"}
+
+# 2026-10-05 の結果（全部入りの予測の相関）を見てから足した仮説。期間A・B では「見てから作った」ので、
+# 判定は他の商品（OTHER_MARKETS）で行う。しきい値はその商品のデータを見る前に決めた 1.5σ
+POST_HOC: tuple[Hypothesis, ...] = (
+    Hypothesis("extension_own", "直近 20 日にすでに大きく動いた向き（ふだんの 1.5 倍超）には入らない",
+               _each(ALL + tuple(OTHER_MARKETS), "own"), kind="extension"),
+    Hypothesis("extension_partner", "相方がすでに大きく動いた向き（ふだんの 1.5 倍超）には入らない",
+               _each(ALL, "partner"), kind="extension"),
+)
 
 # 全部の入力を使う予測で、向きを持つ特徴（変化の向き × 売買の向き）として使う系列
 DIRECTIONAL_KEYS = (
@@ -89,6 +102,9 @@ def hypothesis_gate(h: Hypothesis, symbol: str, index: pd.DatetimeIndex, tf: pd.
     if h.kind == "cot":
         pct = at_times(cs, cot_percentile(cs), t)
         allow_long, allow_short = ~(pct > 0.9), ~(pct < 0.1)
+    elif h.kind == "extension":
+        z = at_times(cs, zchange(cs, h.n), t)
+        allow_long, allow_short = ~(z > h.threshold), ~(z < -h.threshold)
     else:
         d = h.sign * np.sign(at_times(cs, change(cs, h.n), t))
         allow_long, allow_short = ~(d < 0), ~(d > 0)   # データが無い日（NaN）は両方許す
