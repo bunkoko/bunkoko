@@ -32,13 +32,16 @@ case "$cmd" in
           exec "$PY" scripts/check_data.py --write-instruments config/instruments_measured.json --set-config ;;
   check)  need_venv; exec "$PY" scripts/check_data.py "$@" ;;
   train)  need_venv; exec "$PY" scripts/train.py "$@" ;;
-  ea)     need_venv; need_run; exec "$PY" scripts/mt5_files.py install --run "$RUN" "$@" ;;
+  ea)     need_venv; need_run
+          rm -f output/live/current        # 以降の replay は学習結果の構成を使う
+          exec "$PY" scripts/mt5_files.py install --run "$RUN" "$@" ;;
   risk)   need_venv; exec "$PY" scripts/set_risk.py --risk "$@" ;;
   preset) need_venv
           [ $# -ge 1 ] || { echo "使い方: ./cfd preset config/baselines/turtle55_d1.json [--risk-scale 0.5]"; exit 1; }
           CONF="$1"; shift
           OUT="output/live/$(basename "$CONF" .json)"
           "$PY" scripts/make_ea.py --final "$CONF" --out "$OUT"
+          echo "$OUT" > output/live/current  # 以降の replay はこの構成を使う
           exec "$PY" scripts/mt5_files.py install --run "$OUT" "$@" ;;
   table)  need_venv; exec "$PY" scripts/risk_table.py "$@" ;;
   compare) need_venv
@@ -47,7 +50,14 @@ case "$cmd" in
   logs)   need_venv; exec "$PY" scripts/mt5_files.py fetch-logs "$@" ;;
   context) need_venv; exec "$PY" scripts/fetch_context.py "$@" ;;
   study)  need_venv; exec "$PY" scripts/feature_study.py "$@" ;;
-  replay) need_venv; need_run; exec "$PY" scripts/replay.py --final "$RUN/final.json" "$@" ;;
+  replay) need_venv
+          if [ -f output/live/current ]; then
+            FINAL="$(cat output/live/current)/final.json"
+            echo "構成: $FINAL（./cfd preset で最後に MT5 に置いたもの）"
+          else
+            need_run; FINAL="$RUN/final.json"
+          fi
+          exec "$PY" scripts/replay.py --final "$FINAL" "$@" ;;
   py)     need_venv; exec "$PY" "$@" ;;
   help|*) cat <<'HELP'
 使い方: ./cfd <コマンド>
@@ -65,7 +75,7 @@ case "$cmd" in
   table    資金と 1回の損失ごとの成績の表（例: ./cfd table --final ... --start 2021-06-01）
   logs     テスターのシグナル記録を取り込む
   compare  テスターの記録を取り込み、全銘柄で EA と Python を突き合わせる（例: ./cfd compare output/live/turtle55_d1/final.json）
-  replay   最新の学習結果で期間を再現（--start 2026-11-01 など）
+  replay   MT5 に置いた構成（preset か ea で最後に置いたもの）で期間を再現（--start 2026-11-01 など）
   context  外部データ（金利・ドル・株価・他の商品・投機筋の建玉）を取得し、MT5 にある関連銘柄も表示
   study    外部データで絞り込むと成績が良くなるかを検証（./cfd context の後。5 分前後）
   py       仮想環境の Python で実行（例: ./cfd py scripts/compare_signals.py ...）
