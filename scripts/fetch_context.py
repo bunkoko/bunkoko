@@ -4,7 +4,8 @@
     python scripts/fetch_context.py --only fred,cftc
     python scripts/fetch_context.py --since 2000-01-01
 
-取得元はどれも無料・登録不要: FRED（米連銀のデータベース）、Yahoo Finance、CFTC（米商品先物取引委員会）。
+取得元はどれも無料・登録不要: FRED（米連銀のデータベース）、Yahoo Finance、CFTC（米商品先物取引委員会）、
+EIA（米エネルギー情報局）。Yahoo は yfinance（./cfd update で入る）で取る。
 FRED に接続できないときは、待たずに Yahoo の近いデータ（^TNX・^VIX・物価連動債 ETF など）で代用する。
 FRED の無料 API キーがあれば --fred-key で渡すと確実に取れる（config/local.toml に保存）。
 研究（scripts/feature_study.py）に使う。価格データ（MT5 の書き出し）と同じく git には入れない。
@@ -28,8 +29,9 @@ except ModuleNotFoundError:  # Python 3.10
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from cfdbot.context import (CATALOG, FRED_ALT, ContextStore, _get, cot_series, cot_urls, fetch_alt,  # noqa: E402
-                            fetch_fred, fetch_yahoo, load_mt5_catalog, mt5_context_files, parse_cot)
+from cfdbot.context import (CATALOG, FRED_ALT, ContextStore, NotFound, _get, cot_series, cot_urls,  # noqa: E402
+                            fetch_alt, fetch_eia, fetch_fred, fetch_yahoo, load_mt5_catalog, mt5_context_files,
+                            parse_cot, yfinance_available)
 from cfdbot.data import load_mt5_csv  # noqa: E402
 from cfdbot.train.config import load_train_config, local_config_path, set_local_option  # noqa: E402
 
@@ -86,7 +88,14 @@ def main() -> None:
     yahoo_cache: dict[str, pd.DataFrame] = {}
     fred_down = False      # FRED に一度つながらなければ、残りは待たずに代わり（Yahoo）を使う
     yahoo_fails = 0        # Yahoo が 3 回続けて失敗したら残りは省く
-    headers = {"fred": "FRED（米連銀のデータベース）", "yahoo": "Yahoo Finance", "cftc": "CFTC（投機筋の建玉）"}
+    headers = {"fred": "FRED（米連銀のデータベース）", "yahoo": "Yahoo Finance", "cftc": "CFTC（投機筋の建玉）",
+               "eia": "EIA（米エネルギー情報局）"}
+    if yfinance_available():
+        import yfinance as yf  # type: ignore
+
+        yf.set_tz_cache_location(str((store.root / ".yfinance").resolve()))   # キャッシュもこのフォルダの中に置く
+    elif not only or "yahoo" in only:
+        print("⚠ yfinance が入っていない（./cfd update で入る）。Yahoo に直接取りに行くが、断られることが多い")
     shown = set()
     for spec in CATALOG:
         if only and spec.source not in only:
@@ -101,6 +110,8 @@ def main() -> None:
                 if not fred_down:
                     try:
                         df = fetch_fred(spec.code, api_key)
+                    except NotFound:
+                        raise
                     except Exception as e:  # noqa: BLE001
                         fred_down = True
                         print(f"  FRED に接続できない（{str(e)[:120]}）。残りは待たずに Yahoo の代わりのデータを使う",
@@ -129,6 +140,8 @@ def main() -> None:
                 except Exception:
                     yahoo_fails += 1
                     raise
+            elif spec.source == "eia":
+                df = fetch_eia(spec.code)
             else:
                 if cot_error:
                     raise RuntimeError(cot_error)
@@ -156,9 +169,8 @@ def main() -> None:
               "で取り直す（キーは https://fredaccount.stlouisfed.org/apikeys で発行。メールアドレスの登録だけ）")
     if failed:
         if len([f for f in failed if f[2] == "yahoo"]) > 5:
-            print("Yahoo がまとめて失敗した場合: 少し時間をおいて再実行する。続くときは\n"
-                  "  UV_PYTHON_INSTALL_DIR=\"$PWD/.python\" uv pip install --python .venv/bin/python yfinance\n"
-                  "で yfinance を入れると、そちらで取り直す")
+            print("Yahoo がまとめて失敗した: " + ("少し時間をおいて（30 分〜数時間）再実行する" if yfinance_available()
+                                               else "./cfd update で yfinance を入れてから再実行する"))
         print("失敗した系列は研究で使わないだけなので、そのまま先に進んでよい（表示を送ってくれれば対応する）")
     show_mt5(args)
     print("\n次: ./cfd study（外部データで絞り込んだときの成績を比べる。5 分前後）")

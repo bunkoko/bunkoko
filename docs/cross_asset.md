@@ -83,7 +83,7 @@ EA は MQL5 VPS で動かす予定で、VPS にはファイルが移らない。
 2. MT5 で CfdExportBars を実行する（入力はそのまま）。
    - いつものバーに加えて、サーバーの全銘柄の一覧（`symbols_all.txt`）と、関連銘柄の日足（`context` フォルダ）を書き出す。
 3. `./cfd data` で取り込む。
-4. `./cfd context` で外部データを取得する。
+4. `./cfd context` で外部データを取得する（Yahoo は yfinance、原油在庫は EIA の Excel から取る。どちらも `./cfd update` で入る）。
    - 数分かかる。最後に MT5 のサーバーにある銘柄の一覧が出る。
    - FRED に接続できないときは、待たずに Yahoo の近いデータで代用する（10 年金利 → ^TNX、VIX → ^VIX、
      実質金利 → 物価連動債 ETF の価格、期待インフレ → 物価連動債 ÷ 普通の国債、など）。

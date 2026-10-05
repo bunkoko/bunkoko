@@ -15,6 +15,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
+# 外部データの研究（./cfd context）: Yahoo の日足と EIA の Excel を読む
+research = ["yfinance>=0.2.50", "xlrd>=2.0"]
 
 [tool.setuptools.packages.find]
 include = ["cfdbot*"]

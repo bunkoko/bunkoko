@@ -19,7 +19,7 @@ case "$cmd" in
   setup)  exec scripts/setup_mac.sh "$@" ;;
   update) git pull --ff-only
           need_venv
-          UV_PYTHON_INSTALL_DIR="$PWD/.python" uv pip install --python "$PY" -e ".[dev]" -q
+          UV_PYTHON_INSTALL_DIR="$PWD/.python" uv pip install --python "$PY" -e ".[dev,research]" -q
           "$PY" scripts/mt5_files.py install
           echo "更新した。MT5 の MetaEditor で CfdCommodityEA と CfdExportBars をコンパイルし直す（F7）" ;;
   where)  need_venv; exec "$PY" scripts/mt5_files.py where "$@" ;;

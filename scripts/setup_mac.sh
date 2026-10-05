@@ -39,7 +39,7 @@ else
 fi
 
 step "3/5 パッケージ（.venv の中に入る）"
-uv pip install --python .venv/bin/python -e ".[dev]"
+uv pip install --python .venv/bin/python -e ".[dev,research]"
 
 step "4/5 テスト"
 .venv/bin/python -m pytest -q

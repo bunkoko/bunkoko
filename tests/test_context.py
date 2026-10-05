@@ -169,3 +169,37 @@ def test_get_falls_back_to_curl_and_hides_query(monkeypatch):
         assert "SECRET" not in str(e)
     else:
         raise AssertionError("例外にならない")
+
+
+def test_eia_sheet_and_404_is_not_an_outage(monkeypatch):
+    from cfdbot import context as ctx
+
+    sheet = pd.DataFrame([["Back to Contents", "Data 1: Weekly U.S. Ending Stocks"],
+                          ["Sourcekey", "WCESTUS1"],
+                          ["Date", "Weekly U.S. Ending Stocks excluding SPR of Crude Oil (Thousand Barrels)"],
+                          [pd.Timestamp("2026-09-18"), 415000],
+                          [pd.Timestamp("2026-09-25"), 413500]])
+    t = ctx.eia_table(sheet)
+    assert list(t["date"]) == ["2026-09-18", "2026-09-25"] and t["value"].iloc[-1] == 413500
+
+    def not_found(*a, **k):
+        raise ctx.urllib.error.HTTPError("https://x/y?id=1", 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(ctx.urllib.request, "urlopen", not_found)
+    monkeypatch.setattr(ctx, "_curl", lambda *a: (_ for _ in ()).throw(AssertionError("curl は試さない")))
+    try:
+        ctx._get("https://x/y?id=1")
+    except ctx.NotFound:
+        pass
+    else:
+        raise AssertionError("NotFound にならない")
+
+
+def test_hypothesis_uses_the_fallback_series_when_the_first_is_missing():
+    days = pd.bdate_range("2025-01-01", periods=60)
+    up = CSeries("usd_broad", pd.DataFrame({"close": np.linspace(100, 120, 60)}, index=days),
+                 (days + pd.Timedelta(days=1)).tz_localize("UTC").as_unit("ns").asi8, "price")
+    idx = pd.date_range("2025-03-10", periods=3, freq="D", tz="UTC")
+    h = Hypothesis("usd", "test", {"GOLD": "dxy|usd_broad"}, sign=-1)
+    g = hypothesis_gate(h, "GOLD", idx, pd.Timedelta("1D"), lambda k, s: up if k == "usd_broad" else None)
+    assert (~g["long"]).all() and g["short"].all()     # ドル高なので買わない

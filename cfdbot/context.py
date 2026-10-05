@@ -8,6 +8,7 @@
     FRED（米連銀）  金利・期待インフレ等     観測日の翌営業日 17:00 ET（ドル指数は週 1 回なので 5 営業日後）
     Yahoo          先物・株価指数・為替     観測日が取引所の時刻で終わったとき（翌日 0:00）
     CFTC           投機筋の建玉（週次）      火曜の観測 → 金曜 15:30 ET（3 営業日後 16:00 で扱う）
+    EIA            米原油在庫（週次）        金曜の観測 → 水曜 10:30 ET（3 営業日後 17:00 で扱う）
 
 データは data/context/<取得元>/<キー>.csv に保存する（scripts/fetch_context.py が作る）。
 """
@@ -19,6 +20,7 @@ import json
 import shutil
 import subprocess
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
@@ -34,11 +36,15 @@ from .events import ET
 _UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
 
 
+class NotFound(RuntimeError):
+    """相手のサーバーには届いたが、その系列が無い（404）。"""
+
+
 @dataclass(frozen=True)
 class SeriesSpec:
     key: str
-    source: str        # "fred" / "yahoo" / "cftc"
-    code: str          # FRED の ID / Yahoo のティッカー / CFTC の市場コード
+    source: str        # "fred" / "yahoo" / "cftc" / "eia"
+    code: str          # FRED・EIA の ID / Yahoo のティッカー / CFTC の市場コード
     label: str
     kind: str          # "price"（比率で変化を見る）/ "level"（差で見る: 金利・スプレッド・VIX など）
     lag_days: int = 0  # 観測日の何営業日後に公表されるか（FRED・CFTC）
@@ -57,7 +63,8 @@ CATALOG: tuple[SeriesSpec, ...] = (
     SeriesSpec("vix", "fred", "VIXCLS", "VIX（米株の予想変動率）", "level", 1),
     SeriesSpec("ovx", "fred", "OVXCLS", "原油の予想変動率（OVX）", "level", 1),
     SeriesSpec("gvz", "fred", "GVZCLS", "金の予想変動率（GVZ）", "level", 1),
-    SeriesSpec("crude_stocks", "fred", "WCESTUS1", "米原油在庫（週次・戦略備蓄を除く）", "price", 3),
+    # ---- 米原油在庫（EIA。週次。金曜時点 → 水曜 10:30 ET 公表）
+    SeriesSpec("crude_stocks", "eia", "WCESTUS1", "米原油在庫（週次・戦略備蓄を除く）", "price", 3),
     # ---- 先物（長期の検証に使う銘柄と、関連する商品）
     SeriesSpec("fut_gold", "yahoo", "GC=F", "金先物", "price"),
     SeriesSpec("fut_silver", "yahoo", "SI=F", "銀先物", "price"),
@@ -269,6 +276,12 @@ def _get(url: str, timeout: float = 30.0, tries: int = 2, ua: str | None = _UA, 
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return r.read()
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise NotFound(f"{url.split('?')[0]}: 見つからない（404）") from None
+            last = e
+            if i + 1 < tries:
+                time.sleep(2)
         except Exception as e:  # noqa: BLE001  通信の失敗は種類を問わず再試行する
             last = e
             if i + 1 < tries:
@@ -368,25 +381,83 @@ def parse_yahoo_chart(raw: bytes) -> pd.DataFrame:
     return df
 
 
+def yfinance_available() -> bool:
+    try:
+        import yfinance  # type: ignore  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _yf_history(ticker: str, since: str) -> pd.DataFrame:
+    """yfinance（ブラウザと同じ通信のふりをするので Yahoo に断られにくい）で日足を取る。"""
+    import yfinance as yf  # type: ignore
+
+    last: Exception | None = None
+    for wait in (0, 10, 30):    # アクセスが多すぎると言われたら少し待ってやり直す
+        time.sleep(wait)
+        try:
+            h = yf.Ticker(ticker).history(start=since, interval="1d", auto_adjust=False, raise_errors=True,
+                                          timeout=30)
+            break
+        except Exception as e:  # noqa: BLE001
+            last = e
+            if "rate" not in type(e).__name__.lower() and "too many" not in str(e).lower():
+                raise
+    else:
+        raise RuntimeError(f"Yahoo（yfinance）: {last}")
+    if h.empty:
+        raise RuntimeError(f"Yahoo（yfinance）: {ticker} のデータが空")
+    tz = str(h.index.tz) if h.index.tz is not None else "America/New_York"
+    df = pd.DataFrame({"date": h.index.strftime("%Y-%m-%d"), "open": h["Open"].to_numpy(float),
+                       "high": h["High"].to_numpy(float), "low": h["Low"].to_numpy(float),
+                       "close": h["Close"].to_numpy(float), "volume": h["Volume"].to_numpy(float), "tz": tz})
+    return df.dropna(subset=["close"]).drop_duplicates("date", keep="last")
+
+
 def fetch_yahoo(ticker: str, since: str = "2000-01-01") -> pd.DataFrame:
+    """Yahoo の日足。yfinance が入っていればそれを使う（直接だと「アクセスが多すぎる」で断られることが多い）。"""
+    first: Exception | None = None
+    if yfinance_available():
+        try:
+            return _yf_history(ticker, since)
+        except Exception as e:  # noqa: BLE001
+            first = e
     p1 = int(pd.Timestamp(since, tz="UTC").timestamp())
     p2 = int(pd.Timestamp.now(tz="UTC").timestamp()) + 86400
     url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(ticker, safe='')}"
            f"?period1={p1}&period2={p2}&interval=1d&events=history")
     try:
         return parse_yahoo_chart(_get(url, timeout=30, tries=2))
-    except Exception as first:  # noqa: BLE001
-        try:  # yfinance が入っていればそちらで再試行
-            import yfinance as yf  # type: ignore
-        except ImportError:
-            raise first from None
-        h = yf.Ticker(ticker).history(start=since, interval="1d", auto_adjust=False)
-        if h.empty:
-            raise first from None
-        tz = str(h.index.tz) if h.index.tz is not None else "America/New_York"
-        return pd.DataFrame({"date": h.index.strftime("%Y-%m-%d"), "open": h["Open"].to_numpy(),
-                             "high": h["High"].to_numpy(), "low": h["Low"].to_numpy(),
-                             "close": h["Close"].to_numpy(), "volume": h["Volume"].to_numpy(), "tz": tz})
+    except Exception as e:  # noqa: BLE001
+        raise (first or e) from None
+
+
+# --------------------------------------------------------------------------- EIA（米エネルギー情報局）
+def eia_table(sheet: pd.DataFrame) -> pd.DataFrame:
+    """EIA の履歴 Excel の 1 枚（1 列目が日付、2 列目が値。上に説明の行がある）を date / value の表にする。"""
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        d = pd.to_datetime(sheet.iloc[:, 0], errors="coerce")
+    v = pd.to_numeric(sheet.iloc[:, 1], errors="coerce")
+    ok = d.notna() & v.notna()
+    return pd.DataFrame({"date": d[ok].dt.strftime("%Y-%m-%d").to_numpy(), "value": v[ok].to_numpy(float)})
+
+
+def fetch_eia(code: str) -> pd.DataFrame:
+    """EIA の週次の系列（例: WCESTUS1 = 米原油在庫・戦略備蓄を除く）。キー不要の履歴 Excel から取る。"""
+    try:
+        import xlrd  # type: ignore  # noqa: F401
+    except ImportError:
+        raise RuntimeError("Excel（.xls）を読む xlrd が無い。./cfd update で入る") from None
+    raw = _get(f"https://www.eia.gov/dnav/pet/hist_xls/{code}w.xls", timeout=60, tries=2)
+    book = pd.read_excel(io.BytesIO(raw), sheet_name=None, header=None, engine="xlrd")
+    name = "Data 1" if "Data 1" in book else next((k for k in book if k.lower().startswith("data")), None)
+    if name is None:
+        raise RuntimeError(f"EIA の Excel に Data のシートが無い（{list(book)}）")
+    return eia_table(book[name])
 
 
 _COT_COLS = {

@@ -32,14 +32,14 @@ def _each(symbols, key: str) -> dict[str, str]:
 class Hypothesis:
     name: str
     label: str
-    inputs: dict[str, str]        # 銘柄 → 系列キー（"partner" は相方の銘柄の価格）
+    inputs: dict[str, str]        # 銘柄 → 系列キー（"partner" は相方の銘柄の価格。"a|b" は a が無ければ b）
     sign: int = 1                 # +1: 系列が上がっていれば買いだけ / -1: 下がっていれば買いだけ
     kind: str = "trend"           # "trend" / "cot"
     n: int = 20                   # 何本前からの変化を見るか（日次なら約 1 か月）
 
 
 HYPOTHESES: tuple[Hypothesis, ...] = (
-    Hypothesis("usd", "ドル安なら買いだけ・ドル高なら売りだけ（ドルインデックス）", _each(ALL, "dxy"), -1),
+    Hypothesis("usd", "ドル安なら買いだけ・ドル高なら売りだけ（ドルインデックス）", _each(ALL, "dxy|usd_broad"), -1),
     Hypothesis("real_rate", "実質金利が下がっていれば買いだけ（金・銀）", _each(METALS, "real10y"), -1),
     Hypothesis("bonds", "米国債の価格が上がっていれば買いだけ（金・銀）", _each(METALS, "tbond"), +1),
     Hypothesis("breakeven", "期待インフレ率が上がっていれば買いだけ", _each(ALL, "breakeven10y"), +1),
@@ -79,10 +79,10 @@ def decide_ns(index: pd.DatetimeIndex, tf: pd.Timedelta) -> np.ndarray:
 def hypothesis_gate(h: Hypothesis, symbol: str, index: pd.DatetimeIndex, tf: pd.Timedelta,
                     resolve: Resolver) -> pd.DataFrame | None:
     """仮説 h による銘柄 symbol の絞り込み（列 long / short）。対象外・データが無ければ None。"""
-    key = h.inputs.get(symbol)
-    if key is None:
+    keys = h.inputs.get(symbol)
+    if keys is None:
         return None
-    cs = resolve(key, symbol)
+    cs = next((c for c in (resolve(k, symbol) for k in keys.split("|")) if c is not None), None)
     if cs is None:
         return None
     t = decide_ns(index, tf)
