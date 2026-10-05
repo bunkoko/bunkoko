@@ -18,6 +18,9 @@ cmd="${1:-help}"
 case "$cmd" in
   setup)  exec scripts/setup_mac.sh "$@" ;;
   update) git pull --ff-only
+          # 取得したばかりの新しい cfd で続きを行う（動いている古い cfd のままだと、新しく増えた手順が抜ける）
+          exec ./cfd _after_update ;;
+  _after_update)
           need_venv
           UV_PYTHON_INSTALL_DIR="$PWD/.python" uv pip install --python "$PY" -e ".[dev,research]" -q
           "$PY" scripts/mt5_files.py install
