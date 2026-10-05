@@ -217,3 +217,23 @@ def test_extension_gate_blocks_entries_after_a_big_move():
     g = hypothesis_gate(h, "GOLD", idx, pd.Timedelta("1D"), lambda k, s: cs)
     assert g["long"].iloc[0] and g["short"].iloc[0]              # ふだんの日はどちらも入れる
     assert not g["long"].iloc[1] and g["short"].iloc[1]          # 大きく上げた後は買わない（売りは入れる）
+
+
+def test_donchian_extension_filter_matches_the_study_gate():
+    from cfdbot import indicators as ind
+    from cfdbot.context import from_bars, zchange
+    from cfdbot.data import synthetic_ohlc
+    from cfdbot.strategies import make_strategy
+
+    df = synthetic_ohlc("gold", start="2021-01-03", end="2024-12-31", hours=24, seed=5)
+    own = from_bars("GOLD", df, pd.Timedelta("1D"))
+    z_study = zchange(own, 20)
+    z_ind = ind.extension_z(df["close"], 20).to_numpy()
+    ok = np.isfinite(z_study)
+    assert ok.sum() > 500 and np.allclose(z_study[ok], z_ind[ok], rtol=1e-9)
+    base = make_strategy("donchian", entry_period=55, exit_period=20, trend_ema=0).generate(df)
+    ext = make_strategy("donchian", entry_period=55, exit_period=20, trend_ema=0, max_extension=1.5).generate(df)
+    removed = (base["entry"] != 0) & (ext["entry"] == 0)
+    assert removed.any() and ((ext["entry"] != 0) <= (base["entry"] != 0)).all()   # 減るだけで増えない
+    zz = pd.Series(z_ind, index=df.index)
+    assert ((base["entry"][removed] * zz[removed]) > 1.5).all()                   # 消えたのは大きく動いた向きだけ

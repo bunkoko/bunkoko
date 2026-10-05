@@ -19,6 +19,10 @@ class DonchianBreakout(Strategy):
         "exit_period": 20,
         "trend_ema": 200,     # 0 でフィルタ無効
         "buffer_atr": 0.0,    # チャネルを ATR×buffer 以上抜けたときだけ採用
+        # 直近 extension_period 本ですでに大きく動いた向き（ふだんの max_extension 倍超）には入らない（0 で無効）。
+        # 2026-10 の検証（docs/cross_asset.md 6 章）: 先物 20 年・フィリップ 5 年・使っていない 3 市場で効果を確認
+        "max_extension": 0.0,
+        "extension_period": 20,
     }
 
     def validate(self) -> None:
@@ -41,6 +45,10 @@ class DonchianBreakout(Strategy):
             trend = ind.ema(close, p["trend_ema"])
             long_ok &= close > trend
             short_ok &= close < trend
+        if p["max_extension"] > 0:
+            z = ind.extension_z(close, p["extension_period"])
+            long_ok &= ~(z > p["max_extension"])     # 計算できない（NaN）ときは止めない
+            short_ok &= ~(z < -p["max_extension"])
         return signal_frame(
             df.index, long_ok, short_ok,
             exit_long=close < ex_lower,

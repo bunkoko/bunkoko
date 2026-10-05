@@ -84,3 +84,15 @@ def donchian(df: pd.DataFrame, n: int) -> tuple[pd.Series, pd.Series]:
     upper = df["high"].rolling(n).max().shift(1)
     lower = df["low"].rolling(n).min().shift(1)
     return upper, lower
+
+
+def extension_z(close: pd.Series, n: int = 20, window: int = 252) -> pd.Series:
+    """直近 n 本の値動き（対数）が、ふだんの何倍か。
+
+    ふだん = 1 本の値動き（対数）の標準偏差（直近 window 本・不偏。window/2 本未満なら NaN）× √n。
+    EA の ExtensionZ と同じ式。
+    """
+    r1 = np.log(close / close.shift(1))
+    scale = r1.rolling(window, min_periods=window // 2).std() * np.sqrt(n)
+    return np.log(close / close.shift(n)) / scale
+

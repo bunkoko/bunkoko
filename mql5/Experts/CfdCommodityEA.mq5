@@ -19,7 +19,7 @@
 //| ※ MetaEditor でコンパイル・デモ口座で動作確認してから使うこと。      |
 //+------------------------------------------------------------------+
 #property copyright "cfdbot"
-#property version   "0.11"
+#property version   "0.12"
 #property description "ATR-based commodity CFD EA (Donchian / Squeeze / Pullback / Reversion)"
 
 #include <Trade\Trade.mqh>
@@ -47,6 +47,8 @@ input int    dc_entry_period = 40;    // エントリーチャネル本数
 input int    dc_exit_period  = 20;    // 手仕舞いチャネル本数
 input int    dc_trend_ema    = 200;   // トレンドフィルタEMA（0=無効）
 input double dc_buffer_atr   = 0.0;   // ブレイク幅の下限（ATR倍）
+input double dc_max_extension = 0.0;  // 直近の値動きがふだんのこの倍を超えた向きには入らない（0=無効）
+input int    dc_extension_period = 20; // その「直近」の本数
 
 input group "B: スクイーズ"
 input int    sq_bb_period        = 20;
@@ -150,7 +152,8 @@ struct Params
   {
    int    strategy;
    int    dc_entry_period, dc_exit_period, dc_trend_ema;
-   double dc_buffer_atr;
+   double dc_buffer_atr, dc_max_extension;
+   int    dc_extension_period;
    int    sq_bb_period, sq_box_period, sq_min_squeeze_bars;
    double sq_bb_mult, sq_kc_mult, sq_stop_box_frac;
    int    pb_fast_ema, pb_slow_ema, pb_slope_bars, pb_adx_period, pb_setup_bars, pb_swing_bars;
@@ -438,6 +441,34 @@ double HighestHigh(const int from, const int to) // [from, to]
    return(v);
   }
 
+// 直近 n 本の値動き（対数）が、ふだんの何倍か（Python の indicators.extension_z と同じ式）。
+// ふだん = 1 本の値動き（対数）の標準偏差（直近 252 本・不偏。126 本未満なら計算しない）× √n
+bool ExtensionZ(const int k, const int n, double &z)
+  {
+   const int window = 252;
+   if(n < 1 || k < n || g_c[k] <= 0 || g_c[k - n] <= 0)
+      return(false);
+   int from = MathMax(1, k - window + 1);
+   int cnt = k - from + 1;
+   if(cnt < window / 2 || cnt < 2)
+      return(false);
+   double mean = 0;
+   for(int i = from; i <= k; i++)
+      mean += MathLog(g_c[i] / g_c[i - 1]);
+   mean /= cnt;
+   double ss = 0;
+   for(int i = from; i <= k; i++)
+     {
+      double d = MathLog(g_c[i] / g_c[i - 1]) - mean;
+      ss += d * d;
+     }
+   double sd = MathSqrt(ss / (cnt - 1));
+   if(sd <= 0)
+      return(false);
+   z = MathLog(g_c[k] / g_c[k - n]) / (sd * MathSqrt((double)n));
+   return(true);
+  }
+
 double LowestLow(const int from, const int to)
   {
    double v = g_l[from];
@@ -475,6 +506,15 @@ void ComputeSignal(const int k, CfdSignal &s)
          CalcEMA(g_c, P.dc_trend_ema, e);
          lg = lg && g_c[k] > e[k];
          sh = sh && g_c[k] < e[k];
+        }
+      if(P.dc_max_extension > 0)
+        {
+         double z = 0;
+         if(ExtensionZ(k, P.dc_extension_period, z))   // 計算できないときは止めない（Python の NaN と同じ）
+           {
+            lg = lg && !(z > P.dc_max_extension);
+            sh = sh && !(z < -P.dc_max_extension);
+           }
         }
       s.exit_long = g_c[k] < LowestLow(k - M, k - 1);
       s.exit_short = g_c[k] > HighestHigh(k - M, k - 1);
@@ -1455,6 +1495,8 @@ void LoadDefaults()
    P.dc_exit_period = dc_exit_period;
    P.dc_trend_ema = dc_trend_ema;
    P.dc_buffer_atr = dc_buffer_atr;
+   P.dc_max_extension = dc_max_extension;
+   P.dc_extension_period = dc_extension_period;
    P.sq_bb_period = sq_bb_period;
    P.sq_bb_mult = sq_bb_mult;
    P.sq_kc_mult = sq_kc_mult;
@@ -1540,6 +1582,8 @@ bool SetParam(const string key, const string v)
    else if(key == "dc_exit_period") P.dc_exit_period = i;
    else if(key == "dc_trend_ema") P.dc_trend_ema = i;
    else if(key == "dc_buffer_atr") P.dc_buffer_atr = d;
+   else if(key == "dc_max_extension") P.dc_max_extension = d;
+   else if(key == "dc_extension_period") P.dc_extension_period = i;
    else if(key == "sq_bb_period") P.sq_bb_period = i;
    else if(key == "sq_bb_mult") P.sq_bb_mult = d;
    else if(key == "sq_kc_mult") P.sq_kc_mult = d;

@@ -1,0 +1,77 @@
+{
+  "note": "タートル 55/20 日足に「直近 20 日ですでに大きく動いた向き（ふだんの 1.5 倍超）には入らない」を足したもの。外部データの検証（docs/cross_asset.md 6 章）で、先物 20 年・フィリップ 5 年・使っていない 3 市場のすべてで、時期をずらした偶然を上回った。しきい値は確かめる前に決めた値のまま（調整しない）",
+  "sleeves": [
+    {
+      "symbol": "GOLD",
+      "strategy": "donchian",
+      "timeframe": "D1",
+      "htf": {},
+      "params": {
+        "entry_period": 55,
+        "exit_period": 20,
+        "trend_ema": 0,
+        "buffer_atr": 0.0,
+        "max_extension": 1.5,
+        "extension_period": 20
+      },
+      "exit": {},
+      "multiplier": 1.0,
+      "train_score": 0.0,
+      "train_trades": 0
+    },
+    {
+      "symbol": "SILVER",
+      "strategy": "donchian",
+      "timeframe": "D1",
+      "htf": {},
+      "params": {
+        "entry_period": 55,
+        "exit_period": 20,
+        "trend_ema": 0,
+        "buffer_atr": 0.0,
+        "max_extension": 1.5,
+        "extension_period": 20
+      },
+      "exit": {},
+      "multiplier": 1.0,
+      "train_score": 0.0,
+      "train_trades": 0
+    },
+    {
+      "symbol": "WTI",
+      "strategy": "donchian",
+      "timeframe": "D1",
+      "htf": {},
+      "params": {
+        "entry_period": 55,
+        "exit_period": 20,
+        "trend_ema": 0,
+        "buffer_atr": 0.0,
+        "max_extension": 1.5,
+        "extension_period": 20
+      },
+      "exit": {},
+      "multiplier": 1.0,
+      "train_score": 0.0,
+      "train_trades": 0
+    },
+    {
+      "symbol": "BRENT",
+      "strategy": "donchian",
+      "timeframe": "D1",
+      "htf": {},
+      "params": {
+        "entry_period": 55,
+        "exit_period": 20,
+        "trend_ema": 0,
+        "buffer_atr": 0.0,
+        "max_extension": 1.5,
+        "extension_period": 20
+      },
+      "exit": {},
+      "multiplier": 1.0,
+      "train_score": 0.0,
+      "train_trades": 0
+    }
+  ]
+}
