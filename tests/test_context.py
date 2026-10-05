@@ -127,3 +127,45 @@ def test_ml_gate_learns_only_from_trades_closed_before_the_year():
     zz = pd.Series(z, index=idx).loc["2020"]
     agree = (g["long"].to_numpy() == (zz.to_numpy() > 0))[np.isfinite(zz.to_numpy())]
     assert agree.mean() > 0.9
+
+
+def test_fred_api_json_and_yahoo_substitutes(monkeypatch):
+    from cfdbot import context as ctx
+
+    raw = json.dumps({"observations": [{"date": "2026-01-05", "value": "1.80"},
+                                       {"date": "2026-01-06", "value": "."}]}).encode()
+    df = ctx.parse_fred_api(raw)
+    assert list(df["value"]) == [1.80]
+
+    def fake_yahoo(ticker, since):
+        price = {"TIP": [100.0, 99.0, 98.0], "IEF": [100.0, 100.0, 100.0]}[ticker]
+        return pd.DataFrame({"date": ["2026-01-05", "2026-01-06", "2026-01-07"], "close": price})
+
+    monkeypatch.setattr(ctx, "fetch_yahoo", fake_yahoo)
+    real = ctx.fetch_alt("real10y", "2000-01-01")
+    assert real["value"].is_monotonic_increasing          # 物価連動債が下がる ＝ 実質金利が上がる
+    be = ctx.fetch_alt("breakeven10y", "2000-01-01")
+    assert be["value"].is_monotonic_decreasing and be["via"].iloc[0] == "Yahoo TIP/IEF"
+
+
+def test_get_falls_back_to_curl_and_hides_query(monkeypatch):
+    from cfdbot import context as ctx
+
+    def boom(*a, **k):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(ctx.urllib.request, "urlopen", boom)
+    monkeypatch.setattr(ctx.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ctx, "_curl", lambda url, timeout, ua: b"ok")
+    assert ctx._get("https://example.com/x?api_key=SECRET") == b"ok"
+
+    def curl_fails(url, timeout, ua):
+        raise RuntimeError("curl failed")
+
+    monkeypatch.setattr(ctx, "_curl", curl_fails)
+    try:
+        ctx._get("https://example.com/x?api_key=SECRET")
+    except RuntimeError as e:
+        assert "SECRET" not in str(e)
+    else:
+        raise AssertionError("例外にならない")

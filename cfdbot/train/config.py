@@ -221,7 +221,7 @@ def load_train_config(path: str | Path | None) -> TrainConfig:
                 fixed=dict(spec.get("fixed", {})), timeframes=[t.upper() for t in tfs] if tfs else None,
                 grids=grids,
             ))
-    unknown = set(raw) - set(sections) - {"strategies", "output_dir"}
+    unknown = set(raw) - set(sections) - {"strategies", "output_dir", "context"}   # context: 外部データの取得用
     if unknown:
         raise ValueError(f"不明なセクション: {sorted(unknown)}")
     normalize(cfg)

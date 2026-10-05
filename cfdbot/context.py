@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
+import subprocess
 import time
 import urllib.parse
 import urllib.request
@@ -211,6 +213,7 @@ def load_series(path: Path, spec: SeriesSpec) -> CSeries | None:
         avail = _avail_exchange(df.index, tz)
         df = df.drop(columns=[c for c in ("tz",) if c in df])
     else:
+        df = df.drop(columns=[c for c in ("via",) if c in df])   # FRED の代わりに Yahoo から作った印
         avail = _avail_fred(df.index, spec.lag_days, spec.release_et)
     order = np.argsort(avail, kind="stable")
     return CSeries(spec.key, df.iloc[order], avail[order], spec.kind)
@@ -243,17 +246,39 @@ def yahoo_frame(store: ContextStore, key: str) -> pd.DataFrame | None:
 
 
 # --------------------------------------------------------------------------- 取得
-def _get(url: str, timeout: float = 60.0, tries: int = 4) -> bytes:
+def _curl(url: str, timeout: float, ua: str | None) -> bytes:
+    exe = shutil.which("curl")
+    if exe is None:
+        raise RuntimeError("curl が無い")
+    cmd = [exe, "-sSfL", "--max-time", str(int(timeout))] + (["-A", ua] if ua else []) + [url]
+    r = subprocess.run(cmd, capture_output=True)
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.decode(errors="replace").strip()[-160:] or f"curl の終了コード {r.returncode}")
+    return r.stdout
+
+
+def _get(url: str, timeout: float = 30.0, tries: int = 2, ua: str | None = _UA, use_curl: bool = True) -> bytes:
+    """URL を取得する。Python で取れなければ curl でも試す（相手のサーバーによって通りやすい方が違う）。
+
+    待ち時間の上限は timeout × (tries + 1) 程度。エラーの表示には URL の ? 以降（API キーなど）を含めない。
+    """
     last: Exception | None = None
     for i in range(tries):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": _UA, "Accept": "*/*"})
+            headers = {"Accept": "*/*"} | ({"User-Agent": ua} if ua else {})
+            req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return r.read()
         except Exception as e:  # noqa: BLE001  通信の失敗は種類を問わず再試行する
             last = e
-            time.sleep(2 ** i)
-    raise RuntimeError(f"{url}: {last}")
+            if i + 1 < tries:
+                time.sleep(2)
+    if use_curl:
+        try:
+            return _curl(url, timeout, ua)
+        except Exception as e:  # noqa: BLE001
+            last = e
+    raise RuntimeError(f"{url.split('?')[0]}: {last}")
 
 
 def parse_fred_csv(raw: bytes) -> pd.DataFrame:
@@ -263,8 +288,58 @@ def parse_fred_csv(raw: bytes) -> pd.DataFrame:
     return df[["date", "value"]].dropna()
 
 
-def fetch_fred(code: str) -> pd.DataFrame:
-    return parse_fred_csv(_get(f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={code}"))
+def parse_fred_api(raw: bytes) -> pd.DataFrame:
+    obs = json.loads(raw).get("observations") or []
+    df = pd.DataFrame({"date": [o.get("date") for o in obs],
+                       "value": pd.to_numeric(pd.Series([o.get("value") for o in obs], dtype=object), errors="coerce")})
+    return df.dropna()
+
+
+def fetch_fred(code: str, api_key: str | None = None) -> pd.DataFrame:
+    """FRED の系列。API キーがあれば公式の API（確実）、無ければグラフ用の CSV（キー不要。混むと遅い）。"""
+    if api_key:
+        url = (f"https://api.stlouisfed.org/fred/series/observations?series_id={code}"
+               f"&api_key={api_key}&file_type=json")
+        return parse_fred_api(_get(url, timeout=30, tries=2, ua=None))
+    # ブラウザを名乗ると門前払い（応答なし）になることがあるので、名乗らずに 1 回だけ試す（だめなら curl）
+    return parse_fred_csv(_get(f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={code}", timeout=20, tries=1,
+                               ua=None))
+
+
+# FRED に届かないときの代わり（Yahoo の指数・ETF から近いものを作る。向きと変化を見るだけなので代用できる）
+#   close: そのまま / -log: 価格の対数の符号反転（価格が下がる＝金利が上がる）
+#   logratio: 2 つの価格の比の対数 / -logratio: その符号反転 / diff: 差
+FRED_ALT: dict[str, tuple[str, ...]] = {
+    "ust10y": ("close", "^TNX"),
+    "curve10y2y": ("diff", "^TNX", "^IRX"),           # 10 年 − 3 か月
+    "real10y": ("-log", "TIP"),                       # 物価連動債 ETF の価格が下がる ≒ 実質金利が上がる
+    "breakeven10y": ("logratio", "TIP", "IEF"),       # 物価連動債 ÷ 普通の国債 ≒ 期待インフレ
+    "usd_broad": ("close", "DX-Y.NYB"),
+    "hy_spread": ("-logratio", "HYG", "IEF"),         # ハイイールド債が国債より弱い ≒ スプレッドが広がる
+    "vix": ("close", "^VIX"),
+    "ovx": ("close", "^OVX"),
+    "gvz": ("close", "^GVZ"),
+}
+
+
+def fetch_alt(key: str, since: str, cache: dict[str, pd.DataFrame] | None = None) -> pd.DataFrame:
+    """FRED の系列 key の代わりを Yahoo から作る（列 date / value / via）。"""
+    op, *tickers = FRED_ALT[key]
+    cache = {} if cache is None else cache
+    closes = []
+    for t in tickers:
+        if t not in cache:
+            cache[t] = fetch_yahoo(t, since)
+        closes.append(cache[t].set_index("date")["close"].astype(float))
+    if len(closes) == 2:
+        a, b = closes[0].align(closes[1], join="inner")
+    else:
+        a, b = closes[0], None
+    with np.errstate(divide="ignore", invalid="ignore"):
+        v = {"close": lambda: a, "-log": lambda: -np.log(a), "logratio": lambda: np.log(a / b),
+             "-logratio": lambda: -np.log(a / b), "diff": lambda: a - b}[op]()
+    v = v[np.isfinite(v)].sort_index()
+    return pd.DataFrame({"date": v.index, "value": v.to_numpy(float), "via": "Yahoo " + "/".join(tickers)})
 
 
 def parse_yahoo_chart(raw: bytes) -> pd.DataFrame:
@@ -299,7 +374,7 @@ def fetch_yahoo(ticker: str, since: str = "2000-01-01") -> pd.DataFrame:
     url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(ticker, safe='')}"
            f"?period1={p1}&period2={p2}&interval=1d&events=history")
     try:
-        return parse_yahoo_chart(_get(url))
+        return parse_yahoo_chart(_get(url, timeout=30, tries=2))
     except Exception as first:  # noqa: BLE001
         try:  # yfinance が入っていればそちらで再試行
             import yfinance as yf  # type: ignore
