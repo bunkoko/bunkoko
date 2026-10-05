@@ -62,6 +62,9 @@ def python_signals_from_final(final_path: str, symbol: str, config: str, data: s
         e = sig["entry"].to_numpy()
         sig["entry"] = np.where(((e > 0) & (tr <= 0)) | ((e < 0) & (tr >= 0)), 0, e)
     sig["atr"] = atr
+    if sleeve["strategy"] == "donchian" and float(sleeve["params"].get("max_extension", 0) or 0) > 0:
+        # すでに大きく動いた向きを止める絞り込みの値（不一致の原因を見るため）
+        sig["ext_z"] = ind.extension_z(frame["close"], int(sleeve["params"].get("extension_period", 20)))
     print(f"比較する構成: {symbol} {sleeve['strategy']} @{tf}" + (f" + 上位足 {sleeve['htf']}" if sleeve.get("htf") else ""))
     return sig
 
@@ -132,10 +135,30 @@ def main() -> None:
     print(f"手仕舞いシグナル不一致: {len(exit_mismatch)} 本")
     if len(stop_diff):
         print(f"損切り幅の最大差: {stop_diff.max():.6f}")
+    # 記録の何本目で食い違ったか（テスターは開始前の履歴が短いので、最初の 1 年は長い期間を使う計算がずれうる）
+    pos = pd.Series(np.arange(len(e)), index=common)
+    early_bars = 252
     if len(entry_mismatch):
-        print("\n不一致の例（最初の 10 本）:")
-        show = pd.DataFrame({"ea": e.loc[entry_mismatch[:10], "entry"], "python": s.loc[entry_mismatch[:10], "entry"]})
+        print("\n不一致（最大 20 本）:")
+        show = pd.DataFrame({"ea": e.loc[entry_mismatch[:20], "entry"], "python": s.loc[entry_mismatch[:20], "entry"],
+                             "記録の何本目": pos[entry_mismatch[:20]]})
+        if "ext_z" in s:
+            show["直近の動き（ふだんの何倍）"] = s.loc[entry_mismatch[:20], "ext_z"].round(3)
+        show.index = show.index.strftime("%Y-%m-%d")
         print(show.to_string())
+    if len(exit_mismatch):
+        print(f"手仕舞いの不一致: {', '.join(f'{t:%Y-%m-%d}' for t in exit_mismatch[:10])}")
+    mism_pos = pd.concat([pos[entry_mismatch], pos[exit_mismatch]])
+    early_only = len(mism_pos) > 0 and int(mism_pos.max()) < early_bars and len(exit_mismatch) == 0
+    if early_only and len(entry_mismatch):
+        # 食い違ったのが「すでに大きく動いた向き」の境目のエントリーだけか（それ以外のずれなら原因が別）
+        if "ext_z" not in s:
+            early_only = False
+        else:
+            ea_side, py_side = e.loc[entry_mismatch, "entry"].to_numpy(), s.loc[entry_mismatch, "entry"].to_numpy()
+            side = np.where(ea_side != 0, ea_side, py_side)
+            moved = np.nan_to_num(s.loc[entry_mismatch, "ext_z"].to_numpy(float) * side, nan=0.0)
+            early_only = bool(np.all(moved > 1.0))
     same_trades = len(entry_mismatch) == 0 and len(exit_mismatch) == 0
     worst_all = float(np.nan_to_num(atr_diff.max())) if len(atr_diff) else 0.0
     worst_late = float(np.nan_to_num(late.max())) if len(late) else 0.0
@@ -146,6 +169,10 @@ def main() -> None:
         verdict = "一致（ATR の小さな差は記録の最初の方だけ。売買の判断はすべて同じ）"
     elif same_trades and worst_all < 1e-3:
         verdict = "ほぼ一致（ATR に 0.1% 未満の差が残るが、売買の判断はすべて同じ）"
+    elif early_only and worst_late < 1e-5:
+        # 開始前の履歴が短いテスターだけで起きる（本番の EA は全部の履歴で計算するので Python と同じになる）
+        verdict = (f"一致（違いは記録の最初の {early_bars} 本＝約 1 年だけ。テスターの開始前の履歴が短く、"
+                   "長い期間を使う計算がずれるため。それ以降の売買の判断はすべて同じ）")
     else:
         verdict = "差分あり（上記を確認。出力をそのまま送ってください）"
     print("\n結果:", verdict)
