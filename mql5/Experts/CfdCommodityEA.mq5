@@ -19,7 +19,7 @@
 //| ※ MetaEditor でコンパイル・デモ口座で動作確認してから使うこと。      |
 //+------------------------------------------------------------------+
 #property copyright "cfdbot"
-#property version   "0.12"
+#property version   "0.13"
 #property description "ATR-based commodity CFD EA (Donchian / Squeeze / Pullback / Reversion)"
 
 #include <Trade\Trade.mqh>
@@ -273,6 +273,31 @@ void OnTick()
    OnNewBar(k);
   }
 
+// 足ごとの判断を 1 行だけ書く（シグナルが無い日も。動いているかをエキスパートタブで確かめられるように）
+void LogDailyCheck(const int k, const CfdSignal &s)
+  {
+   string what = s.entry > 0 ? "買いのシグナル" : (s.entry < 0 ? "売りのシグナル" : "シグナルなし");
+   string ext = "";
+   double z = 0;
+   if(P.strategy == STRAT_DONCHIAN && P.dc_max_extension > 0 && ExtensionZ(k, P.dc_extension_period, z))
+      ext = StringFormat("、直近 %d 本の動き %+.2f 倍（%.1f 倍超の向きには入らない）", P.dc_extension_period, z,
+                         P.dc_max_extension);
+   PrintFormat("%s の足を判断: 終値 %s → %s%s、保有 %d", TimeToString(g_t[k], TIME_DATE),
+               DoubleToString(g_c[k], _Digits), what, ext, CountMyPositions());
+  }
+
+int CountMyPositions()
+  {
+   int n = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong tk = PositionGetTicket(i);
+      if(tk > 0 && PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == ea_magic)
+         n++;
+     }
+   return(n);
+  }
+
 //+------------------------------------------------------------------+
 //| 確定足の処理                                                       |
 //+------------------------------------------------------------------+
@@ -283,6 +308,7 @@ void OnNewBar(const int k)
    ComputeSignal(k, s);
    if(ea_log_signals)
       LogSignal(k, s);
+   LogDailyCheck(k, s);
    ManagePositions(k, tc, s);
    CleanupPositionGVs();
    g_pend = false;
