@@ -271,7 +271,9 @@ class Backtester:
     def _prepare(self) -> None:
         cfg = self.cfg
         self.sym: dict[str, _SymbolData] = {}
-        for symbol in {s.symbol for s in self.sleeves}:
+        # 同じ時刻の足は銘柄をこの順に処理する（構成の順。集合の順だと実行のたびに変わり、
+        # 金と銀が同じ日に出たときにどちらがグループの上限を先に使うかで結果が揺れる）
+        for symbol in dict.fromkeys(s.symbol for s in self.sleeves):
             df = self.data[symbol]
             if df.index.tz is None:
                 raise ValueError(f"{symbol}: index must be tz-aware (UTC)")
