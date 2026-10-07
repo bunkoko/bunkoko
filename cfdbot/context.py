@@ -235,7 +235,19 @@ def yahoo_frame(store: ContextStore, key: str) -> pd.DataFrame | None:
     p = store.path(SPECS[key])
     if not p.exists():
         return None
-    df = pd.read_csv(p).dropna(subset=["close"])
+    return yahoo_csv_frame(p)
+
+
+def yahoo_csv_frame(path: str | Path, repair: bool = False) -> pd.DataFrame:
+    """Yahoo の日足 CSV（date/open/high/low/close）を yahoo_frame と同じ形にする。
+
+    repair: 始値・高値・安値だけが 0 以下の日は終値で埋める（株価指数・個別株の古いデータにある欠け）。
+    終値が 0 以下の日以降は、どちらでも使わない。
+    """
+    df = pd.read_csv(path).dropna(subset=["close"])
+    if repair:
+        for c in ("open", "high", "low"):
+            df[c] = df[c].where(df[c] > 0, df["close"])
     bad = df[(df[["open", "high", "low", "close"]] <= 0).any(axis=1)]
     if not bad.empty:
         df = df[pd.to_datetime(df["date"]) < pd.to_datetime(bad["date"]).min()]
