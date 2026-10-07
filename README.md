@@ -84,7 +84,11 @@ python scripts/mt5_files.py install --run output/train/<日時>   # EA とプリ
 ```bash
 ./cfd context    # 外部データを data/context/ に取得（FRED・Yahoo・CFTC。無料・登録不要）
 ./cfd study      # 13 の仮説と、全部の入力を使う予測を、偶然との比較つきで検証（5 分前後）
+./cfd meta       # 2 次モデル（メタラベリング）で今の戦略の取引を選ぶと良くなるかを検証（数分）
 ```
+
+`./cfd meta` は『ファイナンス機械学習』（AFML）の方法で確かめる: パージング・エンバーゴ付きの組み合わせ交差検証（CPCV）、
+学習に使っていない期間・市場での確認、試した数で割り引いた基準、PSR（方針と採用の条件は [docs/meta_labeling.md](docs/meta_labeling.md)）。
 
 ## 実データでの使い方
 

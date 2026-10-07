@@ -168,6 +168,7 @@ class _SleeveData:
     atr: np.ndarray
     warmup: int
     cfg_cache: dict[str | None, ExitConfig]
+    size_mult: np.ndarray | None = None   # エントリーごとの 1 回の損失の倍率（entry_gate の long_size / short_size）
 
 
 @dataclass
@@ -226,15 +227,29 @@ def htf_trend(signal_index: pd.DatetimeIndex, tf: pd.Timedelta, htf_frame: pd.Da
 
 
 def apply_entry_gate(sig: pd.DataFrame, gate: pd.DataFrame) -> pd.DataFrame:
-    """gate（列 long / short）で許されていない向きのエントリーを消す。gate に無い足は許す。"""
+    """gate（列 long / short）で許されていない向きのエントリーを消す。gate に無い足は許す。
+
+    列 long_size / short_size があれば、その足のエントリーの 1 回の損失を何倍にするか（0 以下は入らない）。
+    結果は列 size_mult に入る（研究用。メタラベリングの量の調整）。
+    """
     g = gate.reindex(sig.index)
-    no_long = g["long"].eq(False).to_numpy(bool)     # 欠けている足（NaN）は許す
-    no_short = g["short"].eq(False).to_numpy(bool)
+    n = len(sig)
     entry = sig["entry"].to_numpy(np.int8)
-    blocked = ((entry > 0) & no_long) | ((entry < 0) & no_short)
+    no_long = g["long"].eq(False).to_numpy(bool) if "long" in g else np.zeros(n, bool)   # 欠けている足（NaN）は許す
+    no_short = g["short"].eq(False).to_numpy(bool) if "short" in g else np.zeros(n, bool)
+    sized = "long_size" in g or "short_size" in g
+    size = np.ones(n)
+    if sized:
+        def col(name: str) -> np.ndarray:
+            v = g[name].to_numpy(float) if name in g else np.ones(n)
+            return np.where(np.isfinite(v), v, 1.0)
+        size = np.where(entry > 0, col("long_size"), np.where(entry < 0, col("short_size"), 1.0))
+    blocked = ((entry > 0) & no_long) | ((entry < 0) & no_short) | ((entry != 0) & (size <= 0))
     sig = sig.copy()
     sig["entry"] = np.where(blocked, 0, entry).astype(np.int8)
     sig["gate_blocked"] = blocked
+    if sized:
+        sig["size_mult"] = np.where(blocked, 1.0, size)
     return sig
 
 
@@ -337,6 +352,7 @@ class Backtester:
                 atr=atr.to_numpy(float),
                 warmup=warmup,
                 cfg_cache={},
+                size_mult=sig["size_mult"].to_numpy(float) if "size_mult" in sig else None,
             )
 
         start = min(d.times[0] for d in self.sym.values())
@@ -733,7 +749,8 @@ class Backtester:
                 budget, reason = c_budget, "cluster"
         if budget <= 0:
             return self._reject(when, name, side, reason)
-        size = position_size(equity, stop_dist, inst, fx, rc, budget, sd.sleeve.risk_weight)
+        mult = sd.sleeve.risk_weight * (sd.size_mult[i] if sd.size_mult is not None else 1.0)
+        size = position_size(equity, stop_dist, inst, fx, rc, budget, mult)
         if size.qty <= 0:
             return self._reject(when, name, side, size.reason or reason)
         qty = size.qty
