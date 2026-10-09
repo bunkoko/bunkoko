@@ -8,7 +8,7 @@ import pytest
 
 from cfdbot.news import (MAX_RECORDS, GdeltClient, MarketDaily, NewsStore, QueryError, Throttled, collect_articles,
                          collect_gkg, daily_timeline, flags_at, gdelt_url, gkg_slots, gkg_url, headline_id,
-                         hold_returns, parse_artlist, parse_gkg, parse_timeline, parse_yahoo_news,
+                         hold_returns, parse_artlist, parse_gkg, parse_gkg_file, parse_timeline, parse_yahoo_news,
                          sample_like_backfill, spikes, values_at, vol_ratios)
 from cfdbot.news_embed import EmbeddingCache, HashEmbedder, daily_features, load_day_vectors, topic_scores
 
@@ -317,15 +317,17 @@ def test_gate_test_blocks_entries_after_news_and_compares_with_shifted(monkeypat
     assert r["pct"] == 1.0 and mod.gate_verdict(r) == "有望"
 
 
-def _gkg_zip(rows):
-    """GKG の 1 行 = 27 列（タブ区切り）。使うのは 2（種類）・3（サイト）・4（URL）・26（見出しの入った XML）だけ。"""
+def _gkg_zip(rows, extra=None):
+    """GKG の 1 行 = 27 列（タブ区切り）。2 種類・3 サイト・4 URL・7 テーマ・9 場所・15 論調・26 見出しの入った XML。"""
     import io
     import zipfile
 
     lines = []
-    for kind, url, title in rows:
+    for i, (kind, url, title) in enumerate(rows):
         cols = [""] * 27
         cols[2], cols[3], cols[4] = kind, url.split("/")[2], url
+        if extra and i in extra:
+            cols[7], cols[9], cols[15] = extra[i]
         cols[26] = f"<PAGE_LINKS>x</PAGE_LINKS><PAGE_TITLE>{title}</PAGE_TITLE>" if title is not None else ""
         lines.append("\t".join(cols))
     buf = io.BytesIO()
@@ -379,3 +381,30 @@ def test_collect_gkg_skips_missing_files_and_records_progress(tmp_path):
     with pytest.raises(RuntimeError):
         collect_gkg(st, pd.Timestamp("2026-10-10", tz="UTC"), pd.Timestamp("2026-10-10 01:00", tz="UTC"), "k",
                     get=lambda u: (503, b""), sleep=lambda s: None, log=lambda s: None)
+
+
+def test_gkg_tone_themes_and_file_counts_are_kept(tmp_path):
+    t = pd.Timestamp("2026-10-09 12:00", tz="UTC")
+    extra = {0: ("ECON_OILPRICE;ENV_OIL;ECON_OILPRICE;", "1#Iran#IR#IR#32#53#IR;4#Tehran, Iran#IR#IR07#35.7#51.4#-1",
+                 "-3.5,1.2,4.7,5.9,20.1,0.8,412"),
+             1: ("ARMEDCONFLICT;", "1#Israel#IS#IS#31.5#34.75#IS", "-6.0,0.5,6.5,7.0,25.0,1.0,250"),
+             2: ("ECON_OILPRICE;SPORTS;", "", "2.0,3.0,1.0,4.0,10.0,0.0,300")}
+    raw = _gkg_zip([("1", "https://a.com/1", "Oil jumps as Iran tensions rise"),
+                    ("1", "https://b.com/2", "Missile attack reported"),
+                    ("1", "https://c.com/3", "Local team wins the cup")], extra)
+    g = parse_gkg_file(raw, t)
+    assert len(g.headlines) == 2 and list(g.articles["id"]) == list(g.headlines["id"])
+    a = g.articles.iloc[0]
+    assert a["tone"] == -3.5 and a["words"] == 412 and a["themes"] == "ECON_OILPRICE;ENV_OIL" and a["countries"] == "IR"
+    # ファイルの集計は話題を問わない全記事（見出しを取らなかった 3 件目も入る）
+    assert g.stats["n_all"] == 3 and g.stats["tone_mean"] == pytest.approx((-3.5 - 6.0 + 2.0) / 3)
+    assert g.stats["themes"].startswith("ECON_OILPRICE:2;") and "SPORTS:1" in g.stats["themes"]
+    assert g.stats["countries"] == "IR:1;IS:1"
+
+    st = NewsStore(tmp_path)
+    assert st.add_gkg(g) == 2
+    assert st.add_gkg(g) == 0                       # 同じファイルを 2 回読んでも記事は増えない
+    arts = st.load_gkg_articles(pd.Timestamp("2026-10-09", tz="UTC"))
+    assert len(arts) == 2 and arts["polarity"].iloc[1] == 7.0
+    stats = st.load_gkg_stats()
+    assert len(stats) == 1 and stats.index[0] == t and stats["n_all"].iloc[0] == 3

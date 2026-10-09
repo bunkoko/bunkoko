@@ -243,6 +243,7 @@ class NewsStore:
     def __init__(self, root: str | Path = "data/news"):
         self.root = Path(root)
         self._keys: dict[tuple[pd.Timestamp, str], tuple[set[str], set[str]]] = {}
+        self.added_ids: list[str] = []      # 直前の add で足した見出しの ID
 
     # ---- 見出し
     def headline_path(self, day: pd.Timestamp, source: str) -> Path:
@@ -263,6 +264,7 @@ class NewsStore:
         """新しい見出しだけを足す（同じ取得先の、その日と前の 2 日に同じ URL・同じ見出しがあれば足さない）。"""
         if df.empty:
             return 0
+        self.added_ids = []
         df = df.sort_values("available")
         added = 0
         for (day, source), g in df.groupby([df["available"].dt.floor("D"), df["source"]]):
@@ -280,6 +282,7 @@ class NewsStore:
             if not keep:
                 continue
             out = g.iloc[keep].copy()
+            self.added_ids += list(out["id"])
             for c in ("available", "published"):
                 out[c] = out[c].dt.strftime(TIME_FMT)
             p = self.headline_path(day, source)
@@ -317,6 +320,46 @@ class NewsStore:
         days = [d for d in self.days() if (start is None or d >= start) and (end is None or d < end)]
         frames = [self.load_day(d) for d in days]
         return pd.concat(frames, ignore_index=True) if frames else _frame([])
+
+    # ---- GDELT の生データの論調・テーマ（見出しを取った記事）と、ファイルごとの全記事の集計
+    def gkg_articles_path(self, day: pd.Timestamp) -> Path:
+        return self.root / "gkg" / "articles" / f"{day:%Y-%m}" / f"{day:%Y-%m-%d}.csv.gz"
+
+    def gkg_stats_path(self, t: pd.Timestamp) -> Path:
+        return self.root / "gkg" / "files" / f"{t:%Y-%m}.csv.gz"
+
+    @staticmethod
+    def _append_gz(path: Path, df: pd.DataFrame) -> None:
+        import gzip
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        new = not path.exists()
+        with gzip.open(path, "at", encoding="utf-8", newline="") as f:
+            df.to_csv(f, header=new, index=False)
+
+    def add_gkg(self, parsed: "GkgFile") -> int:
+        """見出しを足し、新しく足した記事の論調・テーマと、ファイルの集計を保存する。足した見出しの数を返す。"""
+        n = self.add(parsed.headlines)
+        if n:
+            arts = parsed.articles[parsed.articles["id"].isin(set(self.added_ids))]
+            day = parsed.headlines["available"].iloc[0].floor("D")
+            self._append_gz(self.gkg_articles_path(day), arts)
+        t = pd.Timestamp(parsed.stats["time"])
+        self._append_gz(self.gkg_stats_path(t), pd.DataFrame([parsed.stats]))
+        return n
+
+    def load_gkg_articles(self, day: pd.Timestamp) -> pd.DataFrame:
+        p = self.gkg_articles_path(day)
+        return pd.read_csv(p, keep_default_na=False, na_values=[""]) if p.exists() else pd.DataFrame()
+
+    def load_gkg_stats(self) -> pd.DataFrame:
+        """ファイルごとの全記事の集計（time の index。同じファイルを 2 回読んだ分は後の方）。"""
+        paths = sorted((self.root / "gkg" / "files").glob("*.csv.gz"))
+        if not paths:
+            return pd.DataFrame()
+        df = pd.concat([pd.read_csv(p, keep_default_na=False, na_values=[""]) for p in paths], ignore_index=True)
+        df.index = pd.DatetimeIndex(pd.to_datetime(df.pop("time"), utc=True), name="time")
+        return df[~df.index.duplicated(keep="last")].sort_index()
 
     # ---- 推移（キーワードの量・論調）
     def timeline_path(self, key: str, mode: str) -> Path:
@@ -432,19 +475,69 @@ def gkg_slots(start: pd.Timestamp, end: pd.Timestamp) -> list[pd.Timestamp]:
     return list(pd.date_range(first, end, freq=GKG_STEP)) if first <= end else []
 
 
-def parse_gkg(raw_zip: bytes, file_time: pd.Timestamp) -> pd.DataFrame:
-    """GKG のファイル（zip）から、見出しが対象の言葉を含む記事を取り出す。"""
+GKG_TONE_FIELDS = ("tone", "positive", "negative", "polarity", "activity", "self_ref", "words")
+
+
+@dataclass
+class GkgFile:
+    """GKG の 1 ファイルから取り出したもの。"""
+
+    headlines: pd.DataFrame   # 見出しが対象の言葉を含む記事（HEADLINE_COLUMNS）
+    articles: pd.DataFrame    # その記事の論調（7 つ）・テーマ・国（id で見出しとつながる）
+    stats: dict               # そのファイルの全記事（話題を問わない）の数・平均の論調・テーマごと・国ごとの記事数
+
+
+def _tone(v: str) -> list[float]:
+    """V1.5TONE: 論調・プラスの語の割合・マイナスの語の割合・極端さ・行動の語の密度・自分たちの語の密度・語数。"""
+    out = []
+    for x in v.split(",")[:len(GKG_TONE_FIELDS)]:
+        try:
+            out.append(float(x))
+        except ValueError:
+            out.append(float("nan"))
+    return out + [float("nan")] * (len(GKG_TONE_FIELDS) - len(out))
+
+
+def _themes(v: str) -> list[str]:
+    return list(dict.fromkeys(t for t in v.split(";") if t))
+
+
+def _countries(v: str) -> list[str]:
+    """V1LOCATIONS（種類#名前#国#…;…）から国のコード（FIPS）を重複なく。"""
+    out = []
+    for loc in v.split(";"):
+        parts = loc.split("#")
+        if len(parts) > 2 and parts[2]:
+            out.append(parts[2])
+    return list(dict.fromkeys(out))
+
+
+def _join_counts(c: dict[str, int]) -> str:
+    return ";".join(f"{k}:{n}" for k, n in sorted(c.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
+def parse_gkg_file(raw_zip: bytes, file_time: pd.Timestamp) -> GkgFile:
+    """GKG のファイル（zip）を読む。本文は入っていない（論調・テーマなどは GDELT が本文から計算したもの）。"""
     import io
     import zipfile
+    from collections import Counter
 
     with zipfile.ZipFile(io.BytesIO(raw_zip)) as z:
         text = z.read(z.namelist()[0]).decode("utf-8", errors="replace")
     avail = file_time + GDELT_DELAY
-    rows = []
+    rows, arts = [], []
+    n_all, tones, th_count, co_count = 0, [], Counter(), Counter()
     for line in text.split("\n"):
         cols = line.split("\t")
         if len(cols) < 27 or cols[2] != "1":          # 1 = ウェブの記事
             continue
+        n_all += 1
+        tone = _tone(cols[15])
+        themes, countries = _themes(cols[7]), _countries(cols[9])
+        if np.isfinite(tone[0]):
+            tones.append(tone[0])
+        th_count.update(themes)
+        co_count.update(countries)
         m = re.search(r"<PAGE_TITLE>(.*?)</PAGE_TITLE>", cols[26])
         title = clean_title(m.group(1)) if m else ""
         url = cols[4].strip()
@@ -453,10 +546,21 @@ def parse_gkg(raw_zip: bytes, file_time: pd.Timestamp) -> pd.DataFrame:
         tag = next((k for k, pat in GKG_TITLE_WORDS.items() if pat.search(title)), None)
         if tag is None:
             continue
-        rows.append({"id": headline_id(url), "available": avail, "published": file_time, "source": "gkg",
+        hid = headline_id(url)
+        rows.append({"id": hid, "available": avail, "published": file_time, "source": "gkg",
                      "query": tag, "title": title, "url": url, "domain": cols[3], "language": "English",
                      "country": ""})
-    return _frame(rows)
+        arts.append(dict(zip(("id",) + GKG_TONE_FIELDS, [hid] + tone))
+                    | {"themes": ";".join(themes), "countries": ";".join(countries)})
+    stats = {"time": file_time.strftime(TIME_FMT), "n_all": n_all,
+             "tone_mean": float(np.mean(tones)) if tones else float("nan"),
+             "themes": _join_counts(th_count), "countries": _join_counts(co_count)}
+    return GkgFile(_frame(rows), pd.DataFrame(arts, columns=["id", *GKG_TONE_FIELDS, "themes", "countries"]), stats)
+
+
+def parse_gkg(raw_zip: bytes, file_time: pd.Timestamp) -> pd.DataFrame:
+    """GKG のファイル（zip）から、見出しが対象の言葉を含む記事を取り出す。"""
+    return parse_gkg_file(raw_zip, file_time).headlines
 
 
 def collect_gkg(store: NewsStore, start: pd.Timestamp, end: pd.Timestamp, state_key: str,
@@ -480,7 +584,7 @@ def collect_gkg(store: NewsStore, start: pd.Timestamp, end: pd.Timestamp, state_
         if status == 404:
             missing += 1           # GDELT の欠け（たまにある）
         elif status == 200:
-            added += store.add(parse_gkg(raw, t))
+            added += store.add_gkg(parse_gkg_file(raw, t))
             done += 1
         else:
             raise RuntimeError(f"GDELT の生データを取れなかった（{t:%Y-%m-%d %H:%M}、HTTP {status}）。続きから取り直せる")
