@@ -480,5 +480,6 @@ def test_why_failed_explains_common_model_errors():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     assert "Pillow" in mod.why_failed(ImportError("EmbeddingGemma2Processor requires the PIL library but it was not"))
+    assert "torchvision" in mod.why_failed(ImportError("Could not import module 'EmbeddingGemma2Processor'. Are this"))
     assert "ログイン" in mod.why_failed(OSError("401 Client Error. (Request ID: Root=1-6ac8)"))
     assert mod.why_failed(RuntimeError("boom\nmore")) == "boom"

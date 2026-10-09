@@ -213,3 +213,15 @@
   EmbeddingGemma 初代は Hugging Face へのログインが要るので動かなかった（想定どおり。候補から外した）
 - → Pillow を足し、EmbeddingGemma 2 を含めて `./cfd news compare --force` で決め直す。report はまだ一度も
   実行していないので、決め直しは 7 章の決まりの範囲
+
+### 2026-10-09 モデルの比べ（Mac、2 回目。価格は使っていない）
+
+| モデル | 点数 | 地政学 | 原油 | 金 | 金融政策 | 1,000 件の時間 |
+|---|---|---|---|---|---|---|
+| qwen3-0.6b | 0.821 | 0.717 | 0.860 | 0.793 | 0.914 | 4.7 秒 |
+| e5-large | 0.806 | 0.714 | 0.871 | 0.734 | 0.905 | 6.0 秒 |
+| hash（AI なし） | 0.724 | 0.577 | 0.782 | 0.817 | 0.718 | 0.0 秒 |
+
+- EmbeddingGemma 2 はまた動かなかった。画像の処理が Pillow のほかに torchvision も使うため（Gemma 4 の画像処理を
+  読み込む時点で要る。こちらの入れ漏れ）。`sentence-transformers[image]` で両方入るようにした
+- → EmbeddingGemma 2 を含めて `./cfd news compare --force` でもう一度決める（report はまだ実行していない）

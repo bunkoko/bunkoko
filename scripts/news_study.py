@@ -318,8 +318,8 @@ def why_failed(e: BaseException) -> str:
     text = str(e) or type(e).__name__
     if "401" in text or "gated" in text.lower():
         return "Hugging Face へのログインが要る（利用規約に同意して hf auth login）"
-    if "requires the PIL" in text or "Pillow" in text:
-        return "画像の部品（Pillow）が無い → ./cfd update && ./cfd news setup"
+    if "requires the PIL" in text or "Pillow" in text or "torchvision" in text or "Could not import module" in text:
+        return "画像の部品（Pillow・torchvision）が無い → ./cfd update && ./cfd news setup"
     return text.splitlines()[0][:120]
 
 
