@@ -76,6 +76,54 @@ HEADLINE_COLUMNS = ["id", "available", "published", "source", "query", "title", 
                     "country"]
 
 
+# --------------------------------------------------------------------------- 途中経過・止め方
+class Progress:
+    """長い処理の途中経過を、every 秒（既定 5 分）ごとに 1 行表示する。"""
+
+    def __init__(self, label: str, total: int, log: Callable[[str], None] = print, every: float = 300.0,
+                 clock: Callable[[], float] = time.monotonic):
+        self.label, self.total, self.log, self.every, self.clock = label, total, log, every, clock
+        self.start = self.last = clock()
+
+    def tick(self, done: int, note: str = "", force: bool = False) -> None:
+        now = self.clock()
+        if not force and now - self.last < self.every:
+            return
+        self.last = now
+        el = now - self.start
+        left = el / done * (self.total - done) if done else float("nan")
+        eta = (f"残り約 {left / 3600:.1f} 時間" if left >= 3600 else f"残り約 {left / 60:.0f} 分") \
+            if np.isfinite(left) else ""
+        pct = f"（{done / self.total:.0%}）" if self.total else ""
+        self.log(f"  [{pd.Timestamp.now():%H:%M}] {self.label}: {done:,}/{self.total:,}{pct}"
+                 + (f"、{note}" if note else "") + (f"。{eta}" if eta else ""))
+
+
+class StopFlag:
+    """Ctrl+C を 1 回押したら、今の 1 件（ファイル・問い合わせ）を終えてから止める。2 回押すとすぐ止める。"""
+
+    def __init__(self):
+        self.requested = False
+
+    def install(self, log: Callable[[str], None] = print) -> None:
+        import signal
+
+        def handler(signum, frame):
+            if self.requested:
+                raise KeyboardInterrupt
+            self.requested = True
+            log("\n止めます。今の 1 件を終えてから止める（すぐ止めるにはもう一度 Ctrl+C）")
+
+        signal.signal(signal.SIGINT, handler)
+
+    def check(self) -> None:
+        if self.requested:
+            raise KeyboardInterrupt
+
+
+STOP = StopFlag()
+
+
 # --------------------------------------------------------------------------- 取得
 class Throttled(RuntimeError):
     """GDELT に「アクセスが多すぎる」と断られ続けた。"""
@@ -254,7 +302,7 @@ class NewsStore:
         if k not in self._keys:
             p = self.headline_path(day, source)
             if p.exists():
-                df = pd.read_csv(p, usecols=["id", "title"], dtype=str, keep_default_na=False)
+                df = pd.read_csv(p, usecols=["id", "title"], dtype=str, keep_default_na=False, on_bad_lines="skip")
                 self._keys[k] = (set(df["id"]), {title_key(t) for t in df["title"]})
             else:
                 self._keys[k] = (set(), set())
@@ -303,10 +351,11 @@ class NewsStore:
         paths = sorted((self.root / "headlines" / f"{day:%Y-%m}").glob(f"{day:%Y-%m-%d}.{source or '*'}.csv"))
         if not paths:
             return _frame([])
-        df = pd.concat([pd.read_csv(p, dtype=str, keep_default_na=False) for p in paths], ignore_index=True)
+        df = pd.concat([pd.read_csv(p, dtype=str, keep_default_na=False, on_bad_lines="skip") for p in paths],
+                       ignore_index=True)
         for c in ("available", "published"):
-            df[c] = pd.to_datetime(df[c], utc=True)
-        return df
+            df[c] = pd.to_datetime(df[c], utc=True, errors="coerce", format="ISO8601")
+        return df[df["available"].notna() & (df["id"] != "")].reset_index(drop=True)  # 途中で切れた行は使わない
 
     def counts(self, day: pd.Timestamp) -> dict[str, int]:
         """取得先ごとの件数（ファイルの行数）。"""
@@ -417,7 +466,9 @@ def collect_articles(client: GdeltClient, store: NewsStore, start: pd.Timestamp,
     """
     added = capped = 0
     ws = windows(start, end, width)
+    prog = Progress("記事の一覧", len(ws), log)
     for i, (s, e) in enumerate(ws):
+        STOP.check()
         for q in queries:
             try:
                 df = parse_artlist(client.fetch(gdelt_url(q.text, "artlist", s, e)), q.key)
@@ -427,8 +478,8 @@ def collect_articles(client: GdeltClient, store: NewsStore, start: pd.Timestamp,
             capped += len(df) >= MAX_RECORDS
             added += store.add(df)
         store.save_state(**{state_key: e.strftime(TIME_FMT)})
-        if len(ws) > 4 and (i + 1) % 20 == 0:
-            log(f"  {e:%Y-%m-%d %H:%M} まで（{i + 1}/{len(ws)}、見出し +{added}）")
+        if len(ws) > 4:
+            prog.tick(i + 1, f"{e:%Y-%m-%d %H:%M} まで、見出し +{added:,}")
     return added, capped
 
 
@@ -436,17 +487,20 @@ def update_timelines(client: GdeltClient, store: NewsStore, start: pd.Timestamp,
                      queries=TIMELINE_QUERIES, modes=TIMELINE_MODES, log: Callable[[str], None] = print) -> int:
     """キーワードの量・論調の推移を start〜end について 3 か月ずつ取って保存する。取れた点の数を返す。"""
     got = 0
-    for q in queries:
-        for mode in modes:
-            for s, e in windows(start, end, pd.Timedelta(days=91)):
-                try:
-                    df = parse_timeline(client.fetch(gdelt_url(q.text, mode, s, e)))
-                except QueryError as err:
-                    log(f"  {q.key} {mode} {s:%Y-%m}: 受け付けられなかった（{err}）")
-                    continue
-                if len(df):
-                    store.save_timeline(q.key, mode, df)
-                    got += len(df)
+    jobs = [(q, mode, s, e) for q in queries for mode in modes for s, e in windows(start, end, pd.Timedelta(days=91))]
+    prog = Progress("キーワードの推移", len(jobs), log)
+    for i, (q, mode, s, e) in enumerate(jobs):
+        STOP.check()
+        try:
+            df = parse_timeline(client.fetch(gdelt_url(q.text, mode, s, e)))
+        except QueryError as err:
+            log(f"  {q.key} {mode} {s:%Y-%m}: 受け付けられなかった（{err}）")
+            df = None
+        if df is not None and len(df):
+            store.save_timeline(q.key, mode, df)
+            got += len(df)
+        if len(jobs) > 4:
+            prog.tick(i + 1, f"{q.key} {mode} {s:%Y-%m} まで")
     return got
 
 
@@ -572,7 +626,9 @@ def collect_gkg(store: NewsStore, start: pd.Timestamp, end: pd.Timestamp, state_
     """
     added = done = missing = 0
     slots = gkg_slots(start, end)
+    prog = Progress("生データ", len(slots), log)
     for i, t in enumerate(slots):
+        STOP.check()
         for wait in (0, 30, 120):
             sleep(wait or 0.2)
             try:
@@ -589,8 +645,8 @@ def collect_gkg(store: NewsStore, start: pd.Timestamp, end: pd.Timestamp, state_
         else:
             raise RuntimeError(f"GDELT の生データを取れなかった（{t:%Y-%m-%d %H:%M}、HTTP {status}）。続きから取り直せる")
         store.save_state(**{state_key: t.strftime(TIME_FMT)})
-        if len(slots) > 8 and (i + 1) % 200 == 0:
-            log(f"  {t:%Y-%m-%d} まで（{i + 1}/{len(slots)} ファイル、見出し +{added}）")
+        if len(slots) > 8:
+            prog.tick(i + 1, f"{t:%Y-%m-%d} まで、見出し +{added:,}")
     return added, done, missing
 
 

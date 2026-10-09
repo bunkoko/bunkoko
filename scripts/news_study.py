@@ -81,6 +81,25 @@ def keep_awake() -> None:
         subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())])
 
 
+GDELT_REST = pd.Timedelta(hours=1)   # API に断られたら、この間は問い合わせない（続けると断られる時間が延びやすい）
+
+
+def gdelt_rest_until(store: NewsStore, now: pd.Timestamp) -> pd.Timestamp | None:
+    st = store.state()
+    t = pd.Timestamp(st["gdelt_rest_until"]) if "gdelt_rest_until" in st else None
+    return t if t is not None and t > now else None
+
+
+def rest_gdelt(store: NewsStore, now: pd.Timestamp) -> pd.Timestamp:
+    until = now + GDELT_REST
+    store.save_state(gdelt_rest_until=until.strftime(TIME_FMT))
+    return until
+
+
+def jst(t: pd.Timestamp) -> str:
+    return f"{t.tz_convert('Asia/Tokyo'):%H:%M}"
+
+
 def free_gb(path: Path) -> float:
     p = Path(path).resolve()
     while not p.exists():
@@ -109,12 +128,15 @@ def cmd_collect(args) -> None:
                     msg.append(f"生データ +{added}（{n} ファイル）")
                 except RuntimeError as e:
                     msg.append(str(e))
-    if not args.no_gdelt:
+    rest = gdelt_rest_until(store, now)
+    if not args.no_gdelt and rest is not None:
+        msg.append(f"GDELT の API は休み中（{jst(rest)} まで）")
+    elif not args.no_gdelt:
         with file_lock(store, "gdelt", wait=False) as ok:
             if not ok:
                 msg.append("GDELT は別の取得中なので省いた")
             else:
-                client = GdeltClient(log=quiet)
+                client = GdeltClient(log=quiet, backoff=())      # 断られたらやり直さず、休む
                 st = store.state()
                 since = pd.Timestamp(st["live_until"]) - pd.Timedelta(minutes=15) if "live_until" in st \
                     else now - pd.Timedelta(hours=2)
@@ -134,8 +156,8 @@ def cmd_collect(args) -> None:
                                 tl += update_timelines(client, store, start, now, [q], [mode], log=quiet)
                         store.save_state(timeline_checked=now.strftime(TIME_FMT))
                         msg.append(f"推移 +{tl}")
-                except Throttled as e:
-                    msg.append(f"GDELT に断られた（{e}）。次の回に続きから取る")
+                except Throttled:
+                    msg.append(f"GDELT に断られた。{jst(rest_gdelt(store, now_utc()))} まで API を休む（続きから取る）")
     print(f"{now:%Y-%m-%d %H:%M} UTC 収集: " + "、".join(msg), flush=True)
 
 
@@ -190,8 +212,8 @@ class NotEnoughSpace(SystemExit):
 
 
 def cmd_backfill(args) -> list[str]:
-    """過去の分をまとめて取る。取り切れなかったものを返す（「記事の一覧:」で始まるもの以外は判定に要る）。"""
-    store, now = NewsStore(args.root), now_utc()
+    """過去の分をまとめて取る。取り切れなかったものを返す（「生データ:」で始まるものは判定に要る）。"""
+    store = NewsStore(args.root)
     log = lambda s: print(s, flush=True)  # noqa: E731
     free = free_gb(store.root)
     log(f"空き容量: {free:.1f}GB（このコマンドで 1GB ほど、report の埋め込みで 1GB ほど増える）")
@@ -200,27 +222,30 @@ def cmd_backfill(args) -> list[str]:
                              "./cfd news clean で不要なものを消してからもう一度")
     keep_awake()
     problems = []
-    if not args.no_timeline or not args.no_articles:
-        with file_lock(store, "gdelt", wait=True):
-            client = GdeltClient(log=log)
-            try:
-                if not args.no_timeline:
-                    backfill_timelines(store, client, pd.Timestamp(args.timeline_since, tz="UTC"), now, log)
-            except Throttled as e:
-                problems.append(f"キーワードの推移: GDELT に断られ続けた（{e}）")
+    # 生データが先（API と違って断られない。判定に一番要る）。API は後で（断られていても、その間に休みが明ける）
     if not args.no_gkg:
         with file_lock(store, "gkg", wait=True):
             try:
                 backfill_gkg(store, pd.Timestamp(args.gkg_since, tz="UTC"), now_utc(), log)
             except RuntimeError as e:
                 problems.append(f"生データ: {e}")
-    if not args.no_articles:
+    for part, skip in (("キーワードの推移", args.no_timeline), ("記事の一覧", args.no_articles)):
+        if skip:
+            continue
+        rest = gdelt_rest_until(store, now_utc())
+        if rest is not None:
+            problems.append(f"{part}: GDELT の API は休み中（{jst(rest)} まで。断られたため）")
+            continue
         with file_lock(store, "gdelt", wait=True):
-            client = GdeltClient(log=log)
+            client = GdeltClient(log=log, backoff=(60.0, 180.0))
             try:
-                backfill_articles(store, client, args.days, now_utc(), log)
+                if part == "キーワードの推移":
+                    backfill_timelines(store, client, pd.Timestamp(args.timeline_since, tz="UTC"), now_utc(), log)
+                else:
+                    backfill_articles(store, client, args.days, now_utc(), log)
             except Throttled as e:
-                problems.append(f"記事の一覧: GDELT に断られ続けた（{e}）")
+                until = rest_gdelt(store, now_utc())
+                problems.append(f"{part}: GDELT に断られ続けた（{e}）。{jst(until)} まで API を休む")
     if problems:
         log("\n⚠ 取り切れなかったもの（時間をおいて ./cfd news backfill をもう一度。続きから取る）:")
         for p in problems:
@@ -232,7 +257,20 @@ def cmd_backfill(args) -> list[str]:
 
 # --------------------------------------------------------------------------- まとめて実行（止まったら待ってやり直す）
 RUN_WAITS = (10, 30, 60)          # やり直す前に待つ分（GDELT・回線の一時的な不調を待つ）
-_sleep = time.sleep
+
+
+def _sleep(sec: float) -> None:
+    """待つ（Ctrl+C ですぐ止められるように 5 秒ずつ。5 分ごとに残りを表示）。"""
+    from cfdbot.news import STOP
+
+    end = time.monotonic() + sec
+    last = time.monotonic()
+    while (left := end - time.monotonic()) > 0:
+        time.sleep(min(5.0, left))
+        STOP.check()
+        if time.monotonic() - last >= 300:
+            last = time.monotonic()
+            print(f"  [{datetime.now():%H:%M}] 待っている（あと {max(0.0, end - last) / 60:.0f} 分）", flush=True)
 
 
 def run_status_path(store: NewsStore) -> Path:
@@ -277,13 +315,16 @@ def cmd_run(args) -> None:
         keep_awake()
         sub = build_parser()
         waits = list(RUN_WAITS[:args.retries])
+        warnings: list[str] = []
         for step in ("backfill", "report"):
             step_args = sub.parse_args(["--root", args.root, step])
             for attempt in range(len(waits) + 1):
                 write_run_status(store, step=step, state="実行中", attempt=attempt + 1)
                 try:
                     result = (cmd_backfill if step == "backfill" else cmd_report)(step_args)
-                    problems = [p for p in (result if step == "backfill" else []) if not p.startswith("記事の一覧")]
+                    if step == "backfill":
+                        warnings = [p for p in result if not p.startswith("生データ")]
+                    problems = [p for p in (result if step == "backfill" else []) if p.startswith("生データ")]
                 except NotEnoughSpace as e:
                     write_run_status(store, step=step, state="要対応", error=str(e), attempt=attempt + 1)
                     raise
@@ -302,8 +343,14 @@ def cmd_run(args) -> None:
                 write_run_status(store, step=step, state="待ち", error="; ".join(problems)[:300],
                                  attempt=attempt + 1, retry_at=until.strftime(TIME_FMT))
                 _sleep(waits[attempt] * 60)
-        write_run_status(store, step="report", state="完了", report=str(result))
-        print(f"\n完了: {result}", flush=True)
+        note = "; ".join(warnings)
+        write_run_status(store, step="report", state="完了" + ("（一部まだ取れていない）" if note else ""),
+                         report=str(result), error=note or None)
+        print(f"\n完了: {result}" + (f"\nまだ取れていないもの（後で ./cfd news run でまた取りに行く）: {note}" if note
+                                      else ""), flush=True)
+    except KeyboardInterrupt:
+        write_run_status(store, step="", state="止めた（Ctrl+C）")
+        raise
     finally:
         sys.stdout = old_out
         logf.close()
@@ -815,7 +862,10 @@ def gate_test(args, flags_by_symbol: dict[str, tuple[pd.DatetimeIndex, np.ndarra
     b, g = stats(base), stats(test)
     rng = np.random.default_rng(SEED)
     null = []
+    from cfdbot.news import STOP
+
     for _ in range(args.gate_placebo):
+        STOP.check()
         sh = {}
         for s, gt in gates.items():
             m = masks[s]
@@ -1010,7 +1060,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    from cfdbot.news import STOP
+
     args = build_parser().parse_args()
+    STOP.install(lambda m: print(m, flush=True))
+    try:
+        dispatch(args)
+    except KeyboardInterrupt:
+        print("\n止めた。続きは同じコマンドで（取得済みの所は飛ばす）", flush=True)
+        raise SystemExit(130) from None
+
+
+def dispatch(args) -> None:
     {"run": cmd_run, "collect": cmd_collect, "backfill": cmd_backfill, "embed": cmd_embed, "selftest": cmd_selftest,
      "compare": cmd_compare,
      "setup": cmd_setup, "schedule": cmd_schedule, "status": cmd_status, "report": cmd_report,

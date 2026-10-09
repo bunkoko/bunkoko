@@ -527,21 +527,22 @@ def test_run_retries_after_a_stop_and_records_status(tmp_path, monkeypatch):
     mod.cmd_run(type("A", (), {"root": str(root), "retries": 3})())
     assert calls == ["backfill", "backfill", "report"] and waits == [600]
     st = json.loads((root / "run_status.json").read_text(encoding="utf-8"))
-    assert st["state"] == "完了" and st["report"].endswith("report.md")
+    assert st["state"] == "完了（一部まだ取れていない）" and st["report"].endswith("report.md")   # 記事の一覧は後で
+    assert "記事の一覧" in st["error"]
     assert "10 分待ってやり直す" in (root / "run.log").read_text(encoding="utf-8")
 
 
 def test_run_gives_up_after_retries_and_stops_at_once_without_space(tmp_path, monkeypatch):
     mod = _news_module("news_study_run2")
     waits = []
-    monkeypatch.setattr(mod, "cmd_backfill", lambda a: ["キーワードの推移: GDELT に断られ続けた"])
+    monkeypatch.setattr(mod, "cmd_backfill", lambda a: ["生データ: 取れなかった（HTTP 503）"])
     monkeypatch.setattr(mod, "_sleep", lambda sec: waits.append(sec))
     monkeypatch.setattr(mod, "keep_awake", lambda: None)
     root = tmp_path / "news"
     with pytest.raises(SystemExit):
         mod.cmd_run(type("A", (), {"root": str(root), "retries": 2})())
     st = json.loads((root / "run_status.json").read_text(encoding="utf-8"))
-    assert waits == [600, 1800] and st["state"] == "要対応" and "推移" in st["error"]
+    assert waits == [600, 1800] and st["state"] == "要対応" and "生データ" in st["error"]
 
     def no_space(a):
         raise mod.NotEnoughSpace("空きが 5GB より少ない")
@@ -551,3 +552,60 @@ def test_run_gives_up_after_retries_and_stops_at_once_without_space(tmp_path, mo
     with pytest.raises(SystemExit):
         mod.cmd_run(type("A", (), {"root": str(root), "retries": 3})())
     assert waits == [] and json.loads((root / "run_status.json").read_text(encoding="utf-8"))["state"] == "要対応"
+
+
+def test_progress_prints_at_most_every_five_minutes():
+    from cfdbot.news import Progress
+
+    t = [0.0]
+    out = []
+    p = Progress("生データ", 1000, out.append, clock=lambda: t[0])
+    for i in range(1, 1001):
+        t[0] += 1.0                     # 1 件 1 秒
+        p.tick(i, f"{i} 件目")
+    assert len(out) == 3                # 300・600・900 秒
+    assert "300/1,000（30%）" in out[0] and "残り約 12 分" in out[0]
+
+
+def test_gdelt_rest_skips_the_api_in_collect(tmp_path, monkeypatch):
+    mod = _news_module("news_study_rest")
+    st = NewsStore(tmp_path / "news")
+    now = mod.now_utc()
+    until = mod.rest_gdelt(st, now)
+    assert mod.gdelt_rest_until(st, now) == until.floor("s")
+    assert mod.gdelt_rest_until(st, now + pd.Timedelta(hours=2)) is None
+
+    def boom(*a, **k):
+        raise AssertionError("休み中は API に問い合わせない")
+
+    monkeypatch.setattr(mod, "GdeltClient", boom)
+    monkeypatch.setattr(mod, "collect_yahoo", lambda *a, **k: 0)
+    mod.cmd_collect(type("A", (), {"root": str(tmp_path / "news"), "no_yahoo": True, "no_gkg": True,
+                                   "no_gdelt": False})())
+
+
+def test_stop_request_finishes_the_current_file_and_cut_lines_are_skipped(tmp_path):
+    from cfdbot.news import STOP
+
+    st = NewsStore(tmp_path)
+    seen = []
+
+    def get(url):
+        seen.append(url)
+        if len(seen) == 2:
+            STOP.requested = True          # 2 つ目のファイルの途中で Ctrl+C
+        stamp = url.rsplit("/", 1)[1][:14]
+        return 200, _gkg_zip([("1", f"https://a.com/{stamp}", f"Oil story {stamp}")])
+
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            collect_gkg(st, pd.Timestamp("2026-10-09", tz="UTC"), pd.Timestamp("2026-10-09 21:00", tz="UTC"),
+                        "gkg_until", get=get, sleep=lambda s: None, log=lambda s: None)
+    finally:
+        STOP.requested = False
+    assert len(seen) == 2 and st.state()["gkg_until"] == "2026-10-09T03:00:00Z"   # 2 つ目まで終えて止まる
+    # 書いている途中で切れた行は読まない
+    day = pd.Timestamp("2026-10-09", tz="UTC")
+    with open(st.headline_path(day, "gkg"), "a", encoding="utf-8") as f:
+        f.write('deadbeef,2026-10-09T0')
+    assert len(st.load_day(day, "gkg")) == 2

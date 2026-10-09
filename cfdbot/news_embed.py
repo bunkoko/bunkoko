@@ -218,13 +218,17 @@ class EmbeddingCache:
 def embed_days(store: NewsStore, embedder: Embedder, until: pd.Timestamp,
                log: Callable[[str], None] = print) -> int:
     """until より前の（終わった）UTC の日を、まだの分だけ埋め込む。"""
+    from .news import STOP, Progress
+
     cache = EmbeddingCache(store, embedder.key)
     total = 0
     days = [d for d in store.days() if d < until]
+    prog = Progress(f"埋め込み（{embedder.key}）", len(days), log)
     for i, d in enumerate(days):
+        STOP.check()
         total += cache.update_day(d, embedder)
-        if (i + 1) % 30 == 0 and total:
-            log(f"  埋め込み: {d:%Y-%m-%d} まで（+{total}）")
+        if total:
+            prog.tick(i + 1, f"{d:%Y-%m-%d} まで、+{total:,} 件")
     return total
 
 
