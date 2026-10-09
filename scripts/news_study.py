@@ -15,6 +15,7 @@ import argparse
 import contextlib
 import os
 import plistlib
+import shutil
 import subprocess
 import sys
 import time
@@ -27,9 +28,10 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from cfdbot.news import (BLOCK, TIME_FMT, TIMELINE_MODES, TIMELINE_QUERIES, GdeltClient, MarketDaily,  # noqa: E402
-                         NewsStore, Throttled, ann_sharpe, collect_articles, collect_yahoo, daily_timeline,
-                         flags_at, hold_returns, shift_days, spikes, update_timelines, values_at, vol_ratios)
+from cfdbot.news import (BLOCK, GKG_FIRST, TIME_FMT, TIMELINE_MODES, TIMELINE_QUERIES, GdeltClient,  # noqa: E402
+                         MarketDaily, NewsStore, Throttled, ann_sharpe, collect_articles, collect_gkg, collect_yahoo,
+                         daily_timeline, flags_at, gkg_slots, hold_returns, shift_days, spikes, update_timelines,
+                         values_at, vol_ratios)
 from cfdbot.stats import deflated_threshold  # noqa: E402
 
 LABEL = "com.bunkoko.news"
@@ -40,6 +42,8 @@ MIN_TRADING_DAYS = 250           # これより短い期間では判定しない
 MIN_EVENTS = 10                  # 急増がこれより少なければ判定しない
 PRIOR_TRIALS = 21                # これまでに試した数（docs/news.md）
 SEED = 20261009
+JUDGE_FROM = pd.Timestamp("2025-07-01", tz="UTC")   # 埋め込みの判定の開始（モデルの公開 2025-06 より後）
+MIN_FREE_GB = 10                 # まとめての取得を始める前に要る空き容量（余裕を見て）
 
 
 def now_utc() -> pd.Timestamp:
@@ -47,11 +51,11 @@ def now_utc() -> pd.Timestamp:
 
 
 @contextlib.contextmanager
-def gdelt_lock(store: NewsStore, wait: bool):
-    """GDELT に同時に 2 つから問い合わせない（自動の収集とまとめての取得が重なると断られる）。"""
+def file_lock(store: NewsStore, name: str, wait: bool):
+    """同じ取得を同時に 2 つ動かさない（GDELT の API は重なると断られる。同じファイルに 2 つから書かない）。"""
     import fcntl
 
-    p = store.root / ".gdelt.lock"
+    p = store.root / f".{name}.lock"
     p.parent.mkdir(parents=True, exist_ok=True)
     f = open(p, "w")
     try:
@@ -65,25 +69,47 @@ def gdelt_lock(store: NewsStore, wait: bool):
         f.close()
 
 
+def free_gb(path: Path) -> float:
+    p = Path(path).resolve()
+    while not p.exists():
+        p = p.parent
+    return shutil.disk_usage(p).free / 1e9
+
+
 # --------------------------------------------------------------------------- 集める
 def cmd_collect(args) -> None:
     store, now = NewsStore(args.root), now_utc()
     msg = []
+    quiet = lambda s: None  # noqa: E731
     if not args.no_yahoo:
         msg.append(f"Yahoo +{collect_yahoo(store, now)}")
+    if not args.no_gkg:
+        with file_lock(store, "gkg", wait=False) as ok:
+            if not ok:
+                msg.append("生データは別の取得中なので省いた")
+            else:
+                st = store.state()
+                done = [pd.Timestamp(st[k]) for k in ("gkg_until", "gkg_backfill_until") if k in st]
+                since = max(done) + pd.Timedelta(minutes=1) if done else now - pd.Timedelta(days=1)
+                try:
+                    added, n, missing = collect_gkg(store, since, now - pd.Timedelta(minutes=20), "gkg_until",
+                                                    log=quiet)
+                    msg.append(f"生データ +{added}（{n} ファイル）")
+                except RuntimeError as e:
+                    msg.append(str(e))
     if not args.no_gdelt:
-        with gdelt_lock(store, wait=False) as ok:
+        with file_lock(store, "gdelt", wait=False) as ok:
             if not ok:
                 msg.append("GDELT は別の取得中なので省いた")
             else:
-                client = GdeltClient(log=lambda s: None)
+                client = GdeltClient(log=quiet)
                 st = store.state()
                 since = pd.Timestamp(st["live_until"]) - pd.Timedelta(minutes=15) if "live_until" in st \
                     else now - pd.Timedelta(hours=2)
                 since = max(since, now - pd.Timedelta(days=80))
                 try:
                     added, capped = collect_articles(client, store, since, now, pd.Timedelta(hours=3), "live_until",
-                                                     log=lambda s: None)
+                                                     log=quiet)
                     msg.append(f"GDELT +{added}" + (f"（上限 250 件に {capped} 回）" if capped else ""))
                     checked = pd.Timestamp(st["timeline_checked"]) if "timeline_checked" in st else None
                     if checked is None or now - checked > pd.Timedelta(hours=6):
@@ -93,7 +119,7 @@ def cmd_collect(args) -> None:
                                 old = store.load_timeline(q.key, mode)
                                 start = (old.index[-1].floor("D") - pd.Timedelta(days=2)) if len(old) \
                                     else now.floor("D") - pd.Timedelta(days=7)
-                                tl += update_timelines(client, store, start, now, [q], [mode], log=lambda s: None)
+                                tl += update_timelines(client, store, start, now, [q], [mode], log=quiet)
                         store.save_state(timeline_checked=now.strftime(TIME_FMT))
                         msg.append(f"推移 +{tl}")
                 except Throttled as e:
@@ -101,50 +127,89 @@ def cmd_collect(args) -> None:
     print(f"{now:%Y-%m-%d %H:%M} UTC 収集: " + "、".join(msg), flush=True)
 
 
+def backfill_timelines(store: NewsStore, client: GdeltClient, first: pd.Timestamp, now: pd.Timestamp, log) -> None:
+    log(f"\n== キーワードの推移: {first:%Y-%m}〜（3 か月ずつ。{len(TIMELINE_QUERIES) * len(TIMELINE_MODES)} 本。30 分ほど）")
+    got = 0
+    for q in TIMELINE_QUERIES:
+        for mode in TIMELINE_MODES:
+            old = store.load_timeline(q.key, mode)
+            head_end = old.index[0] if len(old) else now
+            if head_end - first > pd.Timedelta(days=2):
+                got += update_timelines(client, store, first, head_end, [q], [mode], log=log)
+            if len(old):
+                got += update_timelines(client, store, old.index[-1].floor("D") - pd.Timedelta(days=2), now,
+                                        [q], [mode], log=log)
+            tl = store.load_timeline(q.key, mode)
+            log(f"  {q.key} {mode}: " + (f"{tl.index[0]:%Y-%m-%d}〜{tl.index[-1]:%Y-%m-%d}（{len(tl)} 点）"
+                                        if len(tl) else "無し"))
+    store.save_state(timeline_checked=now.strftime(TIME_FMT))
+    log(f"推移 +{got} 点")
+
+
+def backfill_gkg(store: NewsStore, first: pd.Timestamp, now: pd.Timestamp, log) -> None:
+    st = store.state()
+    start = pd.Timestamp(st["gkg_backfill_until"]) + pd.Timedelta(minutes=1) if "gkg_backfill_until" in st else first
+    n = len(gkg_slots(start, now))
+    log(f"\n== GDELT の生データの見出し: {start:%Y-%m-%d}〜（{n:,} ファイル、ダウンロード 約 {n * 6 / 1000:.0f}GB。"
+        "読んだら捨てるので保存は小さい。回線しだいで数時間。止めても続きから取れる）")
+    if n:
+        added, done, missing = collect_gkg(store, start, now - pd.Timedelta(minutes=20), "gkg_backfill_until", log=log)
+        log(f"見出し +{added:,}（{done:,} ファイル。GDELT 側に無かったもの {missing}）")
+
+
+def backfill_articles(store: NewsStore, client: GdeltClient, days: int, now: pd.Timestamp, log) -> None:
+    st = store.state()
+    start = (now - pd.Timedelta(days=days)).floor(BLOCK)
+    if "backfill_until" in st and pd.Timestamp(st.get("backfill_from", now)) <= start + pd.Timedelta(days=7):
+        start = max(start, pd.Timestamp(st["backfill_until"]))
+    else:
+        store.save_state(backfill_from=start.strftime(TIME_FMT))
+    if start >= now:
+        return
+    n_req = int(np.ceil((now - start) / BLOCK)) * 4
+    log(f"\n== GDELT の記事の一覧: {start:%Y-%m-%d}〜（{n_req} 回の問い合わせ、約 {n_req * 6 / 3600:.1f} 時間。"
+        "止めても続きから取れる）")
+    added, capped = collect_articles(client, store, start, now, BLOCK, "backfill_until", log=log)
+    log(f"見出し +{added}（上限 250 件に {capped} 回達した。6 時間ごとに最新の 250 件までしか取れない）")
+
+
 def cmd_backfill(args) -> None:
     store, now = NewsStore(args.root), now_utc()
     log = lambda s: print(s, flush=True)  # noqa: E731
+    free = free_gb(store.root)
+    log(f"空き容量: {free:.0f}GB（このコマンドで増えるのは 1GB ほど。埋め込みとモデルを合わせても 5GB ほど）")
+    if free < MIN_FREE_GB:
+        raise SystemExit(f"空きが {MIN_FREE_GB}GB より少ないので止めた。不要なファイルを消してからもう一度")
     if sys.platform == "darwin":     # 取り終わるまで Mac を眠らせない（ふたを閉じると眠る）
         subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())])
-    with gdelt_lock(store, wait=True):
-        client = GdeltClient(log=log)
-        st = store.state()
-        start = (now - pd.Timedelta(days=args.days)).floor(BLOCK)
-        if "backfill_until" in st and pd.Timestamp(st.get("backfill_from", now)) <= start + pd.Timedelta(days=7):
-            start = max(start, pd.Timestamp(st["backfill_until"]))
-            log(f"前回の続きから: {start:%Y-%m-%d %H:%M} UTC")
-        else:
-            store.save_state(backfill_from=start.strftime(TIME_FMT))
-        n_req = int(np.ceil((now - start) / BLOCK)) * 4
-        if not args.no_articles and start < now:
-            log(f"見出し: {start:%Y-%m-%d}〜（{n_req} 回の問い合わせ、約 {n_req * 6 / 3600:.1f} 時間。途中で止めても続きから取れる）")
+    problems = []
+    if not args.no_timeline or not args.no_articles:
+        with file_lock(store, "gdelt", wait=True):
+            client = GdeltClient(log=log)
             try:
-                added, capped = collect_articles(client, store, start, now, BLOCK, "backfill_until", log=log)
-                log(f"見出し +{added}（上限 250 件に {capped} 回達した。6 時間ごとに最新の 250 件までしか取れない）")
+                if not args.no_timeline:
+                    backfill_timelines(store, client, pd.Timestamp(args.timeline_since, tz="UTC"), now, log)
             except Throttled as e:
-                raise SystemExit(f"GDELT に断られ続けた（{e}）。時間をおいてもう一度 ./cfd news backfill（続きから取る）")
-        if not args.no_timeline:
-            first = pd.Timestamp(args.timeline_since, tz="UTC")
-            log(f"キーワードの推移: {first:%Y-%m}〜（3 か月ずつ。{len(TIMELINE_QUERIES) * len(TIMELINE_MODES)} 本）")
-            got = 0
+                problems.append(f"キーワードの推移: GDELT に断られ続けた（{e}）")
+    if not args.no_gkg:
+        with file_lock(store, "gkg", wait=True):
             try:
-                for q in TIMELINE_QUERIES:
-                    for mode in TIMELINE_MODES:
-                        old = store.load_timeline(q.key, mode)
-                        head_end = old.index[0] if len(old) else now
-                        if head_end - first > pd.Timedelta(days=2):
-                            got += update_timelines(client, store, first, head_end, [q], [mode], log=log)
-                        if len(old):
-                            got += update_timelines(client, store, old.index[-1].floor("D") - pd.Timedelta(days=2),
-                                                    now, [q], [mode], log=log)
-                        tl = store.load_timeline(q.key, mode)
-                        log(f"  {q.key} {mode}: " + (f"{tl.index[0]:%Y-%m-%d}〜{tl.index[-1]:%Y-%m-%d}（{len(tl)} 点）"
-                                                    if len(tl) else "無し"))
+                backfill_gkg(store, pd.Timestamp(args.gkg_since, tz="UTC"), now_utc(), log)
+            except RuntimeError as e:
+                problems.append(f"生データ: {e}")
+    if not args.no_articles:
+        with file_lock(store, "gdelt", wait=True):
+            client = GdeltClient(log=log)
+            try:
+                backfill_articles(store, client, args.days, now_utc(), log)
             except Throttled as e:
-                raise SystemExit(f"GDELT に断られ続けた（{e}）。時間をおいてもう一度 ./cfd news backfill")
-            store.save_state(timeline_checked=now.strftime(TIME_FMT))
-            log(f"推移 +{got} 点")
-        log(f"問い合わせ {client.requests} 回")
+                problems.append(f"記事の一覧: GDELT に断られ続けた（{e}）")
+    if problems:
+        log("\n⚠ 取り切れなかったもの（時間をおいて ./cfd news backfill をもう一度。続きから取る）:")
+        for p in problems:
+            log(f"  - {p}")
+    else:
+        log("\n取り終わった。次は ./cfd news report")
 
 
 # --------------------------------------------------------------------------- 埋め込み
@@ -242,19 +307,25 @@ def cmd_schedule(args) -> None:
     print(f"15 分ごとに ./cfd news collect を実行する（記録: {log}）。Mac がスリープ中は止まり、起きたら続きから取る")
 
 
+def dir_size_gb(path: Path) -> float:
+    return sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file()) / 1e9 if Path(path).exists() else 0.0
+
+
 def cmd_status(args) -> None:
     store = NewsStore(args.root)
+    print(f"空き容量: {free_gb(store.root):.0f}GB（ニュースのデータが使っている量: {dir_size_gb(store.root):.2f}GB）")
     days = store.days()
     if not days:
         print("まだ見出しが無い。./cfd news collect か ./cfd news backfill を実行する")
     else:
         print(f"見出し: {days[0]:%Y-%m-%d}〜{days[-1]:%Y-%m-%d}（{len(days)} 日）")
-        print("直近の日ごとの件数（GDELT / Yahoo）:")
+        print("直近の日ごとの件数（生データ / GDELT の一覧 / Yahoo）:")
         for d in days[-10:]:
-            df = store.load_day(d)
-            print(f"  {d:%Y-%m-%d}  {int((df['source'] == 'gdelt').sum()):5d} / {int((df['source'] == 'yahoo').sum()):4d}")
+            c = store.counts(d)
+            print(f"  {d:%Y-%m-%d}  {c.get('gkg', 0):5d} / {c.get('gdelt', 0):5d} / {c.get('yahoo', 0):4d}")
     st = store.state()
-    for k, label in (("live_until", "毎回の収集（GDELT）"), ("backfill_until", "まとめての取得"),
+    for k, label in (("gkg_until", "毎回の収集（生データ）"), ("gkg_backfill_until", "まとめての取得（生データ）"),
+                     ("live_until", "毎回の収集（GDELT の一覧）"), ("backfill_until", "まとめての取得（GDELT の一覧）"),
                      ("timeline_checked", "推移の確認")):
         if k in st:
             age = now_utc() - pd.Timestamp(st[k])
@@ -312,9 +383,15 @@ class Evaluator:
         d = dates[dates >= first]
         return d[len(d) // 2] if len(d) else first
 
-    def vol(self, days: pd.DatetimeIndex, flags_by_market: dict[str, np.ndarray]) -> dict:
-        """急増（印）の翌日の |値動き| ÷ ふだんの値動き（市場をまとめた平均）。"""
-        first = days[0] + pd.Timedelta(days=1)
+    @staticmethod
+    def _first(days: pd.DatetimeIndex, start: pd.Timestamp | None) -> pd.Timestamp:
+        f = days[0] + pd.Timedelta(days=1)
+        return max(f, start) if start is not None else f
+
+    def vol(self, days: pd.DatetimeIndex, flags_by_market: dict[str, np.ndarray],
+            start: pd.Timestamp | None = None) -> dict:
+        """急増（印）の翌日の |値動き| ÷ ふだんの値動き（市場をまとめた平均）。start より前の判断は数えない。"""
+        first = self._first(days, start)
 
         def ratios(fl_by: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
             xs, ds = [], []
@@ -340,9 +417,9 @@ class Evaluator:
                 "trading_days": len(span), "mid": mid}
 
     def direction(self, days: pd.DatetimeIndex, signal_days_by_market: dict[str, np.ndarray], h: int,
-                  kind: str) -> dict:
+                  kind: str, start: pd.Timestamp | None = None) -> dict:
         """日ごとの向き（kind="value": 値をそのまま、"flag": 印の日に買い）で h 日持った成績（市場の平均）。"""
-        first = (days[0] + pd.Timedelta(days=1)).tz_localize(None)
+        first = self._first(days, start).tz_localize(None)
 
         def returns(sig_by: dict[str, np.ndarray]) -> pd.Series:
             parts = []
@@ -389,8 +466,10 @@ def pct(v) -> str:
     return "–" if v is None else f"{v:.0%}"
 
 
-def gate_test(args, flags_by_symbol: dict[str, tuple[pd.DatetimeIndex, np.ndarray]], say) -> dict | None:
-    """今のタートルで、急増の翌日（最初の判断）は新規に入らない。期間B（フィリップ）の、ニュースのある期間で比べる。"""
+def gate_test(args, flags_by_symbol: dict[str, tuple[pd.DatetimeIndex, np.ndarray]], say,
+              since: pd.Timestamp | None = None) -> dict | None:
+    """今のタートルで、急増の翌日（最初の判断）は新規に入らない。期間B（フィリップ）の、ニュースのある期間
+    （since 以降）で比べる。"""
     from cfdbot.features import decide_ns
     from cfdbot.study import build_setup, summarize
     from cfdbot.universe import day_returns
@@ -404,7 +483,7 @@ def gate_test(args, flags_by_symbol: dict[str, tuple[pd.DatetimeIndex, np.ndarra
     starts = [d[0] + pd.Timedelta(days=1) for d, _ in flags_by_symbol.values() if len(d)]
     if not starts:
         return None
-    start = max(min(starts), per.start)
+    start = max([min(starts), per.start] + ([since] if since is not None else []))
     gates, masks = {}, {}
     for s, frame in per.frames.items():
         if s not in flags_by_symbol:
@@ -468,12 +547,12 @@ def cmd_report(args) -> None:
         f"（{args.placebo} 回）。前半・後半 = 対象の期間を半分に分けたもの")
     days = store.days()
     if days:
-        n = {"gdelt": 0, "yahoo": 0}
+        n = {"gkg": 0, "gdelt": 0, "yahoo": 0}
         for d in days:
-            src = store.load_day(d)["source"].value_counts()
-            for k in n:
-                n[k] += int(src.get(k, 0))
-        say(f"\n- 見出し: {days[0]:%Y-%m-%d}〜{days[-1]:%Y-%m-%d}（{len(days)} 日、GDELT {n['gdelt']:,}・Yahoo {n['yahoo']:,} 件）")
+            for k, v in store.counts(d).items():
+                n[k] = n.get(k, 0) + v
+        say(f"\n- 見出し: {days[0]:%Y-%m-%d}〜{days[-1]:%Y-%m-%d}（{len(days)} 日。GDELT の生データ {n['gkg']:,}・"
+            f"GDELT の一覧 {n['gdelt']:,}・Yahoo {n['yahoo']:,} 件）")
 
     # ---------------- A. キーワードで数える（AI なし）
     say("\n## A. キーワードで数える量と論調（AI なし。docs/news.md 3 章）\n")
@@ -527,28 +606,32 @@ def cmd_report(args) -> None:
         n = embed_days(store, emb, today)
         feats = daily_features(load_day_vectors(store, key, today), anchor_vectors(emb))
         role = "（AI を使わない比較用。判定はしない）" if key == "hash" else "（判定に使うモデル）"
-        say(f"### {key} {role}\n\n- {MODELS[key].note}。今回埋め込んだ見出し +{n}")
-        if feats.empty or "share_geo" not in feats:
-            say(f"- 特徴を作れる日がまだ無い（見出しが {20} 日分以上要る）\n")
+        say(f"### {key} {role}\n\n- {MODELS[key].note}。今回埋め込んだ見出し +{n:,}")
+        if feats.empty or "share_geo" not in feats or feats["share_geo"].notna().sum() == 0:
+            say("- 特徴を作れる日がまだ無い（見出しが 20 日分以上要る。./cfd news backfill）\n")
             continue
-        say(f"- 特徴: {feats['share_geo'].first_valid_index():%Y-%m-%d}〜{feats.index[-1]:%Y-%m-%d}")
+        say(f"- 特徴: {feats['share_geo'].first_valid_index():%Y-%m-%d}〜{feats.index[-1]:%Y-%m-%d}"
+            f"（GDELT の生データの見出し、1 日平均 {feats['n'].mean():.0f} 件）")
         sp_geo = spikes(feats["share_geo"]).to_numpy()
         sp_oil = spikes(feats["novelty_oil"]).to_numpy() if "novelty_oil" in feats else np.zeros(len(feats), bool)
         sp_gold = spikes(feats["novelty_gold"]).to_numpy() if "novelty_gold" in feats else np.zeros(len(feats), bool)
-        say(f"- 急増: 地政学 {int(sp_geo.sum())} 日・原油の珍しさ {int(sp_oil.sum())} 日・金の珍しさ {int(sp_gold.sum())} 日")
-        rows = []
-        r = ev.vol(feats.index, {k: sp_geo for k in ("WTI", "BRENT", "GOLD")})
-        rows.append(("emb_geo_vol", "地政学の見出しの割合の急増 → 翌日の値動きの大きさ（÷ふだん）", r, vol_verdict(r)))
-        r = ev.vol(feats.index, {"WTI": sp_oil, "BRENT": sp_oil, "GOLD": sp_gold, "SILVER": sp_gold})
-        rows.append(("novelty_vol", "原油（金）の見出しの珍しさの急増 → 翌日の値動きの大きさ", r, vol_verdict(r)))
-        say("\n| 仮説 | 内容 | 回数 | 値 | 前半 | 後半 | 偶然より良い割合 | 判定 |")
-        say("|---|---|---|---|---|---|---|---|")
-        for name, label, r, v in rows:
-            v = "参考" if key == "hash" else v
-            say(f"| {name} | {label} | {r['n']} | {fmt(r['value'])} | {fmt(r['h1'])} | {fmt(r['h2'])} | {pct(r['pct'])} | {v} |")
+        say(f"- 急増（全期間）: 地政学 {int(sp_geo.sum())} 日・原油の珍しさ {int(sp_oil.sum())} 日・"
+            f"金の珍しさ {int(sp_gold.sum())} 日")
+        say("\n| 仮説 | 期間 | 内容 | 回数 | 値 | 前半 | 後半 | 偶然より良い割合 | 判定 |")
+        say("|---|---|---|---|---|---|---|---|---|")
+        for label_w, since in ((f"判定 {JUDGE_FROM:%Y-%m}〜", JUDGE_FROM), ("参考 全期間", None)):
+            rows = []
+            r = ev.vol(feats.index, {k: sp_geo for k in ("WTI", "BRENT", "GOLD")}, since)
+            rows.append(("emb_geo_vol", "地政学の見出しの割合の急増 → 翌日の値動きの大きさ（÷ふだん）", r, vol_verdict(r)))
+            r = ev.vol(feats.index, {"WTI": sp_oil, "BRENT": sp_oil, "GOLD": sp_gold, "SILVER": sp_gold}, since)
+            rows.append(("novelty_vol", "原油（金）の見出しの珍しさの急増 → 翌日の値動きの大きさ", r, vol_verdict(r)))
+            for name, label, r, v in rows:
+                v = "参考" if key == "hash" or since is None else v
+                say(f"| {name} | {label_w} | {label} | {r['n']} | {fmt(r['value'])} | {fmt(r['h1'])} | {fmt(r['h2'])} "
+                    f"| {pct(r['pct'])} | {v} |")
         if key != "hash" and not args.no_gate:
             fl = {"WTI": sp_geo | sp_oil, "BRENT": sp_geo | sp_oil, "GOLD": sp_geo | sp_gold, "SILVER": sp_geo | sp_gold}
-            g = gate_test(args, {s: (feats.index, f) for s, f in fl.items()}, say)
+            g = gate_test(args, {s: (feats.index, f) for s, f in fl.items()}, say, JUDGE_FROM)
             if g:
                 say(f"\nemb_gate（今のタートルで、上の急増の翌日は新規に入らない。{g['start']:%Y-%m-%d}〜）: "
                     f"シャープ {fmt(g['base'][0])} → {fmt(g['test'][0])}（前半 {fmt(g['base'][1])} → "
@@ -567,13 +650,16 @@ def main() -> None:
     p.add_argument("--root", default="data/news", help="保存先")
     sub = p.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("collect", help="1 回だけ集める")
-    c.add_argument("--no-gdelt", action="store_true")
+    c.add_argument("--no-gdelt", action="store_true", help="GDELT の API（記事の一覧・推移）を省く")
+    c.add_argument("--no-gkg", action="store_true", help="GDELT の生データを省く")
     c.add_argument("--no-yahoo", action="store_true")
     b = sub.add_parser("backfill", help="GDELT の過去の分をまとめて取る")
     b.add_argument("--days", type=int, default=90, help="見出しをさかのぼる日数（GDELT は 3 か月ほどまで）")
     b.add_argument("--timeline-since", default=str(TIMELINE_FIRST.date()), help="キーワードの推移の開始日")
+    b.add_argument("--gkg-since", default=str(GKG_FIRST.date()), help="生データの見出しの開始日（2019-10 から入っている）")
     b.add_argument("--no-articles", action="store_true")
     b.add_argument("--no-timeline", action="store_true")
+    b.add_argument("--no-gkg", action="store_true")
     for name in ("embed", "selftest", "setup"):
         s = sub.add_parser(name)
         s.add_argument("--model", default="qwen3-0.6b")

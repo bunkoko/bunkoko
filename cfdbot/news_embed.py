@@ -21,6 +21,8 @@ import pandas as pd
 
 from .news import NewsStore, sample_like_backfill
 
+FEATURE_SOURCE = "gkg"   # 特徴に使う見出し: GDELT の生データ（2019-10 から今まで同じ取り方。docs/news.md 6 章）
+
 
 @dataclass(frozen=True)
 class ModelSpec:
@@ -166,12 +168,12 @@ class EmbeddingCache:
     def path(self, day: pd.Timestamp) -> Path:
         return self.dir / f"{day:%Y-%m}" / f"{day:%Y-%m-%d}.npz"
 
-    def load(self, day: pd.Timestamp) -> tuple[np.ndarray, np.ndarray]:
+    def load(self, day: pd.Timestamp, raw: bool = False) -> tuple[np.ndarray, np.ndarray]:
         p = self.path(day)
         if not p.exists():
             return np.array([], dtype=str), np.zeros((0, 0), np.float32)
         z = np.load(p, allow_pickle=False)
-        return z["ids"].astype(str), z["vecs"].astype(np.float32)
+        return z["ids"].astype(str), (z["vecs"] if raw else z["vecs"].astype(np.float32))
 
     def update_day(self, day: pd.Timestamp, embedder: Embedder) -> int:
         """その日の見出しのうち、まだ埋め込んでいないものを足す。足した数を返す。"""
@@ -229,6 +231,7 @@ def daily_features(days: list[tuple[pd.Timestamp, np.ndarray]], anchors: dict[st
     cents: deque = deque()         # (日, {原油・金: 平均の向き})
     rows = []
     for day, vecs in days:
+        vecs = np.asarray(vecs, dtype=np.float32)
         sc = topic_scores(vecs, anchors)
         while hist and (day - hist[0][0]).days > WINDOW:
             hist.popleft()
@@ -263,18 +266,24 @@ def daily_features(days: list[tuple[pd.Timestamp, np.ndarray]], anchors: dict[st
     return df.reindex(full)
 
 
-def load_day_vectors(store: NewsStore, model_key: str, until: pd.Timestamp) -> list[tuple[pd.Timestamp, np.ndarray]]:
-    """特徴に使う見出し（GDELT のみ。さかのぼった期間と同じ取り方にそろえる）のベクトルを日ごとに。"""
+def load_day_vectors(store: NewsStore, model_key: str, until: pd.Timestamp,
+                     source: str = FEATURE_SOURCE) -> list[tuple[pd.Timestamp, np.ndarray]]:
+    """特徴に使う見出しのベクトルを日ごとに（float16 のまま。メモリを節約する）。
+
+    source="gdelt"（記事の一覧）は、さかのぼった期間と同じ取り方にそろえてから使う。
+    """
     cache = EmbeddingCache(store, model_key)
     out = []
-    for d in store.days():
+    for d in store.days(source):
         if d >= until:
             continue
-        df = sample_like_backfill(store.load_day(d))
-        ids, vecs = cache.load(d)
+        df = store.load_day(d, source)
+        if source == "gdelt":
+            df = sample_like_backfill(df)
+        ids, vecs = cache.load(d, raw=True)
         if not len(ids):
             continue
         pos = {i: j for j, i in enumerate(ids)}
         idx = [pos[i] for i in df["id"] if i in pos]
-        out.append((d, vecs[idx] if idx else np.zeros((0, vecs.shape[1]), np.float32)))
+        out.append((d, vecs[idx] if idx else np.zeros((0, vecs.shape[1]), np.float16)))
     return out

@@ -7,8 +7,9 @@ import pandas as pd
 import pytest
 
 from cfdbot.news import (MAX_RECORDS, GdeltClient, MarketDaily, NewsStore, QueryError, Throttled, collect_articles,
-                         daily_timeline, flags_at, gdelt_url, headline_id, hold_returns, parse_artlist,
-                         parse_timeline, parse_yahoo_news, sample_like_backfill, spikes, values_at, vol_ratios)
+                         collect_gkg, daily_timeline, flags_at, gdelt_url, gkg_slots, gkg_url, headline_id,
+                         hold_returns, parse_artlist, parse_gkg, parse_timeline, parse_yahoo_news,
+                         sample_like_backfill, spikes, values_at, vol_ratios)
 from cfdbot.news_embed import EmbeddingCache, HashEmbedder, daily_features, load_day_vectors, topic_scores
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -98,12 +99,19 @@ def test_store_dedups_by_url_and_title_across_recent_days(tmp_path):
                                 _art("https://c.com/2", "Gold steady", "20261009T233500Z")]), "oil")
     assert st.add(a) == 2                         # 同じ見出しの転載は 1 件。23:35 の分は翌日に入る
     assert [d.strftime("%m-%d") for d in st.days()] == ["10-09", "10-10"]
+    assert st.headline_path(pd.Timestamp("2026-10-09", tz="UTC"), "gdelt").exists()
+    assert st.counts(pd.Timestamp("2026-10-09", tz="UTC")) == {"gdelt": 1}
+    # 別の取得先なら同じ見出しでも別に数える（取得先ごとに数え方をそろえるため）
+    other = a.iloc[:1].assign(source="gkg")
+    assert st.add(other) == 1 and st.days("gkg") == [pd.Timestamp("2026-10-09", tz="UTC")]
+    assert len(st.load_day(pd.Timestamp("2026-10-09", tz="UTC"))) == 2
+    assert len(st.load_day(pd.Timestamp("2026-10-09", tz="UTC"), "gdelt")) == 1
     assert st.load_day(pd.Timestamp("2026-10-09", tz="UTC"))["title"].iloc[0] == 'Oil, "crude" jump again'
     st2 = NewsStore(tmp_path)                     # 読み込み直しても重複しない
     again = parse_artlist(_artlist([_art("https://a.com/1", "Oil jumps (updated)", "20261010T050000Z"),
                                     _art("https://d.com/3", "New story", "20261010T050000Z")]), "oil")
     assert st2.add(again) == 1
-    assert len(st2.load()) == 3
+    assert len(st2.load()) == 4
 
 
 def test_parse_yahoo_news_uses_first_seen_time():
@@ -256,8 +264,9 @@ def test_embedding_cache_adds_only_new_headlines(tmp_path):
     assert cache.update_day(day, e) == 1 and Counting.calls == 2
     ids, vecs = cache.load(day)
     assert len(ids) == 2 and vecs.shape == (2, 512)
-    got = load_day_vectors(st, "hash", pd.Timestamp("2026-10-10", tz="UTC"))
+    got = load_day_vectors(st, "hash", pd.Timestamp("2026-10-10", tz="UTC"), source="gdelt")
     assert len(got) == 1 and got[0][1].shape == (2, 512)
+    assert load_day_vectors(st, "hash", pd.Timestamp("2026-10-10", tz="UTC")) == []     # 特徴は生データの見出しだけ
 
 
 def test_launchd_job_runs_collect_every_15_minutes():
@@ -306,3 +315,67 @@ def test_gate_test_blocks_entries_after_news_and_compares_with_shifted(monkeypat
     r = mod.gate_test(args, {"GOLD": (news_days, fl)}, lambda s: None)
     assert r["blocked"] == int(loss.sum()) and r["test"][0] > r["base"][0] + 0.5
     assert r["pct"] == 1.0 and mod.gate_verdict(r) == "有望"
+
+
+def _gkg_zip(rows):
+    """GKG の 1 行 = 27 列（タブ区切り）。使うのは 2（種類）・3（サイト）・4（URL）・26（見出しの入った XML）だけ。"""
+    import io
+    import zipfile
+
+    lines = []
+    for kind, url, title in rows:
+        cols = [""] * 27
+        cols[2], cols[3], cols[4] = kind, url.split("/")[2], url
+        cols[26] = f"<PAGE_LINKS>x</PAGE_LINKS><PAGE_TITLE>{title}</PAGE_TITLE>" if title is not None else ""
+        lines.append("\t".join(cols))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("20261009120000.gkg.csv", "\n".join(lines))
+    return buf.getvalue()
+
+
+def test_parse_gkg_keeps_titles_with_topic_words():
+    t = pd.Timestamp("2026-10-09 12:00", tz="UTC")
+    raw = _gkg_zip([("1", "https://a.com/1", "Oil prices climb as OPEC+ trims output"),
+                    ("1", "https://b.com/2", "Gold &amp; silver rally"),
+                    ("1", "https://c.com/3", "Missiles strike near the border"),
+                    ("1", "https://d.com/4", "Inflation cools in September"),
+                    ("1", "https://e.com/5", "Local team wins the cup"),          # 対象の言葉が無い
+                    ("1", "https://f.com/6", "Goldman upgrades bank stocks"),     # gold を含む別の単語は数えない
+                    ("2", "https://g.com/7", "Oil spill reported"),               # ウェブの記事以外
+                    ("1", "https://h.com/8", None)])                              # 見出しが無い
+    df = parse_gkg(raw, t)
+    assert list(df["query"]) == ["oil", "gold", "geo", "macro"]
+    assert df["title"].iloc[1] == "Gold & silver rally"
+    assert (df["published"] == t).all() and (df["available"] == t + pd.Timedelta(minutes=30)).all()
+    assert (df["source"] == "gkg").all() and df["domain"].iloc[0] == "a.com"
+    assert gkg_url(t).endswith("/gdeltv2/20261009120000.gkg.csv.zip")
+
+
+def test_gkg_slots_every_three_hours():
+    s = pd.Timestamp("2026-10-09 01:10", tz="UTC")
+    sl = gkg_slots(s, pd.Timestamp("2026-10-09 09:00", tz="UTC"))
+    assert [x.strftime("%H:%M") for x in sl] == ["03:00", "06:00", "09:00"]
+    assert gkg_slots(pd.Timestamp("2026-10-09 09:01", tz="UTC"), pd.Timestamp("2026-10-09 10:00", tz="UTC")) == []
+
+
+def test_collect_gkg_skips_missing_files_and_records_progress(tmp_path):
+    st = NewsStore(tmp_path)
+    calls = []
+
+    def get(url):
+        calls.append(url)
+        if "20261009030000" in url:
+            return 404, b""                                  # GDELT 側の欠け
+        stamp = url.rsplit("/", 1)[1][:14]
+        return 200, _gkg_zip([("1", f"https://a.com/{stamp}", f"Oil story {stamp}")])
+
+    added, done, missing = collect_gkg(st, pd.Timestamp("2026-10-09", tz="UTC"),
+                                       pd.Timestamp("2026-10-09 09:00", tz="UTC"), "gkg_until", get=get,
+                                       sleep=lambda s: None, log=lambda s: None)
+    assert (added, done, missing) == (3, 3, 1) and len(calls) == 4
+    assert st.state()["gkg_until"] == "2026-10-09T09:00:00Z"
+    assert st.counts(pd.Timestamp("2026-10-09", tz="UTC")) == {"gkg": 3}
+    with pytest.raises(RuntimeError):
+        collect_gkg(st, pd.Timestamp("2026-10-10", tz="UTC"), pd.Timestamp("2026-10-10 01:00", tz="UTC"), "k",
+                    get=lambda u: (503, b""), sleep=lambda s: None, log=lambda s: None)

@@ -60,6 +60,18 @@ ARTICLE_QUERIES: tuple[Query, ...] = (
     Query("macro", '("federal reserve" OR inflation OR "interest rates" OR recession)', "金融政策・景気"),
 )
 YAHOO_TICKERS = ("CL=F", "BZ=F", "GC=F", "SI=F")
+# GDELT の生データ（15 分ごとの GKG のファイル。英語の記事すべて）。見出しが入っているのは 2019-10 から。
+# 3 時間ごとに 1 ファイル（UTC 0・3・6…21 時に終わる 15 分）だけを使い、見出しが下の言葉を含む記事を取り出す。
+# 1 ファイル 2〜12MB で、取り出すのは 25〜115 件ほど（ファイルは保存しない）
+GKG_BASE = "https://data.gdeltproject.org/gdeltv2/"
+GKG_FIRST = pd.Timestamp("2019-10-01", tz="UTC")
+GKG_STEP = pd.Timedelta(hours=3)
+GKG_TITLE_WORDS: dict[str, re.Pattern] = {     # ARTICLE_QUERIES と同じ言葉（複数形も含む）。最初に当てはまったもの
+    "oil": re.compile(r"\b(oil|crude|opec|brent)s?\b", re.I),
+    "gold": re.compile(r"\b(gold|silver|bullion)s?\b", re.I),
+    "geo": re.compile(r"\b(war|missile|sanction|attack|military|conflict)s?\b", re.I),
+    "macro": re.compile(r"\b(federal reserve|inflation|interest rates?|recessions?)\b", re.I),
+}
 HEADLINE_COLUMNS = ["id", "available", "published", "source", "query", "title", "url", "domain", "language",
                     "country"]
 
@@ -223,36 +235,40 @@ def parse_yahoo_news(raw: bytes, ticker: str, now: pd.Timestamp) -> pd.DataFrame
 
 # --------------------------------------------------------------------------- 保存
 class NewsStore:
-    """data/news の下に保存する。見出しは UTC の日ごとの CSV（使えるようになった時刻で分ける）。"""
+    """data/news の下に保存する。見出しは UTC の日ごと・取得先ごとの CSV（使えるようになった時刻で日を分ける）。
+
+    取得先ごとにファイルを分けるので、同時に動く収集どうしが同じファイルに書くことはない。
+    """
 
     def __init__(self, root: str | Path = "data/news"):
         self.root = Path(root)
-        self._keys: dict[pd.Timestamp, tuple[set[str], set[str]]] = {}
+        self._keys: dict[tuple[pd.Timestamp, str], tuple[set[str], set[str]]] = {}
 
     # ---- 見出し
-    def headline_path(self, day: pd.Timestamp) -> Path:
-        return self.root / "headlines" / f"{day:%Y-%m}" / f"{day:%Y-%m-%d}.csv"
+    def headline_path(self, day: pd.Timestamp, source: str) -> Path:
+        return self.root / "headlines" / f"{day:%Y-%m}" / f"{day:%Y-%m-%d}.{source}.csv"
 
-    def _day_keys(self, day: pd.Timestamp) -> tuple[set[str], set[str]]:
-        if day not in self._keys:
-            p = self.headline_path(day)
+    def _day_keys(self, day: pd.Timestamp, source: str) -> tuple[set[str], set[str]]:
+        k = (day, source)
+        if k not in self._keys:
+            p = self.headline_path(day, source)
             if p.exists():
                 df = pd.read_csv(p, usecols=["id", "title"], dtype=str, keep_default_na=False)
-                self._keys[day] = (set(df["id"]), {title_key(t) for t in df["title"]})
+                self._keys[k] = (set(df["id"]), {title_key(t) for t in df["title"]})
             else:
-                self._keys[day] = (set(), set())
-        return self._keys[day]
+                self._keys[k] = (set(), set())
+        return self._keys[k]
 
     def add(self, df: pd.DataFrame) -> int:
-        """新しい見出しだけを足す（同じ URL・同じ見出しは、その日と前の 2 日に既にあれば足さない）。"""
+        """新しい見出しだけを足す（同じ取得先の、その日と前の 2 日に同じ URL・同じ見出しがあれば足さない）。"""
         if df.empty:
             return 0
         df = df.sort_values("available")
         added = 0
-        for day, g in df.groupby(df["available"].dt.floor("D")):
+        for (day, source), g in df.groupby([df["available"].dt.floor("D"), df["source"]]):
             day = pd.Timestamp(day)
-            ids, keys = self._day_keys(day)
-            older = [self._day_keys(day - pd.Timedelta(days=k)) for k in (1, 2)]
+            ids, keys = self._day_keys(day, source)
+            older = [self._day_keys(day - pd.Timedelta(days=k), source) for k in (1, 2)]
             keep = []
             for i, row in enumerate(g.itertuples(index=False)):
                 tk = title_key(row.title)
@@ -266,24 +282,36 @@ class NewsStore:
             out = g.iloc[keep].copy()
             for c in ("available", "published"):
                 out[c] = out[c].dt.strftime(TIME_FMT)
-            p = self.headline_path(day)
+            p = self.headline_path(day, source)
             p.parent.mkdir(parents=True, exist_ok=True)
             out.to_csv(p, mode="a", header=not p.exists(), index=False)
             added += len(out)
         return added
 
-    def days(self) -> list[pd.Timestamp]:
+    def _files(self) -> list[Path]:
         d = self.root / "headlines"
-        return sorted(pd.Timestamp(p.stem, tz="UTC") for p in d.glob("*/*.csv")) if d.exists() else []
+        return sorted(d.glob("*/*.csv")) if d.exists() else []
 
-    def load_day(self, day: pd.Timestamp) -> pd.DataFrame:
-        p = self.headline_path(day)
-        if not p.exists():
+    def days(self, source: str | None = None) -> list[pd.Timestamp]:
+        out = {p.name.split(".")[0] for p in self._files() if source is None or p.name.split(".")[1] == source}
+        return sorted(pd.Timestamp(d, tz="UTC") for d in out)
+
+    def load_day(self, day: pd.Timestamp, source: str | None = None) -> pd.DataFrame:
+        paths = sorted((self.root / "headlines" / f"{day:%Y-%m}").glob(f"{day:%Y-%m-%d}.{source or '*'}.csv"))
+        if not paths:
             return _frame([])
-        df = pd.read_csv(p, dtype=str, keep_default_na=False)
+        df = pd.concat([pd.read_csv(p, dtype=str, keep_default_na=False) for p in paths], ignore_index=True)
         for c in ("available", "published"):
             df[c] = pd.to_datetime(df[c], utc=True)
         return df
+
+    def counts(self, day: pd.Timestamp) -> dict[str, int]:
+        """取得先ごとの件数（ファイルの行数）。"""
+        out = {}
+        for p in (self.root / "headlines" / f"{day:%Y-%m}").glob(f"{day:%Y-%m-%d}.*.csv"):
+            with open(p, "rb") as f:
+                out[p.name.split(".")[1]] = max(0, sum(1 for _ in f) - 1)
+        return out
 
     def load(self, start: pd.Timestamp | None = None, end: pd.Timestamp | None = None) -> pd.DataFrame:
         days = [d for d in self.days() if (start is None or d >= start) and (end is None or d < end)]
@@ -392,6 +420,74 @@ def collect_yahoo(store: NewsStore, now: pd.Timestamp, get: Callable[[str], tupl
             log(f"  Yahoo {t}: {e}"[:160])
         sleep(1.0)
     return added
+
+
+def gkg_url(t: pd.Timestamp) -> str:
+    return f"{GKG_BASE}{t:%Y%m%d%H%M%S}.gkg.csv.zip"
+
+
+def gkg_slots(start: pd.Timestamp, end: pd.Timestamp) -> list[pd.Timestamp]:
+    """start 以降・end 以前の、3 時間ごとのファイルの時刻。"""
+    first = start.ceil(GKG_STEP)
+    return list(pd.date_range(first, end, freq=GKG_STEP)) if first <= end else []
+
+
+def parse_gkg(raw_zip: bytes, file_time: pd.Timestamp) -> pd.DataFrame:
+    """GKG のファイル（zip）から、見出しが対象の言葉を含む記事を取り出す。"""
+    import io
+    import zipfile
+
+    with zipfile.ZipFile(io.BytesIO(raw_zip)) as z:
+        text = z.read(z.namelist()[0]).decode("utf-8", errors="replace")
+    avail = file_time + GDELT_DELAY
+    rows = []
+    for line in text.split("\n"):
+        cols = line.split("\t")
+        if len(cols) < 27 or cols[2] != "1":          # 1 = ウェブの記事
+            continue
+        m = re.search(r"<PAGE_TITLE>(.*?)</PAGE_TITLE>", cols[26])
+        title = clean_title(m.group(1)) if m else ""
+        url = cols[4].strip()
+        if not title or not url:
+            continue
+        tag = next((k for k, pat in GKG_TITLE_WORDS.items() if pat.search(title)), None)
+        if tag is None:
+            continue
+        rows.append({"id": headline_id(url), "available": avail, "published": file_time, "source": "gkg",
+                     "query": tag, "title": title, "url": url, "domain": cols[3], "language": "English",
+                     "country": ""})
+    return _frame(rows)
+
+
+def collect_gkg(store: NewsStore, start: pd.Timestamp, end: pd.Timestamp, state_key: str,
+                get: Callable[[str], tuple[int, bytes]] = http_get, sleep: Callable[[float], None] = time.sleep,
+                log: Callable[[str], None] = print) -> tuple[int, int, int]:
+    """start〜end の 3 時間ごとのファイルを 1 つずつ取り、見出しを足す（ファイルは保存しない）。
+
+    戻り値: (足した見出しの数, 読んだファイルの数, 無かったファイルの数)。終わった所までを state_key に記録する。
+    """
+    added = done = missing = 0
+    slots = gkg_slots(start, end)
+    for i, t in enumerate(slots):
+        for wait in (0, 30, 120):
+            sleep(wait or 0.2)
+            try:
+                status, raw = get(gkg_url(t))
+            except OSError:
+                status, raw = -1, b""
+            if status in (200, 404):
+                break
+        if status == 404:
+            missing += 1           # GDELT の欠け（たまにある）
+        elif status == 200:
+            added += store.add(parse_gkg(raw, t))
+            done += 1
+        else:
+            raise RuntimeError(f"GDELT の生データを取れなかった（{t:%Y-%m-%d %H:%M}、HTTP {status}）。続きから取り直せる")
+        store.save_state(**{state_key: t.strftime(TIME_FMT)})
+        if len(slots) > 8 and (i + 1) % 200 == 0:
+            log(f"  {t:%Y-%m-%d} まで（{i + 1}/{len(slots)} ファイル、見出し +{added}）")
+    return added, done, missing
 
 
 # --------------------------------------------------------------------------- 日ごとの特徴
