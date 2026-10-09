@@ -483,3 +483,17 @@ def test_why_failed_explains_common_model_errors():
     assert "torchvision" in mod.why_failed(ImportError("Could not import module 'EmbeddingGemma2Processor'. Are this"))
     assert "ログイン" in mod.why_failed(OSError("401 Client Error. (Request ID: Root=1-6ac8)"))
     assert mod.why_failed(RuntimeError("boom\nmore")) == "boom"
+
+
+def test_clean_removes_only_unused_models_and_download_cache(tmp_path):
+    spec = importlib.util.spec_from_file_location("news_study_clean", ROOT / "scripts" / "news_study.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    hub, xet = tmp_path / "hub", tmp_path / "xet"
+    for name in ("models--Qwen--Qwen3-Embedding-0.6B", "models--google--embeddinggemma-2",
+                 "models--intfloat--multilingual-e5-large", "models--someone--other-model"):
+        (hub / name).mkdir(parents=True)
+    xet.mkdir()
+    got = {p.name for _label, p in mod.clean_targets(hub, xet, "qwen3-0.6b")}
+    # 選んだモデルと、この作業と関係ないモデルは消さない
+    assert got == {"models--google--embeddinggemma-2", "models--intfloat--multilingual-e5-large", "xet"}

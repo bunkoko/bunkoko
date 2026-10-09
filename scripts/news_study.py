@@ -10,6 +10,7 @@
     ./cfd news embed       見出しを埋め込む（終わった日の分だけ）
     ./cfd news report      仮説を確かめて output/news/<日時>/report.md に書く（埋め込みも先に行う）
     ./cfd news status      集めた量と、自動の収集が動いているか
+    ./cfd news clean       比べるためだけに取ったモデルとダウンロードの一時置き場を消す（--dry-run で確認だけ）
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ MIN_TRADING_DAYS = 250           # これより短い期間では判定しない
 MIN_EVENTS = 10                  # 急増がこれより少なければ判定しない
 PRIOR_TRIALS = 21                # これまでに試した数（docs/news.md）
 SEED = 20261009
-MIN_FREE_GB = 10                 # まとめての取得を始める前に要る空き容量（余裕を見て）
+MIN_FREE_GB = 5                  # まとめての取得を始める前に要る空き容量（増えるのは 2GB ほど＋macOS のための余裕）
 
 
 def now_utc() -> pd.Timestamp:
@@ -187,9 +188,10 @@ def cmd_backfill(args) -> None:
     store, now = NewsStore(args.root), now_utc()
     log = lambda s: print(s, flush=True)  # noqa: E731
     free = free_gb(store.root)
-    log(f"空き容量: {free:.0f}GB（このコマンドで増えるのは 1GB ほど。埋め込みとモデルを合わせても 5GB ほど）")
+    log(f"空き容量: {free:.1f}GB（このコマンドで 1GB ほど、report の埋め込みで 1GB ほど増える）")
     if free < MIN_FREE_GB:
-        raise SystemExit(f"空きが {MIN_FREE_GB}GB より少ないので止めた。不要なファイルを消してからもう一度")
+        raise SystemExit(f"空きが {MIN_FREE_GB}GB より少ないので止めた（macOS の動作に余裕が要るため）。"
+                         "./cfd news clean で不要なものを消してからもう一度")
     keep_awake()
     problems = []
     if not args.no_timeline or not args.no_articles:
@@ -454,8 +456,71 @@ def cmd_schedule(args) -> None:
     print(f"15 分ごとに ./cfd news collect を実行する（記録: {log}）。Mac がスリープ中は止まり、起きたら続きから取る")
 
 
+def hf_cache_dirs() -> tuple[Path, Path]:
+    """Hugging Face のモデルの置き場と、ダウンロードの一時置き場（xet）。"""
+    try:
+        from huggingface_hub import constants
+
+        hub = Path(constants.HF_HUB_CACHE)
+        xet = Path(getattr(constants, "HF_XET_CACHE", Path(constants.HF_HOME) / "xet"))
+    except ImportError:
+        home = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+        hub, xet = home / "hub", home / "xet"
+    return hub, xet
+
+
+def clean_targets(hub: Path, xet: Path, keep: str) -> list[tuple[str, Path]]:
+    """消してよいもの: 比べるためだけに取ったモデル（選んだモデル以外）と、ダウンロードの一時置き場。"""
+    from cfdbot.news_embed import MODELS
+
+    out = []
+    for key, spec in MODELS.items():
+        if not spec.name or key == keep:
+            continue
+        p = hub / ("models--" + spec.name.replace("/", "--"))
+        if p.exists():
+            out.append((f"比べるためだけに取ったモデル {key}", p))
+    if xet.exists():
+        out.append(("Hugging Face のダウンロードの一時置き場", xet))
+    return out
+
+
+def cmd_clean(args) -> None:
+    """このニュースの作業で入れたもののうち、もう要らないものを消す（選んだモデルと集めたデータは消さない）。"""
+    store = NewsStore(args.root)
+    keep = chosen_model(store)
+    hub, xet = hf_cache_dirs()
+    before = free_gb(store.root)
+    targets = [(label, p, dir_size_gb(p)) for label, p in clean_targets(hub, xet, keep)]
+    uv = shutil.which("uv")
+    uv_dir = None
+    if uv:
+        r = subprocess.run([uv, "cache", "dir"], capture_output=True, text=True)
+        uv_dir = Path(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
+    print(f"空き容量: {before:.1f}GB。残すモデル: {keep}")
+    print("消すもの:")
+    for label, p, gb in targets:
+        print(f"  {gb:5.1f}GB  {label}（{p}）")
+    if uv_dir and uv_dir.exists():
+        print(f"  {dir_size_gb(uv_dir):5.1f}GB  部品のダウンロードの一時置き場（uv。入れ終わった部品は消えない）（{uv_dir}）")
+    if not targets and not (uv_dir and uv_dir.exists()):
+        print("  無し")
+        return
+    if args.dry_run:
+        print("（--dry-run なので消していない）")
+        return
+    for _label, p, _gb in targets:
+        shutil.rmtree(p, ignore_errors=True)
+    if uv_dir and uv_dir.exists():
+        subprocess.run([uv, "cache", "clean"], capture_output=True)
+    print(f"消した。空き容量: {before:.1f}GB → {free_gb(store.root):.1f}GB")
+
+
 def dir_size_gb(path: Path) -> float:
-    return sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file()) / 1e9 if Path(path).exists() else 0.0
+    """大きさ（GB）。Hugging Face の置き場は同じファイルへのリンクがあるので、リンクは数えない。"""
+    if not Path(path).exists():
+        return 0.0
+    return sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file() and not f.is_symlink()) / 1e9
 
 
 def cmd_status(args) -> None:
@@ -821,6 +886,8 @@ def main() -> None:
     s = sub.add_parser("schedule", help="15 分ごとの自動の収集を入れる")
     s.add_argument("--off", action="store_true", help="外す")
     sub.add_parser("status")
+    cl = sub.add_parser("clean", help="比べるためだけに取ったモデルとダウンロードの一時置き場を消す（データは消さない）")
+    cl.add_argument("--dry-run", action="store_true", help="消すものを表示するだけ")
     c2 = sub.add_parser("compare", help="埋め込みのモデルの精度を比べ、判定に使うモデルを決める（価格は使わない）")
     c2.add_argument("--models", default=",".join(COMPARE_MODELS), help="比べるモデル（カンマ区切り。hash は必ず入る）")
     c2.add_argument("--n", type=int, default=5000, help="比べる見出しの数")
@@ -840,7 +907,8 @@ def main() -> None:
     args = p.parse_args()
     {"collect": cmd_collect, "backfill": cmd_backfill, "embed": cmd_embed, "selftest": cmd_selftest,
      "compare": cmd_compare,
-     "setup": cmd_setup, "schedule": cmd_schedule, "status": cmd_status, "report": cmd_report}[args.cmd](args)
+     "setup": cmd_setup, "schedule": cmd_schedule, "status": cmd_status, "report": cmd_report,
+     "clean": cmd_clean}[args.cmd](args)
 
 
 if __name__ == "__main__":
