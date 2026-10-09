@@ -1,13 +1,15 @@
 """ニュースを集めて、売買に役立つかを確かめる（./cfd news。設定と判定の条件は docs/news.md）。
 
-    ./cfd news setup       Mac の準備: 埋め込みの部品とモデル（初回は数分）、15 分ごとの自動の収集
+  モデルを決める（先に）:
+    ./cfd news setup       埋め込みの部品を入れる（初回は数分）
+    ./cfd news compare     モデルの精度を比べ、判定に使うモデルを決める（生データ 160 ファイルで。価格は使わない。10〜20 分）
+  データを取って確かめる（モデルを決めた後）:
+    ./cfd news schedule    15 分ごとの自動の収集を入れる（--off で外す）
     ./cfd news backfill    GDELT の過去の分をまとめて取る（推移 2017 年〜・生データの見出し 2019-10〜・一覧 90 日。数時間）
-    ./cfd news compare     埋め込みのモデルの精度を比べ、判定に使うモデルを決める（価格は使わない。10〜20 分）
     ./cfd news collect     1 回だけ集める（自動の収集が 15 分ごとに実行するもの）
     ./cfd news embed       見出しを埋め込む（終わった日の分だけ）
     ./cfd news report      仮説を確かめて output/news/<日時>/report.md に書く（埋め込みも先に行う）
     ./cfd news status      集めた量と、自動の収集が動いているか
-    ./cfd news schedule [--off]   自動の収集を入れる（外す）
 """
 
 from __future__ import annotations
@@ -236,6 +238,7 @@ def cmd_selftest(args) -> None:
     """モデルが正しく動くかの確かめ: 例の見出しが、思った話題の代表の文に一番近いか。"""
     from cfdbot.news_embed import anchor_vectors, make_embedder, topic_scores
 
+    args.model = args.model or chosen_model(NewsStore(args.root))
     emb = make_embedder(args.model)
     dev = getattr(emb, "device", "cpu")
     examples = [("OPEC+ agrees to reduce crude output by 1 million barrels", "oil"),
@@ -269,6 +272,30 @@ def chosen_model(store: NewsStore) -> str:
     return json.loads(p.read_text(encoding="utf-8"))["model"] if p.exists() else DEFAULT_MODEL
 
 
+COMPARE_FILES = 160          # 比べるために読む生データのファイルの数（1 ファイル 35 件ほど → 5,000 件ほど）
+
+
+def fetch_compare_sample(store: NewsStore, n_files: int = COMPARE_FILES, seed: int = SEED,
+                         log=print) -> int:
+    """比べるための見出しを、2019-10〜今の生データのファイルから n_files 個（ばらばらの時刻）取る。
+
+    まとめての取得（backfill）とは別の置き場（data/news/compare）。取ったファイルは飛ばすので、何度実行してもよい。
+    """
+    slots = gkg_slots(GKG_FIRST, now_utc() - pd.Timedelta(days=1))
+    rng = np.random.default_rng(seed)
+    pick = sorted(pd.Timestamp(slots[i]) for i in rng.choice(len(slots), min(n_files, len(slots)), replace=False))
+    stats = store.load_gkg_stats()
+    have = set(stats.index) if len(stats) else set()
+    todo = [t for t in pick if t not in have]
+    if todo:
+        log(f"比べるための見出し: 生データ {len(todo)} ファイル（2019-10〜今からばらばらに。ダウンロード 約 {len(todo) * 6 / 1000:.1f}GB、"
+            "読んだら捨てる。数分）")
+    added = 0
+    for t in todo:
+        added += collect_gkg(store, t, t, "compare_last", log=lambda s: None)[0]
+    return added
+
+
 def compare_sample(store: NewsStore, n: int, seed: int = SEED) -> pd.DataFrame:
     """比べるための見出し（GDELT の生データ。テーマが付いているもの）を、全期間からばらばらに n 件。"""
     rng = np.random.default_rng(seed)
@@ -293,9 +320,11 @@ def cmd_compare(args) -> None:
 
     keep_awake()
     store = NewsStore(args.root)
-    sample = compare_sample(store, args.n)
+    cstore = NewsStore(Path(args.root) / "compare")
+    fetch_compare_sample(cstore)
+    sample = compare_sample(cstore, args.n)
     if len(sample) < 500:
-        raise SystemExit(f"比べる見出しが足りない（{len(sample)} 件）。先に ./cfd news backfill")
+        raise SystemExit(f"比べる見出しが足りない（{len(sample)} 件）。ネットにつないでもう一度 ./cfd news compare")
     labels = theme_labels(sample["themes"])
     lines: list[str] = []
 
@@ -304,7 +333,7 @@ def cmd_compare(args) -> None:
         lines.append(t)
 
     say(f"# 埋め込みのモデルの比べ（{datetime.now():%Y-%m-%d %H:%M}）")
-    say(f"\n見出し {len(sample):,} 件（GDELT の生データ、全期間からばらばらに）。答えは GDELT が本文から付けたテーマ:")
+    say(f"\n見出し {len(sample):,} 件（GDELT の生データ 2019-10〜今からばらばらに）。答えは GDELT が本文から付けたテーマ:")
     for k, v in THEME_KEYS.items():
         say(f"- {k}: {int(labels[k].sum()):,} 件（{', '.join(sorted(v))}）")
     say("\n点数 = 話題ごとの AUC の平均（そのテーマの見出しほど、その話題の代表の文に近いと判定できたか。"
@@ -336,6 +365,8 @@ def cmd_compare(args) -> None:
         if hasattr(emb, "release"):
             emb.release()
         del emb
+    if not any(k != "hash" for k in scores):
+        raise SystemExit("AI のモデルが 1 つも動かなかった（上の表の理由を見る）。部品が無ければ ./cfd news setup")
     pick = choose_model(scores)
     say(f"\n決まり（docs/news.md 7 章）: 標準の {DEFAULT_MODEL} より {COMPARE_MARGIN} 以上良いモデルがあれば、その中で一番良いもの。"
         "hash は比較用で選ばない")
@@ -353,21 +384,22 @@ def cmd_compare(args) -> None:
     f = out / f"compare-{datetime.now():%Y%m%d-%H%M}.md"
     f.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"\n書き出し: {f}")
+    print("次は ./cfd news schedule && ./cfd news backfill && ./cfd news report（データの取得と判定）")
 
 
 # --------------------------------------------------------------------------- Mac の準備・自動の収集
 def cmd_setup(args) -> None:
+    """埋め込みの部品だけを入れる（モデルとデータは取らない）。"""
     py = ROOT / ".venv" / "bin" / "python"
     env = os.environ | {"UV_PYTHON_INSTALL_DIR": str(ROOT / ".python")}
-    if args.model != "hash":
-        print("== 1/3 埋め込みの部品（sentence-transformers・PyTorch。初回は数分）", flush=True)
-        subprocess.run(["uv", "pip", "install", "--python", str(py), "-e", ".[dev,research,news]", "-q"],
-                       cwd=ROOT, env=env, check=True)
-    print(f"== 2/3 モデル {args.model} の取得（初回のみ）と確かめ", flush=True)
-    subprocess.run([str(py), str(Path(__file__)), "selftest", "--model", args.model], cwd=ROOT, check=True)
-    print("== 3/3 15 分ごとの自動の収集", flush=True)
-    cmd_schedule(argparse.Namespace(off=False, root=args.root))
-    print("\n準備完了。過去の分は ./cfd news backfill（数時間。Mac をスリープさせない）")
+    print("埋め込みの部品（sentence-transformers・PyTorch。初回は数分）", flush=True)
+    subprocess.run(["uv", "pip", "install", "--python", str(py), "-e", ".[dev,research,news]", "-q"],
+                   cwd=ROOT, env=env, check=True)
+    subprocess.run([str(py), "-c", "import sentence_transformers, torch; "
+                    "print('入った: sentence-transformers', sentence_transformers.__version__, '・PyTorch', "
+                    "torch.__version__, '・GPU（MPS）', '使える' if torch.backends.mps.is_available() else '使えない')"],
+                   cwd=ROOT, check=True)
+    print("\n次は ./cfd news compare（モデルを比べて決める）")
 
 
 def plist_path() -> Path:
@@ -772,10 +804,10 @@ def main() -> None:
     b.add_argument("--no-articles", action="store_true")
     b.add_argument("--no-timeline", action="store_true")
     b.add_argument("--no-gkg", action="store_true")
-    for name in ("embed", "selftest", "setup"):
+    sub.add_parser("setup", help="埋め込みの部品を入れる（モデルとデータは取らない）")
+    for name in ("embed", "selftest"):
         s = sub.add_parser(name)
-        s.add_argument("--model", default=None if name == "embed" else "qwen3-0.6b",
-                       help="埋め込みのモデル" + ("（省略時は ./cfd news compare で選んだもの）" if name == "embed" else ""))
+        s.add_argument("--model", default=None, help="埋め込みのモデル（省略時は ./cfd news compare で選んだもの）")
     s = sub.add_parser("schedule", help="15 分ごとの自動の収集を入れる")
     s.add_argument("--off", action="store_true", help="外す")
     sub.add_parser("status")

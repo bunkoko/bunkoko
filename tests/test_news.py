@@ -433,11 +433,12 @@ def test_model_choice_rules_and_theme_scores():
     assert pick_prompt({}, MODELS["gemma2"].prompt_names) is None
 
 
-def test_compare_command_scores_models_and_records_choice(tmp_path):
+def test_compare_command_scores_models_and_records_choice(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location("news_study_cmp", ROOT / "scripts" / "news_study.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    st = NewsStore(tmp_path / "news")
+    monkeypatch.setattr(mod, "fetch_compare_sample", lambda *a, **k: 0)     # 生データは取りに行かない
+    st = NewsStore(tmp_path / "news" / "compare")                          # 比べるための置き場（backfill とは別）
     kinds = [("Missile attack hits military base", "ARMEDCONFLICT"), ("Oil prices rise on OPEC supply cut", "ECON_OILPRICE"),
              ("Gold climbs to record as bullion demand grows", "ECON_GOLDPRICE"),
              ("Inflation slows as interest rates stay high", "ECON_INFLATION")]
@@ -451,11 +452,24 @@ def test_compare_command_scores_models_and_records_choice(tmp_path):
         st.add_gkg(parse_gkg_file(_gkg_zip(rows, extra), t))
     args = type("A", (), {"root": str(tmp_path / "news"), "models": "qwen3-0.6b,hash", "n": 600, "force": False,
                           "out": str(tmp_path / "out")})()
+    choice = tmp_path / "news" / "model_choice.json"
+    with pytest.raises(SystemExit):                 # AI のモデルが 1 つも動かなければ決めない
+        mod.cmd_compare(args)
+    assert not choice.exists()
+
+    import cfdbot.news_embed as ne
+
+    class FakeAI(HashEmbedder):
+        def __init__(self, key):
+            super().__init__()
+            self.key = key
+
+    monkeypatch.setattr(ne, "make_embedder", lambda key: FakeAI(key))
+    args.models = "qwen3-0.6b,gemma2"
     mod.cmd_compare(args)
     md = next((tmp_path / "out").glob("compare-*.md")).read_text(encoding="utf-8")
-    assert "| qwen3-0.6b | 2025-06 | 使えなかった" in md               # 部品の無い環境では飛ばす
-    row = next(line for line in md.splitlines() if line.startswith("| hash |"))
+    row = next(line for line in md.splitlines() if line.startswith("| qwen3-0.6b |"))
     assert float(row.split("**")[1]) > 0.8
-    choice = json.loads((tmp_path / "news" / "model_choice.json").read_text(encoding="utf-8"))
-    assert choice["model"] == "qwen3-0.6b" and "hash" in choice["scores"]
-    assert mod.chosen_model(st) == "qwen3-0.6b"
+    got = json.loads(choice.read_text(encoding="utf-8"))
+    assert got["model"] == "qwen3-0.6b" and set(got["scores"]) == {"qwen3-0.6b", "gemma2", "hash"}  # 同点なら標準のまま
+    assert mod.chosen_model(NewsStore(tmp_path / "news")) == "qwen3-0.6b"
