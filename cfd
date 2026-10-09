@@ -55,6 +55,7 @@ case "$cmd" in
   ml)     need_venv; exec "$PY" scripts/ml_study.py "$@" ;;
   leadlag) need_venv; exec "$PY" scripts/leadlag_study.py "$@" ;;
   intraday) need_venv; exec "$PY" scripts/intraday_study.py "$@" ;;
+  news)   need_venv; exec "$PY" scripts/news_study.py "$@" ;;
   replay) need_venv
           if [ -f output/live/current ]; then
             FINAL="$(cat output/live/current)/final.json"
@@ -88,6 +89,7 @@ case "$cmd" in
   ml       59 市場をまとめて学ぶ機械学習でポジションを決めると良くなるかを検証（universe の後。10〜40 分）
   leadlag  先行指標（原油・為替・金利など）で日米の業種・個別株を予測できるかを検証（初回は --fetch。30〜60 分）
   intraday 5 分足〜1 時間足の短い売買を、小さいコストで候補探し → 実際のコストで確認（--source mt5 で data/ の M5）
+  news     ニュースを集めて埋め込み、売買に役立つかを検証（初回は ./cfd news setup → ./cfd news backfill）
   py       仮想環境の Python で実行（例: ./cfd py scripts/compare_signals.py ...）
 HELP
           ;;
