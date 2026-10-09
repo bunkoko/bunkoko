@@ -5,6 +5,7 @@
     ./cfd news compare     モデルの精度を比べ、判定に使うモデルを決める（生データ 160 ファイルで。価格は使わない。10〜20 分）
   データを取って確かめる（モデルを決めた後）:
     ./cfd news schedule    15 分ごとの自動の収集を入れる（--off で外す）
+    ./cfd news run         backfill → report を続けて行う。止まったら 10・30・60 分待ってやり直す（記録: data/news/run.log）
     ./cfd news backfill    GDELT の過去の分をまとめて取る（推移 2017 年〜・生データの見出し 2019-10〜・一覧 90 日。数時間）
     ./cfd news collect     1 回だけ集める（自動の収集が 15 分ごとに実行するもの）
     ./cfd news embed       見出しを埋め込む（終わった日の分だけ）
@@ -184,14 +185,19 @@ def backfill_articles(store: NewsStore, client: GdeltClient, days: int, now: pd.
     log(f"見出し +{added}（上限 250 件に {capped} 回達した。6 時間ごとに最新の 250 件までしか取れない）")
 
 
-def cmd_backfill(args) -> None:
+class NotEnoughSpace(SystemExit):
+    """空き容量が足りない（待ってやり直しても直らない）。"""
+
+
+def cmd_backfill(args) -> list[str]:
+    """過去の分をまとめて取る。取り切れなかったものを返す（「記事の一覧:」で始まるもの以外は判定に要る）。"""
     store, now = NewsStore(args.root), now_utc()
     log = lambda s: print(s, flush=True)  # noqa: E731
     free = free_gb(store.root)
     log(f"空き容量: {free:.1f}GB（このコマンドで 1GB ほど、report の埋め込みで 1GB ほど増える）")
     if free < MIN_FREE_GB:
-        raise SystemExit(f"空きが {MIN_FREE_GB}GB より少ないので止めた（macOS の動作に余裕が要るため）。"
-                         "./cfd news clean で不要なものを消してからもう一度")
+        raise NotEnoughSpace(f"空きが {MIN_FREE_GB}GB より少ないので止めた（macOS の動作に余裕が要るため）。"
+                             "./cfd news clean で不要なものを消してからもう一度")
     keep_awake()
     problems = []
     if not args.no_timeline or not args.no_articles:
@@ -221,6 +227,86 @@ def cmd_backfill(args) -> None:
             log(f"  - {p}")
     else:
         log("\n取り終わった。次は ./cfd news report")
+    return problems
+
+
+# --------------------------------------------------------------------------- まとめて実行（止まったら待ってやり直す）
+RUN_WAITS = (10, 30, 60)          # やり直す前に待つ分（GDELT・回線の一時的な不調を待つ）
+_sleep = time.sleep
+
+
+def run_status_path(store: NewsStore) -> Path:
+    return store.root / "run_status.json"
+
+
+def write_run_status(store: NewsStore, **kw) -> None:
+    p = run_status_path(store)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(kw | {"updated": now_utc().strftime(TIME_FMT)}, ensure_ascii=False, indent=1),
+                 encoding="utf-8")
+
+
+class _Tee:
+    """画面とファイルの両方に書く。"""
+
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, text):
+        for st in self.streams:
+            st.write(text)
+            st.flush()
+        return len(text)
+
+    def flush(self):
+        for st in self.streams:
+            st.flush()
+
+
+def cmd_run(args) -> None:
+    """過去の分の取得 → 判定を続けて行う。止まったら待ってやり直す（取得は続きから）。様子は status と run.log。"""
+    import traceback
+
+    store = NewsStore(args.root)
+    store.root.mkdir(parents=True, exist_ok=True)
+    logf = open(store.root / "run.log", "a", encoding="utf-8")
+    old_out = sys.stdout
+    sys.stdout = _Tee(old_out, logf)
+    try:
+        print(f"\n===== {datetime.now():%Y-%m-%d %H:%M} ./cfd news run =====", flush=True)
+        keep_awake()
+        sub = build_parser()
+        waits = list(RUN_WAITS[:args.retries])
+        for step in ("backfill", "report"):
+            step_args = sub.parse_args(["--root", args.root, step])
+            for attempt in range(len(waits) + 1):
+                write_run_status(store, step=step, state="実行中", attempt=attempt + 1)
+                try:
+                    result = (cmd_backfill if step == "backfill" else cmd_report)(step_args)
+                    problems = [p for p in (result if step == "backfill" else []) if not p.startswith("記事の一覧")]
+                except NotEnoughSpace as e:
+                    write_run_status(store, step=step, state="要対応", error=str(e), attempt=attempt + 1)
+                    raise
+                except (Exception, SystemExit) as e:  # noqa: BLE001  回線などの失敗は、待ってやり直す（取得は続きから）
+                    traceback.print_exc(file=sys.stdout)
+                    problems = [f"{type(e).__name__}: {e}"[:300]]
+                if not problems:
+                    break
+                if attempt == len(waits):
+                    msg = "; ".join(problems)
+                    write_run_status(store, step=step, state="要対応", error=msg, attempt=attempt + 1)
+                    raise SystemExit(f"{step} がやり直しても終わらなかった: {msg}\n"
+                                     "原因を直してから ./cfd news run（続きから進む）")
+                until = now_utc() + pd.Timedelta(minutes=waits[attempt])
+                print(f"\n{step} が止まった（{'; '.join(problems)[:200]}）。{waits[attempt]} 分待ってやり直す", flush=True)
+                write_run_status(store, step=step, state="待ち", error="; ".join(problems)[:300],
+                                 attempt=attempt + 1, retry_at=until.strftime(TIME_FMT))
+                _sleep(waits[attempt] * 60)
+        write_run_status(store, step="report", state="完了", report=str(result))
+        print(f"\n完了: {result}", flush=True)
+    finally:
+        sys.stdout = old_out
+        logf.close()
 
 
 # --------------------------------------------------------------------------- 埋め込み
@@ -525,6 +611,19 @@ def dir_size_gb(path: Path) -> float:
 
 def cmd_status(args) -> None:
     store = NewsStore(args.root)
+    rs = run_status_path(store)
+    if rs.exists():
+        r = json.loads(rs.read_text(encoding="utf-8"))
+        print(f"まとめての実行（./cfd news run）: {r.get('step')} {r.get('state')}（{r.get('attempt', 1)} 回目、"
+              f"{pd.Timestamp(r['updated']).tz_convert('Asia/Tokyo'):%m-%d %H:%M} 時点）")
+        if r.get("error"):
+            print(f"  理由: {r['error']}")
+        if r.get("retry_at"):
+            print(f"  やり直し: {pd.Timestamp(r['retry_at']).tz_convert('Asia/Tokyo'):%m-%d %H:%M}")
+        if r.get("report"):
+            print(f"  結果: {r['report']}")
+        if r.get("state") == "要対応":
+            print("  → 原因を直してから ./cfd news run（続きから進む）。記録: data/news/run.log")
     print(f"空き容量: {free_gb(store.root):.0f}GB（ニュースのデータが使っている量: {dir_size_gb(store.root):.2f}GB）")
     days = store.days()
     if not days:
@@ -741,7 +840,7 @@ def gate_verdict(r: dict) -> str:
     return "有望" if ok else "偶然の範囲"
 
 
-def cmd_report(args) -> None:
+def cmd_report(args) -> Path:
     keep_awake()
     store = NewsStore(args.root)
     lines: list[str] = []
@@ -862,9 +961,10 @@ def cmd_report(args) -> None:
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"\n書き出し: {out / 'report.md'}")
+    return out / "report.md"
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--root", default="data/news", help="保存先")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -904,8 +1004,14 @@ def main() -> None:
     r.add_argument("--config", default="config/train.toml")
     r.add_argument("--context", default="data/context")
     r.add_argument("--out", default="output/news")
-    args = p.parse_args()
-    {"collect": cmd_collect, "backfill": cmd_backfill, "embed": cmd_embed, "selftest": cmd_selftest,
+    ru = sub.add_parser("run", help="過去の分の取得 → 判定を続けて行う（止まったら待ってやり直す）")
+    ru.add_argument("--retries", type=int, default=len(RUN_WAITS), help="やり直す回数（10・30・60 分待つ）")
+    return p
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    {"run": cmd_run, "collect": cmd_collect, "backfill": cmd_backfill, "embed": cmd_embed, "selftest": cmd_selftest,
      "compare": cmd_compare,
      "setup": cmd_setup, "schedule": cmd_schedule, "status": cmd_status, "report": cmd_report,
      "clean": cmd_clean}[args.cmd](args)

@@ -497,3 +497,57 @@ def test_clean_removes_only_unused_models_and_download_cache(tmp_path):
     got = {p.name for _label, p in mod.clean_targets(hub, xet, "qwen3-0.6b")}
     # 選んだモデルと、この作業と関係ないモデルは消さない
     assert got == {"models--google--embeddinggemma-2", "models--intfloat--multilingual-e5-large", "xet"}
+
+
+def _news_module(name):
+    spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / "news_study.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_run_retries_after_a_stop_and_records_status(tmp_path, monkeypatch):
+    mod = _news_module("news_study_run")
+    calls, waits = [], []
+    results = [["生データ: 取れなかった"], ["記事の一覧: GDELT に断られ続けた"]]   # 1 回目は止まる、2 回目は判定に要る分は取れた
+
+    def fake_backfill(a):
+        calls.append("backfill")
+        return results.pop(0)
+
+    def fake_report(a):
+        calls.append("report")
+        return tmp_path / "report.md"
+
+    monkeypatch.setattr(mod, "cmd_backfill", fake_backfill)
+    monkeypatch.setattr(mod, "cmd_report", fake_report)
+    monkeypatch.setattr(mod, "_sleep", lambda sec: waits.append(sec))
+    monkeypatch.setattr(mod, "keep_awake", lambda: None)
+    root = tmp_path / "news"
+    mod.cmd_run(type("A", (), {"root": str(root), "retries": 3})())
+    assert calls == ["backfill", "backfill", "report"] and waits == [600]
+    st = json.loads((root / "run_status.json").read_text(encoding="utf-8"))
+    assert st["state"] == "完了" and st["report"].endswith("report.md")
+    assert "10 分待ってやり直す" in (root / "run.log").read_text(encoding="utf-8")
+
+
+def test_run_gives_up_after_retries_and_stops_at_once_without_space(tmp_path, monkeypatch):
+    mod = _news_module("news_study_run2")
+    waits = []
+    monkeypatch.setattr(mod, "cmd_backfill", lambda a: ["キーワードの推移: GDELT に断られ続けた"])
+    monkeypatch.setattr(mod, "_sleep", lambda sec: waits.append(sec))
+    monkeypatch.setattr(mod, "keep_awake", lambda: None)
+    root = tmp_path / "news"
+    with pytest.raises(SystemExit):
+        mod.cmd_run(type("A", (), {"root": str(root), "retries": 2})())
+    st = json.loads((root / "run_status.json").read_text(encoding="utf-8"))
+    assert waits == [600, 1800] and st["state"] == "要対応" and "推移" in st["error"]
+
+    def no_space(a):
+        raise mod.NotEnoughSpace("空きが 5GB より少ない")
+
+    waits.clear()
+    monkeypatch.setattr(mod, "cmd_backfill", no_space)
+    with pytest.raises(SystemExit):
+        mod.cmd_run(type("A", (), {"root": str(root), "retries": 3})())
+    assert waits == [] and json.loads((root / "run_status.json").read_text(encoding="utf-8"))["state"] == "要対応"

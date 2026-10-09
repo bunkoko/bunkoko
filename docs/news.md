@@ -73,8 +73,13 @@
 2. データを取って確かめる（モデルを決めた後。8〜9 時間）:
 
 ```
-./cfd news schedule && ./cfd news backfill && ./cfd news report
+./cfd news schedule && ./cfd news run
 ```
+
+- `run` は backfill → report を続けて行う。止まったら 10・30・60 分待ってやり直す（取得は続きから）。
+  空き容量が足りないときだけは、待っても直らないのですぐ止まる。様子は `./cfd news status` と `data/news/run.log`
+- 外出中に止まったとき: Mac で `claude remote-control`（Claude Code の遠隔操作）を動かしておけば、スマホの
+  Claude Code のアプリから再開を頼める。手順は `CLAUDE.md`（Mac の Claude が読む）
 
 - `setup`: 埋め込みの部品（sentence-transformers・PyTorch）を入れる。モデルとデータは取らない。初回は数分
 - `compare`: 生データ 160 ファイル（2019-10〜今からばらばらに。`data/news/compare` に別に置く）から見出し 5,000 件を取り、
