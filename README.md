@@ -91,6 +91,7 @@ python scripts/mt5_files.py install --run output/train/<日時>   # EA とプリ
 `./cfd meta` は『ファイナンス機械学習』（AFML）の方法で確かめる: パージング・エンバーゴ付きの組み合わせ交差検証（CPCV）、
 学習に使っていない期間・市場での確認、試した数で割り引いた基準、PSR（方針と採用の条件は [docs/meta_labeling.md](docs/meta_labeling.md)）。
 `./cfd universe` の方針と判定の条件は [docs/universe.md](docs/universe.md)。
+`./cfd ml`（59 市場をまとめて学ぶ機械学習。強化学習の扱いも）の方針と判定の条件は [docs/ml.md](docs/ml.md)。
 
 ## 実データでの使い方
 
