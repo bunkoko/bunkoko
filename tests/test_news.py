@@ -408,3 +408,54 @@ def test_gkg_tone_themes_and_file_counts_are_kept(tmp_path):
     assert len(arts) == 2 and arts["polarity"].iloc[1] == 7.0
     stats = st.load_gkg_stats()
     assert len(stats) == 1 and stats.index[0] == t and stats["n_all"].iloc[0] == 3
+
+
+def test_model_choice_rules_and_theme_scores():
+    from cfdbot.news_embed import MODELS, choose_model, judge_from, pick_prompt, theme_labels, topic_aucs
+
+    lab = theme_labels(pd.Series(["ECON_OILPRICE;TAX_FNCACT", "ARMEDCONFLICT", None, "ECON_GOLDPRICE;ECON_INFLATION"]))
+    assert lab["oil"].tolist() == [True, False, False, False] and lab["geo"].tolist() == [False, True, False, False]
+    assert lab["gold"].tolist() == [False, False, False, True] and lab["macro"].tolist() == [False, False, False, True]
+    a = topic_aucs({"oil": np.array([0.9, 0.1, 0.2, 0.3]), "geo": np.array([0.1, 0.2, 0.3, 0.4])}, lab)
+    assert a["oil"] == 1.0 and a["geo"] == pytest.approx(1 / 3)
+    # 標準より 0.02 以上良いときだけ替える。hash は選ばない
+    assert choose_model({"qwen3-0.6b": 0.80, "gemma2": 0.81, "hash": 0.95}) == "qwen3-0.6b"
+    assert choose_model({"qwen3-0.6b": 0.80, "gemma2": 0.83, "e5-large": 0.82}) == "gemma2"
+    assert choose_model({"gemma2": 0.70, "e5-large": 0.75}) == "e5-large"         # 標準が動かなければ一番良いもの
+    assert choose_model({"hash": 0.9}) == "qwen3-0.6b"
+    # 判定の期間: 2025-07-01 か、モデルの公開の翌月の遅い方
+    assert judge_from("qwen3-0.6b") == pd.Timestamp("2025-07-01", tz="UTC")
+    assert judge_from("e5-large") == pd.Timestamp("2025-07-01", tz="UTC")
+    assert judge_from("gemma2") == pd.Timestamp("2026-11-01", tz="UTC")
+    assert MODELS["gemma2"].name == "google/embeddinggemma-2"
+    assert pick_prompt({"SearchQuery": "x", "Document": "y"}, MODELS["gemma2"].prompt_names) == "Document"
+    assert pick_prompt({"STS": "x", "Document": "y"}, MODELS["gemma2"].prompt_names) == "STS"
+    assert pick_prompt({}, MODELS["gemma2"].prompt_names) is None
+
+
+def test_compare_command_scores_models_and_records_choice(tmp_path):
+    spec = importlib.util.spec_from_file_location("news_study_cmp", ROOT / "scripts" / "news_study.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    st = NewsStore(tmp_path / "news")
+    kinds = [("Missile attack hits military base", "ARMEDCONFLICT"), ("Oil prices rise on OPEC supply cut", "ECON_OILPRICE"),
+             ("Gold climbs to record as bullion demand grows", "ECON_GOLDPRICE"),
+             ("Inflation slows as interest rates stay high", "ECON_INFLATION")]
+    for d in range(3):
+        t = pd.Timestamp("2026-10-01 03:00", tz="UTC") + pd.Timedelta(days=d)
+        rows, extra = [], {}
+        for i in range(220):
+            title, theme = kinds[i % 4]
+            rows.append(("1", f"https://n{d}.com/{i}", f"{title} story {d} {i}"))
+            extra[i] = (theme + ";TAX_FNCACT;", "", "-1,1,2,3,4,5,300")
+        st.add_gkg(parse_gkg_file(_gkg_zip(rows, extra), t))
+    args = type("A", (), {"root": str(tmp_path / "news"), "models": "qwen3-0.6b,hash", "n": 600, "force": False,
+                          "out": str(tmp_path / "out")})()
+    mod.cmd_compare(args)
+    md = next((tmp_path / "out").glob("compare-*.md")).read_text(encoding="utf-8")
+    assert "| qwen3-0.6b | 2025-06 | 使えなかった" in md               # 部品の無い環境では飛ばす
+    row = next(line for line in md.splitlines() if line.startswith("| hash |"))
+    assert float(row.split("**")[1]) > 0.8
+    choice = json.loads((tmp_path / "news" / "model_choice.json").read_text(encoding="utf-8"))
+    assert choice["model"] == "qwen3-0.6b" and "hash" in choice["scores"]
+    assert mod.chosen_model(st) == "qwen3-0.6b"

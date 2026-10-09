@@ -1,7 +1,8 @@
 """ニュースを集めて、売買に役立つかを確かめる（./cfd news。設定と判定の条件は docs/news.md）。
 
     ./cfd news setup       Mac の準備: 埋め込みの部品とモデル（初回は数分）、15 分ごとの自動の収集
-    ./cfd news backfill    GDELT の過去の分をまとめて取る（見出し 90 日・キーワードの推移 2017 年〜。数時間）
+    ./cfd news backfill    GDELT の過去の分をまとめて取る（推移 2017 年〜・生データの見出し 2019-10〜・一覧 90 日。数時間）
+    ./cfd news compare     埋め込みのモデルの精度を比べ、判定に使うモデルを決める（価格は使わない。10〜20 分）
     ./cfd news collect     1 回だけ集める（自動の収集が 15 分ごとに実行するもの）
     ./cfd news embed       見出しを埋め込む（終わった日の分だけ）
     ./cfd news report      仮説を確かめて output/news/<日時>/report.md に書く（埋め込みも先に行う）
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
 import plistlib
 import shutil
@@ -32,6 +34,7 @@ from cfdbot.news import (BLOCK, GKG_FIRST, TIME_FMT, TIMELINE_MODES, TIMELINE_QU
                          MarketDaily, NewsStore, Throttled, ann_sharpe, collect_articles, collect_gkg, collect_yahoo,
                          daily_timeline, flags_at, gkg_slots, hold_returns, shift_days, spikes, update_timelines,
                          values_at, vol_ratios)
+from cfdbot.news_embed import COMPARE_MODELS  # noqa: E402
 from cfdbot.stats import deflated_threshold  # noqa: E402
 
 LABEL = "com.bunkoko.news"
@@ -42,7 +45,6 @@ MIN_TRADING_DAYS = 250           # これより短い期間では判定しない
 MIN_EVENTS = 10                  # 急増がこれより少なければ判定しない
 PRIOR_TRIALS = 21                # これまでに試した数（docs/news.md）
 SEED = 20261009
-JUDGE_FROM = pd.Timestamp("2025-07-01", tz="UTC")   # 埋め込みの判定の開始（モデルの公開 2025-06 より後）
 MIN_FREE_GB = 10                 # まとめての取得を始める前に要る空き容量（余裕を見て）
 
 
@@ -222,6 +224,7 @@ def cmd_embed(args) -> None:
     from cfdbot.news_embed import embed_days, make_embedder
 
     store = NewsStore(args.root)
+    args.model = args.model or chosen_model(store)
     emb = make_embedder(args.model)
     t0 = time.time()
     n = embed_days(store, emb, now_utc().floor("D"))
@@ -245,7 +248,7 @@ def cmd_selftest(args) -> None:
     vecs = emb.encode([e[0] for e in examples])
     sc = topic_scores(vecs, anchors)
     ok = 0
-    print(f"モデル {args.model}（{dev}）")
+    print(f"モデル {args.model}（{dev}、指示: {getattr(emb, 'prompt_name', None) or 'なし'}）")
     for i, (text, want) in enumerate(examples):
         best = max(sc, key=lambda k: sc[k][i])
         ok += best == want
@@ -253,6 +256,103 @@ def cmd_selftest(args) -> None:
     t0 = time.time()
     emb.encode([f"Oil prices move as traders weigh supply outlook {i}" for i in range(1000)])
     print(f"正解 {ok}/{len(examples)}。速さ: 1,000 件で {time.time() - t0:.1f} 秒")
+
+
+def choice_path(store: NewsStore) -> Path:
+    return store.root / "model_choice.json"
+
+
+def chosen_model(store: NewsStore) -> str:
+    from cfdbot.news_embed import DEFAULT_MODEL
+
+    p = choice_path(store)
+    return json.loads(p.read_text(encoding="utf-8"))["model"] if p.exists() else DEFAULT_MODEL
+
+
+def compare_sample(store: NewsStore, n: int, seed: int = SEED) -> pd.DataFrame:
+    """比べるための見出し（GDELT の生データ。テーマが付いているもの）を、全期間からばらばらに n 件。"""
+    rng = np.random.default_rng(seed)
+    days = store.days("gkg")
+    pick = sorted(rng.choice(len(days), min(len(days), 400), replace=False)) if days else []
+    parts = []
+    for i in pick:
+        d = days[i]
+        h, a = store.load_day(d, "gkg"), store.load_gkg_articles(d)
+        if len(h) and len(a):
+            parts.append(h[["id", "title"]].merge(a[["id", "themes"]], on="id"))
+    if not parts:
+        return pd.DataFrame(columns=["id", "title", "themes"])
+    df = pd.concat(parts, ignore_index=True).drop_duplicates("id")
+    return df.sample(min(n, len(df)), random_state=seed).reset_index(drop=True)
+
+
+def cmd_compare(args) -> None:
+    """モデルの精度を比べる（価格は使わない）。標準より 0.02 以上良いモデルがあれば、判定に使うモデルを替える。"""
+    from cfdbot.news_embed import (COMPARE_MARGIN, DEFAULT_MODEL, MODELS, THEME_KEYS, anchor_vectors, choose_model,
+                                   judge_from, make_embedder, theme_labels, topic_aucs, topic_scores)
+
+    keep_awake()
+    store = NewsStore(args.root)
+    sample = compare_sample(store, args.n)
+    if len(sample) < 500:
+        raise SystemExit(f"比べる見出しが足りない（{len(sample)} 件）。先に ./cfd news backfill")
+    labels = theme_labels(sample["themes"])
+    lines: list[str] = []
+
+    def say(t: str = "") -> None:
+        print(t, flush=True)
+        lines.append(t)
+
+    say(f"# 埋め込みのモデルの比べ（{datetime.now():%Y-%m-%d %H:%M}）")
+    say(f"\n見出し {len(sample):,} 件（GDELT の生データ、全期間からばらばらに）。答えは GDELT が本文から付けたテーマ:")
+    for k, v in THEME_KEYS.items():
+        say(f"- {k}: {int(labels[k].sum()):,} 件（{', '.join(sorted(v))}）")
+    say("\n点数 = 話題ごとの AUC の平均（そのテーマの見出しほど、その話題の代表の文に近いと判定できたか。"
+        "0.5 = でたらめ、1 = 完全）\n")
+    say("| モデル | 公開 | 点数 | " + " | ".join(THEME_KEYS) + " | 1,000 件の時間 | 指示 |")
+    say("|---|---|---|" + "---|" * len(THEME_KEYS) + "---|---|")
+    models = [m.strip() for m in args.models.split(",") if m.strip()]
+    scores: dict[str, float] = {}
+    for key in models + (["hash"] if "hash" not in models else []):
+        spec = MODELS.get(key)
+        if spec is None:
+            say(f"| {key} | | 無いモデル | " + " | " * len(THEME_KEYS) + " |")
+            continue
+        try:
+            emb = make_embedder(key)
+            t0 = time.time()
+            vecs = emb.encode(sample["title"].tolist())
+            sec = (time.time() - t0) / len(sample) * 1000
+            aucs = topic_aucs(topic_scores(vecs, anchor_vectors(emb)), labels)
+        except (SystemExit, Exception) as e:  # noqa: BLE001  取れない・動かないモデルは飛ばす
+            reason = str(e).splitlines()[0][:80] if str(e) else type(e).__name__
+            say(f"| {key} | {spec.released or '–'} | 使えなかった: {reason} | " + " | " * len(THEME_KEYS) + " |")
+            continue
+        score = float(np.nanmean(list(aucs.values())))
+        scores[key] = score
+        prompt = getattr(emb, "prompt_name", None) or ("query: " if spec.prefix else "なし")
+        say(f"| {key} | {spec.released or '–'} | **{score:.3f}** | " + " | ".join(f"{aucs[k]:.3f}" for k in THEME_KEYS)
+            + f" | {sec:.1f} 秒 | {prompt} |")
+        if hasattr(emb, "release"):
+            emb.release()
+        del emb
+    pick = choose_model(scores)
+    say(f"\n決まり（docs/news.md 7 章）: 標準の {DEFAULT_MODEL} より {COMPARE_MARGIN} 以上良いモデルがあれば、その中で一番良いもの。"
+        "hash は比較用で選ばない")
+    say(f"→ 判定に使うモデル: **{pick}**（判定の期間: {judge_from(pick):%Y-%m-%d}〜）")
+    p = choice_path(store)
+    if p.exists() and not args.force:
+        old = chosen_model(store)
+        say(f"\n※ 前に決めたモデル {old} のまま（決め直すのは、まだ ./cfd news report を見ていないときだけ。--force）")
+    else:
+        p.write_text(json.dumps({"model": pick, "scores": scores, "n": len(sample),
+                                 "decided": now_utc().strftime(TIME_FMT)}, ensure_ascii=False, indent=1),
+                     encoding="utf-8")
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    f = out / f"compare-{datetime.now():%Y%m%d-%H%M}.md"
+    f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"\n書き出し: {f}")
 
 
 # --------------------------------------------------------------------------- Mac の準備・自動の収集
@@ -603,7 +703,13 @@ def cmd_report(args) -> None:
     say("\n## B. 埋め込みで数える話題の強さ・珍しさ（docs/news.md 7 章）\n")
     from cfdbot.news_embed import MODELS, anchor_vectors, daily_features, embed_days, load_day_vectors, make_embedder
 
-    for key in [args.model] + ([] if args.model == "hash" else ["hash"]):
+    from cfdbot.news_embed import judge_from
+
+    model = args.model or chosen_model(store)
+    judge = judge_from(model)
+    say(f"判定に使うモデル: {model}（{'./cfd news compare で選んだもの' if choice_path(store).exists() else '標準'}）。"
+        f"判定の期間: {judge:%Y-%m-%d}〜")
+    for key in [model] + ([] if model == "hash" else ["hash"]):
         try:
             emb = make_embedder(key)
         except (SystemExit, Exception) as e:  # noqa: BLE001  部品が無い・モデルを取れない
@@ -625,7 +731,7 @@ def cmd_report(args) -> None:
             f"金の珍しさ {int(sp_gold.sum())} 日")
         say("\n| 仮説 | 期間 | 内容 | 回数 | 値 | 前半 | 後半 | 偶然より良い割合 | 判定 |")
         say("|---|---|---|---|---|---|---|---|---|")
-        for label_w, since in ((f"判定 {JUDGE_FROM:%Y-%m}〜", JUDGE_FROM), ("参考 全期間", None)):
+        for label_w, since in ((f"判定 {judge:%Y-%m}〜", judge), ("参考 全期間", None)):
             rows = []
             r = ev.vol(feats.index, {k: sp_geo for k in ("WTI", "BRENT", "GOLD")}, since)
             rows.append(("emb_geo_vol", "地政学の見出しの割合の急増 → 翌日の値動きの大きさ（÷ふだん）", r, vol_verdict(r)))
@@ -637,7 +743,7 @@ def cmd_report(args) -> None:
                     f"| {pct(r['pct'])} | {v} |")
         if key != "hash" and not args.no_gate:
             fl = {"WTI": sp_geo | sp_oil, "BRENT": sp_geo | sp_oil, "GOLD": sp_geo | sp_gold, "SILVER": sp_geo | sp_gold}
-            g = gate_test(args, {s: (feats.index, f) for s, f in fl.items()}, say, JUDGE_FROM)
+            g = gate_test(args, {s: (feats.index, f) for s, f in fl.items()}, say, judge)
             if g:
                 say(f"\nemb_gate（今のタートルで、上の急増の翌日は新規に入らない。{g['start']:%Y-%m-%d}〜）: "
                     f"シャープ {fmt(g['base'][0])} → {fmt(g['test'][0])}（前半 {fmt(g['base'][1])} → "
@@ -668,12 +774,18 @@ def main() -> None:
     b.add_argument("--no-gkg", action="store_true")
     for name in ("embed", "selftest", "setup"):
         s = sub.add_parser(name)
-        s.add_argument("--model", default="qwen3-0.6b")
+        s.add_argument("--model", default=None if name == "embed" else "qwen3-0.6b",
+                       help="埋め込みのモデル" + ("（省略時は ./cfd news compare で選んだもの）" if name == "embed" else ""))
     s = sub.add_parser("schedule", help="15 分ごとの自動の収集を入れる")
     s.add_argument("--off", action="store_true", help="外す")
     sub.add_parser("status")
+    c2 = sub.add_parser("compare", help="埋め込みのモデルの精度を比べ、判定に使うモデルを決める（価格は使わない）")
+    c2.add_argument("--models", default=",".join(COMPARE_MODELS), help="比べるモデル（カンマ区切り。hash は必ず入る）")
+    c2.add_argument("--n", type=int, default=5000, help="比べる見出しの数")
+    c2.add_argument("--force", action="store_true", help="前に決めたモデルを決め直す（report を見る前だけ）")
+    c2.add_argument("--out", default="output/news")
     r = sub.add_parser("report")
-    r.add_argument("--model", default="qwen3-0.6b", help="判定に使う埋め込みのモデル（結果を見る前に決めたもの）")
+    r.add_argument("--model", default=None, help="判定に使う埋め込みのモデル（省略時は ./cfd news compare で選んだもの）")
     r.add_argument("--placebo", type=int, default=200)
     r.add_argument("--gate-placebo", type=int, default=30)
     r.add_argument("--no-gate", action="store_true", help="バックテスト（news_gate・emb_gate）を省く")
@@ -685,6 +797,7 @@ def main() -> None:
     r.add_argument("--out", default="output/news")
     args = p.parse_args()
     {"collect": cmd_collect, "backfill": cmd_backfill, "embed": cmd_embed, "selftest": cmd_selftest,
+     "compare": cmd_compare,
      "setup": cmd_setup, "schedule": cmd_schedule, "status": cmd_status, "report": cmd_report}[args.cmd](args)
 
 

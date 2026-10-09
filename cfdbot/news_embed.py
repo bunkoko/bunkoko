@@ -29,22 +29,27 @@ class ModelSpec:
     key: str
     name: str                    # Hugging Face のモデル名（hash は空）
     prefix: str = ""             # 文の前に付ける決まりの文字（e5 は "query: "）
-    prompt_name: str | None = None
+    prompt_names: tuple[str, ...] = ()   # 使う指示（モデルにあるもののうち最初のもの。無ければ付けない）
     dim: int | None = None       # 次元を減らして保存する（対応しているモデルだけ）
+    released: str = ""           # 公開の年月（判定の期間を決める）
     note: str = ""
 
 
 MODELS: dict[str, ModelSpec] = {m.key: m for m in (
-    ModelSpec("qwen3-0.6b", "Qwen/Qwen3-Embedding-0.6B", dim=256,
-              note="既定。登録不要・約 1.2GB。日本語も扱える（2025-06 公開）"),
-    ModelSpec("gemma-300m", "google/embeddinggemma-300m", prompt_name="STS", dim=256,
-              note="軽い。Hugging Face で利用規約に同意してログインが要る（2025-09 公開）"),
-    ModelSpec("e5-large", "intfloat/multilingual-e5-large", prefix="query: ",
-              note="約 2GB。公開が古い（2023 年）ので、2024 年以降の検証で先読みの心配が小さい"),
-    ModelSpec("qwen3-4b", "Qwen/Qwen3-Embedding-4B", dim=256, note="約 8GB。遅いが精度が高い"),
+    ModelSpec("qwen3-0.6b", "Qwen/Qwen3-Embedding-0.6B", dim=256, released="2025-06",
+              note="標準。登録不要・約 1.2GB。日本語も扱える"),
+    ModelSpec("gemma2", "google/embeddinggemma-2", prompt_names=("STS", "Classification", "Clustering", "Document"),
+              dim=256, released="2026-10", note="EmbeddingGemma 2（Gemma 4 がもと）。Apache 2.0"),
+    ModelSpec("gemma-300m", "google/embeddinggemma-300m", prompt_names=("STS",), dim=256, released="2025-09",
+              note="EmbeddingGemma（初代）。Hugging Face で利用規約に同意してログインが要る"),
+    ModelSpec("e5-large", "intfloat/multilingual-e5-large", prefix="query: ", released="2023-06",
+              note="約 2GB。公開が古いので先読みの心配が一番小さい"),
+    ModelSpec("qwen3-4b", "Qwen/Qwen3-Embedding-4B", dim=256, released="2025-06",
+              note="約 8GB。遅いが精度が高い（比べるときは --models に足す）"),
     ModelSpec("hash", "", dim=512, note="AI を使わない比較用（単語の出現だけ）"),
 )}
 DEFAULT_MODEL = "qwen3-0.6b"
+COMPARE_MODELS = ("qwen3-0.6b", "gemma2", "gemma-300m", "e5-large")   # ./cfd news compare で比べる（＋hash）
 
 # 代表の文（結果を見る前に決めたもの。変えない。docs/news.md 7 章）
 TOPICS: dict[str, tuple[str, ...]] = {
@@ -128,6 +133,10 @@ class HashEmbedder:
         return _normalize(out)
 
 
+def pick_prompt(available: dict, preferred: tuple[str, ...]) -> str | None:
+    return next((p for p in preferred if p in available), None)
+
+
 class SentenceEmbedder:
     """sentence-transformers のモデル（初回はダウンロードする。以降は Mac の中だけで動く）。"""
 
@@ -140,8 +149,8 @@ class SentenceEmbedder:
         device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
         kw = {"truncate_dim": spec.dim} if spec.dim else {}
         self.model = SentenceTransformer(spec.name, device=device, **kw)
-        prompts = getattr(self.model, "prompts", None) or {}
-        self.prompt_name = spec.prompt_name if spec.prompt_name in prompts else None
+        self.prompts = dict(getattr(self.model, "prompts", None) or {})
+        self.prompt_name = pick_prompt(self.prompts, spec.prompt_names)
         self.key, self.spec, self.device, self.batch_size = spec.key, spec, device, batch_size
 
     def encode(self, texts: list[str]) -> np.ndarray:
@@ -149,6 +158,17 @@ class SentenceEmbedder:
                               prompt_name=self.prompt_name, convert_to_numpy=True, normalize_embeddings=True,
                               show_progress_bar=False)
         return _normalize(np.asarray(v, dtype=np.float32))   # 次元を減らした後にも長さを 1 にそろえる
+
+    def release(self) -> None:
+        """メモリを空ける（次のモデルを読む前に）。"""
+        import gc
+
+        import torch
+
+        self.model = None
+        gc.collect()
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
 
 
 def make_embedder(key: str) -> Embedder:
@@ -287,3 +307,48 @@ def load_day_vectors(store: NewsStore, model_key: str, until: pd.Timestamp,
         idx = [pos[i] for i in df["id"] if i in pos]
         out.append((d, vecs[idx] if idx else np.zeros((0, vecs.shape[1]), np.float16)))
     return out
+
+
+# --------------------------------------------------------------------------- モデルの比べ方（価格は使わない）
+# 答え: GDELT が本文全体から付けたテーマ。見出しを、その記事のテーマの話題に一番近いと判定できるかで比べる
+THEME_KEYS: dict[str, frozenset[str]] = {
+    "geo": frozenset({"ARMEDCONFLICT", "MILITARY", "SANCTIONS", "WB_2462_POLITICAL_VIOLENCE_AND_WAR"}),
+    "oil": frozenset({"ECON_OILPRICE", "ENV_OIL"}),
+    "gold": frozenset({"ECON_GOLDPRICE", "WB_2936_GOLD", "WB_2937_SILVER"}),
+    "macro": frozenset({"ECON_INFLATION", "ECON_INTEREST_RATES", "EPU_POLICY_CENTRAL_BANK",
+                        "EPU_POLICY_FEDERAL_RESERVE", "EPU_CATS_MONETARY_POLICY", "WB_1235_CENTRAL_BANKS"}),
+}
+COMPARE_MARGIN = 0.02      # 標準のモデルから替えるのは、点数がこれ以上良いときだけ
+JUDGE_FROM = pd.Timestamp("2025-07-01", tz="UTC")
+
+
+def theme_labels(themes: pd.Series) -> pd.DataFrame:
+    """記事ごとに、各話題のテーマが付いているか。"""
+    sets = themes.fillna("").astype(str).map(lambda s: set(s.split(";")))
+    return pd.DataFrame({k: sets.map(lambda x, v=v: bool(x & v)).to_numpy() for k, v in THEME_KEYS.items()})
+
+
+def topic_aucs(scores: dict[str, np.ndarray], labels: pd.DataFrame) -> dict[str, float]:
+    """話題ごとの AUC（テーマの付いた見出しほど、その話題の代表の文に近いと判定できているか。0.5 = でたらめ、1 = 完全）。"""
+    from .meta import auc
+
+    return {k: auc(np.asarray(scores[k], dtype=float), labels[k].to_numpy()) for k in labels if k in scores}
+
+
+def choose_model(scores: dict[str, float], default: str = DEFAULT_MODEL, margin: float = COMPARE_MARGIN) -> str:
+    """標準のモデルより margin 以上良いモデルがあれば、その中で一番良いもの。無ければ標準（docs/news.md 7 章）。"""
+    ok = {k: v for k, v in scores.items() if k != "hash" and v is not None and np.isfinite(v)}
+    if not ok:
+        return default
+    best = max(ok, key=ok.get)
+    if default not in ok:
+        return best
+    return best if ok[best] >= ok[default] + margin else default
+
+
+def judge_from(model_key: str) -> pd.Timestamp:
+    """判定の開始: 2025-07-01 か、モデルの公開の翌月 1 日の遅い方（モデルが知っている期間では判定しない）。"""
+    rel = MODELS[model_key].released if model_key in MODELS else ""
+    if not rel:
+        return JUDGE_FROM
+    return max(JUDGE_FROM, pd.Timestamp(f"{rel}-01", tz="UTC") + pd.offsets.MonthBegin(1))
