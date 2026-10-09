@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from .events import trading_day_keys
 from .instruments import Instrument
 from .metrics import daily_equity
 
@@ -34,6 +35,7 @@ class Group:
     cost: float          # 往復コスト（価格に対する割合。スプレッド・手数料・滑りの合計の目安）
     financing: float     # 保有コスト（年率、名目に対して。買い・売りとも支払いとして扱う）
     margin: float        # 証拠金率
+    weekend: bool = False  # 土日も取引される（金曜〜週末の新規停止を使わない）
 
 
 GROUPS = {
@@ -44,7 +46,13 @@ GROUPS = {
     "bond": Group("国債先物", 0.0003, 0.02, 0.05),
     "jp_stock": Group("日本株", 0.0015, 0.03, 0.20),
     "us_stock": Group("米国株", 0.0015, 0.03, 0.20),
+    # 国内の暗号資産の証拠金取引・CFD の目安: 往復 0.2%、建玉に 1 日 0.04%（年 14.6%）、レバレッジ 2 倍まで
+    "crypto": Group("暗号資産", 0.002, 0.146, 0.50, weekend=True),
 }
+# 暗号資産の参考: コストの小さい場合（海外の大きな取引所に近い。国内の個人には使えないことが多い）
+CRYPTO_LOW_COST = Group("暗号資産（低コストの場合）", 0.0006, 0.05, 0.50, weekend=True)
+# 暗号資産は Yahoo のデータが 2014 年からなので、前半・後半を自分の期間の中ほどで分ける
+CRYPTO_SPLIT = "2020-07-01"
 
 _M = Market
 UNIVERSE: tuple[Market, ...] = (
@@ -84,6 +92,8 @@ UNIVERSE: tuple[Market, ...] = (
     _M("CITI", "C", "us_stock", "シティ"), _M("PFE", "PFE", "us_stock", "ファイザー"),
     _M("INTC", "INTC", "us_stock", "インテル"), _M("IBM", "IBM", "us_stock", "IBM"),
     _M("JNJ", "JNJ", "us_stock", "J&J"), _M("AIG", "AIG", "us_stock", "AIG"),
+    # 暗号資産（24 時間・土日も動く）
+    _M("BTC", "BTC-USD", "crypto", "ビットコイン"), _M("ETH", "ETH-USD", "crypto", "イーサリアム"),
 )
 BY_KEY = {m.key: m for m in UNIVERSE}
 
@@ -92,19 +102,46 @@ def data_path(root: str | Path, m: Market) -> Path:
     return Path(root) / f"{m.key}.csv"
 
 
-def market_instrument(m: Market) -> Instrument:
+def market_instrument(m: Market, g: Group | None = None) -> Instrument:
     """研究用の銘柄仕様。数量はほぼ連続（最小単位の影響を避ける）、スプレッドはデータの列（価格に比例）で持つ。"""
-    g = GROUPS[m.group]
+    g = g or GROUPS[m.group]
     return Instrument(symbol=m.key, description=m.label, unit="unit", min_qty=1e-6, qty_step=1e-6, max_qty=1e15,
                       margin_rate=g.margin, spread=0.0, slippage=0.0, tick_size=1e-6,
                       financing_long=g.financing, financing_short=g.financing, cluster=m.key)
 
 
-def with_costs(frame: pd.DataFrame, m: Market) -> pd.DataFrame:
+def with_costs(frame: pd.DataFrame, m: Market, g: Group | None = None) -> pd.DataFrame:
     """往復コストを、足ごとのスプレッド（価格 × 割合。tick 1e-6 単位）として持たせる。"""
     f = frame.copy()
-    f["spread"] = GROUPS[m.group].cost * f["close"] / 1e-6
+    f["spread"] = (g or GROUPS[m.group]).cost * f["close"] / 1e-6
     return f
+
+
+def hold_returns(frame: pd.DataFrame) -> pd.Series:
+    """持っているだけ（買って持ち続ける）の日ごとの変化率（コストなし。比べる相手として）。"""
+    c = frame["close"].astype(float)
+    keys = trading_day_keys(c.index + pd.Timedelta(days=1))   # 足の終わりの時刻で、戦略の日ごとの資産と同じ日付にする
+    r = pd.Series(c.to_numpy(), index=keys).groupby(level=0).last().pct_change().dropna()
+    r.index = pd.DatetimeIndex(r.index)
+    return r
+
+
+def timeframe_costs(hourly: pd.DataFrame, costs: dict[str, float], atr_period: int = 20,
+                    stop_atr: float = 2.5) -> pd.DataFrame:
+    """時間足ごとの「往復コスト ÷ 損切り幅（stop_atr × ATR）」。check_data の表と同じ考え方。
+
+    hourly: 1 時間足（UTC の index、open/high/low/close）。4 時間足・日足はここから作る。
+    """
+    rows = []
+    for name, rule in (("1 時間足", "1h"), ("4 時間足", "4h"), ("日足", "1D")):
+        f = hourly if rule == "1h" else hourly.resample(rule, label="left", closed="left").agg(
+            {"open": "first", "high": "max", "low": "min", "close": "last"}).dropna()
+        prev = f["close"].shift(1)
+        tr = pd.concat([f["high"] - f["low"], (f["high"] - prev).abs(), (f["low"] - prev).abs()], axis=1).max(axis=1)
+        rel = float((tr.rolling(atr_period).mean() / f["close"]).median())
+        rows.append({"timeframe": name, "atr_pct": rel,
+                     **{k: c / (stop_atr * rel) if rel > 0 else np.nan for k, c in costs.items()}})
+    return pd.DataFrame(rows)
 
 
 # --------------------------------------------------------------------------- 集計

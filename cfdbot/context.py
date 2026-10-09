@@ -427,6 +427,22 @@ def _yf_history(ticker: str, since: str) -> pd.DataFrame:
     return df.dropna(subset=["close"]).drop_duplicates("date", keep="last")
 
 
+def fetch_yahoo_intraday(ticker: str, interval: str = "1h", period: str = "730d") -> pd.DataFrame:
+    """Yahoo の時間足（yfinance が必要。1 時間足は直近 730 日まで）。列 time（UTC）/open/high/low/close。"""
+    if not yfinance_available():
+        raise RuntimeError("yfinance が無い（./cfd update で入る）")
+    import yfinance as yf  # type: ignore
+
+    h = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=False, raise_errors=True, timeout=30)
+    if h.empty:
+        raise RuntimeError(f"Yahoo（yfinance）: {ticker} の {interval} が空")
+    idx = h.index.tz_convert("UTC") if h.index.tz is not None else h.index.tz_localize("UTC")
+    df = pd.DataFrame({"time": idx.strftime("%Y-%m-%d %H:%M:%S"), "open": h["Open"].to_numpy(float),
+                       "high": h["High"].to_numpy(float), "low": h["Low"].to_numpy(float),
+                       "close": h["Close"].to_numpy(float)})
+    return df.dropna(subset=["close"]).drop_duplicates("time", keep="last")
+
+
 def fetch_yahoo(ticker: str, since: str = "2000-01-01") -> pd.DataFrame:
     """Yahoo の日足。yfinance が入っていればそれを使う（直接だと「アクセスが多すぎる」で断られることが多い）。"""
     first: Exception | None = None

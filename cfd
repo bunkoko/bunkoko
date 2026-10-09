@@ -81,7 +81,7 @@ case "$cmd" in
   context  外部データ（金利・ドル・株価・他の商品・投機筋の建玉）を取得し、MT5 にある関連銘柄も表示
   study    外部データで絞り込むと成績が良くなるかを検証（./cfd context の後。5 分前後）
   meta     2 次モデル（メタラベリング）で取引を選ぶと成績が良くなるかを検証（./cfd context の後。数分）
-  universe 売買の対象を FX・株価指数・国債・個別株に広げたら良くなるかを検証（初回は --fetch。数分）
+  universe 売買の対象を FX・株価指数・国債・個別株・暗号資産に広げたら良くなるかを検証（初回は --fetch。数分）
   py       仮想環境の Python で実行（例: ./cfd py scripts/compare_signals.py ...）
 HELP
           ;;
