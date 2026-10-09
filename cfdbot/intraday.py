@@ -69,16 +69,20 @@ def parse_candles(raw: bytes, day: date, divisor: float) -> pd.DataFrame:
     return df[cols]
 
 
-def to_m5(bid: pd.DataFrame, ask: pd.DataFrame) -> pd.DataFrame:
-    """1 分足の売値・買値 → 5 分足（売値と買値の中値の OHLC、スプレッドは 5 分の平均）。"""
-    if bid.empty or ask.empty:
-        return pd.DataFrame(columns=["open", "high", "low", "close", "spread"])
-    j = bid.join(ask, rsuffix="_a", how="inner")
-    mid = pd.DataFrame({c: (j[c] + j[f"{c}_a"]) / 2 for c in ("open", "high", "low", "close")})
-    mid["spread"] = (j["close_a"] - j["close"]).clip(lower=0)
-    agg = mid.resample("5min", label="left", closed="left").agg(
-        {"open": "first", "high": "max", "low": "min", "close": "last", "spread": "mean"}).dropna()
-    return agg
+def to_m5(bid: pd.DataFrame, ask: pd.DataFrame | None = None) -> pd.DataFrame:
+    """1 分足 → 5 分足。買値もあれば中値の OHLC とスプレッド（5 分の平均）、無ければ売値の OHLC（スプレッドは空）。"""
+    cols = ["open", "high", "low", "close", "spread"]
+    if bid.empty:
+        return pd.DataFrame(columns=cols)
+    if ask is not None and not ask.empty:
+        j = bid.join(ask, rsuffix="_a", how="inner")
+        px = pd.DataFrame({c: (j[c] + j[f"{c}_a"]) / 2 for c in ("open", "high", "low", "close")})
+        px["spread"] = (j["close_a"] - j["close"]).clip(lower=0)
+    else:
+        px = bid[["open", "high", "low", "close"]].copy()
+        px["spread"] = np.nan
+    return px.resample("5min", label="left", closed="left").agg(
+        {"open": "first", "high": "max", "low": "min", "close": "last", "spread": "mean"}).dropna(subset=["close"])
 
 
 def m5_path(root: str | Path, key: str, month: str) -> Path:
@@ -92,7 +96,12 @@ def load_m5(root: str | Path, key: str) -> pd.DataFrame:
         return pd.DataFrame(columns=["open", "high", "low", "close", "spread"])
     df = pd.concat([pd.read_csv(f, index_col=0) for f in files])
     df.index = pd.DatetimeIndex(pd.to_datetime(df.index, utc=True))
-    return df[~df.index.duplicated(keep="last")].sort_index()
+    df = df[~df.index.duplicated(keep="last")].sort_index()
+    # 買値を取らなかった日のスプレッドは、取った日の同じ時刻（UTC の時）の中央値で埋める
+    if df["spread"].isna().any():
+        by_hour = df.groupby(df.index.hour)["spread"].transform("median")
+        df["spread"] = df["spread"].fillna(by_hour).fillna(df["spread"].median())
+    return df
 
 
 def resample(df: pd.DataFrame, rule: str) -> pd.DataFrame:

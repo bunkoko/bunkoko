@@ -97,3 +97,18 @@ def test_rules_are_fourteen_and_runnable():
         if r.timeframe == "5min":
             p = positions(r, df)
             assert len(p) == len(df) and set(np.unique(p)) <= {-1.0, 0.0, 1.0}
+
+
+def test_bid_only_days_get_spread_from_sampled_hours(tmp_path):
+    from cfdbot.intraday import load_m5, m5_path
+
+    day = date(2024, 1, 3)
+    bid = parse_candles(_bi5([(0, 2000000, 2001000, 1999000, 2002000, 1.0)]), day, 1000)
+    with_ask = to_m5(bid, bid + 0.4)
+    no_ask = to_m5(bid.set_axis(bid.index + pd.Timedelta(days=1)))
+    assert np.isnan(no_ask["spread"].iloc[0]) and no_ask["close"].iloc[0] == 2001.0
+    path = m5_path(tmp_path, "GOLD", "2024-01")
+    path.parent.mkdir(parents=True)
+    pd.concat([with_ask, no_ask]).to_csv(path, compression="gzip")
+    df = load_m5(tmp_path, "GOLD")
+    assert df["spread"].to_list() == pytest.approx([0.4, 0.4])     # 同じ時刻の取れた日の値で埋める

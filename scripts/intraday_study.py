@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from concurrent.futures import ThreadPoolExecutor
+import time
 from datetime import date, datetime
 from pathlib import Path
 
@@ -32,33 +32,37 @@ def f2(x: float) -> str:
     return f"{x:.2f}" if np.isfinite(x) else "–"
 
 
-def fetch_month(m, month_start: date, month_end: date, root: Path, workers: int) -> tuple[int, int]:
-    """1 か月分を取って 5 分足にして保存する。戻り値は (本数, 取れなかった日数)。"""
-    days = fetch_days(month_start, month_end, weekend=(m.key == "BTC"))
+def polite_get(url: str, waits=(30, 60, 120, 240)) -> bytes | None:
+    """相手に負担をかけないよう 1 件ずつ取り、断られたら長めに待ってやり直す。取れなければ None。"""
+    for i in range(len(waits) + 1):
+        try:
+            raw = _get(url, timeout=20, tries=1, use_curl=False)
+            time.sleep(0.2)
+            return raw
+        except NotFound:
+            return b""
+        except Exception:  # noqa: BLE001
+            if i < len(waits):
+                time.sleep(waits[i])
+    return None
 
-    def one(day):
-        out = {}
-        for side in ("BID", "ASK"):
-            try:
-                raw = _get(duka_url(m.duka, day, side), timeout=20, tries=4, use_curl=False)
-            except NotFound:
-                raw = b""
-            except Exception:  # noqa: BLE001  通信の失敗は後でもう一度
-                return day, None
-            out[side] = parse_candles(raw, day, m.divisor)
-        return day, to_m5(out["BID"], out["ASK"])
 
-    with ThreadPoolExecutor(workers) as ex:
-        got = list(ex.map(one, days))
-    parts = [df for _, df in got if df is not None and not df.empty]
-    missing = 0
-    for day, df in got:
-        if df is None:                       # 失敗した日はひとつずつやり直す
-            _, df = one(day)
-            if df is None:
-                missing += 1
-            elif not df.empty:
-                parts.append(df)
+def fetch_month(m, month_start: date, month_end: date, root: Path, workers: int = 1) -> tuple[int, int]:
+    """1 か月分を取って 5 分足にして保存する。売値は毎日、買値（スプレッド用）は水曜だけ。戻り値は (本数, 取れなかった日数)。"""
+    parts, missing = [], 0
+    for day in fetch_days(month_start, month_end, weekend=(m.key == "BTC")):
+        raw = polite_get(duka_url(m.duka, day, "BID"))
+        if raw is None:
+            missing += 1
+            continue
+        bid = parse_candles(raw, day, m.divisor)
+        ask = None
+        if day.weekday() == 2 and not bid.empty:
+            raw_a = polite_get(duka_url(m.duka, day, "ASK"))
+            ask = parse_candles(raw_a, day, m.divisor) if raw_a else None
+        df = to_m5(bid, ask)
+        if not df.empty:
+            parts.append(df)
     if not parts:
         return 0, missing
     df = pd.concat(parts).sort_index()
@@ -124,7 +128,7 @@ def main() -> None:
     p.add_argument("--end", default=None)
     p.add_argument("--markets", default="", help="カンマ区切り（例 GOLD,WTI）。省略で全部")
     p.add_argument("--split", default="2023-06-01", help="前半と後半の境")
-    p.add_argument("--workers", type=int, default=4)
+    p.add_argument("--workers", type=int, default=1, help="（未使用。Dukascopy には 1 件ずつ取りに行く）")
     p.add_argument("--out", default="output/intraday")
     args = p.parse_args()
 
