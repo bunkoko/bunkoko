@@ -69,6 +69,12 @@ def file_lock(store: NewsStore, name: str, wait: bool):
         f.close()
 
 
+def keep_awake() -> None:
+    """このコマンドが終わるまで Mac を眠らせない（画面は消えてよい。ノートはふたを閉じると眠る）。"""
+    if sys.platform == "darwin":
+        subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())])
+
+
 def free_gb(path: Path) -> float:
     p = Path(path).resolve()
     while not p.exists():
@@ -180,8 +186,7 @@ def cmd_backfill(args) -> None:
     log(f"空き容量: {free:.0f}GB（このコマンドで増えるのは 1GB ほど。埋め込みとモデルを合わせても 5GB ほど）")
     if free < MIN_FREE_GB:
         raise SystemExit(f"空きが {MIN_FREE_GB}GB より少ないので止めた。不要なファイルを消してからもう一度")
-    if sys.platform == "darwin":     # 取り終わるまで Mac を眠らせない（ふたを閉じると眠る）
-        subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())])
+    keep_awake()
     problems = []
     if not args.no_timeline or not args.no_articles:
         with file_lock(store, "gdelt", wait=True):
@@ -530,6 +535,7 @@ def gate_verdict(r: dict) -> str:
 
 
 def cmd_report(args) -> None:
+    keep_awake()
     store = NewsStore(args.root)
     lines: list[str] = []
 
