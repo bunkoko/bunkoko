@@ -32,28 +32,40 @@ def f2(x: float) -> str:
     return f"{x:.2f}" if np.isfinite(x) else "–"
 
 
-def fetch_month(m, month_start: date, month_end: date, root: Path, workers: int) -> int:
+def fetch_month(m, month_start: date, month_end: date, root: Path, workers: int) -> tuple[int, int]:
+    """1 か月分を取って 5 分足にして保存する。戻り値は (本数, 取れなかった日数)。"""
     days = fetch_days(month_start, month_end, weekend=(m.key == "BTC"))
 
     def one(day):
         out = {}
         for side in ("BID", "ASK"):
             try:
-                raw = _get(duka_url(m.duka, day, side), timeout=30, tries=3, use_curl=False)
+                raw = _get(duka_url(m.duka, day, side), timeout=20, tries=4, use_curl=False)
             except NotFound:
                 raw = b""
+            except Exception:  # noqa: BLE001  通信の失敗は後でもう一度
+                return day, None
             out[side] = parse_candles(raw, day, m.divisor)
-        return to_m5(out["BID"], out["ASK"])
+        return day, to_m5(out["BID"], out["ASK"])
 
     with ThreadPoolExecutor(workers) as ex:
-        parts = [p for p in ex.map(one, days) if not p.empty]
+        got = list(ex.map(one, days))
+    parts = [df for _, df in got if df is not None and not df.empty]
+    missing = 0
+    for day, df in got:
+        if df is None:                       # 失敗した日はひとつずつやり直す
+            _, df = one(day)
+            if df is None:
+                missing += 1
+            elif not df.empty:
+                parts.append(df)
     if not parts:
-        return 0
+        return 0, missing
     df = pd.concat(parts).sort_index()
     path = m5_path(root, m.key, f"{month_start:%Y-%m}")
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(path, compression="gzip")
-    return len(df)
+    return len(df), missing
 
 
 def fetch(markets, root: Path, start: date, end: date, workers: int) -> None:
@@ -67,7 +79,10 @@ def fetch(markets, root: Path, start: date, end: date, workers: int) -> None:
             complete = nxt <= date.today()
             if not (path.exists() and complete):
                 try:
-                    total += fetch_month(m, month, last, root, workers)
+                    n, miss = fetch_month(m, month, last, root, workers)
+                    total += n
+                    if miss:
+                        print(f"  ⚠ {m.label} {month:%Y-%m}: {miss} 日分を取れなかった", flush=True)
                     fails = 0
                 except Exception as e:  # noqa: BLE001
                     fails += 1
