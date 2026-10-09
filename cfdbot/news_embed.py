@@ -49,7 +49,8 @@ MODELS: dict[str, ModelSpec] = {m.key: m for m in (
     ModelSpec("hash", "", dim=512, note="AI を使わない比較用（単語の出現だけ）"),
 )}
 DEFAULT_MODEL = "qwen3-0.6b"
-COMPARE_MODELS = ("qwen3-0.6b", "gemma2", "gemma-300m", "e5-large")   # ./cfd news compare で比べる（＋hash）
+# ./cfd news compare で比べる（＋hash）。EmbeddingGemma 初代はログインが要るので、比べるなら --models に足す
+COMPARE_MODELS = ("qwen3-0.6b", "gemma2", "e5-large")
 
 # 代表の文（結果を見る前に決めたもの。変えない。docs/news.md 7 章）
 TOPICS: dict[str, tuple[str, ...]] = {

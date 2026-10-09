@@ -473,3 +473,12 @@ def test_compare_command_scores_models_and_records_choice(tmp_path, monkeypatch)
     got = json.loads(choice.read_text(encoding="utf-8"))
     assert got["model"] == "qwen3-0.6b" and set(got["scores"]) == {"qwen3-0.6b", "gemma2", "hash"}  # 同点なら標準のまま
     assert mod.chosen_model(NewsStore(tmp_path / "news")) == "qwen3-0.6b"
+
+
+def test_why_failed_explains_common_model_errors():
+    spec = importlib.util.spec_from_file_location("news_study_why", ROOT / "scripts" / "news_study.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert "Pillow" in mod.why_failed(ImportError("EmbeddingGemma2Processor requires the PIL library but it was not"))
+    assert "ログイン" in mod.why_failed(OSError("401 Client Error. (Request ID: Root=1-6ac8)"))
+    assert mod.why_failed(RuntimeError("boom\nmore")) == "boom"

@@ -313,6 +313,16 @@ def compare_sample(store: NewsStore, n: int, seed: int = SEED) -> pd.DataFrame:
     return df.sample(min(n, len(df)), random_state=seed).reset_index(drop=True)
 
 
+def why_failed(e: BaseException) -> str:
+    """モデルが使えなかった理由（よくあるものは、どうすればよいかも）。"""
+    text = str(e) or type(e).__name__
+    if "401" in text or "gated" in text.lower():
+        return "Hugging Face へのログインが要る（利用規約に同意して hf auth login）"
+    if "requires the PIL" in text or "Pillow" in text:
+        return "画像の部品（Pillow）が無い → ./cfd update && ./cfd news setup"
+    return text.splitlines()[0][:120]
+
+
 def cmd_compare(args) -> None:
     """モデルの精度を比べる（価格は使わない）。標準より 0.02 以上良いモデルがあれば、判定に使うモデルを替える。"""
     from cfdbot.news_embed import (COMPARE_MARGIN, DEFAULT_MODEL, MODELS, THEME_KEYS, anchor_vectors, choose_model,
@@ -354,7 +364,7 @@ def cmd_compare(args) -> None:
             sec = (time.time() - t0) / len(sample) * 1000
             aucs = topic_aucs(topic_scores(vecs, anchor_vectors(emb)), labels)
         except (SystemExit, Exception) as e:  # noqa: BLE001  取れない・動かないモデルは飛ばす
-            reason = str(e).splitlines()[0][:80] if str(e) else type(e).__name__
+            reason = why_failed(e)
             say(f"| {key} | {spec.released or '–'} | 使えなかった: {reason} | " + " | " * len(THEME_KEYS) + " |")
             continue
         score = float(np.nanmean(list(aucs.values())))
