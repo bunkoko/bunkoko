@@ -53,6 +53,7 @@ case "$cmd" in
   meta)   need_venv; exec "$PY" scripts/meta_study.py "$@" ;;
   universe) need_venv; exec "$PY" scripts/universe_study.py "$@" ;;
   ml)     need_venv; exec "$PY" scripts/ml_study.py "$@" ;;
+  leadlag) need_venv; exec "$PY" scripts/leadlag_study.py "$@" ;;
   replay) need_venv
           if [ -f output/live/current ]; then
             FINAL="$(cat output/live/current)/final.json"
@@ -84,6 +85,7 @@ case "$cmd" in
   meta     2 次モデル（メタラベリング）で取引を選ぶと成績が良くなるかを検証（./cfd context の後。数分）
   universe 売買の対象を FX・株価指数・国債・個別株・暗号資産に広げたら良くなるかを検証（初回は --fetch。数分）
   ml       59 市場をまとめて学ぶ機械学習でポジションを決めると良くなるかを検証（universe の後。10〜40 分）
+  leadlag  先行指標（原油・為替・金利など）で日米の業種・個別株を予測できるかを検証（初回は --fetch。30〜60 分）
   py       仮想環境の Python で実行（例: ./cfd py scripts/compare_signals.py ...）
 HELP
           ;;
