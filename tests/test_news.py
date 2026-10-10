@@ -453,11 +453,17 @@ def test_compare_command_scores_models_and_records_choice(tmp_path, monkeypatch)
     args = type("A", (), {"root": str(tmp_path / "news"), "models": "qwen3-0.6b,hash", "n": 600, "force": False,
                           "out": str(tmp_path / "out")})()
     choice = tmp_path / "news" / "model_choice.json"
+    import cfdbot.news_embed as ne
+
+    def no_ai(key):                                 # モデルが入っている Mac でも、入っていない状態にする
+        if key == "hash":
+            return HashEmbedder()
+        raise SystemExit("埋め込みの部品が無い")
+
+    monkeypatch.setattr(ne, "make_embedder", no_ai)
     with pytest.raises(SystemExit):                 # AI のモデルが 1 つも動かなければ決めない
         mod.cmd_compare(args)
     assert not choice.exists()
-
-    import cfdbot.news_embed as ne
 
     class FakeAI(HashEmbedder):
         def __init__(self, key):
@@ -609,3 +615,16 @@ def test_stop_request_finishes_the_current_file_and_cut_lines_are_skipped(tmp_pa
     with open(st.headline_path(day, "gkg"), "a", encoding="utf-8") as f:
         f.write('deadbeef,2026-10-09T0')
     assert len(st.load_day(day, "gkg")) == 2
+
+
+def test_report_saves_prices_when_the_folder_does_not_exist_yet(tmp_path, monkeypatch):
+    mod = _news_module("news_study_prices")
+    import cfdbot.context as context
+
+    days = pd.bdate_range("2026-01-01", periods=30)
+    monkeypatch.setattr(context, "fetch_yahoo", lambda ticker, since: pd.DataFrame(
+        {"date": days.strftime("%Y-%m-%d"), "close": np.linspace(70.0, 75.0, len(days))}))
+    folder = tmp_path / "data" / "universe"   # ./cfd universe を使ったことのない Mac には無い
+    markets = mod.load_markets(type("A", (), {"universe": str(folder), "no_fetch": False})())
+    assert sorted(markets) == sorted(mod.PRICE_MARKETS)
+    assert (folder / "WTI.csv").exists()

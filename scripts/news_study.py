@@ -716,6 +716,7 @@ def load_markets(args) -> dict[str, MarketDaily]:
         fresh = p.exists() and (now_utc().tz_localize(None) - pd.Timestamp(read_yahoo(p)[0].index[-1])).days <= 4
         if not fresh and not args.no_fetch:
             try:
+                p.parent.mkdir(parents=True, exist_ok=True)   # ./cfd universe を使ったことのない Mac には、置き場がまだ無い
                 fetch_yahoo(ticker, "2000-01-01").to_csv(p, index=False)
             except Exception as e:  # noqa: BLE001
                 print(f"⚠ {key} の価格を取れなかった（{e}）。手元のデータで続ける"[:200])

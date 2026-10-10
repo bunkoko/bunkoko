@@ -158,6 +158,10 @@ class SentenceEmbedder:
         v = self.model.encode([self.spec.prefix + t for t in texts], batch_size=self.batch_size,
                               prompt_name=self.prompt_name, convert_to_numpy=True, normalize_embeddings=True,
                               show_progress_bar=False)
+        if self.device == "mps":
+            import torch
+
+            torch.mps.empty_cache()   # 使い終えた GPU のメモリを返す（返さないと、日を重ねるうちに数十 GB までたまる）
         return _normalize(np.asarray(v, dtype=np.float32))   # 次元を減らした後にも長さを 1 にそろえる
 
     def release(self) -> None:
