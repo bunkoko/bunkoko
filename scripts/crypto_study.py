@@ -41,8 +41,7 @@ def pct(x: float, digits: int = 0) -> str:
     return f"{x:.{digits}%}" if np.isfinite(x) else "–"
 
 
-def main() -> None:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+def add_check_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--final", default="config/baselines/turtle55_d1_ext.json", help="戦略（今の構成の 1 つ目の銘柄の設定を使う）")
     p.add_argument("--config", default="config/train.toml")
     p.add_argument("--data", default="data/universe", help="日足の置き場（./cfd universe と同じ）")
@@ -50,8 +49,10 @@ def main() -> None:
     p.add_argument("--start", default="2001-01-01", help="成績を数え始める日")
     p.add_argument("--equity", type=float, default=10_000_000, help="1 市場あたりの資金（円。率で比べるので結論は変わらない）")
     p.add_argument("--out", default="output/crypto")
-    args = p.parse_args()
 
+
+def cmd_check(args) -> None:
+    """3 章の確かめ直し: 業者ごとのコストで今の戦略を当てる。"""
     root = Path(args.data)
     markets = [m for m in UNIVERSE if m.group in ("core", "crypto")]
     for m in markets:
@@ -192,6 +193,79 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"\n保存先: {out}/report.md")
+
+
+# --------------------------------------------------------------------------- 記録だけの売買（docs/crypto.md 6 章）
+LABEL = "com.bunkoko.crypto"
+
+
+def cmd_paper(args) -> None:
+    from cfdbot.crypto import PaperStore, paper_report, paper_run
+
+    store = PaperStore(args.root)
+    if not args.report:
+        paper_run(store, equity=args.equity)
+    lines, info = paper_report(store)
+    print("\n".join(lines))
+    out = Path(args.out) / datetime.now().strftime("%Y%m%d-%H%M")
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def plist_path() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+
+
+def make_plist(root: Path, log: Path) -> dict:
+    return {"Label": LABEL, "ProgramArguments": [str(root / "cfd"), "crypto", "paper"], "WorkingDirectory": str(root),
+            "StartCalendarInterval": {"Hour": 6, "Minute": 30}, "StandardOutPath": str(log),
+            "StandardErrorPath": str(log), "EnvironmentVariables": {"PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"}}
+
+
+def cmd_schedule(args) -> None:
+    import os
+    import plistlib
+    import subprocess
+
+    if sys.platform != "darwin":
+        raise SystemExit("毎朝の記録の登録は Mac だけ（launchd）。他では cron などで毎朝 6:30 に ./cfd crypto paper を")
+    uid, p = os.getuid(), plist_path()
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{LABEL}"], capture_output=True)
+    if args.off:
+        p.unlink(missing_ok=True)
+        print("毎朝の記録を外した")
+        return
+    log = ROOT / "data" / "crypto" / "paper" / "run.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "wb") as f:
+        plistlib.dump(make_plist(ROOT, log), f)
+    r = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(p)], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise SystemExit(f"launchctl に断られた: {r.stderr.strip()}")
+    print(f"毎朝 6:30 に ./cfd crypto paper を動かすよう登録した（記録: {log}）。Mac が眠っていると動かないので、"
+          "電源につないで docs/operations.md 10 章の設定にしておく")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd")
+    c = sub.add_parser("check", help="業者ごとのコストで今の戦略を当てる（3 章）")
+    add_check_args(c)
+    add_check_args(p)                                    # サブコマンド無しは check
+    q = sub.add_parser("paper", help="記録だけの売買（6 章）。毎朝 1 回。--report で途中経過だけ")
+    q.add_argument("--root", default="data/crypto")
+    q.add_argument("--equity", type=float, default=1_000_000, help="記録上の資金（円）")
+    q.add_argument("--out", default="output/crypto/paper")
+    q.add_argument("--report", action="store_true", help="取りに行かず、記録から成績だけ出す")
+    sch = sub.add_parser("schedule", help="毎朝 6:30 の記録を launchd に登録する（Mac）")
+    sch.add_argument("--off", action="store_true")
+    return p
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    {"paper": cmd_paper, "schedule": cmd_schedule}.get(args.cmd, cmd_check)(args)
 
 
 if __name__ == "__main__":

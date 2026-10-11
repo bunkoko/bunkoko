@@ -88,7 +88,7 @@ case "$cmd" in
   study    外部データで絞り込むと成績が良くなるかを検証（./cfd context の後。5 分前後）
   meta     2 次モデル（メタラベリング）で取引を選ぶと成績が良くなるかを検証（./cfd context の後。数分）
   universe 売買の対象を FX・株価指数・国債・個別株・暗号資産に広げたら良くなるかを検証（初回は --fetch。数分）
-  crypto   暗号資産を国内の業者の実際の手数料で確かめ直す（docs/crypto.md。universe の日足を使う。数分）
+  crypto   暗号資産: 業者の実際の手数料で確かめ直す（数分）。crypto paper で記録だけの売買、crypto schedule で毎朝の登録（docs/crypto.md）
   trend    トレンドフォローの改良（複数の期間・量の管理・出口）を 3 期間で確かめる（docs/trend.md。数分）
   ml       59 市場をまとめて学ぶ機械学習でポジションを決めると良くなるかを検証（universe の後。10〜40 分）
   leadlag  先行指標（原油・為替・金利など）で日米の業種・個別株を予測できるかを検証（初回は --fetch。30〜60 分）
