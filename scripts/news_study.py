@@ -877,7 +877,7 @@ def gate_test(args, flags_by_symbol: dict[str, tuple[pd.DatetimeIndex, np.ndarra
         null.append(stats(per.run(setup.picks, sh))[0] - b[0])
     null = np.array([v for v in null if np.isfinite(v)])
     d = g[0] - b[0]
-    n_block = int(sum((~gt["long"]).sum() for gt in gates.values()))
+    n_block = int(sum((~gt["long"].to_numpy() & masks[s]).sum() for s, gt in gates.items()))   # 判定の期間の中だけ
     trades = summarize(test, 10_000_000, list(per.frames))["trades"]
     r = day_returns(base["equity"], start)
     return {"base": b, "test": g, "pct": float(np.mean(null < d)) if len(null) else None, "blocked": n_block,
