@@ -36,7 +36,7 @@ sys.path.insert(0, str(ROOT))
 
 from cfdbot.news import (BLOCK, GKG_FIRST, TIME_FMT, TIMELINE_MODES, TIMELINE_QUERIES, GdeltClient,  # noqa: E402
                          MarketDaily, NewsStore, Throttled, ann_sharpe, collect_articles, collect_gkg, collect_yahoo,
-                         daily_timeline, flags_at, gkg_slots, hold_returns, shift_days, spikes, update_timelines,
+                         flags_at, gkg_slots, hold_returns, keyword_timelines, shift_days, spikes, update_timelines,
                          values_at, vol_ratios)
 from cfdbot.news_embed import COMPARE_MODELS  # noqa: E402
 from cfdbot.stats import deflated_threshold  # noqa: E402
@@ -919,11 +919,12 @@ def cmd_report(args) -> Path:
 
     # ---------------- A. キーワードで数える（AI なし）
     say("\n## A. キーワードで数える量と論調（AI なし。docs/news.md 3 章）\n")
-    tl = {q.key: daily_timeline(store.load_timeline(q.key, "timelinevolraw"), store.load_timeline(q.key, "timelinetone"))
-          for q in TIMELINE_QUERIES}
-    tl = {k: v[v.index < today] for k, v in tl.items() if len(v)}
-    for k, v in tl.items():
-        say(f"- 推移 {k}: {v.index[0]:%Y-%m-%d}〜{v.index[-1]:%Y-%m-%d}（{int(v.notna().any(axis=1).sum())} 日）")
+    tl = keyword_timelines(store, today)   # GDELT の生データから作る（API の推移は使わない。docs/news.md 4.1）
+    if tl:
+        geo, oil = tl["geo"], tl["oil_macro"]
+        say(f"- 推移: GDELT の生データから作った（docs/news.md 4.1）。{geo.index[0]:%Y-%m-%d}〜{geo.index[-1]:%Y-%m-%d}、"
+            f"地政学の量 {int(geo['share'].notna().sum())} 日・原油の論調 {int(oil['tone'].notna().sum())} 日"
+            f"（論調に使った記事 1 日平均 {oil['n'][oil['tone'].notna()].mean():.0f} 件）")
     rows, gate_flags = [], {}
     if "geo" in tl and "share" in tl["geo"]:
         geo = tl["geo"]
@@ -947,7 +948,7 @@ def cmd_report(args) -> Path:
         for name, label, r, v in rows:
             say(f"| {name} | {label} | {r['n']} | {fmt(r['value'])} | {fmt(r['h1'])} | {fmt(r['h2'])} | {pct(r['pct'])} | {v} |")
     else:
-        say("- キーワードの推移がまだ無い（./cfd news backfill で取る）")
+        say("- キーワードの推移を作れない（GDELT の生データがまだ無い。./cfd news run で取る）")
     if gate_flags and not args.no_gate:
         g = gate_test(args, gate_flags, say)
         if g:

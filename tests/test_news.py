@@ -628,3 +628,47 @@ def test_report_saves_prices_when_the_folder_does_not_exist_yet(tmp_path, monkey
     markets = mod.load_markets(type("A", (), {"universe": str(folder), "no_fetch": False})())
     assert sorted(markets) == sorted(mod.PRICE_MARKETS)
     assert (folder / "WTI.csv").exists()
+
+
+def test_keyword_timelines_come_from_raw_titles_themes_and_file_counts(tmp_path):
+    from cfdbot.news import GKG_GEO_THEMES, GKG_OIL_THEMES, keyword_timelines
+    from cfdbot.news_embed import THEME_KEYS
+
+    assert GKG_GEO_THEMES == THEME_KEYS["geo"] and GKG_OIL_THEMES == THEME_KEYS["oil"]   # 埋め込みの比べと同じテーマ
+    st = NewsStore(tmp_path)
+    rows, extra, n = [], {}, [0]
+
+    def art(title, themes="", tone="0"):
+        extra[len(rows)] = (themes, "", f"{tone},1,1,1,1,1,100")
+        n[0] += 1
+        rows.append(("1", f"https://n{n[0]}.com/{n[0]}", title))
+
+    art("Missile attack hits oil depot", "ARMEDCONFLICT;TAX_FNCACT")       # 原油に分けられるが、地政学として数える
+    art("Price war in phones heats up", "TAX_FNCACT")                      # 言葉はあるが地政学のテーマが無い
+    for i in range(5):
+        art(f"Oil prices rise on supply cut {i}", "ECON_OILPRICE", str(i + 1))
+    art("Gold climbs", "ECON_GOLDPRICE", "9")
+    art("Local team wins the cup")                                         # 見出しは取らないが全記事の数に入る
+    art("Weather is nice")
+    st.add_gkg(parse_gkg_file(_gkg_zip(rows, extra), pd.Timestamp("2026-10-01 03:00", tz="UTC")))
+    rows, extra = [], {}
+    art("Sanctions on oil exports widen", "SANCTIONS;ENV_OIL", "-4")
+    art("Military conflict escalates", "MILITARY")
+    art("Crude slips", "ENV_OIL", "-2")
+    art("Cup final tonight")
+    st.add_gkg(parse_gkg_file(_gkg_zip(rows, extra), pd.Timestamp("2026-10-03 21:00", tz="UTC")))
+
+    tl = keyword_timelines(st, pd.Timestamp("2026-10-10", tz="UTC"))
+    geo, oil = tl["geo"]["share"], tl["oil_macro"]
+    d1, d2, d3 = (pd.Timestamp(f"2026-10-0{i}", tz="UTC") for i in (1, 2, 3))
+    assert list(geo.index) == [d1, d2, d3]                                  # 毎日の行（ファイルの無い日は NaN）
+    assert geo[d1] == pytest.approx(1 / 10) and np.isnan(geo[d2]) and geo[d3] == pytest.approx(2 / 4)
+    assert oil.loc[d1, "tone"] == pytest.approx(3.0) and oil.loc[d1, "n"] == 5
+    assert np.isnan(oil.loc[d3, "tone"]) and oil.loc[d3, "n"] == 2          # 5 件未満の日は論調なし
+    assert keyword_timelines(st, d2)["geo"].index[-1] == d1                 # until より前の日だけ
+
+
+def test_keyword_timelines_are_empty_without_raw_data(tmp_path):
+    from cfdbot.news import keyword_timelines
+
+    assert keyword_timelines(NewsStore(tmp_path), pd.Timestamp("2026-10-10", tz="UTC")) == {}

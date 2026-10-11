@@ -650,6 +650,66 @@ def collect_gkg(store: NewsStore, start: pd.Timestamp, end: pd.Timestamp, state_
     return added, done, missing
 
 
+# --------------------------------------------------------------------------- キーワードの推移（生データから）
+# docs/news.md 4.1。API の推移の代わり。テーマは news_embed.THEME_KEYS の地政学・原油と同じ
+GKG_GEO_THEMES = frozenset({"ARMEDCONFLICT", "MILITARY", "SANCTIONS", "WB_2462_POLITICAL_VIOLENCE_AND_WAR"})
+GKG_OIL_THEMES = frozenset({"ECON_OILPRICE", "ENV_OIL"})
+MIN_TONE_ARTICLES = 5
+
+
+def gkg_daily_counts(store: NewsStore) -> pd.Series:
+    """UTC の日ごとに、読んだファイルの全記事（話題を問わない）の数。"""
+    paths = sorted((store.root / "gkg" / "files").glob("*.csv.gz"))
+    if not paths:
+        return pd.Series(dtype=float)
+    df = pd.concat([pd.read_csv(p, usecols=["time", "n_all"]) for p in paths], ignore_index=True)
+    t = pd.DatetimeIndex(pd.to_datetime(df["time"], utc=True))
+    n = pd.Series(df["n_all"].to_numpy(float), index=t)
+    n = n[~n.index.duplicated(keep="last")]
+    return n.groupby(n.index.floor("D")).sum()
+
+
+def keyword_timelines(store: NewsStore, until: pd.Timestamp) -> dict[str, pd.DataFrame]:
+    """生データから、地政学の量（geo の share）と原油の論調（oil_macro の tone）の日ごとの推移を作る。
+
+    until より前の日だけ。毎日の行がある（無い日は NaN）。daily_timeline と同じ形。
+    """
+    n_all = gkg_daily_counts(store)
+    if n_all.empty:
+        return {}
+    geo_n, tone_sum, tone_n = {}, {}, {}
+    for day in store.days("gkg"):
+        if day >= until:
+            continue
+        h, a = store.load_day(day, "gkg"), store.load_gkg_articles(day)
+        if h.empty or a.empty:
+            continue
+        m = h.merge(a.drop_duplicates("id"), on="id", how="inner")
+        themes = m["themes"].fillna("").astype(str).map(lambda v: set(v.split(";")))
+        title = m["title"].astype(str)
+        words = {k: title.map(lambda t, pat=GKG_TITLE_WORDS[k]: bool(pat.search(t))) for k in ("geo", "oil")}
+        geo = words["geo"] & themes.map(lambda x: bool(x & GKG_GEO_THEMES))
+        oil = words["oil"] & themes.map(lambda x: bool(x & GKG_OIL_THEMES))
+        tone = pd.to_numeric(m["tone"], errors="coerce")
+        d = m["published"].dt.floor("D")
+        for k, g in geo.groupby(d):
+            geo_n[k] = geo_n.get(k, 0) + int(g.sum())
+        ok = oil & tone.notna()
+        for k, g in tone[ok].groupby(d[ok]):
+            tone_sum[k] = tone_sum.get(k, 0.0) + float(g.sum())
+            tone_n[k] = tone_n.get(k, 0) + len(g)
+    n_all = n_all[n_all.index < until]
+    if n_all.empty:
+        return {}
+    full = pd.date_range(n_all.index.min(), n_all.index.max(), freq="D", tz="UTC")
+    total = n_all.reindex(full)
+    share = pd.Series(geo_n, dtype=float).reindex(full).fillna(0.0) / total.where(total > 0)
+    cnt = pd.Series(tone_n, dtype=float).reindex(full)
+    mean = pd.Series(tone_sum, dtype=float).reindex(full) / cnt
+    return {"geo": pd.DataFrame({"share": share}),
+            "oil_macro": pd.DataFrame({"tone": mean.where(cnt >= MIN_TONE_ARTICLES), "n": cnt.fillna(0)})}
+
+
 # --------------------------------------------------------------------------- 日ごとの特徴
 def daily_timeline(vol: pd.DataFrame | None, tone: pd.DataFrame | None) -> pd.DataFrame:
     """推移を UTC の日ごとに: share（全記事に対する割合）と tone（平均の論調）。毎日の行がある（無い日は NaN）。"""
