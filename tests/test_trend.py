@@ -55,10 +55,11 @@ def test_trend_study_runs_three_periods_and_writes_verdicts(tmp_path, monkeypatc
     cfg.write_text(f'output_dir = "{tmp_path / "out"}"\n[data]\ndir = "{data}"\n', encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["trend_study.py", "--config", str(cfg), "--data", str(uni),
                                       "--split", "2022-06-01", "--long-start", "2016-01-01",
-                                      "--out", str(tmp_path / "trend")])
+                                      "--variants", "multi,kalman", "--out", str(tmp_path / "trend")])
     mod.main()
     md = next((tmp_path / "trend").glob("*/report.md")).read_text(encoding="utf-8")
     assert "## 期間A" in md and "## 期間B" in md and "## 期間C" in md
-    assert "| multi:" in md and "| volcap:" in md and "| tp2r:" in md
+    assert "| multi:" in md and "| kalman:" in md and "| volcap:" not in md
     assert "期間B（フィリップのデータ）はこの環境に無い" not in md
-    assert md.count("採用候補**") + md.count("| 参考 |") + md.count("| 採らない |") == 5
+    assert md.count("採用候補**") + md.count("| 参考 |") + md.count("| 採らない |") == 2
+    assert "試した数: 34 ＋ 1 ＝ 35" in md                                 # multi は判定済み、kalman だけ新しい

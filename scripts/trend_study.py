@@ -35,9 +35,12 @@ CORE = ("GOLD", "SILVER", "WTI", "BRENT")
 OTHER = ("COPPER", "PLATINUM", "NATGAS")          # 期間C: これまで使っていない市場（docs/cross_asset.md と同じ）
 HORIZONS = ((20, 10), (55, 20), (120, 40))       # multi: 入る日数 / 手仕舞いの日数（docs/trend.md 1 章）
 VOLCAP_FLOOR, VOLCAP_SHORT, VOLCAP_SCALE, VOLCAP_MIN_HISTORY = 0.5, 20, 60, 250
-PRIOR_TRIALS, NEW_TRIALS = 28, 5
-VARIANTS = {    # 名前 → (表示, 出口の上書き)。multi・volcap は出口ではなく組み立てが違う
+PRIOR_TRIALS = 34                                # docs/review.md（28 ＋ 1 章の 5 つ ＋ 短い時間足 1）
+JUDGED = ("multi", "volcap", "no_be", "trail5", "tp2r")   # 1 章の 5 つ（2026-10-12 に判定済み。試した数に入っている）
+DEFAULT_VARIANTS = "base,kalman"
+VARIANTS = {    # 名前 → (表示, 出口の上書き)。multi・volcap・kalman は出口ではなく組み立てが違う
     "base": ("基準（タートル 55/20＋行き過ぎフィルタ）", {}),
+    "kalman": ("kalman: なめらかなトレンド（カルマンフィルタ。z > 1 で入り、符号が変わったら出る）", {}),
     "multi": ("multi: 20/10・55/20・120/40 を 3 分の 1 ずつ", {}),
     "volcap": ("volcap: かごの変動が高い時は新規の量を減らす", {}),
     "no_be": ("no_be: 建値への移動をやめる", {"breakeven_trigger_atr": 0.0}),
@@ -54,6 +57,7 @@ class Period:
     instruments: dict[str, Instrument]
     bt: BacktestConfig
     start: pd.Timestamp
+    prior: dict[str, pd.Series] | None = None   # kalman のパラメータ推定に使う別の系列（期間B: 先物の終値）
 
 
 def f2(x: float) -> str:
@@ -146,6 +150,11 @@ def build_sleeves(name: str, period: Period, pk0) -> tuple[list[Sleeve], int]:
                           exit_cfg, name=f"{s}:dc{e}", risk_weight=1.0 / len(HORIZONS))
                    for s in period.frames for e, x in HORIZONS]
         return sleeves, len(HORIZONS)
+    if name == "kalman":
+        prior = period.prior or {}
+        return [Sleeve(s, make_strategy("kalman", z_in=1.0, max_extension=pk0.params.get("max_extension", 0.0),
+                                        extension_period=pk0.params.get("extension_period", 20),
+                                        prior_close=prior.get(s)), exit_cfg) for s in period.frames], 1
     gates = volcap_gates(period.frames) if name == "volcap" else {}
     return [Sleeve(s, make_strategy(pk0.strategy, **pk0.params), exit_cfg, entry_gate=gates.get(s))
             for s in period.frames], 1
@@ -186,8 +195,15 @@ def main() -> None:
     p.add_argument("--long-start", default="2001-01-01", help="期間A・C の開始日")
     p.add_argument("--split", default="2021-06-01", help="期間A の終わり・期間B の始まり")
     p.add_argument("--equity", type=float, default=10_000_000)
+    p.add_argument("--variants", default=DEFAULT_VARIANTS, help="比べる改良（カンマ区切り。all で全部）")
     p.add_argument("--out", default="output/trend")
     args = p.parse_args()
+    names = list(VARIANTS) if args.variants == "all" else [v.strip() for v in args.variants.split(",") if v.strip()]
+    unknown = [v for v in names if v not in VARIANTS]
+    if unknown:
+        raise SystemExit(f"無い改良: {unknown}（{list(VARIANTS)} から）")
+    names = ["base"] + [v for v in names if v != "base"]
+    new_trials = sum(1 for v in names if v not in JUDGED and v != "base")
 
     cfg = load_train_config(args.config)
     pk0 = load_picks(args.final)[0]
@@ -203,6 +219,8 @@ def main() -> None:
     periods.append(a)
     b = period_from_phillip(cfg, args.equity, split)
     if b is not None:
+        b.prior = {s: yahoo_csv_frame(data_path(root, BY_KEY[s]), repair=True)["close"]
+                   for s in b.frames if data_path(root, BY_KEY[s]).exists()}   # kalman: 先物の履歴で推定
         periods.append(b)
     c = period_from_yahoo("C", f"期間C 他の商品 {long_start:%Y-%m}〜", OTHER, root, cfg, args.equity, long_start, None,
                           args.since)
@@ -220,7 +238,7 @@ def main() -> None:
     say("# トレンドフォローの改良を 3 つの期間で確かめる")
     say(f"作成: {datetime.now():%Y-%m-%d %H:%M}　判定の条件: docs/trend.md 3 章（結果を見る前に決めたもの）")
     say(f"基準: {Path(args.final).name}。資金 {args.equity:,.0f} 円・1 回の損失 {periods[0].bt.risk.risk_per_trade:.1%}。"
-        f"試した数: {PRIOR_TRIALS} ＋ {NEW_TRIALS} ＝ {PRIOR_TRIALS + NEW_TRIALS}")
+        f"試した数: {PRIOR_TRIALS} ＋ {new_trials} ＝ {PRIOR_TRIALS + new_trials}（1 章の 5 つは判定済みで、含めてある）")
     if b is None:
         say("- 期間B（フィリップのデータ）はこの環境に無い。判定は Mac で `./cfd trend` を実行して完成させる")
 
@@ -231,7 +249,8 @@ def main() -> None:
         say("|---|---|---|---|---|---|---|---|---|")
         rets = {}
         results[per.name] = {}
-        for name, (label, _) in VARIANTS.items():
+        for name in names:
+            label = VARIANTS[name][0]
             print(f"計算: {per.name} {name}", flush=True)
             r, n = run_variant(name, per, pk0)
             rets[name] = r
@@ -249,7 +268,8 @@ def main() -> None:
     say("\n| 改良 | " + " | ".join(f"期間{per.name}" for per in periods) + " | 期間A の差の PSR | 判定 |")
     say("|---|" + "---|" * len(periods) + "---|---|")
     verdicts = {}
-    for name, (label, _) in VARIANTS.items():
+    for name in names:
+        label = VARIANTS[name][0]
         if name == "base":
             continue
         better = {per.name: results[per.name][name]["diff"] > 0 for per in periods}
@@ -282,7 +302,8 @@ def main() -> None:
     say("- 期間A・C のコストは目安（往復 0.08%・年 3%）。期間B はフィリップの実測スプレッド")
     say("- multi は取引回数が約 3 倍になる。期間B のコストで成り立つかは期間B の行で見る")
     say("- volcap は量を減らすだけなので、シャープが上がっても年率は下がりうる（最大DD と合わせて読む）")
-    say("- 5 つを同じデータで試したので、1 つが偶然 95% に届く確率は 5 × 5% ≈ 23%。3 期間すべてで良いことも条件にして割り引く")
+    say("- 同じデータで複数を試すと、どれかが偶然 95% に届きやすい（5 つなら ≈ 23%）。3 期間すべてで良いことも条件にして割り引く")
+    say("- kalman は最初の 500 本（約 2 年）は売買しない。その分、基準より取引が少なく見える")
 
     (out / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"\n保存先: {out}/report.md")

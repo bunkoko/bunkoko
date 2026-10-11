@@ -6,6 +6,7 @@ from typing import Any
 
 from .base import Strategy, finalize_signals, signal_frame
 from .donchian import DonchianBreakout
+from .kalman import KalmanTrend
 from .pullback import TrendPullback
 from .regime import RegimeSwitch
 from .reversion import RangeReversion
@@ -13,7 +14,7 @@ from .squeeze import SqueezeBreakout
 
 STRATEGIES: dict[str, type[Strategy]] = {
     cls.name: cls
-    for cls in (DonchianBreakout, SqueezeBreakout, TrendPullback, RangeReversion, RegimeSwitch)
+    for cls in (DonchianBreakout, SqueezeBreakout, TrendPullback, RangeReversion, RegimeSwitch, KalmanTrend)
 }
 
 
@@ -29,6 +30,7 @@ __all__ = [
     "STRATEGIES",
     "Strategy",
     "DonchianBreakout",
+    "KalmanTrend",
     "SqueezeBreakout",
     "TrendPullback",
     "RangeReversion",
