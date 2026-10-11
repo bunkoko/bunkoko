@@ -88,6 +88,7 @@ python scripts/mt5_files.py install --run output/train/<日時>   # EA とプリ
 ./cfd meta       # 2 次モデル（メタラベリング）で今の戦略の取引を選ぶと良くなるかを検証（数分）
 ./cfd universe --fetch   # 対象を FX・株価指数・国債・個別株・暗号資産（59 市場）に広げたら良くなるかを検証
 ./cfd crypto            # 暗号資産を国内の業者の実際の手数料で確かめ直す（docs/crypto.md）
+./cfd trend             # トレンドフォローの改良（複数の期間・量の管理・出口）を 3 期間で確かめる（docs/trend.md）
 ```
 
 `./cfd meta` は『ファイナンス機械学習』（AFML）の方法で確かめる: パージング・エンバーゴ付きの組み合わせ交差検証（CPCV）、
