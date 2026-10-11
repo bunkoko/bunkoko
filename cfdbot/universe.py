@@ -53,6 +53,16 @@ GROUPS = {
 CRYPTO_LOW_COST = Group("暗号資産（低コストの場合）", 0.0006, 0.05, 0.50, weekend=True)
 # 暗号資産は Yahoo のデータが 2014 年からなので、前半・後半を自分の期間の中ほどで分ける
 CRYPTO_SPLIT = "2020-07-01"
+# 国内の業者ごとのコスト（docs/crypto.md 3 章。2026-10 に各社の公式の案内で確かめた仕組みと料率）
+CRYPTO_VENUES = {
+    "guide": Group("前回の目安（docs/universe.md）", 0.002, 0.146, 0.50, weekend=True),
+    # 取引手数料 0（BTC/JPY・ETH/JPY）。板の売り買いの差と滑りを往復 0.1% と控えめに。保有 0.04%/日
+    "gmo": Group("GMOコイン 取引所（レバレッジ）", 0.001, 0.0004 * 365, 0.50, weekend=True),
+    # 取引手数料 0。保有 0.04%/日に、ファンディングレートの最低 0.01% × 1 日 3 回をいつも払う側として足す
+    "bitflyer": Group("bitFlyer Crypto CFD", 0.001, (0.0004 + 0.0003) * 365, 0.50, weekend=True),
+    "none": Group("参考: コストなし", 0.0, 0.0, 0.50, weekend=True),
+}
+CRYPTO_JUDGED = ("gmo", "bitflyer")   # 判定する業者（前回の目安とコストなしは比べるためだけ）
 
 _M = Market
 UNIVERSE: tuple[Market, ...] = (

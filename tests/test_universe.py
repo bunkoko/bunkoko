@@ -137,3 +137,38 @@ def test_timeframe_costs_shrink_with_longer_bars():
     assert tc["x"].is_monotonic_decreasing
     assert tc["x"].iloc[0] == pytest.approx(0.002 / (2.5 * tc["atr_pct"].iloc[0]))
     assert GROUPS["crypto"].weekend and not GROUPS["core"].weekend
+
+
+def test_crypto_venues_follow_the_documented_fees():
+    from cfdbot.universe import CRYPTO_JUDGED, CRYPTO_VENUES
+
+    assert CRYPTO_VENUES["guide"].cost == GROUPS["crypto"].cost                   # 前回の目安と同じ
+    assert CRYPTO_VENUES["guide"].financing == GROUPS["crypto"].financing
+    assert CRYPTO_VENUES["gmo"].financing == pytest.approx(0.0004 * 365)          # 0.04%/日
+    assert CRYPTO_VENUES["bitflyer"].financing == pytest.approx(0.0007 * 365)     # ＋ファンディング 0.01% × 3 回
+    assert all(g.weekend and g.margin == 0.5 for g in CRYPTO_VENUES.values())     # 土日も動く・2 倍まで
+    assert set(CRYPTO_JUDGED) == {"gmo", "bitflyer"}
+
+
+def test_crypto_study_writes_a_verdict_for_each_venue(tmp_path, monkeypatch):
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    rng = np.random.default_rng(3)
+    for key, days, freq in (("GOLD", 2600, "B"), ("SILVER", 2600, "B"), ("WTI", 2600, "B"), ("BRENT", 2600, "B"),
+                            ("BTC", 3600, "D"), ("ETH", 3000, "D")):
+        idx = pd.date_range("2014-09-17" if freq == "D" else "2015-01-01", periods=days, freq=freq)
+        close = 100 * np.exp(np.cumsum(rng.normal(0.0004, 0.02, days)))
+        pd.DataFrame({"date": idx.strftime("%Y-%m-%d"), "open": close, "high": close * 1.01, "low": close * 0.99,
+                      "close": close, "volume": 1.0}).to_csv(tmp_path / f"{key}.csv", index=False)
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location("crypto_study", root / "scripts" / "crypto_study.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(sys, "argv", ["crypto_study.py", "--data", str(tmp_path), "--out", str(tmp_path / "out")])
+    mod.main()
+    md = next((tmp_path / "out").glob("*/report.md")).read_text(encoding="utf-8")
+    assert "GMOコイン 取引所（レバレッジ）: **" in md and "bitFlyer Crypto CFD: **" in md
+    assert "選ぶ業者: **" in md
