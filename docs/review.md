@@ -79,10 +79,11 @@
 
 ### 進み具合（2026-10-11）
 
-- A・B: `docs/trend.md` に事前登録し、期間A・C を計算した。**採用候補は無し**（multi が期間A で +0.11 だが PSR 81%）。
-  期間B は Mac で `./cfd trend`
-- C: クラウドからは Dukascopy に断られる（429）。Mac で `./cfd intraday --source mt5`
-- D: `./cfd crypto paper` と毎朝の登録 `./cfd crypto schedule` を作った。判定の条件は `docs/crypto.md` 6 章
+- A・B（2026-10-12 完了）: `docs/trend.md`。3 期間で確かめ、**採用候補は無し**（no_be だけ参考）。今の構成のまま
+- C（2026-10-12 完了）: `docs/intraday.md`。14 通りとも候補にならず、**短い時間足は閉じる**
+- D: `./cfd crypto paper` と毎朝の登録 `./cfd crypto schedule` を作り、Mac で記録を始めた。判定の条件は `docs/crypto.md` 6 章。
+  判定は 2027-10 ごろ
+- 試した数: 34（28 ＋ トレンドの改良 5 ＋ 短い時間足 1）
 
 ## 5. おすすめの順番
 

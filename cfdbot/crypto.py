@@ -194,11 +194,15 @@ def paper_run(store: PaperStore, get: Callable[[str], tuple[int, bytes]] = http_
         first = int(have["time"].iloc[-1].year) if len(have) else FIRST_YEAR
         for year in range(first, now.year + 1):
             status, raw = get(klines_url(sym, year))
+            if status == 404:              # その年の分が無い（取り扱いの始まる前の年）
+                continue
             if status != 200:
                 raise RuntimeError(f"{sym} の日足を取れなかった（{year} 年、HTTP {status}）")
             got = parse_klines(raw)
             if len(got):
                 store.save_klines(sym, got)
+        if store.load_klines(sym).empty:
+            raise RuntimeError(f"{sym} の日足が 1 本も取れなかった（{FIRST_YEAR}〜{now.year} 年）")
         status, raw = get(ticker_url(sym))
         if status != 200:
             raise RuntimeError(f"{sym} の値段を取れなかった（HTTP {status}）")

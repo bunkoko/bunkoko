@@ -42,6 +42,8 @@ class FakeGmo:
         sym = url.split("symbol=")[1].split("&")[0]
         if "/klines" in url:
             year = int(url.split("date=")[1])
+            if year < self.bars[sym]["time"].iloc[0].year:            # 取り扱いの前の年は 404（ETH_JPY の 2018 年など）
+                return 404, b'{"status":1,"messages":[{"message_code":"ERR-5003"}]}'
             return 200, _klines_json(self.bars[sym], year)
         return 200, _ticker_json(float(self.bars[sym]["close"].iloc[-1]))
 
