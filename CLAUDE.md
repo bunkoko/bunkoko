@@ -41,6 +41,7 @@
 | 「トレンドの改良を確かめて」 | `./cfd trend`（数分。期間B が加わる）。結果の `output/trend/<日時>/report.md` を見せ、`docs/trend.md` 5 章に記録を足す |
 | 「短い時間足を確かめて」 | `./cfd intraday --source mt5`（フィリップの M5 が `data/` に要る。無ければ Mac の前で CfdExportBars） |
 | 「暗号資産の記録は動いてる？」 | `./cfd crypto paper --report`。毎朝 6:30 の登録は `launchctl print gui/$(id -u)/com.bunkoko.crypto` |
+| 「キャリーを確かめて」 | `./cfd carry --fetch`（EIA から WTI の限月を取って計算。数分）。`output/carry/<日時>/report.md` を見せ、`docs/carry.md` 6 章に記録を足す |
 | 「毎週の確認をして」 | 書き出し済みなら `./cfd data` → `./cfd replay --start 2026-10-06 --equity 10000000`（`docs/operations.md` 12 章）。書き出しがまだなら、Mac の前でしてもらう |
 
 - 画面の操作が要ることはできない: MT5 のスクリプト（`CfdExportBars`）・EA の貼り付けや設定・MetaEditor のコンパイル・
