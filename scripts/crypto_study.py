@@ -212,12 +212,31 @@ def cmd_paper(args) -> None:
     (out / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def cmd_live(args) -> None:
+    """docs/crypto.md 8 章: 記録の直後に、GMOコインの建玉を記録の向きにそろえる（既定は空運転）。"""
+    from cfdbot.crypto import PaperStore, paper_run
+    from cfdbot.crypto_live import GmoClient, LiveStore, live_run, load_keys
+
+    paper = PaperStore(args.root)
+    live = LiveStore(Path(args.root) / "live")
+    if not args.no_paper:
+        paper_run(paper, equity=args.equity)                 # まず記録（取得・向きの決定・追記）
+    client = None
+    if not args.offline:
+        keys = load_keys()
+        client = GmoClient(keys["api_key"], keys["api_secret"])
+    rows = live_run(paper, live, client, real=args.real)
+    mode = "本物" if args.real and client is not None else "空運転"
+    print(f"{mode}: {len(rows)} 件を記録 → {live.log_path}")
+
+
 def plist_path() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
 
 
-def make_plist(root: Path, log: Path) -> dict:
-    return {"Label": LABEL, "ProgramArguments": [str(root / "cfd"), "crypto", "paper"], "WorkingDirectory": str(root),
+def make_plist(root: Path, log: Path, live: bool = False, real: bool = False) -> dict:
+    args = [str(root / "cfd"), "crypto"] + ((["live"] + (["--real"] if real else [])) if live else ["paper"])
+    return {"Label": LABEL, "ProgramArguments": args, "WorkingDirectory": str(root),
             "StartCalendarInterval": {"Hour": 6, "Minute": 30}, "StandardOutPath": str(log),
             "StandardErrorPath": str(log), "EnvironmentVariables": {"PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"}}
 
@@ -239,11 +258,12 @@ def cmd_schedule(args) -> None:
     log.parent.mkdir(parents=True, exist_ok=True)
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "wb") as f:
-        plistlib.dump(make_plist(ROOT, log), f)
+        plistlib.dump(make_plist(ROOT, log, live=args.live, real=args.real), f)
     r = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(p)], capture_output=True, text=True)
     if r.returncode != 0:
         raise SystemExit(f"launchctl に断られた: {r.stderr.strip()}")
-    print(f"毎朝 6:30 に ./cfd crypto paper を動かすよう登録した（記録: {log}）。Mac が眠っていると動かないので、"
+    what = ("crypto live" + (" --real（本物の注文）" if args.real else "（空運転）")) if args.live else "crypto paper"
+    print(f"毎朝 6:30 に ./cfd {what} を動かすよう登録した（記録: {log}）。Mac が眠っていると動かないので、"
           "電源につないで docs/operations.md 10 章の設定にしておく")
 
 
@@ -258,14 +278,22 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--equity", type=float, default=1_000_000, help="記録上の資金（円）")
     q.add_argument("--out", default="output/crypto/paper")
     q.add_argument("--report", action="store_true", help="取りに行かず、記録から成績だけ出す")
-    sch = sub.add_parser("schedule", help="毎朝 6:30 の記録を launchd に登録する（Mac）")
+    sch = sub.add_parser("schedule", help="毎朝 6:30 の記録（--live で少額の本番）を launchd に登録する（Mac）")
     sch.add_argument("--off", action="store_true")
+    sch.add_argument("--live", action="store_true", help="paper の代わりに live を動かす")
+    sch.add_argument("--real", action="store_true", help="--live と一緒に: 本物の注文を出す")
+    lv = sub.add_parser("live", help="少額の本番（8 章）。記録の直後に建玉を記録の向きにそろえる。既定は空運転")
+    lv.add_argument("--root", default="data/crypto")
+    lv.add_argument("--equity", type=float, default=1_000_000, help="記録上の資金（円）")
+    lv.add_argument("--real", action="store_true", help="本物の注文を出す（無ければ空運転）")
+    lv.add_argument("--no-paper", action="store_true", help="記録の取得を省く（すでに今日の分がある時）")
+    lv.add_argument("--offline", action="store_true", help="API に触らない（キー無しで仕組みを確かめる）")
     return p
 
 
 def main() -> None:
     args = build_parser().parse_args()
-    {"paper": cmd_paper, "schedule": cmd_schedule}.get(args.cmd, cmd_check)(args)
+    {"paper": cmd_paper, "schedule": cmd_schedule, "live": cmd_live}.get(args.cmd, cmd_check)(args)
 
 
 if __name__ == "__main__":

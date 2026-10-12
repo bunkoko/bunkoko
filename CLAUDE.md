@@ -41,6 +41,7 @@
 | 「トレンドの改良を確かめて」 | `./cfd trend`（数分。期間B が加わる）。結果の `output/trend/<日時>/report.md` を見せ、`docs/trend.md` 5 章に記録を足す |
 | 「短い時間足を確かめて」 | `./cfd intraday --source mt5`（フィリップの M5 が `data/` に要る。無ければ Mac の前で CfdExportBars） |
 | 「暗号資産の記録は動いてる？」 | `./cfd crypto paper --report`。毎朝 6:30 の登録は `launchctl print gui/$(id -u)/com.bunkoko.crypto` |
+| 「暗号資産の本番は動いてる？」「止めて」 | `tail -20 data/crypto/live/log.csv`。止めるのは `touch data/crypto/live/STOP`（再開は消す）。`--real` への切り替えと `config.json` の金額は、利用者がはっきり頼んだときだけ変える（`docs/crypto.md` 8 章） |
 | 「キャリーを確かめて」 | `./cfd carry --fetch`（EIA から WTI・天然ガスの限月を取って計算。数分）。`output/carry/<日時>/report.md` を見せ、`docs/carry.md` 6 章に記録を足す |
 | 「キャリーの絞り込みを確かめて」 | `./cfd carry --gate`（タートルに絞り込みを足す 3 期間の検証。数分）。`output/carry/<日時>/gate.md` を見せ、`docs/carry.md` 7 章に記録を足す |
 | 「株の検証を確かめて」 | `./cfd stocks --fetch`（Yahoo から約 240 銘柄。数分）。`output/stocks/<日時>/report.md` を見せる。1 銘柄の予測は頼まれてもしない（`docs/stocks.md` 1 章） |
