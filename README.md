@@ -92,7 +92,8 @@ python scripts/mt5_files.py install --run output/train/<日時>   # EA とプリ
 ./cfd spread            # 2 つの差の戻り（WTI−ブレント・金÷銀）を確かめる（docs/spread.md）
 ./cfd diversify         # 市場を分散した論文どおりのトレンドフォローを確かめる（docs/diversified.md）
 ./cfd carry --fetch     # キャリー（原油の期間構造）を確かめる（docs/carry.md。EIA から取るので Mac で）
-./cfd stocks --fetch    # 日本の個別株をルールで選ぶ検証（docs/stocks.md）
+./cfd stocks --fetch    # 個別株をルールで選ぶ検証（--market us で米国株。docs/stocks.md・docs/us_equity.md）
+./cfd timing --fetch    # S&P500 を持ち方で上回れるか（docs/us_equity.md）
 ```
 
 `./cfd meta` は『ファイナンス機械学習』（AFML）の方法で確かめる: パージング・エンバーゴ付きの組み合わせ交差検証（CPCV）、

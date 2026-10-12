@@ -22,10 +22,13 @@ sys.path.insert(0, str(ROOT))
 
 from cfdbot.context import fetch_yahoo  # noqa: E402
 from cfdbot.stats import psr_of  # noqa: E402
-from cfdbot.stocks import (COST, TICKERS, TOP_N, basket_returns, load_closes, monthly_picks, monthly_returns,  # noqa: E402
-                           random_pick_excess, scores, sharpe_monthly, stock_path, universe_returns)
+from cfdbot.stocks import (COST, TICKERS, TOP_N, US_TICKERS, basket_returns, load_closes, monthly_picks,  # noqa: E402
+                           monthly_returns, random_pick_excess, scores, sharpe_monthly, stock_path, universe_returns)
 
-PRIOR_TRIALS, NEW_TRIALS = 41, 1
+MARKETS = {   # 名前 → (ティッカー, 既定の置き場, 表示, 事前登録の文書, これまでの試した数)
+    "jp": (TICKERS, "data/stocks", "日本の個別株", "docs/stocks.md 3 章", 41),
+    "us": (US_TICKERS, "data/stocks_us", "米国の個別株", "docs/us_equity.md 3 章", 42),
+}
 
 
 def f2(x: float) -> str:
@@ -36,10 +39,10 @@ def pct(x: float, digits: int = 0) -> str:
     return f"{x:.{digits}%}" if np.isfinite(x) else "–"
 
 
-def fetch_all(root: Path, log=print) -> None:
+def fetch_all(root: Path, tickers, log=print) -> None:
     root.mkdir(parents=True, exist_ok=True)
     ok = fail = 0
-    for i, t in enumerate(TICKERS):
+    for i, t in enumerate(tickers):
         p = stock_path(root, t)
         if p.exists():
             ok += 1
@@ -55,24 +58,26 @@ def fetch_all(root: Path, log=print) -> None:
             log(f"  ✗ {t}: {str(e)[:80]}")
         time.sleep(0.3)
         if (i + 1) % 50 == 0:
-            log(f"  {i + 1}/{len(TICKERS)} 銘柄（取れた {ok}・取れない {fail}）")
+            log(f"  {i + 1}/{len(tickers)} 銘柄（取れた {ok}・取れない {fail}）")
     log(f"取得: {ok} 銘柄（取れない {fail}）→ {root}")
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--root", default="data/stocks")
+    p.add_argument("--market", default="jp", choices=list(MARKETS), help="jp: 日本株（docs/stocks.md）、us: 米国株（docs/us_equity.md）")
+    p.add_argument("--root", default=None)
     p.add_argument("--fetch", action="store_true")
     p.add_argument("--start", default="2006-01-01")
     p.add_argument("--placebo", type=int, default=200)
     p.add_argument("--out", default="output/stocks")
     args = p.parse_args()
 
-    root = Path(args.root)
+    tickers, default_root, label, rule_doc, prior = MARKETS[args.market]
+    root = Path(args.root or default_root)
     if args.fetch or not root.exists() or not any(root.glob("*.csv")):
-        fetch_all(root)
+        fetch_all(root, tickers)
     notes: list[str] = []
-    close = load_closes(root, log=notes.append)
+    close = load_closes(root, tickers, log=notes.append)
     if close.shape[1] < 2 * TOP_N:
         raise SystemExit(f"銘柄が足りない（{close.shape[1]}。./cfd stocks --fetch）")
     start = pd.Timestamp(args.start, tz="UTC")
@@ -96,9 +101,9 @@ def main() -> None:
     s_all, s1, s2 = sharpe_monthly(diff), sharpe_monthly(diff.iloc[:half]), sharpe_monthly(diff.iloc[half:])
     ps = psr_of(diff.to_numpy()) if len(diff) > 24 else np.nan
 
-    say("# 日本の個別株をルールで選ぶ（モメンタム × 低ボラティリティ、上位 20 を同じ金額で）")
-    say(f"作成: {datetime.now():%Y-%m-%d %H:%M}　判定の条件: docs/stocks.md 3 章（結果を見る前に決めたもの）。"
-        f"試した数: {PRIOR_TRIALS} ＋ {NEW_TRIALS} ＝ {PRIOR_TRIALS + NEW_TRIALS}")
+    say(f"# {label}をルールで選ぶ（モメンタム × 低ボラティリティ、上位 20 を同じ金額で）")
+    say(f"作成: {datetime.now():%Y-%m-%d %H:%M}　判定の条件: {rule_doc}（結果を見る前に決めたもの）。"
+        f"試した数: {prior} ＋ 1 ＝ {prior + 1}")
     say(f"対象: {close.shape[1]} 銘柄（Yahoo の日足。今の銘柄だけ = 生存者バイアスあり。比べる相手も同じ銘柄群）。"
         f"期間 {diff.index[0]:%Y-%m}〜{diff.index[-1]:%Y-%m}（{len(diff)} か月）。コスト 往復 {COST:.1%}")
     if notes:
@@ -127,7 +132,7 @@ def main() -> None:
     ok = s_all > 0.3 and s1 > 0 and s2 > 0 and ps >= 0.95 and pb >= 0.95
     say("\n## 判定\n")
     say(f"- 差のシャープ {f2(s_all)}（前半 {f2(s1)}・後半 {f2(s2)}）、PSR {pct(ps)}、でたらめより良い割合 {pct(pb)}")
-    say(f"- **{'有望（記録だけの売買を始める）' if ok else '有望ではない。個別株は閉じる'}**"
+    say(f"- **{'有望（記録だけの売買を始める）' if ok else '有望ではない。' + label + 'のルール選びは閉じる'}**"
         "（条件: 0.3 超、前半・後半ともプラス、PSR 95%、でたらめより良い 95%）")
 
     if ok:
