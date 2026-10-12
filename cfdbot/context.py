@@ -238,19 +238,28 @@ def yahoo_frame(store: ContextStore, key: str) -> pd.DataFrame | None:
     return yahoo_csv_frame(p)
 
 
+MAX_BAD_CLOSES = 5   # 終値が 0 以下の日がこれより多ければ壊れたデータとみなし、最初の日から先を使わない
+
+
 def yahoo_csv_frame(path: str | Path, repair: bool = False) -> pd.DataFrame:
     """Yahoo の日足 CSV（date/open/high/low/close）を yahoo_frame と同じ形にする。
 
-    repair: 始値・高値・安値だけが 0 以下の日は終値で埋める（株価指数・個別株の古いデータにある欠け）。
-    終値が 0 以下の日以降は、どちらでも使わない。
+    終値が 0 以下の日が数日だけなら、その日だけ省く（WTI の 2020-04-20 の −37 ドルは本当の値だが、価格が負だと
+    指標・量・スプレッドの計算が壊れるため。買いで持っていた場合の損は、翌日の 10 ドルへの下げで大半が出る）。
+    多ければ壊れたデータとみなし、最初の日から先を使わない。終値が正の日の 0 以下の始値・高値・安値は終値で埋める。
+    repair は互換のために残している（今はどちらでも同じ）。
     """
     df = pd.read_csv(path).dropna(subset=["close"])
     if repair:
         for c in ("open", "high", "low"):
             df[c] = df[c].where(df[c] > 0, df["close"])
-    bad = df[(df[["open", "high", "low", "close"]] <= 0).any(axis=1)]
-    if not bad.empty:
-        df = df[pd.to_datetime(df["date"]) < pd.to_datetime(bad["date"]).min()]
+    bad = df["close"] <= 0
+    if bad.sum() > MAX_BAD_CLOSES:                        # 終値が 0 以下の日が多い = 壊れたデータ。最初の日から先は使わない
+        df = df[pd.to_datetime(df["date"]) < pd.to_datetime(df.loc[bad, "date"]).min()]
+    elif bad.any():                                       # 数日だけ（WTI の 2020-04-20 の −37 ドルなど）は、その日だけ省く
+        df = df[~bad]
+    for c in ("open", "high", "low"):                     # 終値が正の日の 0 以下の始値・高値・安値は終値で埋める
+        df[c] = df[c].where(df[c] > 0, df["close"])
     df = df.assign(**{c: df[c].fillna(df["close"]) for c in ("open", "high", "low")})
     dates = pd.DatetimeIndex(pd.to_datetime(df["date"]))
     opens = (dates - pd.Timedelta(hours=6)).tz_localize(ET, nonexistent="shift_forward", ambiguous=False)

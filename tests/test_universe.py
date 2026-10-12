@@ -18,14 +18,20 @@ def test_universe_is_well_formed():
     assert [m.key for m in UNIVERSE if m.group == "core"] == ["GOLD", "SILVER", "WTI", "BRENT"]
 
 
-def test_yahoo_repair_fills_zero_open_but_cuts_at_zero_close(tmp_path):
+def test_yahoo_frame_drops_isolated_bad_closes_and_cuts_broken_data(tmp_path):
     p = tmp_path / "x.csv"
     pd.DataFrame({"date": ["2020-01-02", "2020-01-03", "2020-01-06", "2020-01-07"],
-                  "open": [0.0, 10.0, 10.0, 10.0], "high": [11, 11, 11, 11], "low": [9, 9, 9, 9],
-                  "close": [10.0, 10.5, 0.0, 11.0]}).to_csv(p, index=False)
+                  "open": [0.0, 10.0, 10.0, -14.0], "high": [11, 11, 11, 11], "low": [9, 9, 9, -16.0],
+                  "close": [10.0, 10.5, -37.0, 11.0]}).to_csv(p, index=False)
     f = yahoo_csv_frame(p, repair=True)
-    assert len(f) == 2 and f["open"].iloc[0] == 10.0
-    assert yahoo_csv_frame(p).empty                           # 既定（先物用）は 0 の行から先を使わない
+    assert len(f) == 3 and f["open"].iloc[0] == 10.0           # 終値が負の 1 日だけ省く（WTI の 2020-04-20 の形）
+    assert f["open"].iloc[-1] == 11.0 and f["low"].iloc[-1] == 11.0   # 終値が正の日の負の始値・安値は終値で埋める
+    assert len(yahoo_csv_frame(p)) == 3                        # 既定でも同じ
+    q = tmp_path / "broken.csv"
+    pd.DataFrame({"date": pd.bdate_range("2020-01-01", periods=12).strftime("%Y-%m-%d"),
+                  "open": 10.0, "high": 11.0, "low": 9.0,
+                  "close": [10.0, 10.0, 10.0] + [0.0] * 9}).to_csv(q, index=False)
+    assert len(yahoo_csv_frame(q)) == 3                        # 0 の日が多ければ壊れたデータ: 最初の 0 の日から先を使わない
 
 
 def test_costs_scale_with_price_and_run_in_backtest(oil_df):

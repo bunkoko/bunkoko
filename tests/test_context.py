@@ -90,15 +90,16 @@ def test_entry_gate_removes_blocked_entries_in_backtest(oil_df):
     assert set(res.trades["side"]) == {1, -1}
 
 
-def test_yahoo_frame_stops_before_non_positive_prices(tmp_path):
+def test_yahoo_frame_drops_the_negative_close_day_and_keeps_the_rest(tmp_path):
     store = ContextStore(tmp_path)
     p = store.path(SPECS["fut_wti"])
     p.parent.mkdir(parents=True)
     pd.DataFrame({"date": ["2020-04-16", "2020-04-17", "2020-04-20", "2020-04-21"],
-                  "open": [20, 19, 18, 10], "high": [21, 20, 18, 12], "low": [19, 18, -40, 9],
+                  "open": [20, 19, 18, -14], "high": [21, 20, 18, 12], "low": [19, 18, -40, -16],
                   "close": [20, 18, -37, 11], "volume": 0, "tz": "America/New_York"}).to_csv(p, index=False)
     f = yahoo_frame(store, "fut_wti")
-    assert len(f) == 2
+    assert len(f) == 3 and list(f["close"]) == [20, 18, 11]                          # −37 ドルの日だけ省く
+    assert f["open"].iloc[-1] == 11 and f["low"].iloc[-1] == 11                       # 負の始値・安値は終値で埋める
     assert f.index[0] == pd.Timestamp("2020-04-15 18:00", tz="America/New_York")   # 前日 18:00 ET 開始
 
 
