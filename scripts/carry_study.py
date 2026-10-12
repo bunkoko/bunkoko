@@ -19,8 +19,10 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from cfdbot.carry import (COST, FINANCING, MAX_LEV, ROLL_LEAD, VOL_TARGET, basis, curve_path, evaluate,  # noqa: E402
-                          fetch_curve, front_returns, load_curve, placebo_sharpes, sharpe, signals)
+import importlib.util  # noqa: E402
+
+from cfdbot.carry import (COST, CURVES, FINANCING, MAX_LEV, ROLL_LEAD, VOL_TARGET, basis, carry_gate, curve_path,  # noqa: E402
+                          evaluate, fetch_curve, front_returns, load_curve, placebo_sharpes, sharpe, signals)
 from cfdbot.stats import psr_of  # noqa: E402
 from cfdbot.study import clean  # noqa: E402
 
@@ -40,6 +42,131 @@ def mdd(r: pd.Series) -> float:
     return float((eq - eq.cummax()).min()) if len(eq) else float("nan")
 
 
+GATE_END = pd.Timestamp("2024-05-01", tz="UTC")       # EIA のデータの終わり（2024-04-05）の後は見ない
+
+
+def _trend_module():
+    spec = importlib.util.spec_from_file_location("trend_study", ROOT / "scripts" / "trend_study.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["trend_study"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def gate_stage(args, root: Path) -> None:
+    """docs/carry.md 7 章: タートルの WTI・ブレント（期間C は天然ガス）に、キャリーの向きと揃った新規だけ入る絞り込み。"""
+    from dataclasses import replace
+
+    from cfdbot.backtest import Sleeve, run_backtest
+    from cfdbot.strategies import make_strategy
+    from cfdbot.study import load_picks
+    from cfdbot.train.config import load_train_config
+    from cfdbot.universe import BY_KEY, day_returns
+
+    ts = _trend_module()
+    cfg = load_train_config(args.config)
+    pk0 = load_picks(args.final)[0]
+    data_root = Path(args.data)
+    long_start = pd.Timestamp("2001-01-01", tz="UTC")
+    split = pd.Timestamp("2021-06-01", tz="UTC")
+    b_wti = basis(load_curve(root, "wti"))
+    b_gas = basis(load_curve(root, "natgas")) if curve_path(root, "natgas").exists() else None
+
+    periods = []
+    a = ts.period_from_yahoo("A", f"期間A 先物 {long_start:%Y-%m}〜{split - pd.Timedelta(days=1):%Y-%m}", ts.CORE, data_root,
+                             cfg, args.equity, long_start, split, "2000-01-01")
+    if a is None:
+        raise SystemExit("期間A の日足が足りない（data/universe/。./cfd universe --fetch）")
+    periods.append((a, {"WTI": b_wti, "BRENT": b_wti}))
+    b = ts.period_from_phillip(cfg, args.equity, split)
+    if b is not None:
+        b.frames = {k: f[f.index < GATE_END] for k, f in b.frames.items()}
+        b.label = f"期間B フィリップ {split:%Y-%m}〜2024-04（EIA のデータの終わりまで）"
+        periods.append((b, {"WTI": b_wti, "BRENT": b_wti}))
+    if b_gas is not None:
+        c = ts.period_from_yahoo("C", "期間C 天然ガス 2001-01〜2024-04（自分のキャリー）", ("NATGAS",), data_root, cfg,
+                                 args.equity, long_start, GATE_END, "2000-01-01")
+        if c is not None:
+            periods.append((c, {"NATGAS": b_gas}))
+
+    def run(period, gates):
+        sleeves = [Sleeve(s, make_strategy(pk0.strategy, **pk0.params), dict(pk0.exit), entry_gate=gates.get(s))
+                   for s in period.frames]
+        bt = replace(period.bt, risk=replace(period.bt.risk, max_positions_per_symbol=1))
+        res = run_backtest(period.frames, period.instruments, sleeves, bt)
+        return day_returns(res.equity, period.start), int(len(res.trades))
+
+    out = Path(args.out) / datetime.now().strftime("%Y%m%d-%H%M")
+    out.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+
+    def say(s: str = "") -> None:
+        print(s, flush=True)
+        lines.append(s)
+
+    say("# タートルにキャリーの絞り込みを足す（docs/carry.md 7 章）")
+    say(f"作成: {datetime.now():%Y-%m-%d %H:%M}　判定の条件: 7 章（結果を見る前に決めたもの）。試した数: 40 ＋ 1 ＝ 41")
+    say("絞り込み: 前日の EIA のキャリーがプラスなら買いだけ、マイナスなら売りだけ（WTI・ブレントは WTI の、天然ガスは自分のキャリー）。"
+        "値が無い日は止めない。手仕舞いは今のまま")
+    if b is None:
+        say("- 期間B（フィリップのデータ）はこの環境に無い。判定は Mac で `./cfd carry --gate` を実行して完成させる")
+    if b_gas is None:
+        say("- 天然ガスの限月（EIA `RNGC1`〜`RNGC4`）が無いので期間C を省いた（`./cfd carry --fetch` で取る）")
+
+    say("\n| 期間 | 市場 | 基準 シャープ | 絞り込み | 差 | 差の PSR | 偶然より良い割合 | 取引 基準 → 絞り込み | 止めた足 |")
+    say("|---|---|---|---|---|---|---|---|---|")
+    rows = {}
+    rng = np.random.default_rng(23)
+    for per, bmap in periods:
+        gates = {s: carry_gate(per.frames[s].index, bmap[s]) for s in per.frames if s in bmap}
+        r0, n0 = run(per, {})
+        r1, n1 = run(per, gates)
+        d = (r1 - r0).dropna()
+        s0, s1 = sharpe(r0), sharpe(r1)
+        ps = psr_of(d.to_numpy()) if len(d) > 60 else np.nan
+        blocked = int(sum((~g["long"] | ~g["short"]).sum() for g in gates.values()))
+        null = []
+        for _ in range(args.gate_placebo if per.name == "A" else 0):
+            sh = {}
+            for s_, g in gates.items():
+                k = int(rng.integers(1, len(g)))
+                sh[s_] = pd.DataFrame({c_: np.roll(g[c_].to_numpy(), k) for c_ in g.columns}, index=g.index)
+            null.append(sharpe(run(per, sh)[0]) - s0)
+        pb = float(np.mean(np.array(null) < (s1 - s0))) if null else np.nan
+        rows[per.name] = {"s0": s0, "s1": s1, "diff": s1 - s0, "psr": ps, "pct": pb}
+        say(f"| {per.label} | {', '.join(BY_KEY[s].label for s in per.frames)} | {f2(s0)} | {f2(s1)} | {s1 - s0:+.2f} | "
+            f"{pct(ps)} | {pct(pb)} | {n0} → {n1} | {blocked} |")
+        pd.DataFrame({"base": r0, "gate": r1}).to_csv(out / f"gate_returns_{per.name}.csv")
+
+    say("\n## 判定\n")
+    have = list(rows)
+    better = all(rows[k]["diff"] > 0 for k in have)
+    psr_a = rows["A"]["psr"]
+    if b is None or "C" not in rows:
+        missing = "・".join(k for k, ok in (("B", b is not None), ("C", "C" in rows)) if not ok)
+        if rows["A"]["diff"] > 0 and psr_a >= 0.95 and better:
+            v = f"途中（期間{missing} 待ち。そろっている期間は条件を満たす）"
+        elif rows["A"]["diff"] <= 0 or psr_a < 0.95:
+            v = "採らない（期間A で条件に届かない）"
+        else:
+            v = "採らない（そろっている期間のどれかで悪い）"
+    elif better and psr_a >= 0.95:
+        v = "**採用候補**（EA に入れる設計を別に事前登録する）"
+    elif sum(rows[k]["diff"] > 0 for k in have) >= 2:
+        v = "参考（3 期間のうち 2 つで良い。採らない）"
+    else:
+        v = "採らない"
+    say(f"- 期間A: 差 {rows['A']['diff']:+.2f}、差の PSR {pct(psr_a)}"
+        + "".join(f"。期間{k}: 差 {rows[k]['diff']:+.2f}" for k in have if k != "A"))
+    say(f"- 判定: {v}（条件: 3 期間すべてで基準より良く、期間A で差の PSR 95% 以上）")
+    say("\n## 読み方・限界")
+    say("- 期間A の WTI は Yahoo の日足の都合で 2020-04-16 まで（docs/review.md のデータの注意）")
+    say("- ブレントを WTI のキャリーで代用している。本番でも同じ代用になる")
+    say("- 期間B は 2024-04 までの約 3 年。EIA のデータの終わり以降は、上場中の限月から毎日ためる必要がある")
+    (out / "gate.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"\n保存先: {out}/gate.md")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--root", default="data/carry")
@@ -47,19 +174,33 @@ def main() -> None:
     p.add_argument("--start", default="1986-01-01")
     p.add_argument("--placebo", type=int, default=200)
     p.add_argument("--out", default="output/carry")
+    p.add_argument("--gate", action="store_true", help="7 章: タートルにキャリーの絞り込みを足す検証（3 期間）")
+    p.add_argument("--data", default="data/universe", help="先物の日足（./cfd universe と同じ）")
+    p.add_argument("--config", default="config/train.toml")
+    p.add_argument("--final", default="config/baselines/turtle55_d1_ext.json")
+    p.add_argument("--equity", type=float, default=10_000_000)
+    p.add_argument("--gate-placebo", type=int, default=30)
     args = p.parse_args()
 
     root = Path(args.root)
     if args.fetch or not curve_path(root).exists():
-        print("取得中: EIA の WTI 先物 限月 1〜4（日次、1983 年〜）…", flush=True)
-        try:
-            curve = fetch_curve()
-        except Exception as e:  # noqa: BLE001
-            raise SystemExit(f"EIA から取れなかった（{str(e)[:160]}）。クラウドの環境からは届かないので Mac で ./cfd carry --fetch") from None
-        root.mkdir(parents=True, exist_ok=True)
-        curve.to_csv(curve_path(root))
-        print(f"  ✓ {curve.index[0]:%Y-%m-%d}〜{curve.index[-1]:%Y-%m-%d}（{len(curve):,} 日）→ {curve_path(root)}")
+        for name, codes in CURVES.items():
+            print(f"取得中: EIA の {name} 先物 限月 1〜4（日次）…", flush=True)
+            try:
+                curve = fetch_curve(codes=codes)
+            except Exception as e:  # noqa: BLE001
+                if name == "wti":
+                    raise SystemExit(f"EIA から取れなかった（{str(e)[:160]}）。クラウドの環境からは届かないので Mac で "
+                                     "./cfd carry --fetch") from None
+                print(f"  ✗ {name}: {str(e)[:120]}（期間C は省く）")
+                continue
+            root.mkdir(parents=True, exist_ok=True)
+            curve.to_csv(curve_path(root, name))
+            print(f"  ✓ {curve.index[0]:%Y-%m-%d}〜{curve.index[-1]:%Y-%m-%d}（{len(curve):,} 日）→ {curve_path(root, name)}")
     curve = load_curve(root)
+    if args.gate:
+        gate_stage(args, root)
+        return
     start = pd.Timestamp(clean(args.start))
 
     out = Path(args.out) / datetime.now().strftime("%Y%m%d-%H%M")

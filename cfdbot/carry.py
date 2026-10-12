@@ -15,6 +15,7 @@ import pandas as pd
 from .universe import GROUPS
 
 EIA_CODES = ("RCLC1", "RCLC2", "RCLC3", "RCLC4")
+CURVES = {"wti": EIA_CODES, "natgas": ("RNGC1", "RNGC2", "RNGC3", "RNGC4")}   # EIA の限月 1〜4 の系列（2024-04 まで）
 ROLL_LEAD = 5                      # 切り替わる何営業日前に限月 2 へ乗り換えるか
 SWITCH_WINDOW = (17, 26)           # 限月 1 が切り替わる日を探す暦日の範囲
 VOL_WINDOW, VOL_TARGET, MAX_LEV = 60, 0.10, 2.0
@@ -42,10 +43,10 @@ def fetch_eia_daily(code: str) -> pd.DataFrame:
     return eia_table(book[name])
 
 
-def fetch_curve(fetch: Callable[[str], pd.DataFrame] = fetch_eia_daily) -> pd.DataFrame:
+def fetch_curve(fetch: Callable[[str], pd.DataFrame] = fetch_eia_daily, codes=EIA_CODES) -> pd.DataFrame:
     """限月 1〜4 を 1 つの表に（index: 日付、列: c1..c4）。"""
     cols = {}
-    for i, code in enumerate(EIA_CODES, 1):
+    for i, code in enumerate(codes, 1):
         df = fetch(code)
         s = pd.Series(df["value"].to_numpy(float), index=pd.DatetimeIndex(pd.to_datetime(df["date"])))
         cols[f"c{i}"] = s[~s.index.duplicated(keep="last")].sort_index()
@@ -54,14 +55,33 @@ def fetch_curve(fetch: Callable[[str], pd.DataFrame] = fetch_eia_daily) -> pd.Da
     return out
 
 
-def curve_path(root: str | Path) -> Path:
-    return Path(root) / "wti_curve.csv"
+def curve_path(root: str | Path, name: str = "wti") -> Path:
+    return Path(root) / f"{name}_curve.csv"
 
 
-def load_curve(root: str | Path) -> pd.DataFrame:
-    p = curve_path(root)
+def load_curve(root: str | Path, name: str = "wti") -> pd.DataFrame:
+    p = curve_path(root, name)
     df = pd.read_csv(p, index_col="date", parse_dates=["date"])
     return df.sort_index()
+
+
+def carry_gate(index: pd.DatetimeIndex, b: pd.Series) -> pd.DataFrame:
+    """足ごとの絞り込み（列 long / short）: 前日の EIA のキャリーがプラスなら買いだけ、マイナスなら売りだけ。無い日は止めない。
+
+    index はバックテストの足の時刻（UTC）。足の取引日（17:00 ET 区切り）の前の日までの最新の値を使う。
+    """
+    from .events import trading_day_keys
+
+    days = pd.DatetimeIndex(trading_day_keys(index))
+    bb = b.dropna().sort_index()
+    if bb.empty:
+        return pd.DataFrame({"long": True, "short": True}, index=index)
+    bb.index = pd.DatetimeIndex(bb.index)
+    if bb.index.tz is not None:
+        bb.index = bb.index.tz_localize(None)
+    pos = np.searchsorted(bb.index.to_numpy(), (days - pd.Timedelta(days=1)).to_numpy(), side="right") - 1
+    v = np.where(pos >= 0, bb.to_numpy()[np.clip(pos, 0, None)], np.nan)
+    return pd.DataFrame({"long": ~(v < 0), "short": ~(v > 0)}, index=index)
 
 
 # --------------------------------------------------------------------------- 限月の切り替えと損益

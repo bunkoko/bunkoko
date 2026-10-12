@@ -85,3 +85,15 @@ def test_fetch_curve_merges_the_four_series():
         return pd.DataFrame({"date": d.strftime("%Y-%m-%d"), "value": [v] * 5})
     cv = fetch_curve(fake)
     assert list(cv.columns) == ["c1", "c2", "c3", "c4"] and len(cv) == 5 and cv["c2"].iloc[0] == 49
+
+
+def test_carry_gate_uses_the_previous_days_value_and_allows_when_missing():
+    from cfdbot.carry import carry_gate
+
+    idx = pd.DatetimeIndex(pd.to_datetime(["2024-03-04 23:00", "2024-03-05 23:00", "2024-03-06 23:00",
+                                           "2024-03-07 23:00"]), tz="UTC")   # 取引日 3/5, 3/6, 3/7, 3/8 の足
+    b = pd.Series([0.01, -0.02, 0.03], index=pd.to_datetime(["2024-03-04", "2024-03-05", "2024-03-06"]))
+    g = carry_gate(idx, b)
+    assert list(g["long"]) == [True, False, True, True] and list(g["short"]) == [False, True, False, False]
+    empty = carry_gate(idx, pd.Series(dtype=float))
+    assert empty["long"].all() and empty["short"].all()                # 値が無ければ止めない
