@@ -43,8 +43,16 @@
 | 「暗号資産の記録は動いてる？」 | `./cfd crypto paper --report`。毎朝 6:30 の登録は `launchctl print gui/$(id -u)/com.bunkoko.crypto` |
 | 「キャリーを確かめて」 | `./cfd carry --fetch`（EIA から WTI・天然ガスの限月を取って計算。数分）。`output/carry/<日時>/report.md` を見せ、`docs/carry.md` 6 章に記録を足す |
 | 「キャリーの絞り込みを確かめて」 | `./cfd carry --gate`（タートルに絞り込みを足す 3 期間の検証。数分）。`output/carry/<日時>/gate.md` を見せ、`docs/carry.md` 7 章に記録を足す |
+| 「株の研究を確かめて」「上がりそうな株は？」 | `./cfd stocks`（数分。データを新しくするなら `--fetch` で 20〜40 分）。`output/stocks/<日時>/report.md` の 1 章（判定）と 4 章（今あてはまるもの）を見せる。「使えそう」以外は勧めない。結果は `docs/stocks.md` 10 章に足す |
+| 「株の短期の売買を確かめて」 | `./cfd shortterm`（10〜20 分。`./cfd stocks --fetch` の後）。`output/shortterm/<日時>/report.md` の 1 章を見せ、`docs/stocks_short.md` 11 章に足す |
+| 「5 つの AI の様子は？」「IR の評価を見せて」 | `./cfd agents status`。採点は最新の `output/agents/<日時>/report.md`（1 章の判定・4 章の台帳）。動かし直すなら `./cfd agents run`（10〜20 分。値段も新しくするなら `--prices`）。結果は `docs/agents.md` 9 章に足す |
+| 「開示の収集は動いてる？」 | `./cfd agents status`（本文・決算の数字の件数）と `tail -20 data/agents/collect.log`。登録は `launchctl print gui/$(id -u)/com.bunkoko.agents.collect`。過去の数字の取得の様子は `tail -3 data/agents/xbrl_history.log`（止まっていたら `nohup ./cfd agents collect --xbrl-history --max-docs 40000 --no-embed > data/agents/xbrl_history.log 2>&1 &` で続きから） |
+| 「決算の数字の検証をして」 | 過去の数字の取得が終わっていれば `./cfd agents earnings`（数分〜十数分）。`output/agents/<日時>/earnings.md` の 1 章を見せ、`docs/agents.md` 10.4 に記録を足す。条件（10.2）は変えない |
 | 「毎週の確認をして」 | 書き出し済みなら `./cfd data` → `./cfd replay --start 2026-10-06 --equity 10000000`（`docs/operations.md` 12 章）。書き出しがまだなら、Mac の前でしてもらう |
 
 - 画面の操作が要ることはできない: MT5 のスクリプト（`CfdExportBars`）・EA の貼り付けや設定・MetaEditor のコンパイル・
   各種ログイン。「Mac の前でお願いします」と伝え、手順は `docs/operations.md` から短く示す
 - 売買の設定（`./cfd preset`・`./cfd risk`）や MT5 に置くファイルは、利用者がはっきり頼んだときだけ変える
+- 適時開示の書類は、TDnet の公開サイト（release.tdnet.info）からは自動で取らない（robots.txt で断っている）。東証の上場会社情報サービスから
+  取るときは、**1 秒に 1 件**（`cfdbot/agents/collector.py` の INTERVAL。利用者が 2026-10-13 に決めた速さ）で、同時に 1 本だけ。
+  これより速くしたり並列にしたりしない
