@@ -48,7 +48,14 @@ def python_signals_from_final(final_path: str, symbol: str, config: str, data: s
     cfg = load_train_config(config)
     if data:
         cfg.data.dir = data
-    ds = load_dataset(cfg.data)
+    sig = signals_for_sleeve(load_dataset(cfg.data), sleeve)
+    print(f"比較する構成: {symbol} {sleeve['strategy']} @{sleeve['timeframe']}"
+          + (f" + 上位足 {sleeve['htf']}" if sleeve.get("htf") else ""))
+    return sig
+
+
+def signals_for_sleeve(ds, sleeve: dict) -> pd.DataFrame:
+    """final.json の構成 1 つについて、Python のシグナル（entry・手仕舞い・atr・ext_z）を計算する。"""
     tf = sleeve["timeframe"]
     frame = ds.signal_frame(sleeve["symbol"], tf)
     strat = make_strategy(sleeve["strategy"], **sleeve["params"])
@@ -62,10 +69,10 @@ def python_signals_from_final(final_path: str, symbol: str, config: str, data: s
         e = sig["entry"].to_numpy()
         sig["entry"] = np.where(((e > 0) & (tr <= 0)) | ((e < 0) & (tr >= 0)), 0, e)
     sig["atr"] = atr
+    sig["close"] = frame["close"]
     if sleeve["strategy"] == "donchian" and float(sleeve["params"].get("max_extension", 0) or 0) > 0:
         # すでに大きく動いた向きを止める絞り込みの値（不一致の原因を見るため）
         sig["ext_z"] = ind.extension_z(frame["close"], int(sleeve["params"].get("extension_period", 20)))
-    print(f"比較する構成: {symbol} {sleeve['strategy']} @{tf}" + (f" + 上位足 {sleeve['htf']}" if sleeve.get("htf") else ""))
     return sig
 
 

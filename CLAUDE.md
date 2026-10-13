@@ -45,7 +45,8 @@
 | 「キャリーを確かめて」 | `./cfd carry --fetch`（EIA から WTI・天然ガスの限月を取って計算。数分）。`output/carry/<日時>/report.md` を見せ、`docs/carry.md` 6 章に記録を足す |
 | 「キャリーの絞り込みを確かめて」 | `./cfd carry --gate`（タートルに絞り込みを足す 3 期間の検証。数分）。`output/carry/<日時>/gate.md` を見せ、`docs/carry.md` 7 章に記録を足す |
 | 「株の検証を確かめて」 | `./cfd stocks --fetch`（Yahoo から約 240 銘柄。数分）。`output/stocks/<日時>/report.md` を見せる。1 銘柄の予測は頼まれてもしない（`docs/stocks.md` 1 章） |
-| 「毎週の確認をして」 | 書き出し済みなら `./cfd data` → `./cfd replay --start 2026-10-06 --equity 10000000`（`docs/operations.md` 12 章）。書き出しがまだなら、Mac の前でしてもらう |
+| 「毎週の確認をして」 | 書き出し済みなら `./cfd data` → `./cfd replay --start 2026-10-06 --equity 10000000` → `./cfd demo-check --start 2026-10-06 --equity 10000000`（`docs/operations.md` 12 章）。`output/demo_check/<日時>/report.md` の「一致／差あり」と本番に進む条件の数を伝える。書き出しがまだなら、Mac の前でしてもらう |
+| 「本番に進んでいい？」 | 最新の demo-check の report.md と `docs/operations.md` 12 章「本番に進む条件」（事前登録）を照らす。条件は変えない |
 
 - 画面の操作が要ることはできない: MT5 のスクリプト（`CfdExportBars`）・EA の貼り付けや設定・MetaEditor のコンパイル・
   各種ログイン。「Mac の前でお願いします」と伝え、手順は `docs/operations.md` から短く示す

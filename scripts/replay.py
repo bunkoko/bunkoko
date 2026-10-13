@@ -27,6 +27,28 @@ from cfdbot.train.pipeline import _account_config, _eval_settings, validate_wind
 from cfdbot.train.portfolio import Pick  # noqa: E402
 
 
+def clean_date(v: str) -> str:
+    """コピーで紛れ込みやすい全角の記号・空白を取り除く。"""
+    return v.strip().strip("「」『』\"'`、。　 ")
+
+
+def replay(cfg, final: dict, start: str, end: str | None = None, risk_scale: float = 1.0, ds=None):
+    """final.json の構成で期間を再現する。戻り値: (validate_window の結果, picks, 開始, 終了の翌日)"""
+    picks = [Pick(s["symbol"], s["strategy"], s["params"], s["exit"], 0, s["train_score"], s["train_score"],
+                  s["train_trades"], s["multiplier"] * risk_scale, s["timeframe"], s.get("htf") or {})
+             for s in final["sleeves"]]
+    if not picks:
+        raise SystemExit("final.json に構成が無い（学習で全銘柄見送り）")
+    ds = ds if ds is not None else load_dataset(cfg.data)
+    settings = _eval_settings(cfg, ds)
+    fx = ds.fx if ds.fx is not None else cfg.data.fx
+    bt_cfg = _account_config(cfg, fx, settings.event_list())
+    t0 = pd.Timestamp(clean_date(start), tz="UTC")
+    last = max(ds.signal_frame(p.symbol, p.timeframe).index[-1] for p in picks)
+    t1 = pd.Timestamp(clean_date(end), tz="UTC") + pd.Timedelta(days=1) if end else last + pd.Timedelta(days=1)
+    return validate_window(ds, settings.instrument_map(), picks, bt_cfg, t0, t1), picks, t0, t1
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--final", required=True, help="学習結果の final.json")
@@ -46,25 +68,7 @@ def main() -> None:
     if args.equity:
         cfg.account.equity = args.equity
     final = json.loads(Path(args.final).read_text(encoding="utf-8"))
-    picks = [Pick(s["symbol"], s["strategy"], s["params"], s["exit"], 0, s["train_score"], s["train_score"],
-                  s["train_trades"], s["multiplier"] * args.risk_scale, s["timeframe"], s.get("htf") or {})
-             for s in final["sleeves"]]
-    if not picks:
-        raise SystemExit("final.json に構成が無い（学習で全銘柄見送り）")
-
-    ds = load_dataset(cfg.data)
-    settings = _eval_settings(cfg, ds)
-    fx = ds.fx if ds.fx is not None else cfg.data.fx
-    bt_cfg = _account_config(cfg, fx, settings.event_list())
-    def clean(v: str) -> str:  # コピーで紛れ込みやすい全角の記号・空白を取り除く
-        return v.strip().strip("「」『』\"'`、。　 ")
-
-    args.start = clean(args.start)
-    args.end = clean(args.end) if args.end else args.end
-    start = pd.Timestamp(args.start, tz="UTC")
-    last = max(ds.signal_frame(p.symbol, p.timeframe).index[-1] for p in picks)
-    end = pd.Timestamp(args.end, tz="UTC") + pd.Timedelta(days=1) if args.end else last + pd.Timedelta(days=1)
-    res = validate_window(ds, settings.instrument_map(), picks, bt_cfg, start, end)
+    res, picks, start, end = replay(cfg, final, args.start, args.end, args.risk_scale)
 
     from cfdbot.metrics import compute_metrics
 
