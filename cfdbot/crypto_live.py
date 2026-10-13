@@ -20,7 +20,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from .crypto import SYMBOLS, Decision, PaperStore, decide, frame
+from .crypto import SYMBOLS, Decision, PaperStore, decide, drawdown, frame, paper_equity
 
 PRIVATE = "https://api.coin.z.com/private"
 PUBLIC = "https://api.coin.z.com/public"
@@ -31,7 +31,7 @@ DEFAULT_CONFIG = {
     "equity_jpy": 1_000_000,         # 量を決める資金（口座の残高ではなく、この戦略に割り当てた額）。BTC の最小 0.01 を 1% の損失で持つには 60 万円以上要る
     "max_notional_jpy": 2_000_000,   # 1 銘柄の名目の上限（資金の 2 倍）
     "symbols": ["BTC_JPY", "ETH_JPY"],
-    "max_drawdown_stop": 0.20,       # 記録上の資産がこの割合を下回ったら STOP を置く（手で外すまで何もしない）
+    "max_drawdown_stop": 0.20,       # 記録上の資産が最高値からこの割合より減ったら STOP を置く（手で外すまで何もしない）
 }
 
 
@@ -176,7 +176,8 @@ class LiveStore:
 
 
 def live_run(paper: PaperStore, live: LiveStore, client: GmoClient | None, real: bool = False,
-             now: pd.Timestamp | None = None, log: Callable[[str], None] = print) -> list[dict]:
+             now: pd.Timestamp | None = None, log: Callable[[str], None] = print,
+             paper_equity_jpy: float = 1_000_000.0) -> list[dict]:
     """記録の向きに建玉をそろえる。client が None か real=False なら空運転（注文は出さず記録だけ）。"""
     now = now or pd.Timestamp.now(tz="UTC")
     cfg = live.config()
@@ -190,6 +191,14 @@ def live_run(paper: PaperStore, live: LiveStore, client: GmoClient | None, real:
 
     if live.stop_file.exists():
         note("*", "skip", text="STOP があるので何もしない")
+        live.append(rows)
+        return rows
+    dd = drawdown(paper_equity(paper, paper_equity_jpy))
+    if dd > float(cfg["max_drawdown_stop"]):
+        live.root.mkdir(parents=True, exist_ok=True)
+        live.stop_file.write_text(f"{now:%Y-%m-%d} 記録上の資産が最高値から {dd:.1%} 減った"
+                                  f"（上限 {float(cfg['max_drawdown_stop']):.0%}）。見直してから手で消す\n", encoding="utf-8")
+        note("*", "stop", text=f"記録上の資産が最高値から {dd:.1%} 減った。STOP を置いた（手で外すまで何もしない）")
         live.append(rows)
         return rows
     if client is not None:

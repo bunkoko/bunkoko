@@ -108,3 +108,54 @@ def test_live_run_real_opens_closes_and_respects_stop(tmp_path):
     rows4 = live_run(paper, live, GmoClient("k", "s", request=req4, clock=lambda: 1.7e9), real=True, now=now,
                      log=lambda m: None)
     assert rows4[0]["action"] == "skip" and req4.orders == []
+
+
+def _paper_log(store, sym, start, n, position, qty):
+    t = pd.date_range(start, periods=n, freq="D")
+    store.append_log([{"logged_at": b + pd.Timedelta(days=1), "symbol": sym, "bar_time": b, "close": 0.0,
+                       "position": position, "qty": qty, "bid": 0.0, "ask": 0.0, "spread_pct": 0.001} for b in t])
+
+
+def test_paper_equity_and_drawdown(tmp_path):
+    from cfdbot.crypto import drawdown, paper_equity
+
+    paper = PaperStore(tmp_path / "paper")
+    assert paper_equity(paper).empty and drawdown(paper_equity(paper)) == 0.0
+    t = pd.date_range(pd.Timestamp("2026-10-01 21:00", tz="UTC"), periods=4, freq="D")
+    paper.save_klines("BTC_JPY", pd.DataFrame({"time": t, "open": 1.0, "high": 1.0, "low": 1.0, "volume": 1.0,
+                                               "close": [10_000_000.0, 11_000_000.0, 9_000_000.0, 9_000_000.0]}))
+    _paper_log(paper, "BTC_JPY", t[0], 4, 1, 0.1)                           # 0.1 BTC の買いを持ち続ける
+    eq = paper_equity(paper, 1_000_000)
+    # 初日は建てた分のスプレッドの半分（0.1 × 1,000 万 × 0.05% = 500 円）。+10 万円、−20 万円（保有コストを少し引く）
+    assert eq.iloc[0] == pytest.approx(1_000_000 - 500)
+    assert eq.iloc[1] - eq.iloc[0] == pytest.approx(100_000 - 0.1 * 10_000_000 * 0.0004)
+    assert eq.iloc[2] - eq.iloc[1] == pytest.approx(-200_000 - 0.1 * 11_000_000 * 0.0004)
+    assert drawdown(eq) == pytest.approx(1 - eq.iloc[-1] / eq.iloc[1])
+    assert drawdown(pd.Series([100.0, 120.0, 90.0])) == pytest.approx(0.25)
+    assert drawdown(pd.Series([100.0, 120.0])) == 0.0
+
+
+def test_live_run_places_stop_after_paper_drawdown(tmp_path):
+    paper, now = _store_with_trend(tmp_path)
+    live = LiveStore(tmp_path / "live")
+    k = paper.load_klines("BTC_JPY")
+    _paper_log(paper, "BTC_JPY", k["time"].iloc[-30], 30, -1, 0.0)          # 数量 0: 資産は動かない
+    rows = live_run(paper, live, None, now=now, log=lambda m: None)
+    assert not live.stop_file.exists() and all(r["action"] != "stop" for r in rows)
+
+    paper2, now2 = _store_with_trend(tmp_path / "b")                        # 上げ続ける相場で売りを持ち続けた記録
+    k2 = paper2.load_klines("BTC_JPY")
+    _paper_log(paper2, "BTC_JPY", k2["time"].iloc[-200], 200, -1, 0.5)
+    live2 = LiveStore(tmp_path / "b" / "live")
+    req = FakeRequest()
+    rows2 = live_run(paper2, live2, GmoClient("k", "s", request=req, clock=lambda: 1.7e9), real=True, now=now2,
+                     log=lambda m: None)
+    assert [r["action"] for r in rows2] == ["stop"] and live2.stop_file.exists() and req.orders == []
+    assert req.calls == []                                                  # API にも触らない
+    rows3 = live_run(paper2, live2, None, now=now2, log=lambda m: None)    # 次の日からは STOP で何もしない
+    assert rows3[0]["action"] == "skip" and "STOP" in rows3[0]["note"]
+    # 上限を緩めれば止まらない（config.json の max_drawdown_stop）
+    live2.stop_file.unlink()
+    live2.config_path.write_text(json.dumps({"max_drawdown_stop": 1.0}), encoding="utf-8")
+    rows4 = live_run(paper2, live2, None, now=now2, log=lambda m: None)
+    assert all(r["action"] != "stop" for r in rows4) and not live2.stop_file.exists()

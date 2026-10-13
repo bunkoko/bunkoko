@@ -242,6 +242,40 @@ def symbol_returns(log: pd.DataFrame, klines: pd.DataFrame) -> tuple[pd.Series, 
     return r, gaps
 
 
+def paper_equity(store: PaperStore, start: float = 1_000_000.0) -> pd.Series:
+    """記録上の資産（円）の推移。記録した向き × 数量 × 終値の変化から、保有コストと向きを変えた分のスプレッドを引く。
+    数量は記録した時の資金（paper_run の equity）で決めたものなので、start にはその資金を渡す。"""
+    pnl = []
+    log = store.load_log()
+    for sym in SYMBOLS:
+        g = log[log["symbol"] == sym]
+        if g.empty:
+            continue
+        k = store.load_klines(sym).set_index("time")["close"].astype(float)
+        g = g.sort_values("bar_time").drop_duplicates("bar_time", keep="first").set_index("bar_time")
+        days = k.index[(k.index >= g.index[0]) & (k.index <= k.index[-1])]
+        if len(days) == 0:
+            continue
+        q = (g["position"] * g["qty"]).astype(float).reindex(days).ffill().fillna(0.0)   # 記録の無い日は前のまま
+        spread = g["spread_pct"].reindex(days).ffill().fillna(VENUE.cost)
+        c = k.reindex(days)
+        prev = q.shift(1).fillna(0.0)
+        r = prev * c.diff().fillna(0.0) - prev.abs() * c.shift(1).fillna(c) * FINANCING_DAY \
+            - (q - prev).abs() * c * spread / 2
+        pnl.append(r.rename(sym))
+    if not pnl:
+        return pd.Series(dtype=float)
+    return start + pd.concat(pnl, axis=1).fillna(0.0).sum(axis=1).cumsum()
+
+
+def drawdown(equity: pd.Series) -> float:
+    """最高値からの今の下落（0〜1）。"""
+    if equity.empty:
+        return 0.0
+    peak = float(equity.cummax().iloc[-1])
+    return max(0.0, 1.0 - float(equity.iloc[-1]) / peak) if peak > 0 else 1.0
+
+
 def paper_report(store: PaperStore, now: pd.Timestamp | None = None) -> tuple[list[str], dict]:
     now = now or pd.Timestamp.now(tz="UTC")
     log = store.load_log()

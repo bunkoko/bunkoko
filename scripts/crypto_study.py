@@ -225,7 +225,7 @@ def cmd_live(args) -> None:
     if not args.offline:
         keys = load_keys()
         client = GmoClient(keys["api_key"], keys["api_secret"])
-    rows = live_run(paper, live, client, real=args.real)
+    rows = live_run(paper, live, client, real=args.real, paper_equity_jpy=args.equity)
     mode = "本物" if args.real and client is not None else "空運転"
     print(f"{mode}: {len(rows)} 件を記録 → {live.log_path}")
 
