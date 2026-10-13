@@ -48,6 +48,7 @@
 | 「5 つの AI の様子は？」「IR の評価を見せて」 | `./cfd agents status`。採点は最新の `output/agents/<日時>/report.md`（1 章の判定・4 章の台帳）。動かし直すなら `./cfd agents run`（10〜20 分。値段も新しくするなら `--prices`）。結果は `docs/agents.md` 9 章に足す |
 | 「開示の収集は動いてる？」 | `./cfd agents status`（本文・決算の数字の件数）と `tail -20 data/agents/collect.log`。登録は `launchctl print gui/$(id -u)/com.bunkoko.agents.collect`。過去の数字の取得の様子は `tail -3 data/agents/xbrl_history.log`（止まっていたら `nohup ./cfd agents collect --xbrl-history --max-docs 40000 --no-embed > data/agents/xbrl_history.log 2>&1 &` で続きから） |
 | 「決算の数字の検証をして」 | 過去の数字の取得が終わっていれば `./cfd agents earnings`（数分〜十数分）。`output/agents/<日時>/earnings.md` の 1 章を見せ、`docs/agents.md` 10.4 に記録を足す。条件（10.2）は変えない |
+| 「足した項目の検証をして」 | `./cfd agents extra`（20〜30 分。出来高を取り直すなら `--fetch`、学び直さないなら `--reuse`）。`output/agents/<日時>/extra.md` の 1 章を見せ、`docs/agents.md` 11.7 に記録を足す。条件（11.5）は変えない |
 | 「毎週の確認をして」 | 書き出し済みなら `./cfd data` → `./cfd replay --start 2026-10-06 --equity 10000000`（`docs/operations.md` 12 章）。書き出しがまだなら、Mac の前でしてもらう |
 
 - 画面の操作が要ることはできない: MT5 のスクリプト（`CfdExportBars`）・EA の貼り付けや設定・MetaEditor のコンパイル・

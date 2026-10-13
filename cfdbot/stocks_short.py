@@ -172,10 +172,12 @@ def walk_forward(x: np.ndarray, y: pd.DataFrame, tradable: np.ndarray, first_yea
         tr = tradable[:end] & np.isfinite(yv[:end])
         if tr.sum() < 10_000:
             continue
-        model = HistGradientBoostingRegressor(**(params or GBM_PARAMS)).fit(x[:end][tr], yv[:end][tr])
+        xt = x[:end][tr]
+        use = np.isfinite(xt).any(axis=0)                 # 学習の期間に 1 つも値の無い入力は外す（学習の部品が受け付けない）
+        model = HistGradientBoostingRegressor(**(params or GBM_PARAMS)).fit(xt[:, use], yv[:end][tr])
         te = tradable[test]
         block = np.full(te.shape, np.nan, dtype=np.float32)
-        block[te] = model.predict(x[test][te])
+        block[te] = model.predict(x[test][te][:, use])
         pred[test] = block
         log(f"  {year}: 学習 {int(tr.sum()):,} 件 → 予測 {int(te.sum()):,} 件")
     return pd.DataFrame(pred, index=idx, columns=y.columns)

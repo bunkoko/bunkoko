@@ -451,3 +451,255 @@ def test_earnings_command_runs_end_to_end(tmp_path, capsys):
     assert {"score", "fc_rev", "kind"} <= set(num.columns) and num["fc_rev"].notna().sum() > 1000
     dec = pd.read_csv(root / "decisions_numbers.csv")
     assert {"selector", "combined_num", "e1"} <= set(dec["book"])                      # この市場は 1 日の開示が 5 社未満なので ir_num は買わない
+
+
+# --------------------------------------------------------------------------- まだ入れていなかった項目（docs/agents.md 11 章）
+def test_extra_fetch_keeps_the_pace_and_resumes(tmp_path):
+    import time
+
+    from cfdbot.agents import extra as X
+
+    calls = []
+
+    def history(t):
+        calls.append((t, time.monotonic()))
+        if t == "C":
+            return pd.DataFrame()                                                       # 空で返ってきた銘柄は残さない
+        idx = pd.DatetimeIndex(["2026-10-01", "2026-10-02"], tz="Asia/Tokyo")
+        return pd.DataFrame({"Close": [10.0, 11.0], "Volume": [100, 0], "Stock Splits": [0.0, 2.0]}, index=idx)
+
+    assert X.fetch_raw(["A", "B", "C"], tmp_path, interval=0.05, history=history, log=lambda s: None) == (2, 1)
+    assert all(b[1] - a[1] >= 0.045 for a, b in zip(calls, calls[1:]))                  # 取り始めから次の取り始めまで間をあける
+    assert X.fetch_raw(["A", "B", "C"], tmp_path, interval=0.0, history=history, log=lambda s: None) == (0, 1)   # 取れた分は取り直さない
+    idx = pd.DatetimeIndex(["2026-10-01", "2026-10-02", "2026-10-05"])
+    close, volume, splits = X.load_raw(tmp_path, idx, ["A", "B", "C"])
+    assert close["A"].tolist()[:2] == [10.0, 11.0] and np.isnan(close["A"].iloc[2]) and close["C"].isna().all()
+    assert volume["A"].iloc[0] == 100 and np.isnan(volume["A"].iloc[1])                 # 出来高 0 は欠け
+    assert splits[["ticker", "ratio"]].to_numpy().tolist() == [["A", 2.0], ["B", 2.0]]
+
+
+def test_extra_volume_and_industry_features_use_only_the_past():
+    from cfdbot.agents import extra as X
+
+    rng = np.random.default_rng(0)
+    idx = pd.bdate_range("2024-01-01", periods=300)
+    cols = ["A", "B", "C", "D"]
+    close = pd.DataFrame(100 * np.exp(np.cumsum(rng.normal(0, 0.01, (300, 4)), axis=0)), index=idx, columns=cols)
+    volume = pd.DataFrame(rng.integers(1000, 2000, (300, 4)).astype(float), index=idx, columns=cols)
+    cc = close.pct_change(fill_method=None)
+    f = X.volume_features(cc, close, volume)
+    assert list(f) == X.VOLUME
+    t = 280
+    assert abs(f["vol_shock_1"].iloc[t, 0] - volume.iloc[t - 1, 0] / volume.iloc[t - 51:t - 1, 0].mean()) < 1e-12
+    assert abs(f["turnover_60"].iloc[t, 1] - (close * volume).iloc[t - 60:t, 1].mean()) < 1e-6
+    v2, c2 = volume.copy(), close.copy()
+    v2.iloc[t:] *= 10                                                                   # 当日から先を変えても、当日の入力は変わらない
+    c2.iloc[t:] *= 2
+    g = X.volume_features(c2.pct_change(fill_method=None), c2, v2)
+    assert all(np.allclose(f[k].iloc[:t + 1], g[k].iloc[:t + 1], equal_nan=True) for k in X.VOLUME)
+    volume.iloc[t - 1, 2] = 0.0                                                         # 出来高 0 の日は欠けとして扱う
+    assert np.isnan(X.volume_features(cc, close, volume)["vol_shock_1"].iloc[t, 2])
+    surge = X.volume_surge(v2)
+    assert not surge.iloc[t].any() and surge.iloc[t + 1].all()                          # 急増は翌日の判断から見える
+
+    ind = X.industry_features(close, pd.Series({"A": "化学", "B": "化学", "C": "機械", "D": "機械"}))
+    r5 = np.log(close.shift(1) / close.shift(6))
+    assert abs(ind["rel_ind_5"].iloc[t, 0] - (r5.iloc[t, 0] - r5.iloc[t, :2].mean())) < 1e-12
+    r20 = np.log(close.shift(1) / close.shift(21))
+    assert abs(ind["ind_ret_20"].iloc[t, 3] - r20.iloc[t, 2:].mean()) < 1e-12 and ind["ind_ret_20"].iloc[t, 2] == ind["ind_ret_20"].iloc[t, 3]
+    i2 = X.industry_features(c2, pd.Series({"A": "化学", "B": "化学", "C": "機械", "D": "機械"}))
+    assert all(np.allclose(ind[k].iloc[:t + 1], i2[k].iloc[:t + 1], equal_nan=True) for k in X.INDUSTRY)
+
+
+def test_extra_fundamentals_are_point_in_time_and_follow_splits():
+    from cfdbot.agents import extra as X
+
+    idx = pd.bdate_range("2025-01-01", periods=420)
+    # 実際の株価は 20 → 10 日目に 1:2 の分割で 10。Yahoo の終値は、分割より前もさかのぼって 10 にしてある
+    raw = pd.DataFrame({"A": np.full(420, 10.0), "B": np.full(420, 50.0)}, index=idx)
+    splits = pd.DataFrame({"date": [idx[10]], "ticker": ["A"], "ratio": [2.0]})
+    events = pd.DataFrame({"ticker": ["A", "A"], "time": [f"{idx[3]:%Y-%m-%d} 15:00:00", f"{idx[12]:%Y-%m-%d} 11:00:00"],
+                           "fc": [50.0, 60.0], "dps": [2.0, 1.0], "shares": [100.0, 200.0], "equity": [400.0, 400.0], "eq_ratio": [0.4, 0.5]})
+    pos = I.decision_pos(events["time"], idx)
+    assert pos.tolist() == [4, 12]
+    f = X.fundamental_panel(events, pos, raw, splits)
+    assert list(f) == X.FUNDAMENTAL and f["ep_fc"]["B"].isna().all()
+    assert f["ep_fc"]["A"].iloc[:4].isna().all()                                        # 開示を使える日より前は欠け
+    cap = np.exp(f["size"]["A"])
+    assert np.allclose(cap.iloc[4:420 - 1].dropna(), 2000.0)                            # 100 株 × 20 円 = 分割の後の 200 株 × 10 円
+    assert abs(f["ep_fc"]["A"].iloc[4] - 50 / 2000) < 1e-12 and abs(f["bm"]["A"].iloc[4] - 0.2) < 1e-12
+    assert abs(f["dy_fc"]["A"].iloc[4] - 0.10) < 1e-12 and abs(f["roe_fc"]["A"].iloc[4] - 0.125) < 1e-12   # 配当 2 円 ÷ 株価 20 円
+    assert abs(f["ep_fc"]["A"].iloc[12] - 60 / 2000) < 1e-12 and abs(f["dy_fc"]["A"].iloc[12] - 0.10) < 1e-12 and f["equity_ratio"]["A"].iloc[12] == 0.5
+    last = pd.Timestamp(idx[12]) + pd.Timedelta(days=X.STALE_DAYS)
+    assert np.isfinite(f["ep_fc"]["A"][idx <= last]).iloc[12:].all() and f["ep_fc"]["A"][idx > last].isna().all()   # 古くなったら欠け
+    # 分割の後に出た「修正の開示」は、分割の前の短信の株数（100 株）を持ったまま。配当だけ新しい数え方（1 株 1 円）で出し直した
+    carried = pd.DataFrame({"ticker": ["A", "A"], "time": [f"{idx[3]:%Y-%m-%d} 15:00:00", f"{idx[12]:%Y-%m-%d} 11:00:00"], "fc": [50.0, 60.0],
+                            "dps": [2.0, 1.0], "shares": [100.0, 100.0], "equity": [400.0, 400.0], "eq_ratio": [0.4, 0.4],
+                            "shares_time": [f"{idx[3]:%Y-%m-%d} 15:00:00"] * 2, "dps_time": [f"{idx[3]:%Y-%m-%d} 15:00:00", f"{idx[12]:%Y-%m-%d} 11:00:00"]})
+    g = X.fundamental_panel(carried, pos, raw, splits)
+    assert np.allclose(np.exp(g["size"]["A"]).iloc[4:250], 2000.0) and abs(g["dy_fc"]["A"].iloc[12] - 0.10) < 1e-12 and abs(g["ep_fc"]["A"].iloc[12] - 0.03) < 1e-12
+
+
+def test_earnings_extra_reads_progress_shares_and_forecasts():
+    from cfdbot.agents import earnings as N
+
+    q = _facts("qcedjpsm", [("OperatingIncome", "CurrentAccumulatedQ2Duration_ConsolidatedMember_ResultMember", 60.0),
+                            ("OperatingIncome", "PriorAccumulatedQ2Duration_ConsolidatedMember_ResultMember", 40.0),
+                            ("OperatingIncome", "CurrentYearDuration_ConsolidatedMember_ForecastMember", 100.0),
+                            ("NetSales", "CurrentYearDuration_ConsolidatedMember_ForecastMember", 1000.0),
+                            ("ProfitAttributableToOwnersOfParent", "CurrentYearDuration_ConsolidatedMember_ForecastMember", 70.0),
+                            ("OwnersEquity", "CurrentAccumulatedQ2Instant_ConsolidatedMember_ResultMember", 500.0),
+                            ("OwnersEquity", "PriorYearInstant_ConsolidatedMember_ResultMember", 450.0),
+                            ("CapitalAdequacyRatio", "CurrentAccumulatedQ2Instant_ConsolidatedMember_ResultMember", 0.4),
+                            (N.SHARES, "CurrentAccumulatedQ2Instant_NonConsolidatedMember_ResultMember", 110.0),
+                            (N.TREASURY, "CurrentAccumulatedQ2Instant_NonConsolidatedMember_ResultMember", 10.0)], {"FiscalYearEnd": "2027-03-31"})
+    x = N.summarize_extra(q)
+    assert (x["cum_op"], x["cum_op_fc"], x["prior_cum_op"], x["fc_op"], x["fc_sales"]) == (60.0, 100.0, 40.0, 100.0, 1000.0)
+    assert (x["shares"], x["equity"], x["eq_ratio"], x["op_name"]) == (100.0, 500.0, 0.4, "OperatingIncome")
+    a = N.summarize_extra(_facts("acedifsm", [("OperatingIncomeIFRS", "CurrentYearDuration_ConsolidatedMember_ResultMember", 90.0),
+                                              ("OperatingIncomeIFRS", "NextYearDuration_ConsolidatedMember_ForecastMember", 99.0),
+                                              ("EquityAttributableToOwnersOfParentIFRS", "CurrentYearInstant_ConsolidatedMember_ResultMember", 300.0),
+                                              (N.SHARES, "CurrentYearInstant_NonConsolidatedMember_ResultMember", 50.0)]))
+    assert (a["actual_op"], a["fc_op"], a["equity"], a["shares"], a["op_name"]) == (90.0, 99.0, 300.0, 50.0, "OperatingIncomeIFRS")   # 自己株式が無ければ 0
+    r = N.summarize_extra(_facts("rvfc", [("OperatingIncome", "CurrentYearDuration_ConsolidatedMember_PreviousMember_ForecastMember", 100.0),
+                                          ("OperatingIncome", "CurrentYearDuration_ConsolidatedMember_CurrentMember_ForecastMember", 130.0)]))
+    assert abs(r["fc_op_rev"] - 0.3) < 1e-12 and np.isnan(r["fc_sales_rev"]) and N.summarize_extra(_facts("rvdf", [("DividendPerShare", "x", 1.0)])) == {}
+
+    fy = 2027 * 12 + 3
+    base = {"shares": 100.0, "equity": 500.0, "eq_ratio": 0.4, "op_name": "OperatingIncome"}
+    items = [("2026-05-10 15:00:00", dict(base, kind=4, fy=fy - 12, fc=70.0, dps=10.0, fc_op=100.0, fc_sales=1000.0, actual_op=80.0, actual_sales=800.0)),
+             ("2026-08-05 15:00:00", dict(base, kind=1, fy=fy, fc=70.0, dps=10.0, fc_op=100.0, fc_sales=1000.0, cum_op=30.0, cum_op_fc=100.0, prior_cum_op=16.0)),
+             ("2026-09-01 15:00:00", {"kind": 5, "fy": None, "fc": 84.0, "fc_rev": 0.2, "fc_op": 120.0, "fc_op_rev": 0.2, "fc_sales_rev": np.nan}),
+             ("2026-09-15 15:00:00", {"kind": 6, "fy": None, "dps": 12.0, "dps_rev": 0.2}),
+             ("2026-11-05 15:00:00", dict(base, kind=2, fy=fy, fc=84.0, dps=12.0, fc_op=120.0, fc_sales=1100.0, cum_op=60.0, cum_op_fc=120.0, prior_cum_op=48.0,
+                                          shares=np.nan, op_name="OrdinaryIncome"))]
+    e = N.company_extra(items[::-1])
+    assert e["kind"].tolist() == [4, 1, 5, 6, 2]
+    assert np.allclose(e["prog_diff"], [np.nan, 30 / 100 - 16 / 80, np.nan, np.nan, np.nan], equal_nan=True)   # 名前の違う利益どうしは比べない
+    assert np.allclose(e["fc_op_rev"], [0.25, 0.0, 0.2, np.nan, 0.0], equal_nan=True) and np.allclose(e["fc_sales_rev"], [0.25, 0.0, np.nan, np.nan, 0.1], equal_nan=True)
+    assert e["fc"].tolist() == [70.0, 70.0, 84.0, 84.0, 84.0] and e["dps"].tolist() == [10.0, 10.0, 10.0, 12.0, 12.0]   # 修正はその項目だけ書き換える
+    assert e["shares"].tolist()[:4] == [100.0] * 4 and np.isnan(e["shares"].iloc[4])     # 短信は、欠けていれば欠けに書き換える
+    assert e["shares_time"].str[:10].tolist() == ["2026-05-10", "2026-08-05", "2026-08-05", "2026-08-05", "2026-11-05"]   # 株数は短信の日の数え方
+    assert e["dps_time"].str[:10].tolist() == ["2026-05-10", "2026-08-05", "2026-08-05", "2026-09-15", "2026-11-05"]
+    assert abs(N._progress(30.0, 100.0, 16.0, 80.0) - 0.1) < 1e-12 and np.isnan(N._progress(30.0, -5.0, 16.0, 80.0)) and np.isnan(N._progress(30.0, 100.0, 16.0, 0.0))
+
+
+def test_extra_repairs_unadjusted_splits_and_keeps_share_counts_continuous(tmp_path):
+    from cfdbot.agents import earnings as N
+    from cfdbot.agents import extra as X
+
+    idx = pd.bdate_range("2026-01-05", periods=12)
+    # Yahoo が直していない例: 分割（1:3）の記録は 8 日目なのに、値段は 7 日目に 1/3 になり、その前はさかのぼって直されていない
+    d = pd.DataFrame({"close": [300.0] * 7 + [100.0] * 5, "volume": [10.0] * 7 + [30.0] * 5, "split": [0.0] * 8 + [3.0] + [0.0] * 3}, index=idx)
+    fixed, n = X.repair_unadjusted(d)
+    assert n == 1 and np.allclose(fixed["close"], 100.0) and np.allclose(fixed["volume"], 30.0) and fixed["split"][fixed["split"] > 0].index.tolist() == [idx[7]]
+    ok = pd.DataFrame({"close": [100.0, 101.0, 99.0, 100.0, 102.0], "volume": [1.0] * 5, "split": [0.0, 0.0, 2.0, 0.0, 0.0]}, index=idx[:5])
+    assert X.repair_unadjusted(ok)[1] == 0 and X.repair_unadjusted(ok)[0].equals(ok)     # 直してある分割はそのまま
+
+    # 株数: 分割（1:2、権利落ち 3/28）の後の短信に、期末の実際の株数（分割の前）を書く会社と、分割の後の数に直して書く会社がある
+    splits = pd.DataFrame({"date": pd.to_datetime(["2024-03-28"] * 2), "ticker": ["A", "B"], "ratio": [2.0, 2.0]})
+    times = pd.Series(["2024-02-01 15:00:00", "2024-04-30 15:00:00", "2024-04-30 15:00:00", "2024-08-01 15:00:00"])
+    assert X.adjusted_shares(times, np.array([100.0, 100.0, 100.0, 201.0]), splits, "A").tolist() == [200.0, 200.0, 200.0, 201.0]   # 前のまま書いた会社
+    assert X.adjusted_shares(times, np.array([100.0, 200.0, 200.0, 201.0]), splits, "B").tolist() == [200.0, 200.0, 200.0, 201.0]   # 直して書いた会社
+    assert X.adjusted_shares(times[1:], np.array([100.0, 100.0, 201.0]), splits, "A").tolist() == [100.0, 100.0, 201.0]            # 直前が無ければ「入れてある」とみなす
+    assert X.adjusted_shares(times, np.array([100.0, np.nan, 150.0, 150.0]), splits, "C").tolist()[::2] == [100.0, 150.0]          # 分割の無い会社の増資はそのまま
+
+    (tmp_path / "xbrl" / "2026-10").mkdir(parents=True)
+    _facts("rvfc", [("NetIncome", "CurrentYearDuration_ConsolidatedMember_PreviousMember_ForecastMember", 10.0),
+                    ("NetIncome", "CurrentYearDuration_ConsolidatedMember_CurrentMember_ForecastMember", 12.0)]).to_csv(tmp_path / "xbrl" / "2026-10" / "r1.csv", index=False)
+    disc = pd.DataFrame([("p1", "2026-10-02 15:00:00", "A", "会社", "業績予想の修正", "", "r1.zip"),
+                         ("p2", "2026-10-05 15:00:00", "A", "会社", "（訂正・数値データ訂正）「業績予想の修正」の一部訂正について", "", "r1.zip")], columns=C.COLUMNS)
+    assert len(N.build(disc, tmp_path, log=lambda s: None)) == 2 and len(N.build(disc, tmp_path, log=lambda s: None, skip_corrections=True)) == 1
+    assert N.is_correction(disc["title"]).tolist() == [False, True]
+
+
+def test_extra_spread_counts_non_overlapping_days():
+    from cfdbot.agents import extra as X
+
+    rng = np.random.default_rng(1)
+    idx = pd.bdate_range("2024-01-01", periods=100)
+    x = pd.DataFrame(rng.normal(size=(100, 60)), index=idx)
+    forward = 0.01 * x.to_numpy() + rng.normal(0, 0.001, (100, 60))
+    mean, t, n = X.spread(x, forward, np.arange(100) >= 20, 5)
+    assert n == 16 and mean > 0.02 and t > 10
+    x.iloc[:, 20:] = np.nan                                                             # 値のある銘柄が少ない日は数えない
+    assert X.spread(x, forward, np.ones(100, bool), 5)[2] == 0
+
+
+def test_extra_command_runs_end_to_end(tmp_path, capsys, monkeypatch):
+    """作り物の小さな市場で、入力 → 学び直し → 採点 → 報告書 まで通す（進捗率が高い株が、その後 60 日上がる市場）。"""
+    import importlib.util
+    from argparse import Namespace
+    from pathlib import Path
+
+    from cfdbot import stocks_short as H
+    from cfdbot.agents import earnings as N
+
+    monkeypatch.setattr(H, "GBM_PARAMS", dict(H.GBM_PARAMS, max_iter=10, min_samples_leaf=200))   # 試験を速くする
+    rng = np.random.default_rng(0)
+    idx = pd.bdate_range("2016-10-03", "2025-12-31")
+    cols = [f"{1000 + i}.T" for i in range(80)]
+    ret = rng.normal(0.0003, 0.01, (len(idx), 80))
+    data, root, ir = tmp_path / "stocks", tmp_path / "agents", tmp_path / "agents" / "ir"
+    (data / "jp_raw").mkdir(parents=True)
+    rows = []
+    for j, t in enumerate(cols):
+        actual = 100.0                                                                  # 前の期の通期の営業利益
+        for k, i in enumerate(range(5 + j % 40, len(idx) - 70, 63)):                    # 63 営業日ごとに、第 1〜3 四半期 → 本決算
+            q, fy = k % 4 + 1, f"{2017 + k // 4}-12-31"
+            stem, month = f"x{j:02d}{k:03d}", f"{idx[i]:%Y-%m}"
+            (ir / "xbrl" / month).mkdir(parents=True, exist_ok=True)
+            shares = [(N.SHARES, "{}_NonConsolidatedMember_ResultMember", 1e6), ("OwnersEquity", "{}_ConsolidatedMember_ResultMember", 5e7)]
+            if q == 4:
+                facts = [("OperatingIncome", "CurrentYearDuration_ConsolidatedMember_ResultMember", actual),
+                         ("ProfitAttributableToOwnersOfParent", "CurrentYearDuration_ConsolidatedMember_ResultMember", 70.0),
+                         ("OperatingIncome", "NextYearDuration_ConsolidatedMember_ForecastMember", actual),
+                         ("ProfitAttributableToOwnersOfParent", "NextYearDuration_ConsolidatedMember_ForecastMember", 70.0)]
+                facts += [(n, c.format("CurrentYearInstant"), v) for n, c, v in shares]
+                kind = "acedjpsm"
+            else:
+                surprise = rng.choice([-0.3, 0.0, 0.0, 0.3])
+                if surprise > 0 and k >= 4:                                             # 進捗率が高い（前の期の実績が分かっている期だけ）
+                    ret[i + 1:i + 61, j] += 0.0015
+                facts = [("OperatingIncome", f"CurrentAccumulatedQ{q}Duration_ConsolidatedMember_ResultMember", actual * q / 4 * (1 + surprise)),
+                         ("OperatingIncome", f"PriorAccumulatedQ{q}Duration_ConsolidatedMember_ResultMember", actual * q / 4),
+                         ("OperatingIncome", "CurrentYearDuration_ConsolidatedMember_ForecastMember", actual),
+                         ("ProfitAttributableToOwnersOfParent", "CurrentYearDuration_ConsolidatedMember_ForecastMember", 70.0),
+                         ("ChangeInNetSales", f"CurrentAccumulatedQ{q}Duration_ConsolidatedMember_ResultMember", float(rng.normal(0, 0.1)))]
+                facts += [(n, c.format(f"CurrentAccumulatedQ{q}Instant"), v) for n, c, v in shares]
+                kind = "qcedjpsm"
+            _facts(kind, facts, {"FiscalYearEnd": fy}).to_csv(ir / "xbrl" / month / f"{stem}.csv", index=False)
+            rows.append((f"p{stem}", f"{idx[i]:%Y-%m-%d} 11:00:00", t, "会社", "決算短信", "", f"{stem}.zip"))
+    close = pd.DataFrame(100 * np.exp(np.cumsum(ret, axis=0)), index=idx, columns=cols)
+    close.to_csv(data / "jp_close.csv")
+    (close.shift(1).fillna(100.0) * (1 + rng.normal(0, 0.002, close.shape))).to_csv(data / "jp_open.csv")
+    pd.DataFrame({"ticker": cols, "name": cols, "sector": [f"業種{j % 8}" for j in range(80)], "size": "x"}).to_csv(data / "universe_jp.csv", index=False)
+    for j, t in enumerate(cols[:78]):                                                   # 2 銘柄は出来高が取れなかったことにする
+        split = np.zeros(len(idx))
+        split[500] = 2.0 if j == 0 else 0.0
+        pd.DataFrame({"date": idx, "close": close[t].to_numpy(), "volume": rng.integers(1000, 5000, len(idx)), "split": split}).to_csv(data / "jp_raw" / f"{t}.csv", index=False)
+    rows.append(("pcorr", f"{idx[1500]:%Y-%m-%d} 11:00:00", cols[3], "会社", "（訂正・数値データ訂正）「第１四半期決算短信」の一部訂正について", "", "x03000.zip"))
+    pd.DataFrame(rows, columns=C.COLUMNS).to_csv(ir / "disclosures.csv", index=False)
+    pd.DataFrame(rng.normal(0, 0.02, close.shape), index=idx, columns=cols).to_csv(root / "selector_scores.csv")
+
+    spec = importlib.util.spec_from_file_location("agents_script3", Path(__file__).resolve().parents[1] / "scripts" / "agents.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    args = Namespace(root=str(root), data=str(data), out=str(tmp_path / "out"), placebo=10, fetch=False, reuse=False)
+    mod.cmd_earnings(args)
+    mod.cmd_extra(args)
+    capsys.readouterr()
+    report = next((tmp_path / "out").glob("*/extra.md")).read_text(encoding="utf-8")
+    v = pd.read_csv(next((tmp_path / "out").glob("*/verdicts_extra.csv"))).set_index("key")
+    assert list(v.index) == ["F1", "F2", "F3", "F4"]
+    assert v.loc["F3", "mean"] > 0 and v.loc["F3", "t"] > 3 and v.loc["F3", "placebo"] == 1.0 and v.loc["F3", "verdict"] == "使えそう"
+    assert "訂正の開示 1 回を除いた" in report and "78 銘柄、分割 1 回" in report and "訂正の開示を除くと、10 章の E1・E2 はどう変わるか" in report
+    num = pd.read_csv(root / "ir_numbers_extra.csv")
+    assert set(N.FEATURES + N.EXTRA) | {"score", "score6"} <= set(num.columns) and num["prog_diff"].notna().sum() > 1000 and num["ep_fc"].notna().sum() > 1000
+    assert len(num) == len(pd.read_csv(root / "ir_numbers.csv")) - 1                    # 訂正の開示の分だけ、10 章の記録より行が少ない
+    for name in ("selector_volume.csv", "selector_fundamental.csv"):
+        sc = pd.read_csv(root / name, index_col=0)
+        assert sc.shape[1] == 80 and sc.notna().any(axis=1).all()
+    assert (data / "jp_volume.csv").exists() and (data / "jp_splits.csv").exists()
+    mod.cmd_extra(Namespace(**{**vars(args), "reuse": True}))                           # 点数が書いてあれば学び直さない
+    assert "銘柄選定（出来高を足した版）" not in capsys.readouterr().out

@@ -97,6 +97,7 @@ python scripts/mt5_files.py install --run output/train/<日時>   # EA とプリ
 ./cfd agents run        # 株を 5 つの AI（情報収集・IR 評価・銘柄選定・判断・判断の評価）で扱う（docs/agents.md。初回は collect --backfill）
 ./cfd agents collect --docs   # 適時開示の本文（PDF を文字にしたもの）と決算の数字（XBRL）もためる（毎日 8:00 の自動収集は schedule --job collect）
 ./cfd agents earnings   # 決算の数字（会社予想の変化など）で評価する（docs/agents.md 10 章。collect --xbrl-history の後）
+./cfd agents extra --fetch    # 出来高・割安さ・大きさ・業種・進捗率を足して確かめる（docs/agents.md 11 章。earnings の後。20〜30 分）
 ```
 
 `./cfd meta` は『ファイナンス機械学習』（AFML）の方法で確かめる: パージング・エンバーゴ付きの組み合わせ交差検証（CPCV）、

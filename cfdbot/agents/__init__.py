@@ -15,4 +15,6 @@ def paths(root: str | Path = "data/agents") -> dict[str, Path]:
     r = Path(root)
     return {"root": r, "disclosures": r / "ir" / "disclosures.csv", "titles": r / "ir" / "titles.npz",
             "ir_scores": r / "ir_scores.csv", "selector": r / "selector_scores.csv", "decisions": r / "decisions.csv",
-            "ledger": r / "ledger.csv", "ir_numbers": r / "ir_numbers.csv", "decisions_numbers": r / "decisions_numbers.csv"}
+            "ledger": r / "ledger.csv", "ir_numbers": r / "ir_numbers.csv", "decisions_numbers": r / "decisions_numbers.csv",
+            "selector_volume": r / "selector_volume.csv", "selector_fundamental": r / "selector_fundamental.csv",
+            "ir_numbers_extra": r / "ir_numbers_extra.csv"}

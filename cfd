@@ -101,7 +101,8 @@ case "$cmd" in
   carry    キャリー（原油の期間構造）を確かめる（docs/carry.md。--fetch で EIA から取る。Mac で）
   stocks   上がりやすい株を探す（時期・時間帯・業種・会社の 17 の仮説。docs/stocks.md。初回は --fetch で 20〜40 分）
   shortterm 株の短期の売買（一晩〜5 日）をルール・機械学習・ニュース・強化学習で確かめる（docs/stocks_short.md。stocks --fetch の後。10〜20 分）
-  agents   株を 5 つの AI（情報収集・IR 評価・銘柄選定・判断・判断の評価）で扱う（docs/agents.md。collect --backfill → run。status で様子）
+  agents   株を 5 つの AI（情報収集・IR 評価・銘柄選定・判断・判断の評価）で扱う（docs/agents.md。collect --backfill → run。status で様子。
+           earnings = 決算の数字で評価、extra = 出来高・割安さ・進捗率などを足して確かめる）
   ml       59 市場をまとめて学ぶ機械学習でポジションを決めると良くなるかを検証（universe の後。10〜40 分）
   leadlag  先行指標（原油・為替・金利など）で日米の業種・個別株を予測できるかを検証（初回は --fetch。30〜60 分）
   intraday 5 分足〜1 時間足の短い売買を、小さいコストで候補探し → 実際のコストで確認（--source mt5 で data/ の M5）

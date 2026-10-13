@@ -10,6 +10,7 @@
     python scripts/agents.py evaluate             # 判断の評価（報告書を作る）
     python scripts/agents.py run [--prices]       # 上を順に（--prices は先に値段も取り直す）
     python scripts/agents.py earnings             # 決算の数字で評価する（10 章の E1〜E3。collect --xbrl-history の後）
+    python scripts/agents.py extra [--fetch]      # まだ入れていなかった項目（出来高・割安さ・業種・進捗率）を足して確かめる（11 章の F1〜F4）
     python scripts/agents.py status
     python scripts/agents.py schedule --job collect [--off]   # 毎日 8:00 に collect --docs を動かすよう登録する／外す（Mac の launchd）
     python scripts/agents.py schedule --job run [--off]       # 平日 13:05 に run --prices を動かすよう登録する／外す
@@ -433,6 +434,246 @@ def cmd_earnings(args) -> None:
     print(f"\n保存先: {out}/earnings.md")
 
 
+# --------------------------------------------------------------------------- まだ入れていなかった項目（11 章）
+def cmd_extra(args) -> None:
+    """入力を作る → 銘柄選定・IR 評価（数字）を入力を足して学び直す → 点数のファイルだけで採点する（F1〜F4）。"""
+    from cfdbot import stocks_short as H
+    from cfdbot.agents import collector as C
+    from cfdbot.agents import earnings as N
+    from cfdbot.agents import evaluator as E
+    from cfdbot.agents import extra as X
+    from cfdbot.agents import ir_scorer as I
+    from cfdbot.agents import selector
+
+    def log(text: str) -> None:
+        print(text, flush=True)
+
+    p = paths(args.root)
+    data = Path(args.data)
+    for key, hint in (("selector", "./cfd agents select"), ("ir_numbers", "./cfd agents earnings")):
+        if not p[key].exists():
+            sys.exit(f"{p[key]} が無い。先に {hint} を実行する")
+    open_, close = prices(data)
+    tickers = list(close.columns)
+    raw_dir = data / "jp_raw"
+    if args.fetch:
+        for _ in range(3):                                                         # 取れなかった銘柄は、あと 2 回まで試す
+            done, failed = X.fetch_raw(tickers, raw_dir, log=log)
+            if failed == 0:
+                break
+    if not raw_dir.exists() or not any(raw_dir.glob("*.csv")):
+        sys.exit("出来高のデータが無い。先に ./cfd agents extra --fetch を実行する（1 秒に 1 社で 10 分ほど）")
+    rawclose, volume, splits = X.load_raw(raw_dir, close.index, tickers)
+    rawclose.to_csv(data / "jp_rawclose.csv", float_format="%.4f")
+    volume.to_csv(data / "jp_volume.csv", float_format="%.0f")
+    splits.to_csv(data / "jp_splits.csv", index=False)
+    have_raw = int(rawclose.notna().any().sum())
+    log(f"出来高・終値・分割: {have_raw}/{len(tickers)} 銘柄、分割 {len(splits)} 回")
+
+    # ---- 入力を作る（どれも、その日の 13:30 までに分かる値）
+    cc = E.returns(close)
+    sector = pd.read_csv(data / "universe_jp.csv").set_index("ticker")["sector"]
+    vol_f = X.volume_features(cc, rawclose, volume)
+    ind_f = X.industry_features(close, sector)
+    disc = C.load_disclosures(p["disclosures"])
+    feat = N.build(disc, p["disclosures"].parent, log=log, extra=True, skip_corrections=True)   # 訂正の開示（古い期の数字の出し直し）は使わない
+    if feat.empty:
+        sys.exit("決算の数字が無い。先に ./cfd agents collect --xbrl-history を実行する")
+    have = {q.stem for q in (p["disclosures"].parent / "xbrl").glob("*/*.csv")}                 # 数字を保存してある開示だけで数える
+    n_corr = int(N.is_correction(disc[disc["xbrl"].str.replace(".zip", "", regex=False).isin(have)]["title"]).sum())
+    fund_f = X.fundamental_panel(feat[["ticker", "time"] + N.STATE + N.STATE_TIMES], I.decision_pos(feat["time"], close.index), rawclose, splits)
+
+    # ---- 銘柄選定: 入力を足した版を学び直して、点数を書く
+    for key, extra, first_year, label in (("selector_volume", vol_f, H.FIRST_TEST_YEAR, "出来高を足した版"),
+                                          ("selector_fundamental", {**fund_f, **ind_f}, 2019, "割安さ・大きさ・業種を足した版")):
+        if args.reuse and p[key].exists():
+            continue
+        log(f"銘柄選定（{label}）")
+        sc = selector.scores_extra(open_, close, extra, first_year=first_year, log=log)
+        sc[sc.notna().any(axis=1)].to_csv(p[key], float_format="%.5f")
+
+    # ---- IR 評価（数字）: 入力を 12 個にして学び直して、点数を書く
+    cols = N.FEATURES + N.EXTRA
+    table = N.daily(feat, close.index, tickers, features=N.FEATURES + N.EXTRA[:3])
+    pos, j = table["pos"].to_numpy(), table["j"].to_numpy()
+    night = H.parts(open_, close)["night"]
+    table["ep_fc"], table["size"] = fund_f["ep_fc"].to_numpy()[pos, j], fund_f["size"].to_numpy()[pos, j]
+    table["gap_ex"] = night.sub(night.mean(axis=1), axis=0).to_numpy()[pos, j]
+    log("IR 評価（数字・入力 12 個）")
+    score = N.walk_forward(table, I.target_rank(close), close.index, log=log, features=cols)
+    log("IR 評価（数字・入力 6 個のまま。同じ開示で学び直す）")
+    score6 = N.walk_forward(table, I.target_rank(close), close.index, log=log)
+    numbers = table.assign(date=close.index[pos], ticker=close.columns[j], score=score, score6=score6)
+    numbers[["date", "ticker", "score", "score6"] + cols].to_csv(p["ir_numbers_extra"], index=False, float_format="%.6f")
+
+    # ---- 判断の評価: 点数のファイルと値段だけで採点する
+    index = close.index
+
+    def matrix(path: Path) -> np.ndarray:
+        return wide(path).reindex(index=index, columns=close.columns).to_numpy(dtype=float)
+
+    def from_rows(d: pd.DataFrame, col: str) -> np.ndarray:
+        t, k = index.get_indexer(d["date"]), close.columns.get_indexer(d["ticker"])
+        ok = (t >= 0) & (k >= 0)
+        w = np.full(close.shape, np.nan)
+        w[t[ok], k[ok]] = d[col].to_numpy(dtype=float)[ok]
+        return w
+
+    sel_w = matrix(p["selector"])
+    eligible = np.isfinite(sel_w)
+    num = pd.read_csv(p["ir_numbers_extra"], parse_dates=["date"])
+    old = pd.read_csv(p["ir_numbers"], parse_dates=["date"])
+    new_ir, old_ir = np.where(eligible, from_rows(num, "score"), np.nan), np.where(eligible, from_rows(num, "score6"), np.nan)
+    rec_ir, rec_rev = np.where(eligible, from_rows(old, "score"), np.nan), from_rows(old, "fc_rev")     # E1〜E3 の記録（訂正の開示を含む）
+    prog, rev = from_rows(num, "prog_diff"), from_rows(num, "fc_rev")
+    rng = np.random.default_rng(11)
+    n_trials = 73
+    results, detail = [], []
+
+    def judge(key: str, label: str, daily: pd.Series, start: str, split: str, null: np.ndarray, real: float) -> None:
+        d = daily[daily.index >= start].resample("ME").sum()
+        v = S.judge(d, split, n_trials, float(np.mean(null < real)))
+        v.update(key=key, label=label, split=split)
+        results.append(v)
+        log(f"  {key} {v['verdict']}")
+
+    def counter(start: str, hold: int = E.HOLD):
+        """start からだけの表にして数える（偶然との比べ方を速くするため。本物も同じ数え方で比べる）。返すのは（最初の行, 数える関数）。"""
+        i0 = int(index.searchsorted(pd.Timestamp(start)))
+        part = cc.iloc[i0:]
+        return i0, lambda book: float(E.book_pnl(book, part, 0.0, hold)["gross"].mean())
+
+    def note(label: str, book: np.ndarray, pnl: pd.DataFrame, start: str) -> None:
+        m = np.asarray(index >= start)
+        x = pnl[m]
+        detail.append((label, f"{x.index[0]:%Y-%m}〜", x["gross"].mean() * 252, x["turnover"].mean(), x["d"].mean() * 252, book[m].sum(axis=1).mean(), x["invested"].mean()))
+
+    base_book = E.top_k(sel_w, E.TOP_SHARE, E.MIN_VALID)
+    pnl_base = E.book_pnl(base_book, cc)
+    for key, path_key, label, name, start, split in (
+            ("F1", "selector_volume", "銘柄選定 AI に出来高の入力 5 個を足すと良くなる", "出来高を足した版", "2010-01-01", "2018-01-01"),
+            ("F2", "selector_fundamental", "銘柄選定 AI に割安さ・大きさ・業種の入力 9 個を足すと良くなる", "割安さ・大きさ・業種を足した版", "2019-01-01", "2023-01-01")):
+        new_w = matrix(p[path_key])
+        book = E.top_k(new_w, E.TOP_SHARE, E.MIN_VALID)
+        pnl_new = E.book_pnl(book, cc)
+        i0, gross = counter(start)
+        diff, base_gross = (new_w - sel_w)[i0:], gross(base_book[i0:])
+        null = np.array([gross(E.top_k(sel_w[i0:] + E.shuffle_rows(diff, rng), E.TOP_SHARE, E.MIN_VALID)) - base_gross for _ in range(args.placebo)])
+        judge(key, label, pnl_new["d"] - pnl_base["d"], start, split, null, gross(book[i0:]) - base_gross)
+        note(f"{key}: {name}", book, pnl_new, start)
+        note(f"{key} の比べる相手: 今の銘柄選定 AI", base_book, pnl_base, start)
+
+    hold3, start3 = 60, "2017-07-01"
+    unchanged = np.abs(rev) < N.UP_REVISION                                          # 通期の純利益の予想は据え置き
+    f3 = (prog >= N.PROGRESS_UP) & unchanged & eligible
+    pool3 = np.isfinite(prog) & eligible
+    pnl3 = E.book_pnl(f3, cc, E.COST, hold3)
+    i0, gross = counter(start3, hold3)
+    null = np.array([gross(E.random_among(pool3[i0:], f3[i0:].sum(axis=1), rng)) for _ in range(args.placebo)])
+    judge("F3", "進捗率が前年より 5 ポイント以上高いのに通期の予想を据え置いた株を、60 営業日持つと全銘柄の平均より上がる", pnl3["d"], start3, "2022-01-01",
+          null, gross(f3[i0:]))
+    note("F3: 進捗率が高い・予想は据え置き（60 日持つ）", f3, pnl3, start3)
+
+    start4 = "2019-01-01"
+    book_new, book_old = E.top_k(new_ir, E.IR_TOP, E.IR_MIN), E.top_k(old_ir, E.IR_TOP, E.IR_MIN)
+    pnl_new, pnl_old = E.book_pnl(book_new, cc), E.book_pnl(book_old, cc)
+    i0, gross = counter(start4)
+    null = np.array([gross(E.random_among(np.isfinite(new_ir)[i0:], book_new[i0:].sum(axis=1), rng)) for _ in range(args.placebo)])
+    judge("F4", "数字の IR 評価 AI に入力 6 個を足すと良くなる（点数の上位 20% を 5 日持つ）", pnl_new["d"] - pnl_old["d"], start4, "2023-01-01",
+          null, gross(book_new[i0:]))
+    note("F4: 入力 12 個の版", book_new, pnl_new, start4)
+    note("F4 の比べる相手: 入力 6 個の版（同じ開示で学び直し）", book_old, pnl_old, start4)
+
+    out = Path(args.out) / datetime.now().strftime("%Y%m%d-%H%M")
+    out.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+
+    def say(text: str = "") -> None:
+        print(text, flush=True)
+        lines.append(text)
+
+    say("# まだ入れていなかった項目を足す（F1〜F4）")
+    say(f"作成: {datetime.now():%Y-%m-%d %H:%M}　仮説と判定の条件: docs/agents.md 11 章（結果を見る前に決めたもの）")
+    say(f"データ: 日本株 {len(tickers)} 銘柄（〜{index[-1]:%Y-%m-%d}）。出来高・分割は Yahoo の日足（{have_raw} 銘柄、分割 {len(splits)} 回）、"
+        f"決算の数字は XBRL {len(feat):,} 回。コスト: 往復 {pct(E.COST, 2)}。試した数: 69 ＋ 4 ＝ {n_trials}（全期間の t 値の基準 {f2(S.expected_max_z(n_trials))}）")
+    say("\n## 1. 判定\n")
+    say("| 記号 | 仮説 | 期間 | 差（年率） | 前半 | 後半 | t 値（全期間） | t 値（後半） | 偶然より良い割合 | 判定 |")
+    say("|---|---|---|---|---|---|---|---|---|---|")
+    for v in results:
+        say(f"| {v['key']} | {v['label']} | {v['start']:%Y-%m}〜{v['end']:%Y-%m}（後半 {v['split'][:4]}〜） | {pct(v['mean'] * 12)} | {pct(v['mean1'] * 12)} | "
+            f"{pct(v['mean2'] * 12)} | {f2(v['t'])} | {f2(v['t2'])} | {pct(v['placebo'], 0)} | **{v['verdict']}** |")
+    say("\n## 2. 細かい数字（全銘柄の平均との差、年率）\n")
+    say("| 買い方 | 期間 | コストを引く前 | 1 日に入れ替える割合 | コストを引いた後 | 1 日に買う数 | 持っている割合 |")
+    say("|---|---|---|---|---|---|---|")
+    for label, period, g, turn, d, names, invested in detail:
+        say(f"| {label} | {period} | {pct(g)} | {pct(turn, 1)} | {pct(d)} | {names:.1f} | {pct(invested, 0)} |")
+    y = I.target_rank(close)
+    say("")
+    for label, w in (("入力 12 個の版", new_ir), ("入力 6 個の版", old_ir)):
+        t, k = np.nonzero(np.isfinite(w) & np.isfinite(y))
+        rows = pd.DataFrame({"year": index.year[t], "score": w[t, k], "y": y[t, k]})
+        ic = rows.groupby("year").apply(lambda g: g["score"].corr(g["y"]), include_groups=False)
+        say(f"- {label}の点数と、実際のその後 5 日の順位の相関（年ごと）: " + "、".join(f"{yr}: {v:+.3f}" for yr, v in ic.items()))
+    same = old.merge(num, on=["date", "ticker"], how="outer", suffixes=("_old", "_new"), indicator=True)
+    both = same[same["_merge"] == "both"]
+    say(f"- 訂正の開示 {n_corr:,} 回を除いた。株 × 日の行は {len(num):,} 件（E1〜E3 の記録は {len(old):,} 件）。どちらにもある {len(both):,} 件のうち、"
+        f"通期の予想の変化率が違う行 {int((~np.isclose(both['fc_rev_old'], both['fc_rev_new'], equal_nan=True, atol=1e-5)).sum())} 件")
+
+    say("\n## 3. 参考（判定しない）: 入力ごとの「上位 20% − 下位 20%」の、その後の値動きの差（コストを引く前）\n")
+    say("数字は、その入力が大きい株のグループと小さい株のグループの、その後 5 日・20 日の値動きの差。重なりを避けるため、5 日おき・20 日おきの日だけで数えた。\n")
+    ex = {h: E.excess_forward(cc, h) for h in (5, 20, 60)}
+    say("| 入力 | 期間 | 5 日後の差 | t 値 | 20 日後の差 | t 値 |")
+    say("|---|---|---|---|---|---|")
+    for names, feats, start in ((X.VOLUME, vol_f, "2010-01-01"), (X.FUNDAMENTAL, fund_f, "2017-01-01"), (X.INDUSTRY, ind_f, "2010-01-01")):
+        m = np.asarray(index >= start)
+        for name in names:
+            a, b = X.spread(feats[name], ex[5], m, 5), X.spread(feats[name], ex[20], m, 20)
+            say(f"| {X.LABELS[name]} | {start[:4]}〜 | {pct(a[0], 2)} | {f2(a[1])} | {pct(b[0], 2)} | {f2(b[1])} |")
+
+    say("\n## 4. 参考（判定しない）: 進捗率と出来高の急増\n")
+    say("| 条件（第 1〜3 四半期の決算短信） | 回数 | 5 日後の平均 | 20 日後の平均 | 60 日後の平均 | t 値（60 日） |")
+    say("|---|---|---|---|---|---|")
+    m3 = np.asarray(index >= start3)[:, None]
+    for label, mask in (("進捗率が前年より 5 ポイント以上高い・予想は据え置き（F3）", f3), ("進捗率の差が ±5 ポイント未満・予想は据え置き", (np.abs(prog) < N.PROGRESS_UP) & unchanged & eligible),
+                        ("進捗率が前年より 5 ポイント以上低い・予想は据え置き", (prog <= -N.PROGRESS_UP) & unchanged & eligible),
+                        ("進捗率の差が計算できた開示すべて", pool3)):
+        mk = mask & m3
+        say(f"| {label} | {int(mk.sum()):,} | {pct(np.nanmean(ex[5][mk]), 2)} | {pct(np.nanmean(ex[20][mk]), 2)} | {pct(np.nanmean(ex[60][mk]), 2)} | {f2(S.t_value(ex[60][mk]))} |")
+    say("")
+    say("| 買い方 | 期間 | コストを引く前（年率） | コストを引いた後（年率） | 1 日に買う数 | 持っている割合 |")
+    say("|---|---|---|---|---|---|")
+    surge = X.volume_surge(volume).to_numpy() & eligible
+    for label, book, hold, start in (("F3 を 5 日持つ形にした場合", f3, 5, start3), ("F3 を 20 日持つ形にした場合", f3, 20, start3),
+                                     ("出来高の急増（前日の出来高が 50 日の上位 10%）の後、20 日持つ", surge, 20, "2010-01-01")):
+        m = np.asarray(index >= start)
+        x = E.book_pnl(book, cc, E.COST, hold)[m]
+        say(f"| {label} | {start[:7]}〜 | {pct(x['gross'].mean() * 252)} | {pct(x['d'].mean() * 252)} | {book[m].sum(axis=1).mean():.1f} | {pct(x['invested'].mean(), 0)} |")
+    cover = np.isfinite(fund_f["ep_fc"].to_numpy())[np.asarray(index >= "2019-01-01")].mean()
+    say(f"\n進捗率の差が計算できた開示 {int(np.isfinite(prog).sum()):,} 回（うち 2017-07 から {int((np.isfinite(prog) & m3).sum()):,} 回）。"
+        f"予想益回りが作れた割合（2019 年から、株 × 日）{pct(cover, 0)}")
+    say("\n## 5. 参考（判定しない）: 訂正の開示を除くと、10 章の E1・E2 はどう変わるか\n")
+    say("10 章の E1〜E3 は、過去の決算短信の「訂正」を新しい開示として数えていた（2026-10-13 の夜、11 章の準備で気づいた）。判定は 10.5 のまま変えない。\n")
+    say("| 買い方 | 期間 | 訂正を含む（10.5 の記録と同じ作り） | t 値 | 訂正を除く | t 値 |")
+    say("|---|---|---|---|---|---|")
+    for label, with_c, without_c, start in (("E1: 通期の純利益の予想を 5% 以上引き上げ → 5 日持つ", (rec_rev >= N.UP_REVISION) & eligible, (rev >= N.UP_REVISION) & eligible, "2016-10-01"),
+                                            ("E2: 数字の IR 点数（入力 6 個）の上位 20% → 5 日持つ", E.top_k(rec_ir, E.IR_TOP, E.IR_MIN), book_old, start4)):
+        cells = []
+        for book in (with_c, without_c):
+            d = E.book_pnl(book, cc)["d"]
+            d = d[d.index >= start].resample("ME").sum()
+            cells += [pct(d.mean() * 12), f2(S.t_value(d.to_numpy()))]
+        say(f"| {label} | {start[:7]}〜 | " + " | ".join(cells) + " |")
+    say("\n## 6. 読み方・限界\n")
+    say("- 判定は 4 つの条件すべて（前半・後半ともプラス、後半だけで t 値 1.65 以上、全期間の t 値が試した数で割り引いた基準以上、偶然より良い割合 95% 以上）")
+    say("- F1・F2・F4 の「差」は、入力を足した版から今の版を引いたもの。足した版そのものの成績は 2 章")
+    say("- 割安さ・大きさは、決算短信の株数と Yahoo の株式分割の記録から作った。分割の前後で数え方がずれた会社があると、その会社の値は次の決算までまちがう")
+    say("- 今の構成銘柄（生存者バイアス）。決算の数字は 2016-10 から。税金は入れていない")
+    say("- 3〜5 章は探して集計した表で、開示どうしの重なりも考えていないので、t 値は大きめに出る。ここで良く見えたものは、これからのデータで確かめ直す")
+    (out / "extra.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    pd.DataFrame(results).drop(columns=["start", "end"]).to_csv(out / "verdicts_extra.csv", index=False)
+    print(f"\n保存先: {out}/extra.md")
+
+
 # --------------------------------------------------------------------------- まとめて・状態
 def cmd_run(args) -> None:
     if args.prices:
@@ -505,7 +746,9 @@ def cmd_schedule(args) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("command", choices=["collect", "ir", "select", "decide", "evaluate", "run", "status", "schedule", "earnings"])
+    p.add_argument("command", choices=["collect", "ir", "select", "decide", "evaluate", "run", "status", "schedule", "earnings", "extra"])
+    p.add_argument("--fetch", action="store_true", help="extra: 先に出来高・終値・株式分割を Yahoo から取る（1 秒に 1 社。取得済みは飛ばす）")
+    p.add_argument("--reuse", action="store_true", help="extra: 入力を足した銘柄選定の点数が書いてあれば、学び直さずに使う")
     p.add_argument("--off", action="store_true", help="schedule: 自動実行を外す")
     p.add_argument("--job", choices=list(JOBS), default="run", help="schedule: どの自動実行か（run = 平日 13:05 の判断、collect = 毎日 8:00 の収集）")
     p.add_argument("--docs", action="store_true", help="collect: 本文（PDF）と決算の数字（XBRL）も取る")
@@ -523,7 +766,7 @@ def main() -> None:
     p.add_argument("--placebo", type=int, default=300)
     args = p.parse_args()
     {"collect": cmd_collect, "ir": cmd_ir, "select": cmd_select, "decide": cmd_decide, "evaluate": cmd_evaluate,
-     "run": cmd_run, "status": cmd_status, "schedule": cmd_schedule, "earnings": cmd_earnings}[args.command](args)
+     "run": cmd_run, "status": cmd_status, "schedule": cmd_schedule, "earnings": cmd_earnings, "extra": cmd_extra}[args.command](args)
 
 
 if __name__ == "__main__":
