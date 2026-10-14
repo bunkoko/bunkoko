@@ -28,6 +28,8 @@ import pandas as pd
 EXT_TOL = 0.006   # EA は %+.2f で書く（丸めの半分 0.005 ＋ 計算の小さな差）
 
 _SOURCE = re.compile(r"CfdCommodityEA\s*\(\s*([^,()\s]+)\s*,\s*([^)]+?)\s*\)")
+_OTHER_SOURCE = re.compile(r"(\S+)\s*\(\s*[^,()\s]+\s*,\s*[^)]+?\s*\)")   # 他の EA・スクリプト「名前 (銘柄,時間足)」
+_STAMP = re.compile(r"(?<!\d)(\d{4})\.(\d{2})\.(\d{2})\s+\d{1,2}:\d{2}:\d{2}")  # 行の頭の日時（タブからのコピー・保存したジャーナル）
 _TIME = re.compile(r"(?<!\d)(\d{1,2}:\d{2}:\d{2})(?:\.\d+)?")
 _JUDGE = re.compile(
     r"(\d{4})[.\-/](\d{2})[.\-/](\d{2})\s*の足を判断\s*[:：]\s*終値\s*(-?[\d.]+)\s*(?:→|->)\s*"
@@ -59,20 +61,21 @@ ISSUE_PATTERNS: list[tuple[re.Pattern, str, str]] = [
 
 @dataclass
 class EaLog:
-    judgments: pd.DataFrame          # chart, tf, bar_date, close, close_dec, signal, ext, ext_period, ext_max, held, file, time
-    events: pd.DataFrame             # chart, tf, file_date, time, kind, severity, text
+    judgments: pd.DataFrame          # chart, tf, bar_date, close, close_dec, signal, ext, ext_period, ext_max, held, file, log_date, time
+    events: pd.DataFrame             # chart, tf, log_date, time, kind, severity, text
     files: list[Path] = field(default_factory=list)
-    first_date: date | None = None   # ログのファイル名の日付（最初・最後）
+    first_date: date | None = None   # ログを書いた日（行の頭の日時、無ければファイル名の日付）の最初・最後
     last_date: date | None = None
-    unattributed: int = 0            # 「の足を判断」があるのに発信元が読めない行
+    unattributed: list = field(default_factory=list)   # 「の足を判断」があるのに発信元が読めない行（書いた日）
     unparsed: list[str] = field(default_factory=list)  # 「の足を判断」があるのに形が読めない行（最大 5 行）
+    undated: list[str] = field(default_factory=list)   # 書いた日が分からないファイル（名前に日付が無く、行にも日時が無い）
 
 
 def read_text(path: Path) -> str:
     """MT5 のログ（UTF-16 LE、BOM あり・なし）を読む。UTF-8 にも対応。"""
     raw = Path(path).read_bytes()
     if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
-        return raw.decode("utf-16")
+        return raw.decode("utf-16", errors="replace")   # 書き込みの途中で読んでも止まらない
     if len(raw) >= 4 and raw[1:2] == b"\x00" and raw[3:4] == b"\x00":
         return raw.decode("utf-16-le", errors="replace")
     return raw.decode("utf-8-sig", errors="replace")
@@ -88,14 +91,23 @@ def file_date(path: Path) -> date | None:
         return None
 
 
-def parse_lines(lines: list[str], fdate: date | None = None, fname: str = "") -> tuple[list[dict], list[dict], int, list[str]]:
-    judg, events, unattributed, unparsed = [], [], 0, []
+def parse_lines(lines: list[str], fdate: date | None = None, fname: str = "") -> tuple[list[dict], list[dict], list, list[str]]:
+    """戻り値: (判断の行, 他の行, 発信元が読めない判断の行の日付, 形が読めない判断の行)。
+
+    書いた日は、行の頭に日時があればそれ、無ければファイル名の日付（fdate）。
+    """
+    judg, events, unattributed, unparsed = [], [], [], []
     for line in lines:
         if not line.strip():
             continue
         src = _SOURCE.search(line)
+        if src is None and _OTHER_SOURCE.search(line):
+            continue   # 他の EA・スクリプトの行
         chart, tf = (src.group(1), _TF_ALIASES.get(src.group(2).upper(), src.group(2).upper())) if src else ("", "")
-        tm = _TIME.search(line)
+        head = line[: src.start()] if src else line
+        st = _STAMP.search(head)
+        ldate = date(int(st.group(1)), int(st.group(2)), int(st.group(3))) if st else fdate
+        tm = _TIME.search(head) or _TIME.search(line)
         when = tm.group(1) if tm else ""
         if "の足を判断" in line:
             m = _JUDGE.search(line)
@@ -104,7 +116,7 @@ def parse_lines(lines: list[str], fdate: date | None = None, fname: str = "") ->
                     unparsed.append(line.strip())
                 continue
             if not src:
-                unattributed += 1
+                unattributed.append(ldate)
                 continue
             close_txt = m.group(4)
             judg.append({
@@ -117,38 +129,42 @@ def parse_lines(lines: list[str], fdate: date | None = None, fname: str = "") ->
                 "ext_period": int(m.group(6)) if m.group(6) else 0,
                 "ext_max": float(m.group(8)) if m.group(8) else np.nan,
                 "held": int(m.group(9)),
-                "file": fname, "file_date": fdate, "time": when,
+                "file": fname, "log_date": ldate, "time": when,
             })
             continue
         if src is None and "CfdCommodityEA" not in line and not any(p.search(line) for p, _, s in ISSUE_PATTERNS
                                                                     if s == "要確認"):
-            continue   # 他の EA・スクリプトの行
+            continue   # 発信元が読めず、要確認の言葉も無い行
         for pat, kind, sev in ISSUE_PATTERNS:
             if pat.search(line):
                 text = line.split(src.group(0), 1)[1].strip() if src else line.strip()
-                events.append({"chart": chart, "tf": tf, "file_date": fdate, "time": when, "kind": kind,
+                events.append({"chart": chart, "tf": tf, "log_date": ldate, "time": when, "kind": kind,
                                "severity": sev, "text": text})
                 break
     return judg, events, unattributed, unparsed
 
 
 def read_logs(paths: list[Path]) -> EaLog:
-    judg, events, unattributed, unparsed = [], [], 0, []
+    judg, events, unattributed, unparsed, undated = [], [], [], [], []
     dates = []
     for path in sorted(paths, key=lambda p: (file_date(p) or date.min, p.name)):
         d = file_date(path)
+        j, e, u, bad = parse_lines(read_text(path).splitlines(), d, path.name)
+        got = [r["log_date"] for r in j + e if r["log_date"] is not None] + [x for x in u if x is not None]
         if d:
             dates.append(d)
-        j, e, u, bad = parse_lines(read_text(path).splitlines(), d, path.name)
+        dates += got
+        if d is None and not got and (j or e or u):
+            undated.append(path.name)
         judg += j
         events += e
         unattributed += u
         unparsed += bad[: max(0, 5 - len(unparsed))]
     jcols = ["chart", "tf", "bar_date", "close", "close_dec", "signal", "ext", "ext_period", "ext_max", "held",
-             "file", "file_date", "time"]
-    ecols = ["chart", "tf", "file_date", "time", "kind", "severity", "text"]
+             "file", "log_date", "time"]
+    ecols = ["chart", "tf", "log_date", "time", "kind", "severity", "text"]
     return EaLog(pd.DataFrame(judg, columns=jcols), pd.DataFrame(events, columns=ecols), sorted(paths),
-                 min(dates, default=None), max(dates, default=None), unattributed, unparsed)
+                 min(dates, default=None), max(dates, default=None), unattributed, unparsed, undated)
 
 
 # --------------------------------------------------------------------------- Python 側
@@ -194,19 +210,22 @@ def python_daily(sig: pd.DataFrame, server_tz, bar: pd.Timedelta, trades: pd.Dat
 
 # --------------------------------------------------------------------------- 照らし合わせ
 
-def compare_symbol(ea: pd.DataFrame, py: pd.DataFrame, start: date, last_log: date | None) -> pd.DataFrame:
+def compare_symbol(ea: pd.DataFrame, py: pd.DataFrame, start: date, last_log: date | None,
+                   upto: date | None = None) -> pd.DataFrame:
     """1 銘柄について 1 日ずつ照らし合わせる。
 
-    ea: その銘柄の判断の行（read_logs の judgments。同じ足が 2 回あれば最後を使う）
+    ea: その銘柄の判断の行（read_logs の judgments。同じ足が 2 回あれば最後を使う。空でもよい）
     py: python_daily
-    対象: 開始日以降の Python の足（と、それより前でも EA が判断した足）。
+    対象: start 以降の足（Python・EA のどちらかにある足）。
     EA の判断が無い足は、次の足がログの最後の日までに始まっていれば「抜け」、そうでなければ「判断待ち」。
+    upto: Python の値を比べる最後の足（書き出したときに途中だった足より前）。それより後は「Python のデータに無い」
     """
     dup = ea[ea.duplicated("bar_date", keep=False)]
     e = ea.drop_duplicates("bar_date", keep="last").set_index("bar_date")
-    p = py.set_index("bar_date")
-    dates = sorted(set(d for d in p.index if d >= start) | set(e.index))
-    next_bar = dict(zip(p.index[:-1], p.index[1:]))
+    p_all = py.set_index("bar_date")
+    next_bar = dict(zip(p_all.index[:-1], p_all.index[1:]))   # 抜けの判定には途中の足も使う（足が始まったことは確か）
+    p = p_all[p_all.index <= upto] if upto is not None else p_all
+    dates = sorted(d for d in set(p.index) | set(e.index) if d >= start)
     rows = []
     for d in dates:
         r: dict = {"bar_date": d}
@@ -214,7 +233,7 @@ def compare_symbol(ea: pd.DataFrame, py: pd.DataFrame, start: date, last_log: da
         if has_ea:
             x = e.loc[d]
             r.update(ea_close=x["close"], ea_signal=int(x["signal"]), ea_ext=x["ext"], ea_held=int(x["held"]),
-                     close_dec=int(x["close_dec"]), ea_time=f"{x['file_date']} {x['time']}".strip(),
+                     close_dec=int(x["close_dec"]), ea_time=f"{x['log_date']} {x['time']}".strip(),
                      twice=bool((dup["bar_date"] == d).any()))
         if has_py:
             y = p.loc[d]
@@ -268,6 +287,8 @@ def reasons(sym: str, days: pd.DataFrame, events: pd.DataFrame, shift: int | Non
             rejections: pd.DataFrame | None = None) -> list[str]:
     """差の理由の候補（確かなものではなく、まず見るところ）。"""
     out: list[str] = []
+    if days["twice"].fillna(False).astype(bool).any():
+        out.append("同じ足を 2 回判断した記録がある → 同じ銘柄のチャートに EA が 2 つある、か再起動で記録が消えた（要確認）")
     diff = days[days["status"] == "差あり"]
     if diff.empty:
         return out
@@ -317,6 +338,4 @@ def reasons(sym: str, days: pd.DataFrame, events: pd.DataFrame, shift: int | Non
         if len(more_py):
             out.append("Python の方が多く持っている日がある → EA が発注できなかった・手で決済した・"
                        "週明けの窓開けで損切りされた時刻の違い")
-    if days["twice"].fillna(False).astype(bool).any():
-        out.append("同じ足を 2 回判断した記録がある → 同じ銘柄のチャートに EA が 2 つある、か再起動で記録が消えた（要確認）")
     return out

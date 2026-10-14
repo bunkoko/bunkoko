@@ -47,6 +47,7 @@
 | 「株の検証を確かめて」 | `./cfd stocks --fetch`（Yahoo から約 240 銘柄。数分）。`output/stocks/<日時>/report.md` を見せる。1 銘柄の予測は頼まれてもしない（`docs/stocks.md` 1 章） |
 | 「毎週の確認をして」 | 書き出し済みなら `./cfd data` → `./cfd replay --start 2026-10-06 --equity 10000000` → `./cfd demo-check --start 2026-10-06 --equity 10000000`（`docs/operations.md` 12 章）。`output/demo_check/<日時>/report.md` の「一致／差あり」と本番に進む条件の数を伝える。書き出しがまだなら、Mac の前でしてもらう |
 | 「本番に進んでいい？」 | 最新の demo-check の report.md と `docs/operations.md` 12 章「本番に進む条件」（事前登録）を照らす。条件は変えない |
+| 「EA の照らし合わせで差が出た」 | report.md の「差の理由の候補」を伝える。直したら `--count-from <直した日>` を足して確かめ直す（`docs/operations.md` 12 章） |
 
 - 画面の操作が要ることはできない: MT5 のスクリプト（`CfdExportBars`）・EA の貼り付けや設定・MetaEditor のコンパイル・
   各種ログイン。「Mac の前でお願いします」と伝え、手順は `docs/operations.md` から短く示す

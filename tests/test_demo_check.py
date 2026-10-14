@@ -40,7 +40,7 @@ def test_parse_judgment_and_issue_lines():
         "2026.10.09 の足を判断: 終値 1.0 → シグナルなし、保有 0",                         # 発信元が無い
     ]
     j, ev, unattributed, unparsed = parse_lines(lines, date(2026, 10, 9), "20261009.log")
-    assert len(j) == 3 and unattributed == 1 and not unparsed
+    assert len(j) == 3 and unattributed == [date(2026, 10, 9)] and not unparsed
     g = j[0]
     assert (g["chart"], g["tf"], g["bar_date"], g["close"], g["close_dec"], g["signal"], g["held"]) == \
         ("XAUUSD.ps01", "D1", date(2026, 10, 6), 2650.12, 2, 1, 0)
@@ -75,6 +75,33 @@ def test_parse_real_layout_from_phillip(tmp_path):
              [0, 0, 0], [-0.39, -0.46, -0.5], [0, 0, 0])
     days = compare_symbol(j[j["chart"] == "XAGUSD.ps01"], py, date(2026, 10, 6), log.last_date)
     assert list(days["status"]) == ["一致", "一致", "判断待ち"]
+
+
+def test_other_programs_and_line_dates():
+    lines = [
+        # 他の EA・スクリプトの行は、要確認の言葉を含んでいても数えない
+        "CS\t0\t00:00:06.000\tSomeOtherEA (USDJPY,H1)\torder failed rc=10019 no money",
+        "CS\t0\t00:00:06.000\tCfdExportBars (XAUUSD.ps01,M5)\tnot enough bars: 10",
+        # 発信元が読めない行の要確認は、念のため残す
+        "order failed rc=10019 no money",
+        # 行の頭に日時がある（タブからのコピー・保存したジャーナル）→ その日付を書いた日にする
+        "2026.10.14 00:00:00.240\tCfdCommodityEA (XBRUSD.ps01,Daily)\t2026.10.13 の足を判断: 終値 104.209 → シグナルなし、"
+        "直近 20 本の動き +0.31 倍（1.5 倍超の向きには入らない）、保有 0",
+    ]
+    j, ev, _, _ = parse_lines(lines, None, "journal.log")
+    assert [e["kind"] for e in ev] == ["発注の失敗"] and ev[0]["chart"] == ""
+    assert j[0]["log_date"] == date(2026, 10, 14) and j[0]["bar_date"] == date(2026, 10, 13)
+    assert j[0]["time"] == "00:00:00"
+
+
+def test_read_logs_undated_file(tmp_path):
+    (tmp_path / "journal.log").write_text(judge_line("2026.10.08", "1.20", "シグナルなし", 0), encoding="utf-8")
+    log = read_logs([tmp_path / "journal.log"])
+    assert log.undated == ["journal.log"] and log.last_date is None
+    # 途中で切れた UTF-16 でも止まらない
+    raw = ("\r\n".join([judge_line("2026.10.08", "1.20", "シグナルなし", 0)] * 2)).encode("utf-16")
+    (tmp_path / "20261009.log").write_bytes(raw[:-1])
+    assert len(read_logs([tmp_path / "20261009.log"]).judgments) >= 1
 
 
 def test_parse_is_lenient_about_layout():
@@ -132,7 +159,7 @@ def _py(dates, closes, signals, exts, held):
 def _ea(dates, closes, signals, exts, held, dec=2):
     return pd.DataFrame({"chart": "XAUUSD.ps01", "tf": "D1", "bar_date": dates, "close": closes,
                          "close_dec": dec, "signal": signals, "ext": exts, "held": held,
-                         "file": "", "file_date": dates, "time": "00:00:05"})
+                         "file": "", "log_date": dates, "time": "00:00:05"})
 
 
 D = [date(2026, 10, d) for d in (6, 7, 8, 9, 12, 13)]
@@ -150,6 +177,18 @@ def test_compare_symbol_statuses():
     assert st[D[3]] == "差あり" and days.set_index("bar_date").loc[D[3], "diffs"] == "保有数"
     assert days.set_index("bar_date").loc[D[4], "diffs"] == "シグナル"
     assert st[D[5]] == "判断待ち"                         # 最後の足は、次の足が来るまで判断されない
+
+
+def test_compare_only_from_start_and_skips_forming_bar():
+    py = _py(D, [10.0, 10.1, 10.2, 10.3, 10.4, 10.5], [0] * 6, [0.1] * 6, [0] * 6)
+    ea = _ea(D, [10.0, 10.1, 10.2, 10.3, 10.4, 10.55], [1, 0, 0, 0, 0, 0], [0.1] * 6, [0] * 6)
+    # 開始日より前の足（10/06 のシグナルの差）は数えない。最後の足は書き出したとき途中だったので比べない
+    days = compare_symbol(ea, py, D[1], last_log=date(2026, 10, 14), upto=D[4]).set_index("bar_date")
+    assert D[0] not in days.index
+    assert list(days["status"]) == ["一致"] * 4 + ["Python のデータに無い"]
+    # EA の行が 1 つも無い銘柄は、全部の足が抜け（最後の足は判断待ち）
+    none = compare_symbol(ea.iloc[0:0], py, D[0], last_log=date(2026, 10, 14))
+    assert list(none["status"]) == ["抜け"] * 5 + ["判断待ち"]
 
 
 def test_compare_flags_close_ext_and_missing_ext():
@@ -244,10 +283,10 @@ def _ea_logs(logs: Path, truth: pd.DataFrame, start: date, skip=(), flip=None):
         write_log(logs / f"{judged_on:%Y%m%d}.log", [line])
 
 
-def _run(cfg, fpath, logs, tmp_path, start="2026-10-06"):
+def _run(cfg, fpath, logs, tmp_path, start="2026-10-06", extra=()):
     r = subprocess.run([sys.executable, str(ROOT / "scripts" / "demo_check.py"), "--final", str(fpath),
                         "--start", start, "--config", str(cfg), "--logs", str(logs), "--out", str(tmp_path / "out"),
-                        "--equity", "10000000"], capture_output=True, text=True, cwd=ROOT)
+                        "--equity", "10000000", *extra], capture_output=True, text=True, cwd=ROOT)
     assert r.returncode == 0, r.stderr[-3000:]
     return r.stdout
 
@@ -278,3 +317,61 @@ def test_demo_check_end_to_end(tmp_path):
     assert "**差あり**" in out and "抜け 1 日" in out and "2026-10-14" in out
     assert "| 2026-10-20 | シグナル |" in out
     assert "[要確認]" in out and "決済失敗" in out
+
+
+def _issue(text: str, chart="XAUUSD.ps01", tf="Daily") -> str:
+    return f"CS\t0\t00:00:06.000\tCfdCommodityEA ({chart},{tf})\t{text}"
+
+
+def test_demo_check_counts_only_its_own_period(tmp_path):
+    cfg, fpath, final = _setup(tmp_path)
+    start = date(2026, 10, 6)
+    truth = _python_truth(cfg, final, "2026-10-06")
+    logs = tmp_path / "logs"
+    _ea_logs(logs, truth, start, flip=date(2026, 10, 15))
+    # 貼る前の H1 チャートでの失敗（開始日より前）は数えない
+    write_log(logs / "20261003.log", [_issue("Alert: CfdCommodityEA: このパラメータは 1440 分足用。チャートの時間足を合わせること",
+                                             tf="H1"), _issue("param file not found: cfdbot_GOLD.txt (Common\\Files)")])
+    with open(logs / "20261016.log", "ab") as f:   # 直す前の失敗
+        f.write(("\r\n" + _issue("order failed rc=10019 no money") + "\r\n").encode("utf-16-le"))
+    out = _run(cfg, fpath, logs, tmp_path)
+    assert "**差あり**" in out and "| 2026-10-15 | シグナル |" in out and "このパラメータは" not in out
+    assert "要確認 1 件・二重判断 0 件" in out
+    # 直した日（10/19）から数え直す。Python の再現は 10/06 から続ける（持っている建玉もそのまま）
+    out = _run(cfg, fpath, logs, tmp_path, extra=("--count-from", "2026-10-19"))
+    assert "**一致**" in out and "2026-10-15" not in out and "order failed" not in out
+    assert "期間: 2026-10-19 から 14 日以上・照らし合わせた日 10 日以上" in out
+
+
+def test_demo_check_forming_bar_missing_symbol_and_end(tmp_path):
+    cfg, fpath, final = _setup(tmp_path)
+    data = tmp_path / "data"
+    _write_d1(data / "XAGUSD.ps01_D1.csv", 2)
+    final2 = json.loads(fpath.read_text(encoding="utf-8"))
+    silver = json.loads(json.dumps(final2["sleeves"][0]))
+    silver["symbol"] = "SILVER"
+    start = date(2026, 10, 6)
+    truth = _python_truth(cfg, final2, "2026-10-06")
+    logs = tmp_path / "logs"
+    _ea_logs(logs, truth, start)
+    last = truth.iloc[-1]   # 11/06 の足: 書き出したときは途中（EA は確定した別の終値で判断した）
+    write_log(logs / "20261107.log", [judge_line("2026.11.06", f"{last['py_close'] * 1.01:.2f}", "シグナルなし",
+                                                 int(last["py_held"]), ext=f"{last['py_ext']:+.2f}")])
+    (data / "account_info.txt").write_text("exported=2026.11.06 09:21\n", encoding="utf-8")
+    out = _run(cfg, fpath, logs, tmp_path)
+    assert "**一致**" in out and "書き出しより後の 1 日分は、次の書き出しで比べる" in out
+    assert "書き出した時刻: 2026-11-06 09:21" in out
+
+    # --end: その日より後の足・行は数えない
+    with open(logs / "20261029.log", "ab") as f:
+        f.write(("\r\n" + _issue("XAUUSD.ps01 決済失敗 (exit) rc=10018") + "\r\n").encode("utf-16-le"))
+    out = _run(cfg, fpath, logs, tmp_path, extra=("--end", "2026-10-23"))
+    assert "**一致**" in out and "決済失敗" not in out and "Python のデータに無い" not in out
+    assert "（20 日・14 日）" in out   # 10/06〜10/26（金曜 10/23 の足は次の足の月曜に判断）、平日 14 本
+
+    # EA を貼っていない銘柄は「記録なし」。抜けとして数える
+    final2["sleeves"].append(silver)
+    fpath.write_text(json.dumps(final2), encoding="utf-8")
+    out = _run(cfg, fpath, logs, tmp_path)
+    assert "SILVER 記録なし" in out and "**差あり**" in out
+    assert "✗ 抜け: 10% 以下（全銘柄）" in out
