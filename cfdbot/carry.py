@@ -35,7 +35,8 @@ def fetch_eia_daily(code: str) -> pd.DataFrame:
         import xlrd  # type: ignore  # noqa: F401
     except ImportError:
         raise RuntimeError("Excel（.xls）を読む xlrd が無い。./cfd update で入る") from None
-    raw = _get(f"https://www.eia.gov/dnav/pet/hist_xls/{code}d.xls", timeout=60, tries=2)
+    area = "ng" if code.startswith("RNG") else "pet"   # 天然ガスは ng/、原油は pet/ の下にある
+    raw = _get(f"https://www.eia.gov/dnav/{area}/hist_xls/{code}d.xls", timeout=60, tries=2)
     book = pd.read_excel(io.BytesIO(raw), sheet_name=None, header=None, engine="xlrd")
     name = "Data 1" if "Data 1" in book else next((k for k in book if k.lower().startswith("data")), None)
     if name is None:
