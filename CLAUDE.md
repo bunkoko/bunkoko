@@ -8,6 +8,8 @@
 - EA の照らし合わせ（`./cfd demo-check`・`./cfd replay`）を直したら、`.venv/bin/python -m pytest -q tests/test_demo_check.py tests/test_demo_check_phillip.py`
   で確かめる（フィリップと同じ形の作ったデータで毎週の確認を通しで流す。数秒）。点検のために作業員（サブエージェント）を
   何体も出すのは、利用者が頼んだときだけ
+- Mac で記録（`git commit`）したら、その場で `git push` する（Mac の中だけの記録があると、`./cfd update` が
+  クラウドの更新を取り込めずに止まる。2026-10-14 に 5 つの記録がそうなり、`claude/mac-local` に送って合わせた）
 
 ## ニュースの取得・判定（`./cfd news`）が止まったとき
 
