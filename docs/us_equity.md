@@ -41,11 +41,11 @@
 ## 4. 手順
 
 ```
-./cfd stocks --market us --fetch   # us_select（Yahoo から約 250 銘柄。数分）
+./cfd stockpick --market us --fetch   # us_select（Yahoo から約 250 銘柄。数分）
 ./cfd timing --fetch               # vol_managed・sma_timing（^GSPC 1950〜）
 ```
 
-結果: `output/stocks/<日時>/report.md`、`output/timing/<日時>/report.md`
+結果: `output/stockpick/<日時>/report.md`、`output/timing/<日時>/report.md`
 
 ## 5. 結果の記録
 

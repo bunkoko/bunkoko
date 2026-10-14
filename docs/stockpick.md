@@ -1,5 +1,9 @@
 # 日本の個別株をルールで選ぶ（事前登録）
 
+> 2026-10-14: Mac 側の別の株の研究（上がりやすい株を探す 17 の仮説。`./cfd stocks`・`docs/stocks.md`）と名前が
+> ぶつかったため、この研究の名前だけを `./cfd stocks` → `./cfd stockpick`、`docs/stocks.md` → `docs/stockpick.md`、
+> データ `data/stocks` → `data/stockpick`、結果 `output/stocks` → `output/stockpick` に変えた。中身・条件・結果は変えていない
+
 書いた日: 2026-10-12（計算する前）。
 
 ## 1. これまでと、この検証の立ち位置
@@ -16,7 +20,7 @@
 
 ## 2. ルール（数字は結果を見て動かさない）
 
-- **対象**: 日本の大型株。日経平均・TOPIX の中核銘柄を中心に、約 230 銘柄のコードを手で並べた（`cfdbot/stocks.py`）。
+- **対象**: 日本の大型株。日経平均・TOPIX の中核銘柄を中心に、約 230 銘柄のコードを手で並べた（`cfdbot/stockpick.py`）。
   **今の銘柄だけ**なので、途中で倒産・上場廃止した会社は入っていない（生存者バイアス）。そのため**比べる相手も同じ銘柄群**にする
 - **2 つの点数**（毎月末に計算）
   - モメンタム: 12 か月前から 1 か月前までの値上がり率（直近 1 か月は除く。論文どおり）
@@ -44,11 +48,11 @@
 ## 4. 手順
 
 ```
-./cfd stocks --fetch     # Yahoo から約 230 銘柄の日足を取る（初回・更新。数分）
-./cfd stocks             # 検証と判定。有望なら今月の上位 20 も表示
+./cfd stockpick --fetch     # Yahoo から約 230 銘柄の日足を取る（初回・更新。数分）
+./cfd stockpick             # 検証と判定。有望なら今月の上位 20 も表示
 ```
 
-- 日足: `data/stocks/`。結果: `output/stocks/<日時>/report.md`
+- 日足: `data/stockpick/`。結果: `output/stockpick/<日時>/report.md`
 
 ## 5. 結果の記録
 

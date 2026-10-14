@@ -1,9 +1,9 @@
-"""日本の個別株をルールで選ぶ検証（./cfd stocks）。
+"""日本の個別株をルールで選ぶ検証（./cfd stockpick）。
 
-    python scripts/stocks_study.py --fetch   # Yahoo から約 230 銘柄の日足を取る（初回・更新）
-    python scripts/stocks_study.py           # 検証と判定（有望なら今月の上位 20 も表示）
+    python scripts/stockpick_study.py --fetch   # Yahoo から約 230 銘柄の日足を取る（初回・更新）
+    python scripts/stockpick_study.py           # 検証と判定（有望なら今月の上位 20 も表示）
 
-ルールと判定の条件は docs/stocks.md（結果を見る前に決めたもの）。
+ルールと判定の条件は docs/stockpick.md（結果を見る前に決めたもの）。
 """
 
 from __future__ import annotations
@@ -22,12 +22,12 @@ sys.path.insert(0, str(ROOT))
 
 from cfdbot.context import fetch_yahoo  # noqa: E402
 from cfdbot.stats import psr_of  # noqa: E402
-from cfdbot.stocks import (COST, TICKERS, TOP_N, US_TICKERS, basket_returns, load_closes, monthly_picks,  # noqa: E402
+from cfdbot.stockpick import (COST, TICKERS, TOP_N, US_TICKERS, basket_returns, load_closes, monthly_picks,  # noqa: E402
                            monthly_returns, random_pick_excess, scores, sharpe_monthly, stock_path, universe_returns)
 
 MARKETS = {   # 名前 → (ティッカー, 既定の置き場, 表示, 事前登録の文書, これまでの試した数)
-    "jp": (TICKERS, "data/stocks", "日本の個別株", "docs/stocks.md 3 章", 41),
-    "us": (US_TICKERS, "data/stocks_us", "米国の個別株", "docs/us_equity.md 3 章", 42),
+    "jp": (TICKERS, "data/stockpick", "日本の個別株", "docs/stockpick.md 3 章", 41),
+    "us": (US_TICKERS, "data/stockpick_us", "米国の個別株", "docs/us_equity.md 3 章", 42),
 }
 
 
@@ -64,12 +64,12 @@ def fetch_all(root: Path, tickers, log=print) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--market", default="jp", choices=list(MARKETS), help="jp: 日本株（docs/stocks.md）、us: 米国株（docs/us_equity.md）")
+    p.add_argument("--market", default="jp", choices=list(MARKETS), help="jp: 日本株（docs/stockpick.md）、us: 米国株（docs/us_equity.md）")
     p.add_argument("--root", default=None)
     p.add_argument("--fetch", action="store_true")
     p.add_argument("--start", default="2006-01-01")
     p.add_argument("--placebo", type=int, default=200)
-    p.add_argument("--out", default="output/stocks")
+    p.add_argument("--out", default="output/stockpick")
     args = p.parse_args()
 
     tickers, default_root, label, rule_doc, prior = MARKETS[args.market]
@@ -79,7 +79,7 @@ def main() -> None:
     notes: list[str] = []
     close = load_closes(root, tickers, log=notes.append)
     if close.shape[1] < 2 * TOP_N:
-        raise SystemExit(f"銘柄が足りない（{close.shape[1]}。./cfd stocks --fetch）")
+        raise SystemExit(f"銘柄が足りない（{close.shape[1]}。./cfd stockpick --fetch）")
     start = pd.Timestamp(args.start, tz="UTC")
 
     out = Path(args.out) / datetime.now().strftime("%Y%m%d-%H%M")

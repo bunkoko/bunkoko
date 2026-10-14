@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from cfdbot.stocks import (basket_returns, month_ends, monthly_picks, monthly_returns, random_pick_excess, scores,
+from cfdbot.stockpick import (basket_returns, month_ends, monthly_picks, monthly_returns, random_pick_excess, scores,
                            sharpe_monthly, universe_returns)
 
 
@@ -51,7 +51,7 @@ def test_basket_returns_charge_turnover():
 
 
 def test_clean_scale_jumps_keeps_only_data_after_a_relisting_jump():
-    from cfdbot.stocks import clean_scale_jumps
+    from cfdbot.stockpick import clean_scale_jumps
 
     idx = pd.bdate_range("2012-09-10", periods=8, tz="UTC")
     s = pd.Series([2.0, 2.0, 2.0, 2.0, 3790.0, 3800.0, 3700.0, 3750.0], index=idx)   # JAL の再上場の形
