@@ -7,7 +7,7 @@
 - --start: その口座で EA が判断した最初の足の日付（Python の再現もこの日から。./cfd replay と同じ）
 - --count-from: 直した後の確かめ直しで、条件を数え始める日（Python の再現は --start から続ける）
 - EA のログ: MT5 のデータフォルダの MQL5/Logs/<YYYYMMDD>.log（自動で探す。--logs でフォルダかファイルを指定もできる。
-  VPS に移した後は、VPS のログを日付ごとのファイルのまま取り込んだフォルダを --logs に渡す）
+  VPS に移した後は、移した日までの Mac のログと VPS のログ（日付ごとのファイルのまま）を 1 つのフォルダに入れて渡す）
 - 構成: ./cfd preset で最後に置いたもの（./cfd replay と同じ）
 - 結果: 画面と output/demo_check/<日時>/report.md・days.csv
 """
@@ -49,6 +49,7 @@ MAX_MISSING_SHARE = 0.10
 LAST_DAYS_NO_GAP = 5
 MIN_ENTRIES = 2
 SERIOUS_SEVERITY = "要確認"
+EXPORT_MARGIN = pd.Timedelta(minutes=15)
 _DATED_LOG = re.compile(r"^\d{8}\.log$")
 
 
@@ -76,6 +77,25 @@ def exported_at(data_dir: str, server_tz) -> pd.Timestamp | None:
     except ValueError:
         return None
     return server_to_utc(pd.DatetimeIndex([t]), server_tz)[0]
+
+
+def excused_held(days: pd.DataFrame, recheck_from: date | None) -> list[bool]:
+    """保有数の差を数えない足か（条件 4）。抜けた足の後、次に一致する足まで。
+
+    EA は止まっていた間の足を処理しないので、その間の売買が Python とずれる。確かめ直し（recheck_from）では、
+    数え始める日より前から続いているずれ（直す前の失敗で建玉がずれたまま）も、次に一致する足まで数えない。
+    days は開始日からの表（抜けが数え始める日より前でも効くように）。
+    """
+    out, flag, entered = [], False, recheck_from is None
+    for d, st in zip(days["bar_date"], days["status"]):
+        if not entered and d >= recheck_from:
+            flag, entered = True, True
+        out.append(flag)
+        if st == "抜け":
+            flag = True
+        elif st == "一致":
+            flag = False
+    return out
 
 
 def fmt(v, nd=2) -> str:
@@ -138,8 +158,12 @@ def main() -> None:
         cap = max(judged.max(), end + timedelta(days=1)) if len(judged) else end + timedelta(days=1)
         log_end = min(log.last_date, cap) if log.last_date else cap
 
+    # 他の行は、数える最初の足を EA が判断した日から（その日の 0 時より前の行は、前の足・直す前・前の口座のもの）
+    first_judged = j.loc[j["bar_date"] >= count_from, "log_date"].dropna()
+    line_from = first_judged.min() if len(first_judged) else count_from + timedelta(days=1)
+
     def in_range(d) -> bool:   # 書いた日が分からない行は数える（見落とさないため）
-        return d is None or pd.isna(d) or (d >= count_from and (log_end is None or d <= log_end))
+        return d is None or pd.isna(d) or (d >= line_from and (log_end is None or d <= log_end))
 
     ev = ev[ev["log_date"].map(in_range).astype(bool)] if len(ev) else ev
     unattributed = [d for d in log.unattributed if in_range(d)]
@@ -177,11 +201,14 @@ def main() -> None:
         bar = pd.Timedelta(TIMEFRAMES[tf])
         py = python_daily(sig, tz, bar, trades, sym)
         # 書き出したときに途中だった足は、EA が見た確定の値と違うので比べない
-        done = py[py.index + bar <= exported] if exported is not None else py.iloc[:-1]
+        # （exported= は書き出しの終わりに書かれるので、その直前に終わった足も念のため次の書き出しに回す）
+        done = py[py.index + bar <= exported - EXPORT_MARGIN] if exported is not None else py.iloc[:-1]
         upto = done["bar_date"].iloc[-1] if len(done) else date.min
-        days = compare_symbol(ea, py, count_from, log.last_date if not log.undated else None, upto)
+        days = compare_symbol(ea, py, start, log.last_date if not log.undated else None, upto)
         if end is not None:
             days = days[days["bar_date"] <= end]
+        days = days.assign(after_gap=excused_held(days, count_from if recheck else None))
+        days = days[days["bar_date"] >= count_from].reset_index(drop=True)
         days.insert(0, "symbol", sym)
         all_days.append(days)
         if ea.empty:
@@ -250,15 +277,20 @@ def main() -> None:
     nopy_all = int((days_all["status"] == "Python のデータに無い").sum()) if len(days_all) else 0
     say()
     say("## 結果")
-    clean = (set(verdicts) <= {"一致"} and serious.empty and not twice_n and not unattributed and len(compared) > 0)
-    say(f"**{'一致' if clean else '差あり'}**（" + "、".join(f"{s[0]} {v}" for s, v in zip(summary, verdicts)) + "）"
+    if {"差あり", "記録なし"} & set(verdicts) or not serious.empty or twice_n or unattributed:
+        word = "差あり"
+    elif compared.empty:
+        word = "まだ比べられない"   # 最初の足がまだ判断されていない・書き出しが古い
+    else:
+        word = "一致"
+    say(f"**{word}**（" + "、".join(f"{s[0]} {v}" for s, v in zip(summary, verdicts)) + "）"
         + (f"。書き出しより後の {nopy_all} 日分は、次の書き出しで比べる" if nopy_all else ""))
 
     # 本番に進む条件のうち、ログで数えられるもの（docs/operations.md 12 章）
     say()
     say("## 本番に進む条件（docs/operations.md 12 章。数えられる分）")
     if days_all.empty or compared.empty:
-        say("- 照らし合わせた日が無い（書き出しが古いか、ログの場所が違う）")
+        say("- 照らし合わせた日が無い（最初の足をまだ EA が判断していない・書き出しが古い・ログの場所が違う）")
     else:
         min_days, min_cmp = (RECHECK_CALENDAR_DAYS, RECHECK_COMPARED_DAYS) if recheck else \
             (MIN_CALENDAR_DAYS, MIN_COMPARED_DAYS)
@@ -269,18 +301,8 @@ def main() -> None:
             -LAST_DAYS_NO_GAP:]
         span = (log_end - count_from).days if log_end else 0
         dated = not log.undated
-        # 抜けた日の後は、次に一致する日までの保有数の差を数えない（EA は止まっていた間の足を処理しないため）
         held_bad = compared[compared["diffs"].fillna("").str.contains("保有数")]
-        held_bad_unexplained = []
-        for sym, g in days_all.groupby("symbol"):
-            after_gap = False
-            for _, r in g.sort_values("bar_date").iterrows():
-                if r["status"] == "抜け":
-                    after_gap = True
-                elif r["status"] == "一致":
-                    after_gap = False
-                elif r["status"] == "差あり" and "保有数" in str(r["diffs"]) and not after_gap:
-                    held_bad_unexplained.append((sym, r["bar_date"]))
+        held_bad_unexplained = held_bad[~held_bad["after_gap"].astype(bool)]
         other_bad = compared[compared["diffs"].fillna("").str.contains("終値|シグナル|行き過ぎ")]
         entries = sum(s[5] for s in summary)
         checks = [
@@ -291,7 +313,7 @@ def main() -> None:
              dated and share <= MAX_MISSING_SHARE and not (set(gaps["bar_date"]) & set(last_days)),
              f"{share:.1%}" if dated else "書いた日が分からないログがあり数えられない"),
             ("終値・シグナル・行き過ぎ: すべて一致", other_bad.empty, f"差 {len(other_bad)} 件"),
-            ("保有数: 抜けの直後を除いてすべて一致", not held_bad_unexplained,
+            ("保有数: 抜けの直後を除いてすべて一致", held_bad_unexplained.empty,
              f"差 {len(held_bad)} 件（抜けの直後でないもの {len(held_bad_unexplained)} 件）"),
             ("要確認の行・同じ足の二重判断: 0 件", serious.empty and not twice_n,
              f"要確認 {len(serious)} 件・二重判断 {twice_n} 件"),

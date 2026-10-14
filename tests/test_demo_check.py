@@ -3,7 +3,7 @@
 import json
 import subprocess
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -269,7 +269,7 @@ def _python_truth(cfg, final, start):
     return python_daily(sig, 9, pd.Timedelta(days=1), res["trades"], "GOLD")
 
 
-def _ea_logs(logs: Path, truth: pd.DataFrame, start: date, skip=(), flip=None):
+def _ea_logs(logs: Path, truth: pd.DataFrame, start: date, skip=(), flip=None, flat=False):
     logs.mkdir(exist_ok=True)
     what = {1: "買いのシグナル", -1: "売りのシグナル", 0: "シグナルなし"}
     rows = truth[truth["bar_date"] >= start]
@@ -278,8 +278,8 @@ def _ea_logs(logs: Path, truth: pd.DataFrame, start: date, skip=(), flip=None):
         if judged_on is None or r["bar_date"] in skip:
             continue
         sig = int(r["py_signal"]) if r["bar_date"] != flip else (1 if int(r["py_signal"]) != 1 else 0)
-        line = judge_line(r["bar_date"].strftime("%Y.%m.%d"), f"{r['py_close']:.2f}", what[sig], int(r["py_held"]),
-                          ext=f"{r['py_ext']:+.2f}")
+        line = judge_line(r["bar_date"].strftime("%Y.%m.%d"), f"{r['py_close']:.2f}", what[sig],
+                          0 if flat else int(r["py_held"]), ext=f"{r['py_ext']:+.2f}")
         write_log(logs / f"{judged_on:%Y%m%d}.log", [line])
 
 
@@ -375,3 +375,40 @@ def test_demo_check_forming_bar_missing_symbol_and_end(tmp_path):
     out = _run(cfg, fpath, logs, tmp_path)
     assert "SILVER 記録なし" in out and "**差あり**" in out
     assert "✗ 抜け: 10% 以下（全銘柄）" in out
+
+
+def test_demo_check_recheck_excuses_carried_differences(tmp_path):
+    cfg, fpath, final = _setup(tmp_path)
+    start = date(2026, 10, 6)
+    truth = _python_truth(cfg, final, "2026-10-06")
+    rows = truth[truth["bar_date"] >= start].reset_index(drop=True)
+    first_held = rows.index[rows["py_held"] == 1][0]
+    signal_bar = rows.loc[first_held - 1, "bar_date"]   # この足のシグナルで、次の足の始値に入る
+    # EA は止まっていてシグナルの足を判断せず（抜け）、その後も建玉を持たないまま
+    logs = tmp_path / "logs"
+    _ea_logs(logs, truth, start, skip=(signal_bar,), flat=True)
+    out = _run(cfg, fpath, logs, tmp_path)
+    assert "抜けの直後でないもの 0 件" in out and "保有数: 抜けの直後を除いてすべて一致（差 0 件" not in out
+    # 抜けが数え始める日より前でも、その後のずれは数えない
+    later = signal_bar + timedelta(days=7)
+    out = _run(cfg, fpath, logs, tmp_path, extra=("--count-from", later.isoformat()))
+    assert "抜けの直後でないもの 0 件" in out and "✓ 保有数" in out
+
+    # 直した日の 0 時に出た失敗の行（直す前のもの）は、確かめ直しで数えない
+    fix_day = date(2026, 10, 20)
+    with open(logs / f"{fix_day:%Y%m%d}.log", "ab") as f:
+        f.write(("\r\n" + _issue("XAUUSD.ps01 発注拒否 rc=10019 (no money) lots=0.10") + "\r\n").encode("utf-16-le"))
+    out = _run(cfg, fpath, logs, tmp_path, extra=("--count-from", fix_day.isoformat()))
+    assert "発注拒否" not in out and "要確認 0 件" in out
+    out = _run(cfg, fpath, logs, tmp_path, extra=("--count-from", "2026-10-19"))
+    assert "発注拒否" in out and "要確認 1 件" in out
+
+
+def test_demo_check_nothing_compared_yet(tmp_path):
+    cfg, fpath, final = _setup(tmp_path)
+    truth = _python_truth(cfg, final, "2026-10-06")
+    logs = tmp_path / "logs"
+    _ea_logs(logs, truth, date(2026, 10, 6))
+    # 週末に口座を替え、月曜の判断の前に確かめた（新しい口座の最初の足はまだ判断されていない）
+    out = _run(cfg, fpath, logs, tmp_path, start="2026-11-06")
+    assert "**まだ比べられない**" in out and "照らし合わせた日が無い（最初の足をまだ EA が判断していない" in out
