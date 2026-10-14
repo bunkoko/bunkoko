@@ -46,7 +46,10 @@ def replay(cfg, final: dict, start: str, end: str | None = None, risk_scale: flo
     t0 = pd.Timestamp(clean_date(start), tz="UTC")
     last = max(ds.signal_frame(p.symbol, p.timeframe).index[-1] for p in picks)
     t1 = pd.Timestamp(clean_date(end), tz="UTC") + pd.Timedelta(days=1) if end else last + pd.Timedelta(days=1)
-    return validate_window(ds, settings.instrument_map(), picks, bt_cfg, t0, t1), picks, t0, t1
+    # EA は過去 ea_calc_bars（4000）本で指標を計算する。Python も手元の過去を全部使う
+    # （助走が短いと、252 本の値動きを使う行き過ぎの絞り込みが開始から数十本のあいだ効かない）
+    res = validate_window(ds, settings.instrument_map(), picks, bt_cfg, t0, t1, signal_warm=pd.Timedelta(days=365 * 100))
+    return res, picks, t0, t1
 
 
 def main() -> None:

@@ -276,10 +276,12 @@ def _warm_time(task: Task) -> pd.Timedelta:
 
 def validate_window(ds: Dataset, instruments, picks, bt_cfg: BacktestConfig,
                     start: pd.Timestamp, end: pd.Timestamp, gates: dict[str, pd.DataFrame] | None = None,
-                    use_fine: bool = True) -> dict[str, Any]:
+                    use_fine: bool = True, signal_warm: pd.Timedelta | None = None) -> dict[str, Any]:
     """検証期間を、実際の資金・全ルール（細かい足での約定の再現を含む）でバックテストする。
 
     gates: 銘柄キー → エントリーの絞り込み（列 long / short。外部データの研究用）
+    signal_warm: 売買の足を開始より前にどれだけ残すか（指定すると助走より長ければこちら。EA と同じく長い過去で
+                 指標を計算したいとき。例: 行き過ぎの絞り込みは 252 本の値動きを使う）
     """
     tasks = [pick_task(p) for p in picks]
     sleeves = [make_sleeve(t, ds, risk_weight=p.multiplier) for t, p in zip(tasks, picks)]
@@ -290,7 +292,8 @@ def validate_window(ds: Dataset, instruments, picks, bt_cfg: BacktestConfig,
     for t in tasks:
         frame = ds.signal_frame(t.symbol, t.timeframe)
         warm = max(_warm_time(x) for x in tasks if x.symbol == t.symbol) * 1.5 + pd.Timedelta(days=7)
-        data[t.symbol] = frame[(frame.index >= start - warm) & (frame.index < end)]
+        sig_warm = max(warm, signal_warm) if signal_warm is not None else warm
+        data[t.symbol] = frame[(frame.index >= start - sig_warm) & (frame.index < end)]
         f = ds.fine_frame(t.symbol, t.timeframe) if use_fine else None
         if f is not None:
             fine[t.symbol] = f[(f.index >= start - warm) & (f.index < end)]

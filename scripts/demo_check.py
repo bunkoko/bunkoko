@@ -146,6 +146,9 @@ def main() -> None:
     recheck = count_from > start
     smap = cfg.data.symbol_map
     tz = cfg.data.server_tz
+    if recheck:   # 足の無い日（日曜など）に直したら、その前の足から数える（土曜の足は月曜の朝、直した後に判断される）
+        bar_days = {d for pk in picks for d in server_dates(ds.signal_frame(pk.symbol, pk.timeframe).index, tz)}
+        count_from = max((d for d in bar_days if start <= d <= count_from), default=count_from)
     exported = exported_at(cfg.data.dir, tz)
 
     # 数える範囲: 足は count_from〜end。他の行（要確認など）は、その足を判断した日まで（end の足は翌日以降に判断される）
@@ -219,7 +222,13 @@ def main() -> None:
         n = days["status"].value_counts()
         ok, bad, gap, wait = (int(n.get(k, 0)) for k in ("一致", "差あり", "抜け", "判断待ち"))
         nopy = int(n.get("Python のデータに無い", 0))
+        # 保有数だけの差で、抜けの後（確かめ直しでは数え始める前から続くずれ）のものは条件 4 で数えない
+        excused = (days["status"] == "差あり") & (days["diffs"] == "保有数") & days["after_gap"].astype(bool)
+        n_excused = int(excused.sum())
+        bad -= n_excused
         say(f"- 一致 {ok} 日、差あり {bad} 日、EA の記録の抜け {gap} 日、判断待ち {wait} 日"
+            + (f"、数えない保有数の差 {n_excused} 日（抜けの後{'・確かめ直しの前から続くずれ' if recheck else ''}）"
+               if n_excused else "")
             + (f"、Python のデータに無い {nopy} 日（書き出しより後の足。次の書き出しで比べる）" if nopy else ""))
         steps = days["ea_held"].dropna().diff()   # EA が判断した日どうしの保有数の増減（抜けた日は飛ばす）
         entries, exits = int((steps > 0).sum()), int((steps < 0).sum())
@@ -232,12 +241,14 @@ def main() -> None:
         if len(twice_days):
             say(f"- ⚠ 同じ足を 2 回判断した日: {', '.join(str(d) for d in twice_days)}"
                 "（同じ銘柄のチャートに EA が 2 つ・再起動で記録が消えた）")
-        if bad:
+        if bad or n_excused:
             say()
             say("| 足の日付 | 差 | 終値 EA / Py | シグナル EA / Py | 行き過ぎ EA / Py | 保有 EA / Py |")
             say("|---|---|---|---|---|---|")
-            for _, r in days[days["status"] == "差あり"].head(20).iterrows():
-                say(f"| {r['bar_date']} | {r['diffs']} | {r['ea_close']} / {r['py_close']} | "
+            for (_, r), ex in zip(days[days["status"] == "差あり"].head(20).iterrows(), excused[days["status"] == "差あり"]):
+                nd = int(r["close_dec"])
+                say(f"| {r['bar_date']} | {r['diffs']}{'（数えない）' if ex else ''} | "
+                    f"{r['ea_close']:.{nd}f} / {r['py_close']:.{nd}f} | "
                     f"{SIG.get(r['ea_signal'], '?')} / {SIG.get(r['py_signal'], '?')} | "
                     f"{fmt(r['ea_ext'])} / {fmt(r['py_ext'])} | {fmt(r['ea_held'], 0)} / {fmt(r['py_held'], 0)} |")
         sym_rej = None
@@ -249,7 +260,7 @@ def main() -> None:
             say("差の理由の候補:")
             for w in why:
                 say(f"- {w}")
-        verdicts.append("差あり" if bad else ("一致" if ok else "照らし合わせた日なし"))
+        verdicts.append("差あり" if bad else ("一致" if ok or n_excused else ("抜けのみ" if gap else "照らし合わせた日なし")))
         summary.append((sym, ok, bad, gap, wait, entries))
 
     say()
@@ -277,13 +288,16 @@ def main() -> None:
     nopy_all = int((days_all["status"] == "Python のデータに無い").sum()) if len(days_all) else 0
     say()
     say("## 結果")
-    if {"差あり", "記録なし"} & set(verdicts) or not serious.empty or twice_n or unattributed:
+    extra = [x for x in (f"要確認の行 {len(serious)} 件" if len(serious) else "",
+                         f"同じ足の二重判断 {twice_n} 件" if twice_n else "",
+                         f"発信元が読めない判断の行 {len(unattributed)} 件" if unattributed else "") if x]
+    if {"差あり", "記録なし", "抜けのみ"} & set(verdicts) or extra:
         word = "差あり"
     elif compared.empty:
         word = "まだ比べられない"   # 最初の足がまだ判断されていない・書き出しが古い
     else:
         word = "一致"
-    say(f"**{word}**（" + "、".join(f"{s[0]} {v}" for s, v in zip(summary, verdicts)) + "）"
+    say(f"**{word}**（" + "、".join([f"{s[0]} {v}" for s, v in zip(summary, verdicts)] + extra) + "）"
         + (f"。書き出しより後の {nopy_all} 日分は、次の書き出しで比べる" if nopy_all else ""))
 
     # 本番に進む条件のうち、ログで数えられるもの（docs/operations.md 12 章）

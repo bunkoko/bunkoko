@@ -389,6 +389,7 @@ def test_demo_check_recheck_excuses_carried_differences(tmp_path):
     _ea_logs(logs, truth, start, skip=(signal_bar,), flat=True)
     out = _run(cfg, fpath, logs, tmp_path)
     assert "抜けの直後でないもの 0 件" in out and "保有数: 抜けの直後を除いてすべて一致（差 0 件" not in out
+    assert "**一致**" in out and "数えない保有数の差" in out and "保有数（数えない）" in out
     # 抜けが数え始める日より前でも、その後のずれは数えない
     later = signal_bar + timedelta(days=7)
     out = _run(cfg, fpath, logs, tmp_path, extra=("--count-from", later.isoformat()))
@@ -412,3 +413,46 @@ def test_demo_check_nothing_compared_yet(tmp_path):
     # 週末に口座を替え、月曜の判断の前に確かめた（新しい口座の最初の足はまだ判断されていない）
     out = _run(cfg, fpath, logs, tmp_path, start="2026-11-06")
     assert "**まだ比べられない**" in out and "照らし合わせた日が無い（最初の足をまだ EA が判断していない" in out
+
+
+def test_demo_check_sunday_fix_and_gaps_only(tmp_path):
+    cfg, fpath, final = _setup(tmp_path)
+    truth = _python_truth(cfg, final, "2026-10-06")
+    logs = tmp_path / "logs"
+    _ea_logs(logs, truth, date(2026, 10, 6))
+    # 日曜に直した → その前の足（ここでは金曜。フィリップなら土曜）から数える
+    out = _run(cfg, fpath, logs, tmp_path, extra=("--count-from", "2026-10-18"))
+    assert "条件を数え始める日: 2026-10-16" in out
+    # EA が止まったまま（判断の行が開始日より後に 1 つも無い）→ 差あり（抜けのみ）
+    stale = tmp_path / "stale"
+    _ea_logs(stale, truth, date(2026, 10, 6))
+    for f in stale.glob("*.log"):
+        if f.name > "20261023.log":
+            f.unlink()
+    write_log(stale / "20261106.log", [_issue("CfdCommodityEA start XAUUSD.ps01 strategy=1 magic=2609004")])
+    out = _run(cfg, fpath, stale, tmp_path, start="2026-10-26")
+    assert "**差あり**（GOLD 抜けのみ）" in out
+
+
+def test_replay_uses_long_history_for_extension_filter(tmp_path):
+    """開始直後でも、行き過ぎの絞り込みが全部の過去で計算したシグナルと同じに効く（EA は 4000 本で計算する）。"""
+    cfg, fpath, final = _setup(tmp_path)
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from compare_signals import signals_for_sleeve
+    from replay import replay
+
+    from cfdbot.train.config import load_train_config
+    from cfdbot.train.dataset import load_dataset
+
+    c = load_train_config(cfg)
+    c.account.equity = 10_000_000
+    ds = load_dataset(c.data)
+    sig = signals_for_sleeve(ds, final["sleeves"][0])["entry"]
+    checked = 0
+    for start in pd.date_range("2025-09-01", "2026-09-01", freq="14D"):
+        res, *_ = replay(c, final, f"{start:%Y-%m-%d}", f"{start + pd.Timedelta(days=60):%Y-%m-%d}", ds=ds)
+        for _, t in res["trades"].iterrows():
+            prev = sig[sig.index < t["entry_time"]]
+            assert prev.iloc[-1] == (1 if t["side"] > 0 else -1), (start, t["entry_time"])
+            checked += 1
+    assert checked > 0
