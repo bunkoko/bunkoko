@@ -53,6 +53,30 @@ def test_parse_judgment_and_issue_lines():
     assert ev[1]["text"].startswith("order failed")
 
 
+def test_parse_real_layout_from_phillip(tmp_path):
+    # 2026-10-14 のエキスパートタブの実物と同じ形（数値は変えてある）。時間足は「Daily」、土曜の短い足を月曜の朝に判断する
+    write_log(tmp_path / "20261010.log", [
+        judge_line("2026.10.09", "60.1234", "シグナルなし", 0, ext="-0.39", chart="XAGUSD.ps01", tf="Daily",
+                   time="00:00:00.481"),
+    ])
+    write_log(tmp_path / "20261012.log", [
+        judge_line("2026.10.10", "60.2345", "シグナルなし", 0, ext="-0.46", chart="XAGUSD.ps01", tf="Daily",
+                   time="07:01:00.188"),
+        judge_line("2026.10.10", "102.345", "シグナルなし", 0, ext="+0.16", chart="XBRUSD.ps01", tf="Daily",
+                   time="09:01:00.372"),
+    ])
+    log = read_logs(sorted(tmp_path.glob("*.log")))
+    j = log.judgments
+    assert list(j["tf"]) == ["D1", "D1", "D1"] and not log.unattributed and not log.unparsed
+    assert list(j["bar_date"]) == [date(2026, 10, 9), date(2026, 10, 10), date(2026, 10, 10)]
+    assert list(j["close_dec"]) == [4, 4, 3] and list(j["time"]) == ["00:00:00", "07:01:00", "09:01:00"]
+    # 土曜の足（10/10）は、次の足（月曜 10/12）がログの最後の日までに始まっていれば判断されているはず
+    py = _py([date(2026, 10, 9), date(2026, 10, 10), date(2026, 10, 12)], [60.1234, 60.2345, 60.3],
+             [0, 0, 0], [-0.39, -0.46, -0.5], [0, 0, 0])
+    days = compare_symbol(j[j["chart"] == "XAGUSD.ps01"], py, date(2026, 10, 6), log.last_date)
+    assert list(days["status"]) == ["一致", "一致", "判断待ち"]
+
+
 def test_parse_is_lenient_about_layout():
     # 区切りが空白・時刻に小数なし・発信元が後ろ、でも読める
     lines = ["OK 0 00:00:05 CfdCommodityEA (XAUUSD.ps01, Daily)   2026.10.06 の足を判断: 終値 2650 → シグナルなし、"
