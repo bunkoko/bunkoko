@@ -187,6 +187,11 @@ def main() -> None:
     if log.undated:
         say(f"- ⚠ 書いた日が分からないログ: {', '.join(log.undated)}（名前が YYYYMMDD.log のファイルのまま渡す）。"
             "抜けと期間を数えられない")
+    first_bar = j["bar_date"].min() if len(j) else None
+    if first_bar is not None:
+        say(f"- ログで EA が判断した最初の足: {first_bar}"
+            + ("（--start より前。EA を貼った直後に判断した足なら、--start をこの日にする）"
+               if first_bar < start and not j["log_date"].dropna().lt(start).any() else ""))
     unknown = sorted(set(j.loc[j["key"].isna(), "chart"]))
     if unknown:
         say(f"- ⚠ 銘柄キーに変換できないチャート: {', '.join(unknown)}（config の symbol_map に追加）")
@@ -245,12 +250,16 @@ def main() -> None:
             say()
             say("| 足の日付 | 差 | 終値 EA / Py | シグナル EA / Py | 行き過ぎ EA / Py | 保有 EA / Py |")
             say("|---|---|---|---|---|---|")
-            for (_, r), ex in zip(days[days["status"] == "差あり"].head(20).iterrows(), excused[days["status"] == "差あり"]):
-                nd = int(r["close_dec"])
+            rows = days[days["status"] == "差あり"].assign(ex=excused[days["status"] == "差あり"])
+            rows = pd.concat([rows[~rows["ex"]], rows[rows["ex"]]])   # 数える差を先に
+            for _, r in rows.head(20).iterrows():
+                ex, nd = bool(r["ex"]), int(r["close_dec"])
                 say(f"| {r['bar_date']} | {r['diffs']}{'（数えない）' if ex else ''} | "
                     f"{r['ea_close']:.{nd}f} / {r['py_close']:.{nd}f} | "
                     f"{SIG.get(r['ea_signal'], '?')} / {SIG.get(r['py_signal'], '?')} | "
                     f"{fmt(r['ea_ext'])} / {fmt(r['py_ext'])} | {fmt(r['ea_held'], 0)} / {fmt(r['py_held'], 0)} |")
+            if len(rows) > 20:
+                say(f"\n（ほか {len(rows) - 20} 日は days.csv）")
         sym_rej = None
         if rej is not None and not rej.empty:
             sym_rej = rej[rej["sleeve"].astype(str).str.split(":").str[0] == sym]
@@ -264,7 +273,7 @@ def main() -> None:
         summary.append((sym, ok, bad, gap, wait, entries))
 
     say()
-    say("## EA の他の行（要確認・注意）" + (f"（{count_from} 以降）" if recheck else ""))
+    say(f"## EA の他の行（要確認・注意。{line_from} 以降に書かれた行）")
     serious = ev[ev["severity"] == SERIOUS_SEVERITY]
     notes = ev[ev["severity"] == "注意"]
     if serious.empty and notes.empty:
@@ -285,7 +294,8 @@ def main() -> None:
     days_all = pd.concat(all_days, ignore_index=True) if all_days else pd.DataFrame()
     twice_n = int(days_all["twice"].fillna(False).astype(bool).sum()) if len(days_all) else 0
     compared = days_all[days_all["status"].isin(["一致", "差あり"])] if len(days_all) else days_all
-    nopy_all = int((days_all["status"] == "Python のデータに無い").sum()) if len(days_all) else 0
+    nopy_all = days_all.loc[days_all["status"] == "Python のデータに無い", "bar_date"].nunique() if len(days_all) else 0
+    gap_all = days_all.loc[days_all["status"] == "抜け", "bar_date"].nunique() if len(days_all) else 0
     say()
     say("## 結果")
     extra = [x for x in (f"要確認の行 {len(serious)} 件" if len(serious) else "",
@@ -298,6 +308,7 @@ def main() -> None:
     else:
         word = "一致"
     say(f"**{word}**（" + "、".join([f"{s[0]} {v}" for s, v in zip(summary, verdicts)] + extra) + "）"
+        + (f"。EA の記録の抜け {gap_all} 日（条件 2）" if gap_all else "")
         + (f"。書き出しより後の {nopy_all} 日分は、次の書き出しで比べる" if nopy_all else ""))
 
     # 本番に進む条件のうち、ログで数えられるもの（docs/operations.md 12 章）
