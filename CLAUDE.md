@@ -5,6 +5,9 @@
 - `data/`・`output/` はコミットしない（.gitignore 済み。証券会社のデータ・ニュースの見出しを含む）。
   講座のノートや資料の中身もコミットしない（このリポジトリは公開）
 - 研究の仮説と判定の条件は、実行する前に `docs/*.md` に書く（事前登録）。結果を見てから条件を変えない
+- EA の照らし合わせ（`./cfd demo-check`・`./cfd replay`）を直したら、`.venv/bin/python -m pytest -q tests/test_demo_check.py tests/test_demo_check_phillip.py`
+  で確かめる（フィリップと同じ形の作ったデータで毎週の確認を通しで流す。数秒）。点検のために作業員（サブエージェント）を
+  何体も出すのは、利用者が頼んだときだけ
 
 ## ニュースの取得・判定（`./cfd news`）が止まったとき
 
