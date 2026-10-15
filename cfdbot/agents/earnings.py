@@ -306,19 +306,20 @@ def recent_revisions(disc: pd.DataFrame, root: Path, index: pd.DatetimeIndex, ti
                      days: int = RECENT_DAYS, log: Callable[[str], None] = print) -> pd.DataFrame:
     """毎日の台帳の E1 の帳に使う表（docs/agents.md 12 章）。直近 days 日の開示だけを読み、判断の日ごとに 1 行。
 
-    列: date（判断の日）/ ticker / fc_rev / kind。訂正の開示は使わない（11 章からの決まり）。保存してある数字だけを使うので、
+    列: date（判断の日）/ ticker / fc_rev / kind / fc_op_rev（通期の営業利益の予想の変化率。本業の印に使う）。訂正の開示は使わない（11 章からの決まり）。保存してある数字だけを使うので、
     まだ東証のサイトに載っていない開示（多くは前日の夕方の分）は入らない（その日の判断に間に合わなかった、という先のデータの事実のまま）。
     """
-    cols = ["date", "ticker", "fc_rev", "kind"]
+    cols = ["date", "ticker", "fc_rev", "kind", "fc_op_rev"]
     if disc.empty or not len(index):
         return pd.DataFrame(columns=cols)
     since = (index[-1] - pd.Timedelta(days=days)).strftime("%Y-%m-%d")
-    feat = build(disc[disc["time"] >= since], root, log=log, skip_corrections=True)
+    feat = build(disc[disc["time"] >= since], root, log=log, extra=True, skip_corrections=True)
     if feat.empty:
         return pd.DataFrame(columns=cols)
-    t = daily(feat, index, tickers)
+    t = daily(feat, index, tickers, features=FEATURES + ["fc_op_rev"])
     out = pd.DataFrame({"date": index[t["pos"].to_numpy()], "ticker": [tickers[k] for k in t["j"].to_numpy()],
-                        "fc_rev": t["fc_rev"].to_numpy(), "kind": t["kind"].to_numpy()})
+                        "fc_rev": t["fc_rev"].to_numpy(), "kind": t["kind"].to_numpy(),
+                        "fc_op_rev": t["fc_op_rev"].to_numpy()})            # 本業の印（docs/text_signals.md 6 章。判定しない）
     return out[cols]
 
 

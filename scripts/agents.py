@@ -1053,8 +1053,9 @@ def show_rows(rows: pd.DataFrame | list[dict], cfg: dict, now: pd.Timestamp, say
         for r in g.itertuples():
             name = f" {r.name}" if isinstance(r.name, str) and r.name else ""
             if side == "買い":
+                mark = L.core_mark(getattr(r, "reason", ""))
                 say(f"- {r.ticker}{name} **{int(r.shares)} 株**（前の営業日の終値 {float(r.prev_close):,.0f} 円 → 約 {int(r.shares) * float(r.prev_close):,.0f} 円。"
-                    f"売る日の目安 {pd.Timestamp(r.due):%m-%d}）")
+                    f"売る日の目安 {pd.Timestamp(r.due):%m-%d}" + (f"。E1 の印: {mark}" if mark else "") + "）")
             elif side == "売り":
                 say(f"- {r.ticker}{name} **{int(r.shares)} 株**" + (f"（{r.note}）" if isinstance(r.note, str) and r.note else ""))
             elif side == "延長":

@@ -68,12 +68,30 @@ def random_pick(eligible: list[str], k: int, day: pd.Timestamp) -> list[str]:
 
 
 def e1_pick(revisions: pd.DataFrame, day: pd.Timestamp, eligible: list[str], up: float = E1_UP) -> pd.DataFrame:
-    """E1 の帳: その日の判断に使える開示で、通期の純利益の予想を up 以上引き上げた株（銘柄選定の点数のある株だけ）。列: ticker / fc_rev。"""
+    """E1 の帳: その日の判断に使える開示で、通期の純利益の予想を up 以上引き上げた株（銘柄選定の点数のある株だけ）。
+
+    列: ticker / fc_rev / fc_op_rev（営業利益の予想の変化率。本業の印に使うだけ。表に無ければ NaN）。
+    """
+    cols = ["ticker", "fc_rev", "fc_op_rev"]
     if revisions is None or revisions.empty:
-        return pd.DataFrame(columns=["ticker", "fc_rev"])
+        return pd.DataFrame(columns=cols)
     r = revisions[(pd.to_datetime(revisions["date"]) == pd.Timestamp(day)) & (revisions["fc_rev"] >= up)
                   & revisions["ticker"].isin(set(eligible))]
-    return r.drop_duplicates("ticker")[["ticker", "fc_rev"]].sort_values("ticker").reset_index(drop=True)
+    r = r.assign(fc_op_rev=r["fc_op_rev"] if "fc_op_rev" in r else np.nan)
+    return r.drop_duplicates("ticker")[cols].sort_values("ticker").reset_index(drop=True)
+
+
+CORE_UP = 0.05     # 本業の印: 通期の営業利益の予想も 5% 以上の引き上げ（docs/text_signals.md 6 章。帳の中身は変えない・判定しない）
+
+
+def e1_reason(fc_rev: float, fc_op_rev: float | None) -> str:
+    """E1 の行の理由の文（本業の印つき）。台帳の列は増やさず、理由の文に入れる。"""
+    base = f"通期の純利益の会社予想 {fc_rev:+.0%}（E1: 5% 以上の引き上げ）"
+    if fc_op_rev is None or not np.isfinite(fc_op_rev):
+        return base + "【本業: 不明（営業利益の予想の変化が分からない）】"
+    if fc_op_rev >= CORE_UP:
+        return base + f"【本業: 営業利益の予想も {fc_op_rev:+.0%}】"
+    return base + f"【本業以外: 営業利益の予想は {fc_op_rev:+.0%}】"
 
 
 def tradable_today(open_: pd.DataFrame, close: pd.DataFrame) -> tuple[pd.Timestamp | None, list[str]]:
@@ -99,7 +117,7 @@ def e1_preview(open_: pd.DataFrame, close: pd.DataFrame, revisions: pd.DataFrame
         return None, pd.DataFrame(columns=["ticker", "name", "reason"])
     r = e1_pick(revisions, day, eligible)
     return day, pd.DataFrame({"ticker": r["ticker"], "name": [names.get(t, t) for t in r["ticker"]],
-                              "reason": [f"通期の純利益の会社予想 {v:+.0%}（E1: 5% 以上の引き上げ）" for v in r["fc_rev"]]})
+                              "reason": [e1_reason(v, o) for v, o in zip(r["fc_rev"], r["fc_op_rev"])]})
 
 
 def extra_rows(day: pd.Timestamp, selector_row: pd.Series, n_selector: int, revisions: pd.DataFrame | None,
@@ -112,7 +130,7 @@ def extra_rows(day: pd.Timestamp, selector_row: pd.Series, n_selector: int, revi
                      f"でたらめ（種 {pd.Timestamp(day):%Y%m%d}、{len(eligible)} 銘柄から {n_selector} 個）"))
     for r in e1_pick(revisions, day, eligible).itertuples():
         rows.append((day, r.ticker, E1_BOOK, selector_row.get(r.ticker), np.nan, np.nan, names.get(r.ticker, r.ticker),
-                     f"通期の純利益の会社予想 {r.fc_rev:+.0%}（E1: 5% 以上の引き上げ）"))
+                     e1_reason(r.fc_rev, r.fc_op_rev)))
     return pd.DataFrame(rows, columns=["date", "ticker", "book", "selector", "ir", "combined", "name", "reason"])
 
 

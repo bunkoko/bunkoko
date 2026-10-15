@@ -49,6 +49,10 @@ def test_e1_pick_and_extra_rows():
     assert len(r) == 2 and set(r["ticker"]) <= {"A.T", "B.T", "D.T"}                     # 点数の無い C は選ばない
     e = rows[rows["book"] == "e1"].iloc[0]
     assert e["ticker"] == "A.T" and e["name"] == "会社A" and "+5%" in e["reason"]
+    assert "【本業: 不明" in e["reason"]                                                  # 営業利益の予想の変化が無い表なら「不明」
+    rows2 = D.extra_rows(day, sel_row, 2, rev.assign(fc_op_rev=[0.08, 0.0, 0.0, 0.0]), {})
+    assert rows2[rows2["book"] == "e1"].iloc[0]["reason"].endswith("【本業: 営業利益の予想も +8%】")   # 本業の印（docs/text_signals.md 6 章）
+    assert rows2["ticker"].tolist() == rows["ticker"].tolist()                          # 印を付けても、帳の中身は変わらない
 
 
 def test_recent_revisions_reads_only_recent_and_skips_corrections(tmp_path):

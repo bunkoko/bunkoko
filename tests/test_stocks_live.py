@@ -502,3 +502,10 @@ def test_notify_test_works_before_setup_and_sends_nothing_without_settings(tmp_p
     _script().cmd_orders(_ns(tmp_path, notify_test=True))
     out = capsys.readouterr().out
     assert "設定が無いので送らない" in out and not (tmp_path / "agents" / "live" / "notify.log").exists()   # 何も送らず、何も書かない
+
+
+def test_core_mark_from_the_e1_reason():
+    assert D.e1_reason(0.12, 0.08).endswith("【本業: 営業利益の予想も +8%】") and L.core_mark(D.e1_reason(0.12, 0.08)) == "本業"
+    assert L.core_mark(D.e1_reason(0.12, 0.01)) == "本業以外" and L.core_mark(D.e1_reason(0.12, float("nan"))) == ""
+    rows = [{"ticker": "1001.T", "name": "会社A", "side": "買い", "shares": 4, "prev_close": 2000.0, "note": "", "reason": D.e1_reason(0.2, 0.3)}]
+    assert "約 8,000 円・本業）" in L.notice_text(rows, {"mode": "real"}, TODAY)[1]

@@ -11,6 +11,7 @@ Windows は不要: EA のコンパイル・テスト・デモの試運転は Mac
 - **これまでの検証のまとめと、これからの方針（2026-10-11）: [docs/review.md](docs/review.md)**（2026-10-15 の研究チームの見直しは 7 章、元の報告は [docs/team_20261015/](docs/team_20261015/)）
 - 資金全体の設計（NISA・EA・暗号資産。2026-10-15 の答えを反映）: [docs/portfolio.md](docs/portfolio.md)、利用者のやること: [docs/todo.md](docs/todo.md)
 - 日本株の少額の本番（予行演習）の決まりと、今日の注文の一覧（`./cfd agents orders`。注文は出さない）: [docs/stocks_live.md](docs/stocks_live.md)、毎日の手順: [docs/stocks_live_daily.md](docs/stocks_live_daily.md)
+- 文章とニュースの信号（似た会社のモメンタム・有報の文面の前年との差・ニュースと値動きの大きさ。2026-10-16 に事前登録）: [docs/text_signals.md](docs/text_signals.md)
 - 戦略は差し替え式。`cfdbot/strategies/` に追加するだけで、バックテスト・最適化・テストの対象になる
 
 | 銘柄 | 主力 | 副 |
@@ -105,6 +106,8 @@ python scripts/mt5_files.py install --run output/train/<日時>   # EA とプリ
 ./cfd agents check      # 台帳の点検（自動実行・抜けた日）と、先のデータの途中経過・止める決まり（docs/agents.md 12 章。数秒）
 ./cfd agents orders     # 日本株の予行演習: 今日の注文の一覧（注文は出さない）。--fill で約定、--report で様子（docs/stocks_live.md）
 ./cfd jquants check     # J-Quants の無料プランで、生存者バイアスを取り除けるかを確かめる（docs/survivorship.md。初回は ./cfd jquants key）
+./cfd edinet check      # EDINET の有報の本文が何年分取れるかを確かめる（docs/text_signals.md。初回は ./cfd edinet key）→ fetch → momentum・lazy
+./cfd news volcheck     # 地政学のニュースの急増の翌日の値動きの大きさを、S&P500・TOPIX・BTC で確かめる（docs/text_signals.md 5 章）
 ./cfd partner           # 相方の行き過ぎフィルタを、使っていない商品の 5 組で確かめる（docs/cross_asset.md 7 章。Mac で数十分）
 ```
 

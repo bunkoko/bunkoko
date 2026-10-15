@@ -657,6 +657,16 @@ def update_refs(files: LiveFiles, fills: pd.DataFrame, plan: pd.DataFrame, today
     return msgs
 
 
+def core_mark(reason) -> str:
+    """E1 の理由の文の「本業」の印（docs/text_signals.md 6 章。判定しない）を短く: 「本業」「本業以外」「」。"""
+    r = str(reason or "")
+    if "【本業以外" in r:
+        return "本業以外"
+    if "【本業:" in r and "不明" not in r:
+        return "本業"
+    return ""
+
+
 # --------------------------------------------------------------------------- iPhone への知らせ（cfdbot/notify.py で送る）
 def notice_text(rows: list[dict] | pd.DataFrame, cfg: dict, now: pd.Timestamp) -> tuple[str, str, bool]:
     """知らせの題・本文・注文があるか。空運転なら「空運転: 出すはずの注文」と分かるように書く。"""
@@ -679,7 +689,9 @@ def notice_text(rows: list[dict] | pd.DataFrame, cfg: dict, now: pd.Timestamp) -
     for _, r in sells.iterrows():
         out.append(f"売り {code(r['ticker'])}{nm(r)} {int(r['shares'])} 株" + (f"（{r['note']}）" if isinstance(r.get("note"), str) and r.get("note") else ""))
     for _, r in buys.iterrows():
-        out.append(f"買い {code(r['ticker'])}{nm(r)} {int(r['shares'])} 株（約 {int(r['shares']) * float(r['prev_close']):,.0f} 円）")
+        mark = core_mark(r.get("reason"))
+        out.append(f"買い {code(r['ticker'])}{nm(r)} {int(r['shares'])} 株（約 {int(r['shares']) * float(r['prev_close']):,.0f} 円"
+                   + (f"・{mark}" if mark else "") + "）")
     ext = df[df["side"] == "延長"] if len(df) else df
     if len(ext):
         out.append("売らずに持ち続ける: " + "、".join(f"{code(t)}" for t in ext["ticker"]))
