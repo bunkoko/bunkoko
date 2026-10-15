@@ -121,7 +121,7 @@ def test_forward_book_judges_only_at_the_look_days_and_keeps_a_stop():
     assert E.forward_verdict(None, "selector") == "まだ記録が無い"
 
 
-def test_decide_writes_random_and_e1_books_and_check_reports(tmp_path, capsys):
+def _decide_setup(tmp_path):
     idx = pd.bdate_range("2026-09-01", "2026-10-15")
     cols = [f"{1000 + i}.T" for i in range(100)]
     root, data = tmp_path / "agents", tmp_path / "stocks"
@@ -133,27 +133,50 @@ def test_decide_writes_random_and_e1_books_and_check_reports(tmp_path, capsys):
     pd.DataFrame({"ticker": cols, "name": [f"会社{i}" for i in range(100)], "sector": "x"}).to_csv(data / "universe_jp.csv", index=False)
     pd.DataFrame({"date": [idx[-1], idx[-1]], "ticker": [cols[5], cols[6]], "fc_rev": [0.12, 0.01], "kind": [5, 2]}).to_csv(
         root / "revisions_recent.csv", index=False)
+    return idx, cols, root, data
+
+
+def test_decide_writes_new_books_to_a_separate_file_and_check_reads_both(tmp_path, capsys):
+    idx, cols, root, data = _decide_setup(tmp_path)
     mod = _script("agents_forward")
     mod.cmd_decide(Namespace(root=str(root), data=str(data)))
     lg = pd.read_csv(root / "ledger.csv")
-    n = lg["book"].value_counts()
-    assert n["selector"] == 10 and n["combined"] == 10 and n["random"] == 10 and n["e1"] == 1
-    assert lg[lg["book"] == "e1"].iloc[0]["ticker"] == cols[5]
-    mod.cmd_decide(Namespace(root=str(root), data=str(data)))                       # 同じ日は二度書かない
-    assert len(pd.read_csv(root / "ledger.csv")) == len(lg)
+    assert lg["book"].value_counts().to_dict() == {"combined": 10, "selector": 10}       # ledger.csv は今までどおり（2 つの帳だけ）
+    assert list(lg.columns) == ["decided_at", "date", "ticker", "book", "selector", "ir", "combined", "name", "reason"]
+    ex = pd.read_csv(root / "ledger_extra.csv")
+    assert ex["book"].value_counts().to_dict() == {"random": 10, "e1": 1} and ex[ex["book"] == "e1"].iloc[0]["ticker"] == cols[5]
+    assert (ex["decided_at"] == lg["decided_at"].iloc[0]).all() and (ex["date"] == f"{idx[-1]:%Y-%m-%d}").all()   # 同じ時刻・同じ日
+    mod.cmd_decide(Namespace(root=str(root), data=str(data)))                       # 同じ日は二度書かない（どちらのファイルも）
+    assert len(pd.read_csv(root / "ledger.csv")) == len(lg) and len(pd.read_csv(root / "ledger_extra.csv")) == len(ex)
 
     rng = np.random.default_rng(1)
     close = pd.DataFrame(100 * np.exp(np.cumsum(rng.normal(0, 0.01, (len(idx), 100)), axis=0)), index=idx, columns=cols)
     close.to_csv(data / "jp_close.csv")
     close.shift(1).fillna(100.0).to_csv(data / "jp_open.csv")
-    lg2 = lg.copy()
-    lg2["decided_at"] = f"{idx[-1]:%Y-%m-%d} 13:06:00"                                 # 時刻を今日の 13:06 に置き直す（試験の時計に合わせる）
-    lg2.to_csv(root / "ledger.csv", index=False)
+    for name, df in (("ledger.csv", lg), ("ledger_extra.csv", ex)):                   # 時刻を今日の 13:06 に置き直す（試験の時計に合わせる）
+        df.assign(decided_at=f"{idx[-1]:%Y-%m-%d} 13:06:00").to_csv(root / name, index=False)
+    assert set(mod.read_ledgers(mod.paths(str(root)))["book"]) == {"selector", "combined", "random", "e1"}
     capsys.readouterr()
     mod.cmd_check(Namespace(root=str(root), data=str(data), out=str(tmp_path / "out"), now=f"{idx[-1]:%Y-%m-%d} 16:00"))
     text = next((tmp_path / "out" / "check").glob("*.md")).read_text(encoding="utf-8")
     assert "## 2. 台帳" in text and "先の判断として数える日" in text and "抜けた営業日: 無し" in text
     assert "| selector |" in text and "| random |" in text and "| e1 |" in text and "まだ判定しない" in text
+
+
+def test_decide_still_writes_ledger_when_the_new_books_fail(tmp_path, capsys, monkeypatch):
+    idx, cols, root, data = _decide_setup(tmp_path)
+    mod = _script("agents_forward_fail")
+
+    def boom(*a, **k):
+        raise ValueError("作り物の失敗")
+
+    monkeypatch.setattr(D, "extra_rows", boom)
+    mod.cmd_decide(Namespace(root=str(root), data=str(data)))
+    out = capsys.readouterr().out
+    lg = pd.read_csv(root / "ledger.csv")
+    assert lg["book"].value_counts().to_dict() == {"combined": 10, "selector": 10}       # M2・combined は必ず書かれる
+    assert not (root / "ledger_extra.csv").exists()
+    assert "でたらめ・E1 の帳は書けなかった（ValueError: 作り物の失敗）。ledger.csv は書いてある" in out
 
 
 def test_cusum_threshold_reproduces_the_registered_value_and_paths():
