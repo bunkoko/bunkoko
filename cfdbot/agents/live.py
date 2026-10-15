@@ -36,6 +36,9 @@ DRY_MIN_DAYS, DRY_MIN_ROWS, DRY_MARGIN_SHARE = 10, 10, 0.8   # 4.5 空運転: 10
 FIX_ORDERS, MIN_ROUNDTRIPS, GIVE_UP_ORDERS = 60, 30, 120     # 5.3 買いの注文 60 回で決める。往復 30 回未満なら続け、120 回で打ち切る
 C_FLOOR, NF_LIMIT, LIMIT_6 = 0.0002, 0.05, 0.0010            # 5.3 下限 0.02%、不成立 5%、docs/agents.md 6 章の「往復 0.10% 以内」
 REF_DAYS = 3                             # 5.1 基準の値段は約定から 3 営業日以内に取る
+EARLY_TRIPS = 10                         # 4.5 の 3: 最初の 10 往復の c の平均が往復 0.10% を超えたら止める
+LIMIT_UP_DAY = 0.10                      # 5.2 不成立のうち、その日の終値が前の日から +10% 以上のもの（ストップ高の日の見当）を別に数える
+EARLIEST_DEADLINE = "13:35"              # 4.1 受付の終わりがこれより前だと、13:05 の判断の後に 30 分の余裕が取れない
 FORM = "SBI S株・成行"
 AT = ("引け", "寄り", "後場寄り")
 SIDES = {"買い": "買い", "buy": "買い", "売り": "売り", "sell": "売り"}
@@ -261,11 +264,25 @@ def recent_mistakes(errs: list[tuple[pd.Timestamp, str]], cal: pd.DatetimeIndex,
     return [e for e in errs if start <= e[0] <= today]
 
 
+def early_cost(rt: pd.DataFrame | None) -> str | None:
+    """4.5 の 3: 往復が済んだ最初の 10 回の c の平均が、往復 0.10% を超えていれば、その理由。"""
+    if rt is None or not len(rt):
+        return None
+    c = rt["c"].dropna()
+    if len(c) < EARLY_TRIPS:
+        return None
+    m = float(c.iloc[:EARLY_TRIPS].mean())
+    return f"最初の {EARLY_TRIPS} 往復のコストの平均 {m:.3%} が往復 {LIMIT_6:.2%} を超えた（docs/stocks_live.md 4.5 の 3）" if m > LIMIT_6 else None
+
+
 def stop_checks(cfg: dict, cash_equity: tuple[float, float], errs: list, lots: dict[str, Lot], close: pd.DataFrame,
-                cal: pd.DatetimeIndex, today: pd.Timestamp, e1_closed: str | None) -> list[str]:
-    """止める決まり（3.2）に当たったものの理由。"""
+                cal: pd.DatetimeIndex, today: pd.Timestamp, e1_closed: str | None, rt: pd.DataFrame | None = None) -> list[str]:
+    """止める決まり（3.3）に当たったものの理由。"""
     x = float(cfg["equity_jpy"])
     out = []
+    early = early_cost(rt)
+    if early:
+        out.append(early)
     if cash_equity[1] < DD_STOP * x:
         out.append(f"記録上の資産 {cash_equity[1]:,.0f} 円が、入れた金額 {x:,.0f} 円の {DD_STOP:.0%} を下回った")
     rec = recent_mistakes(errs, cal, today)
@@ -371,7 +388,7 @@ def make_plan(today: pd.Timestamp, now: pd.Timestamp, cfg: dict, e1_today: pd.Da
 
 # --------------------------------------------------------------------------- 約定を書く
 def check_fill(cfg: dict, plan: pd.DataFrame, lots: dict[str, Lot], day: pd.Timestamp, ticker: str, side: str, shares: int,
-               price: float, status: str, at: str, stop: str | None) -> tuple[str, bool]:
+               price: float, status: str, at: str, stop: str | None, before: pd.DataFrame | None = None) -> tuple[str, bool]:
     """決まりと違えば「誤り」の中身を返す（空なら誤りではない）。2 つ目は「すぐ STOP を置く」か。"""
     if status != "約定":
         return "", False
@@ -380,6 +397,9 @@ def check_fill(cfg: dict, plan: pd.DataFrame, lots: dict[str, Lot], day: pd.Time
         errs.append(f"{shares} 株（S 株は {MAX_SHARES} 株まで）")
     if side == "買い":
         p = plan[(plan["mode"] == "real") & (plan["date"] == day) & (plan["ticker"] == ticker) & (plan["side"] == "買い")] if len(plan) else plan
+        if before is not None and len(before) and ((before["mode"] == "real") & (before["side"] == "買い") & (before["status"] == "約定")
+                                                   & (before["ticker"] == ticker) & (pd.to_datetime(before["date"]) == day)).any():
+            errs.append("同じ日の同じ株の買いが二度")
         if not len(p):
             errs.append("計画に無い買い")
         elif int(p["shares"].iloc[0]) != shares:
@@ -450,7 +470,7 @@ def round_trips(fills: pd.DataFrame, plan: pd.DataFrame, refs: pd.DataFrame, clo
 
     列: date / ticker / status / done（片づいたか）/ c（約定した往復のコスト）/ t（時刻のずれ）/ m（不成立の株の、紙の上の 5 日の差）/ excluded
     """
-    cols = ["date", "ticker", "status", "done", "c", "t", "m", "excluded"]
+    cols = ["date", "ticker", "status", "done", "c", "t", "m", "excluded", "limit_up"]
     if fills is None or not len(fills):
         return pd.DataFrame(columns=cols)
     f = fills[fills["mode"] == "real"].copy()
@@ -462,8 +482,11 @@ def round_trips(fills: pd.DataFrame, plan: pd.DataFrame, refs: pd.DataFrame, clo
     cc = close.pct_change(fill_method=None)
     out = []
     for b in buys.itertuples():
-        rec = {"date": b.date, "ticker": b.ticker, "status": b.status, "done": False, "c": np.nan, "t": np.nan, "m": np.nan, "excluded": ""}
+        rec = {"date": b.date, "ticker": b.ticker, "status": b.status, "done": False, "c": np.nan, "t": np.nan, "m": np.nan, "excluded": "",
+               "limit_up": False}
         if b.status == "不成立":
+            if b.ticker in cc and b.date in cc.index:
+                rec["limit_up"] = bool(cc.at[b.date, b.ticker] >= LIMIT_UP_DAY)
             end = bday_add(cal, b.date, HOLD)
             if b.ticker in close and end <= close.index[-1] and b.date in close.index:
                 w = cc.loc[(cc.index > b.date) & (cc.index <= end)]
@@ -516,7 +539,8 @@ def _upper(x: np.ndarray) -> tuple[float, float, float]:
 def c_star(rt: pd.DataFrame) -> dict:
     """c* を決める時点に届いたか、届いたら値（docs/stocks_live.md 5.3）。最初の 60 回（往復が 30 回に届かなければ 120 回まで）で決め、後から計算し直さない。"""
     out = {"orders": len(rt), "filled": int((rt["status"] == "約定").sum()) if len(rt) else 0,
-           "unfilled": int((rt["status"] == "不成立").sum()) if len(rt) else 0, "fixed": False, "gave_up": False, "k": None}
+           "unfilled": int((rt["status"] == "不成立").sum()) if len(rt) else 0, "fixed": False, "gave_up": False, "k": None,
+           "limit_up": int(rt["limit_up"].fillna(False).astype(bool).sum()) if len(rt) and "limit_up" in rt else 0}
     n_all = rt["c"].notna().sum() if len(rt) else 0
     out["mean_now"], out["se_now"], out["upper_now"] = _upper(rt["c"]) if n_all >= 2 else (np.nan, np.nan, np.nan)
     for k in range(FIX_ORDERS, min(len(rt), GIVE_UP_ORDERS) + 1):

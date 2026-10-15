@@ -982,7 +982,8 @@ def cmd_orders(args) -> None:
     stop = files.stop_reason()
     cash, equity = L.cash_and_equity(float(cfg["equity_jpy"]), ev, lots, close)
     errs = L.mistakes(mode, plan, fills, lots, cal, today)
-    hits = L.stop_checks(cfg, (cash, equity), errs, lots, close, cal, today, e1_closed_reason(p, close))
+    rt = L.round_trips(fills, plan, files.refs(), close, cal) if mode == "real" else None
+    hits = L.stop_checks(cfg, (cash, equity), errs, lots, close, cal, today, e1_closed_reason(p, close), rt)
     if hits and mode == "real" and not stop:
         files.place_stop("・".join(hits), now)
         stop = files.stop_reason()
@@ -1054,6 +1055,9 @@ def orders_setup(args, files, now: pd.Timestamp) -> None:
         if args.deadline is not None:
             cfg["deadline"] = args.deadline
     files.save_config(cfg)
+    if cfg.get("deadline") and pd.Timestamp(f"2000-01-01 {cfg['deadline']}") < pd.Timestamp(f"2000-01-01 {L.EARLIEST_DEADLINE}"):
+        print(f"**注意**: 受付の終わり {cfg['deadline']} は {L.EARLIEST_DEADLINE} より前なので、13:05 の判断の後に {L.MARGIN_MIN} 分の余裕が取れず、"
+              "買える日が無い。形を変えるなら別に事前登録する（docs/stocks_live.md 4.1）")
     print(f"予行演習の設定: {files.config_path}（{'本物' if cfg['mode'] == 'real' else '空運転'}、入れる金額 {cfg['equity_jpy']:,} 円、"
           f"1 日に買うのは {cfg['equity_jpy'] // L.SPLIT:,} 円・{L.MAX_NAMES} 銘柄まで、受付の終わり {cfg.get('deadline') or '未記入'}）")
 
@@ -1075,7 +1079,7 @@ def orders_fill(args, files, cfg: dict, plan: pd.DataFrame, lots: dict, now: pd.
     status = args.status
     if status == "約定" and (shares <= 0 or price <= 0):
         sys.exit("約定なら株数と値段が要る（約定しなかったなら --status 不成立）")
-    err, stop_now = L.check_fill(cfg, plan, lots, day, ticker, side, shares, price, status, args.at, files.stop_reason())
+    err, stop_now = L.check_fill(cfg, plan, lots, day, ticker, side, shares, price, status, args.at, files.stop_reason(), files.fills())
     err = "、".join(e for e in (err, args.error or "") if e)
     fid = files.next_fill_id()
     files.append(files.fills_path, [{"id": fid, "recorded_at": f"{now:%Y-%m-%d %H:%M:%S}", "mode": "real", "date": day, "ticker": ticker, "side": side,
@@ -1113,7 +1117,8 @@ def orders_report(args, p: dict, files, cfg: dict, plan, fills, ev, lots: dict, 
     errs = L.mistakes(mode, plan, fills, lots, cal, today)
     rec = L.recent_mistakes(errs, cal, today)
     say(f"- 直近 {L.ERR_WINDOW} 営業日の誤り {len(rec)} 回（{L.ERR_MAX} 回で止める）" + ("".join(f"\n  - {d:%m-%d} {t}" for d, t in rec)))
-    hits = L.stop_checks(cfg, (cash, equity), errs, lots, close, cal, today, e1_closed_reason(p, close))
+    hits = L.stop_checks(cfg, (cash, equity), errs, lots, close, cal, today, e1_closed_reason(p, close),
+                         L.round_trips(fills, plan, files.refs(), close, cal) if mode == "real" else None)
     say("- 止める決まりに当たっているもの: " + ("・".join(hits) if hits else "無し"))
     say("\n## 2. 持っている株\n")
     if not lots:
@@ -1139,7 +1144,8 @@ def orders_report(args, p: dict, files, cfg: dict, plan, fills, ev, lots: dict, 
                 say(f"- 基準の値段を取れなかった（{type(e).__name__}: {str(e)[:100]}）。次の回にまた取る")
         rt = L.round_trips(fills, plan, files.refs(), close, cal)
         cs = L.c_star(rt)
-        say(f"- 出した買いの注文 {cs['orders']} 回（約定 {cs['filled']}・不成立 {cs['unfilled']}）。決めるのは {L.FIX_ORDERS} 回が片づいたとき")
+        say(f"- 出した買いの注文 {cs['orders']} 回（約定 {cs['filled']}・不成立 {cs['unfilled']}。不成立のうち、その日に +{L.LIMIT_UP_DAY:.0%} 以上"
+            f"上がっていたもの {cs['limit_up']}）。決めるのは {L.FIX_ORDERS} 回が片づいたとき")
         say(f"- 往復が済んで計算できたもの {int(rt['c'].notna().sum()) if len(rt) else 0} 回。外したもの {int((rt['excluded'] != '').sum()) if len(rt) else 0} 回")
         if cs["fixed"]:
             say(f"- **決める時点に届いた**（最初の {cs['k']} 回）: c* = **{cs['c_star']:.3%}**（{cs['rule']}）。往復 {cs['n']} 回の平均 {cs['mean']:.3%}・"

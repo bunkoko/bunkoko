@@ -283,3 +283,29 @@ def test_round_trip_cost_and_timing_against_unadjusted_reference_prices(tmp_path
     assert len(got) == 2 and calls[0][0] == ("A",) and "6 営業日後に取った" in got["source"].iloc[1]
     assert any("3 営業日以内の決まり" in m for m in msgs)
     assert L.update_refs(files, fills, pd.DataFrame(columns=L.PLAN_COLUMNS), TODAY, TODAY, cal, fetch=fake) == []   # 取ってあれば取らない
+
+
+def test_sells_only_duplicate_buy_early_cost_and_early_deadline(tmp_path, capsys):
+    idx, cols, _ = _prices(tmp_path)
+    mod = _script()
+    mod.cmd_orders(_ns(tmp_path, setup=True, equity=300_000, deadline="13:30"))
+    assert "13:35 より前" in capsys.readouterr().out                                     # 13:05 の判断の後に 30 分の余裕が取れない
+    files = L.LiveFiles(tmp_path / "agents" / "live")
+    mod.cmd_orders(_ns(tmp_path, sells_only=True))                                        # 判断が無い日は、売りだけの一覧を書く
+    plan = files.plan()
+    assert plan["side"].tolist() == ["なし"] and "判断が無い日" in plan["reason"].iloc[0]
+    mod.cmd_orders(_ns(tmp_path, now=f"{TODAY:%Y-%m-%d} 13:20"))                         # 同じ日は後から買いを足さない
+    assert len(files.plan()) == 1
+
+    cfg = {"equity_jpy": 300_000}
+    plan = pd.DataFrame([{"mode": "real", "date": TODAY, "ticker": "A", "side": "買い", "shares": 4}])
+    before = pd.DataFrame([{"mode": "real", "date": TODAY, "ticker": "A", "side": "買い", "status": "約定"}])
+    err, _ = L.check_fill(cfg, plan, {}, TODAY, "A", "買い", 4, 2000.0, "約定", "引け", None, before)
+    assert "二度" in err
+
+    rt = pd.DataFrame({"c": [0.002] * 10 + [0.0] * 5, "status": "約定", "done": True})
+    assert "最初の 10 往復" in L.early_cost(rt)                                           # 差が大きければ早めに止める
+    assert L.early_cost(rt.iloc[:9]) is None and L.early_cost(pd.DataFrame({"c": [0.0005] * 10})) is None
+    cal = L.calendar(idx, TODAY)
+    hits = L.stop_checks(cfg, (0, 300_000), [], {}, pd.DataFrame(index=idx), cal, TODAY, None, rt)
+    assert hits and "4.5 の 3" in hits[0]
