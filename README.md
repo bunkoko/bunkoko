@@ -8,7 +8,7 @@ Windows は不要: EA のコンパイル・テスト・デモの試運転は Mac
 - 証券会社の決定・口座開設・データ取得から本番までの手順: **[docs/roadmap.md](docs/roadmap.md)**
 - 複数銘柄の組み合わせと資金配分をデータから学習（H1、iPad も計算に参加可）: **[docs/training.md](docs/training.md)**
 - **これから何を・どの画面で・どうするか（作業手順書）: [docs/operations.md](docs/operations.md)**
-- **これまでの検証のまとめと、これからの方針（2026-10-11）: [docs/review.md](docs/review.md)**
+- **これまでの検証のまとめと、これからの方針（2026-10-11）: [docs/review.md](docs/review.md)**（2026-10-15 の研究チームの見直しは 7 章、元の報告は [docs/team_20261015/](docs/team_20261015/)）
 - 資金全体の設計（NISA・EA・暗号資産。利用者が決めるための選択肢の草案）: [docs/portfolio.md](docs/portfolio.md)
 - 戦略は差し替え式。`cfdbot/strategies/` に追加するだけで、バックテスト・最適化・テストの対象になる
 
