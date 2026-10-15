@@ -114,7 +114,8 @@ def _send_one(ch: dict, title: str, text: str, runner: Callable, opener: Callabl
 
         if not (ch.get("token") and ch.get("user")):
             return False, "token（アプリの API トークン）と user（利用者のキー）が要る"
-        body = urllib.parse.urlencode({"token": ch["token"], "user": ch["user"], "title": title, "message": text}).encode("utf-8")
+        msg = text if len(text) <= 1000 else text[:990] + "\n…（続きは Claude に）"   # Pushover の本文は 1,024 字まで
+        body = urllib.parse.urlencode({"token": ch["token"], "user": ch["user"], "title": title[:250], "message": msg}).encode("utf-8")
         return _post("https://api.pushover.net/1/messages.json", body, "application/x-www-form-urlencoded", opener)
     if kind == "mail":
         import smtplib
