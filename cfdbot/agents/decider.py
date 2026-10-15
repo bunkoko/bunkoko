@@ -76,6 +76,32 @@ def e1_pick(revisions: pd.DataFrame, day: pd.Timestamp, eligible: list[str], up:
     return r.drop_duplicates("ticker")[["ticker", "fc_rev"]].sort_values("ticker").reset_index(drop=True)
 
 
+def tradable_today(open_: pd.DataFrame, close: pd.DataFrame) -> tuple[pd.Timestamp | None, list[str]]:
+    """銘柄選定の点数が付く株（その日に終値と、前日の引け → 寄りの値がある株）と、その最後の日。
+
+    銘柄選定（selector.scores）は、この印のある所だけに点数を付ける（cfdbot/stocks_short.py の walk_forward）。
+    だから E1 の帳に要る「点数のある株」は、学び直しを待たずに値段だけで分かる（docs/stocks_live.md 4.2）。
+    """
+    from .. import stocks_short as H
+
+    ok = close.notna() & H.parts(open_, close)["night"].notna()
+    rows = ok.any(axis=1).to_numpy()
+    if not rows.any():
+        return None, []
+    day = ok.index[rows][-1]
+    return day, ok.columns[ok.loc[day].to_numpy()].tolist()
+
+
+def e1_preview(open_: pd.DataFrame, close: pd.DataFrame, revisions: pd.DataFrame | None, names: dict[str, str]) -> tuple[pd.Timestamp | None, pd.DataFrame]:
+    """E1 の帳を、銘柄選定の学び直しの前に作る（同じ作り・同じ入力。台帳の E1 の帳は今までどおり判断のときに書く）。列: ticker / name / reason。"""
+    day, eligible = tradable_today(open_, close)
+    if day is None:
+        return None, pd.DataFrame(columns=["ticker", "name", "reason"])
+    r = e1_pick(revisions, day, eligible)
+    return day, pd.DataFrame({"ticker": r["ticker"], "name": [names.get(t, t) for t in r["ticker"]],
+                              "reason": [f"通期の純利益の会社予想 {v:+.0%}（E1: 5% 以上の引き上げ）" for v in r["fc_rev"]]})
+
+
 def extra_rows(day: pd.Timestamp, selector_row: pd.Series, n_selector: int, revisions: pd.DataFrame | None,
                names: dict[str, str]) -> pd.DataFrame:
     """台帳に足す 2 つの帳（でたらめ・E1）の行。列は explain の結果と同じ（date / ticker / book / selector / ir / combined / name / reason）。"""
