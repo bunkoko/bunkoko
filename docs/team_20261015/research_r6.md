@@ -189,3 +189,55 @@ Qwen3:
 - 日本の決算発表日のずれの査読付き研究。Johnson & So の日本の追試。
 - Thomas & Zhang の効きの大きさ（%）、Kitagawa の係数、日本の同業波及の日数・%。
 - Qwen3 / Qwen3-Embedding の公式な学習データの締め切り日。
+
+## 6. 追加確認（文章で近い会社のモメンタム／つながりモメンタム／Lazy Prices の買い側）
+
+**ラベル**: 全て二次（検索要約。論文本体は未読）。数字は要約に出たものだけ。
+
+### 6-1 Hoberg & Phillips「Text-Based Industry Momentum」（JFQA 53(6), 2355–2388, 2018-12）
+| 項目 | 内容 | 信頼度 |
+|---|---|---|
+| 何を作ったか | 10-K の事業説明の類似度で決めた近い会社（**TNIC-3**: SIC の 3 桁と同じ細かさに調整）を同業とし、**自社を除く近い会社の月次リターンの等加重平均**を信号にする。比較は SIC・FF-48（時価加重）の業種。近い会社の**数は固定でなく、細かさの調整で決まる**（件数は取れず）| 二次 |
+| リターンの期間・持つ期間 | 基本の信号は **t−12 〜 t−1 か月**。1 か月反転の影響を避けるため直近 1 か月を抜く変形がある。リバランスは**月次**（カレンダー時間のポートフォリオ）と読める。1 週間保有の月次アルファ **1.04%（有意水準 10%）**という第三者（Kai Wu の追試記事）の数字あり | 二次（保有期間の本文は未確認）|
+| 効きの大きさ | 要約: 見えにくい近い会社のショックは**経済的に大きい**モメンタム利益を生み、**自社のモメンタムの変数より強い**。TNIC の説明力の改善が SIC に対し 25〜40% なのに対し、**モメンタム利益の改善は 100〜200%**。**月次アルファ・t 値の本数字は取れず** | 二次 |
+| 標準の業種モメンタムとの差 | SIC の近い会社のショックは **1〜2 か月で伝わり、利益は小さく短命**。TNIC の近い会社のショックは**最長 12 か月ほど続く**（長持ち）。SIC-4 並み・SIC-3 並みに細かく揃えた TNIC でも、強い（TNIC-3 の月次アルファは 1% 水準で有意）。理由は「見えにくい近い会社には投資家の注意が向かない」 | 二次 |
+| 発表後の追試・弱まり | 論文自体が公表後（out-of-sample）の予測力を調べているが、**要約では結果が見えなかった**。第三者の追試は Kai Wu の記事のみ。**公表後に弱まったかの独立の研究は見つからなかった** | 見つからなかった |
+| 日本・米国以外 | **木村・中川「Industry Momentum Strategy Based on Text Mining in the Japanese Stock Market」（IIAI-AAI 2022, IEEE）**: 日本の**有価証券報告書の事業内容**を text mining して業種を作り、**従来の業種分類より、テキストによる業種分類のモメンタムの方が有意**（見えにくい同業群が先行・遅行を生む）。業種分類の比較図では「T33 が最も分類能力が高く、次に GICS、SCDV33、BOW33」（断片）。**効きの大きさ・期間・大型株の別は取れず**。Swinkels (2002) は、**従来の分類では日本の業種モメンタムはほぼ支持されない**とした（分類に敏感）。後続に Springer の "Hidden neighbours"（2024、株価ネットワークから業種モメンタムを取り出す）| 二次 |
+| 注意 | 学会発表（IIAI-AAI）であり、査読の強さは JFQA と比べ弱い。日本は「従来の分類ではそもそも業種モメンタムが弱い」ので、TNIC の方が有意になる土台が違う（推測）| 推測 |
+
+### 6-2 つながりのある会社のモメンタム（日本での追試）
+| 研究 | 内容・数字 | 日本 | 信頼度 |
+|---|---|---|---|
+| Cohen & Frazzini (2008) 顧客モメンタム | 顧客のショック後に供給元が遅れて動く。3 因子・流動性・自社/業種モメンタムを入れても残る（SFAS 131 の 10% 以上の顧客）| 原論文は米国 | 二次 |
+| Lee・Sun・Wang・Zhang (2019, JFE 132(3), 76–96) 技術の近さのモメンタム | 特許の技術分類で近い会社のリターンが自社を予測。**長短 月 117bp（等加重, t=5.47）／時価加重 月 69bp**。業種モメンタムと別物でリスク要因で説明しにくい。データは米国のみ。中国のヘッジファンドが追試した、と大学の記事 | **日本の追試は見つからなかった** | 二次 |
+| 日本の顧客モメンタム | Bloomberg 白書（2012–2018, TPX が最強）、Yamamoto-Kawadai-Miyahara（日米で有効、長短年 4.5%）。前章（R5）の通り、**データが有償**で個人は取れない | 日本（期間短い）| 二次 |
+| 米国の追試での弱まり | Pinchuk: 長短 月 1.22%（等加重）/1.06%（時価加重）。**発見後の標本では小さく有意でなくなる** | 米国 | 二次 |
+| 経済的なつながりの日本の追試（技術・特許・テキスト以外）| **見つからなかった** | — | 見つからなかった |
+
+### 6-3 Lazy Prices の「変えていない会社（買い側）」だけの効き
+- **訂正（R5 の私の書き方）**: R5 で「188bp は極端な五分位の長短」と書いたが、正確には **188bp は「事業等のリスク（Risk Factors）」節だけの 5 因子アルファ（非変更 − 変更, t=2.76, 月次）**。文書全体（年次・四半期）の長短は **月 30〜60bp で有意**（Alpha Architect の要約）。
+- **買い側だけの数字は、原論文の表を見ていないので取れなかった。** Alpha Architect は「**非変更群（Q5）の買いだけで、アルファの半分超が取れる**（Q5 の 5 因子アルファの数字は表にある、と書く）」と述べるが、**その数字（ブログ内の "23bp" は私の検索では確認できず）**は不明。つまり「買い側が半分超」は**ブログの要約**で、論文の表で未確認。
+- 空売りができない私たち（買いのみ）にとって重要な含意（推測）: 文書全体の長短 30〜60bp/月の半分なら、**買い側は月 15〜30bp 程度**の見込み。年 2〜4%。費用は月次入れ替え・回転が低いので年 1.2% 以下だが、日本の大型株で再現するかは別問題。
+- 注意: 買い側が「変えていない」会社は、市場全体を上回る理由が「悪い変更の会社を避けた」分に過ぎないかもしれない（空売りの代わりに買い側の質を見ている）。平均的な大型株との差で見る必要がある。
+
+### 6-4 採用案（文章で近い会社のモメンタム、月 1 回）への注意点
+1. 近い会社の定義は、**日本の有報「事業の内容」の埋め込みの近傍**（木村・中川は日本で同方向の結果）。件数 k を事前登録（結果を見る前に固定）。
+2. 信号 = **近い会社の過去 t−12〜t−1 か月（またはその変形）の等加重リターンから自社と業種（33 業種）の動きを引いた分**。33 業種モメンタムとの差（HP の主張は 100〜200% の改善）が評価の核心。
+3. **日本では従来の業種モメンタムが弱い（Swinkels）**ので、「33 業種のモメンタム自体がほぼゼロ」の可能性が高く、その場合は「差」でなく絶対水準が問われる。
+4. 日本の追試は学会発表 1 本のみ。**弱まりの独立の研究は無い**。公表後の追試で劣化した顧客モメンタムの例（Pinchuk）があるので、**劣化を想定した小さめの期待**を事前登録に書く。
+5. 先読み: 類似度の埋め込みに将来リターンは混ざりにくいが、有報の「事業の内容」は年ごとに変わるので、**その年に提出された有報の埋め込みだけで近さを作り、提出日以降に使う**（提出前に使わない）。
+
+### 6-5 追加の出典
+- Hoberg & Phillips, Text-Based Industry Momentum（JFQA）https://www.cambridge.org/core/services/aop-cambridge-core/content/view/6E04891A7AD30C24C21CBDE37EC06BF4/S0022109018000479a.pdf/text-based-industry-momentum.pdf ／ 著者版 https://faculty.tuck.dartmouth.edu/images/uploads/faculty/gordon-phillips/hoberg_phillips_TNICmomJFQA_FinV1.pdf ／ SSRN https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2504738 ／ ResearchGate https://www.researchgate.net/publication/328840724_Text-Based_Industry_Momentum
+- Kai Wu による追試の記事 https://mrkaiwu.github.io/ind_momentum.html
+- 木村・中川 日本の業種モメンタム（IEEE）https://ieeexplore.ieee.org/document/9894609/ ／ ResearchGate https://www.researchgate.net/publication/363801856_Industry_Momentum_Strategy_Based_on_Text_Mining_in_the_Japanese_Stock_Market ／ 比較図 https://www.researchgate.net/figure/Comparison-of-each-industry-classification-performance_fig1_363801856
+- "Hidden neighbours"（Springer, 2024）https://link.springer.com/article/10.1007/s11408-024-00455-4
+- Swinkels 2002（J. Asset Management）https://ideas.repec.org/a/pal/assmgt/v3y2002i2d10.1057_palgrave.jam.2240071.html
+- Lee-Sun-Wang-Zhang https://www.sciencedirect.com/science/article/abs/pii/S0304405X18303167 ／ SSRN https://papers.ssrn.com/sol3/papers.cfm?abstract_id=3036241 ／ CityU 記事 https://www.cb.cityu.edu.hk/CityBusinessMagazine/2020-Issue1/en/technology-links-and-predictable-returns
+- Lazy Prices（NBER WP）https://www.nber.org/system/files/working_papers/w25084/w25084.pdf ／ JF 版 https://onlinelibrary.wiley.com/doi/abs/10.1111/jofi.12885 ／ Alpha Architect https://alphaarchitect.com/2016/06/13/lazy-prices/ ／ Kent Daniel の討論資料 https://www.kentdaniel.net/discuss/2016/CMN.pdf
+
+### 6-6 見つからなかったもの（6 章）
+- TNIC モメンタムの月次アルファ・t 値、近い会社の数、保有期間の本文、公表後の弱まりの独立の研究。
+- 木村・中川の効きの大きさ・期間・大型株の別。
+- 技術の近さのモメンタム（Lee ほか）の日本の追試。
+- Lazy Prices の買い側（非変更群）だけのアルファの数字。
