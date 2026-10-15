@@ -22,7 +22,7 @@ from .decider import random_pick
 # --------------------------------------------------------------------------- 決まり（docs/stocks_live.md。結果を見る前に決めた）
 DEFAULT_EQUITY = 300_000                 # 3.1 口座に入れる金額 X の既定
 EQUITY_RANGE = (100_000, 500_000)        # 3.1 X は 10〜50 万円（50 万円は docs/agents.md 12.4 の「少額」と同じ上限）
-SPLIT = 6                                # 3.1 1 日に新しく買う金額 D = X ÷ 6
+SPLIT = 7                                # 3.1 1 日に新しく買う金額 D = X ÷ 7（5 日分を持ったまま、新しい買いが値幅の上限で余力を拘束しても足りる。2026-10-15 に 6 から直した）
 MAX_NAMES = 5                            # 2.1 1 日 5 銘柄まで（多い日は日付を種にしたでたらめ）
 MAX_SHARES = 99                          # 2.1 S 株は 1〜99 株。100 株以上になる株は買わない
 HOLD = 5                                 # 4.3 5 営業日後の引けで売る
@@ -39,12 +39,16 @@ REF_DAYS = 3                             # 5.1 基準の値段は約定から 3 
 EARLY_TRIPS = 10                         # 4.5 の 3: 最初の 10 往復の c の平均が往復 0.10% を超えたら止める
 LIMIT_UP_DAY = 0.10                      # 5.2 不成立のうち、その日の終値が前の日から +10% 以上のもの（ストップ高の日の見当）を別に数える
 EARLIEST_DEADLINE = "13:35"              # 4.1 受付の終わりがこれより前だと、13:05 の判断の後に 30 分の余裕が取れない
+OFFICIAL_CUTOFF = "14:00"                # 4.1 SBI の S 株: 10:30〜14:00 の注文がその日の終値（S 株取引ルール。利用者が 2026-10-15 に写した公式の文）
+RULE_DEADLINE = "13:50"                  # 4.1 締めの直後は前の時間の扱いになることがあるので、決まりとしては 13:50 までに出す
+TARGET_TIME = "13:30"                    # 4.1 目安。権利付最終日などの受注停止（13:30〜）と、古い案内の「13:30」の両方を避ける
+EVENING_SELL_AFTER = "16:00"             # 4.3 朝の売りは 16:00 より後に出す（14:00 の直後は前の時間、14:00〜16:00 は夕方の余力の計算で失効の恐れ）
 FORM = "SBI S株・成行"
 AT = ("引け", "寄り", "後場寄り")
 SIDES = {"買い": "買い", "buy": "買い", "売り": "売り", "sell": "売り"}
-STATUSES = ("約定", "不成立", "出さなかった", "取り消し")
+STATUSES = ("約定", "不成立", "出さなかった", "受注停止", "取り消し")   # 受注停止（権利付最終日など）で出せなかった注文は、誤りにも不成立にも数えない
 PLAN_COLUMNS = ["written_at", "mode", "date", "ticker", "name", "side", "form", "shares", "budget_yen", "prev_close", "due",
-                "reason", "decided_at", "margin_min", "note"]
+                "reason", "decided_at", "margin_min", "note", "source"]
 FILL_COLUMNS = ["id", "recorded_at", "mode", "date", "ticker", "side", "shares", "price", "fee_yen", "status", "at", "error", "voids", "memo"]
 REF_COLUMNS = ["date", "ticker", "open", "close", "fetched_at", "source"]
 E1_SIDES = ("買い", "買わない", "延長")    # E1 の行から作った行（空運転で数える）
@@ -212,7 +216,7 @@ def open_lots(ev: pd.DataFrame, plan: pd.DataFrame, fills: pd.DataFrame, mode: s
         lot.due = bday_add(cal, lot.anchor, HOLD)
         if mode == "real" and len(fills):
             s = fills[(fills["mode"] == "real") & (fills["ticker"] == lot.ticker) & (fills["side"] == "売り")
-                      & fills["status"].isin(["約定", "不成立"]) & (pd.to_datetime(fills["date"]) >= lot.due)]
+                      & fills["status"].isin(["約定", "不成立", "受注停止"]) & (pd.to_datetime(fills["date"]) >= lot.due)]
             lot.sell_tries = sorted(pd.to_datetime(s["date"]).tolist())
     return lots
 
@@ -252,6 +256,7 @@ def mistakes(mode: str, plan: pd.DataFrame, fills: pd.DataFrame, lots: dict[str,
             continue
         f = fills[(fills["mode"] == "real") & (fills["side"] == "買い") & (pd.to_datetime(fills["date"]) == day)] if len(fills) else fills
         st = {t: set(f.loc[f["ticker"] == t, "status"]) for t in g["ticker"]}
+        st = {t: v for t, v in st.items() if "受注停止" not in v}          # 受注停止で出せなかった株は数えない
         placed = [t for t, s in st.items() if s & {"約定", "不成立"}]
         if placed and len(placed) < len(st):
             for t in sorted(set(st) - set(placed)):
@@ -309,6 +314,30 @@ class Plan:
     messages: list[str]
 
 
+def daily_budget(equity_jpy: float) -> int:
+    """1 日に新しく買う金額 D（3.1）。"""
+    return math.floor(float(equity_jpy) / SPLIT)
+
+
+# 東証の制限値幅（基準値段 → 1 日に動ける幅。分析役が知識で書いた表。公式の表で確かめる）
+PRICE_LIMITS = [(100, 30), (200, 50), (500, 80), (700, 100), (1_000, 150), (1_500, 300), (2_000, 400), (3_000, 500), (5_000, 700),
+                (7_000, 1_000), (10_000, 1_500), (15_000, 3_000), (20_000, 4_000), (30_000, 5_000), (50_000, 7_000), (70_000, 10_000),
+                (100_000, 15_000), (150_000, 30_000)]
+
+
+def price_limit(base: float) -> float:
+    """制限値幅（円）。表より上は基準値段の 30%（予行演習の株にはまず無い）。"""
+    for upper, width in PRICE_LIMITS:
+        if base < upper:
+            return float(width)
+    return 0.3 * float(base)
+
+
+def reserve_price(base: float) -> float:
+    """成行の買いが 1 株あたりに拘束する買付余力の見込み（基準値段 ＋ 制限値幅。S 株取引ルール）。"""
+    return float(base) + price_limit(base)
+
+
 def deadline_ts(cfg: dict, today: pd.Timestamp) -> pd.Timestamp | None:
     d = cfg.get("deadline")
     if not d:
@@ -319,11 +348,11 @@ def deadline_ts(cfg: dict, today: pd.Timestamp) -> pd.Timestamp | None:
 
 def make_plan(today: pd.Timestamp, now: pd.Timestamp, cfg: dict, e1_today: pd.DataFrame | None, decided_at: str | None,
               close: pd.DataFrame, cal: pd.DatetimeIndex, lots: dict[str, Lot], cash: float, stop: str | None,
-              names: dict | None = None) -> list[dict]:
+              names: dict | None = None, source: str = "台帳") -> list[dict]:
     """その日の行（売り・延長・買い・買わない。何も無ければ「なし」の 1 行）。e1_today が None なら判断の無い日（売りだけ）。"""
     mode = cfg.get("mode", "dry")
     x = float(cfg["equity_jpy"])
-    day_budget = math.floor(x / SPLIT)
+    day_budget = daily_budget(x)
     dl = deadline_ts(cfg, today)
     margin = (dl - now).total_seconds() / 60 if dl is not None else np.nan
     before = close.loc[close.index < today]
@@ -337,7 +366,7 @@ def make_plan(today: pd.Timestamp, now: pd.Timestamp, cfg: dict, e1_today: pd.Da
         rows.append({"written_at": f"{now:%Y-%m-%d %H:%M:%S}", "mode": mode, "date": today, "ticker": t, "name": names.get(t, ""),
                      "side": side, "form": f"{FORM}・引け" if side in ("買い", "売り") else "", "shares": int(shares),
                      "budget_yen": budget, "prev_close": pc, "due": due, "reason": reason, "decided_at": decided_at or "",
-                     "margin_min": round(margin, 1) if np.isfinite(margin) else np.nan, "note": note})
+                     "margin_min": round(margin, 1) if np.isfinite(margin) else np.nan, "note": note, "source": source})
 
     again = set(e1["ticker"])
     for t, lot in sorted(lots.items()):
@@ -350,6 +379,7 @@ def make_plan(today: pd.Timestamp, now: pd.Timestamp, cfg: dict, e1_today: pd.Da
                 note=f"売りの遅れ {late} 日目（{SELL_RETRY_MAX} 日を超えたら止める）" if late else "")
     cand = sorted(set(e1["ticker"]) - set(lots))
     reasons = dict(zip(e1["ticker"], e1["reason"]))
+    exclude = {str(t).strip().upper() if "." in str(t) else f"{str(t).strip().upper()}.T" for t in cfg.get("exclude", [])}
     if e1_today is not None:
         if stop:
             for t in cand:
@@ -376,10 +406,14 @@ def make_plan(today: pd.Timestamp, now: pd.Timestamp, cfg: dict, e1_today: pd.Da
                     row(t, "買わない", budget=budget, pc=pc, reason=reasons.get(t, ""), note=f"高くて買えない（1 株 {pc:,.0f} 円 > {budget:,} 円）")
                 elif n > MAX_SHARES:
                     row(t, "買わない", budget=budget, pc=pc, reason=reasons.get(t, ""), note=f"安くて {MAX_SHARES} 株を超える（S 株は 1〜{MAX_SHARES} 株）")
-                elif n * pc > left:
-                    row(t, "買わない", budget=budget, pc=pc, reason=reasons.get(t, ""), note=f"記録上の現金が足りない（{left:,.0f} 円）")
+                elif t in exclude:
+                    row(t, "買わない", budget=budget, pc=pc, reason=reasons.get(t, ""),
+                        note="すでに持っている株（予行演習の外。合わせて 100 株以上になると S 株で売れなくなる）")
+                elif n * reserve_price(pc) > left:
+                    row(t, "買わない", budget=budget, pc=pc, reason=reasons.get(t, ""),
+                        note=f"買付余力が足りない見込み（成行の買いは 株数 × 値幅の上限 を拘束する。記録上の現金 {left:,.0f} 円）")
                 else:
-                    left -= n * pc
+                    left -= n * reserve_price(pc)
                     row(t, "買い", n, budget, pc, due=bday_add(cal, today, HOLD), reason=reasons.get(t, ""))
     if not rows:
         row("", "なし", reason="今日は注文が無い" if e1_today is not None else "判断が無い日（売りだけ）")
@@ -404,7 +438,7 @@ def check_fill(cfg: dict, plan: pd.DataFrame, lots: dict[str, Lot], day: pd.Time
             errs.append("計画に無い買い")
         elif int(p["shares"].iloc[0]) != shares:
             errs.append(f"株数が計画（{int(p['shares'].iloc[0])} 株）と違う")
-        limit = WRONG_FACTOR * math.floor(float(cfg["equity_jpy"]) / SPLIT)
+        limit = WRONG_FACTOR * daily_budget(float(cfg["equity_jpy"]))
         if shares * price > limit:
             errs.append(f"約定の金額 {shares * price:,.0f} 円が 1 日の金額の {WRONG_FACTOR} 倍（{limit:,.0f} 円）を超えた")
             stop_now = True
@@ -621,3 +655,39 @@ def update_refs(files: LiveFiles, fills: pd.DataFrame, plan: pd.DataFrame, today
     files.append(files.refs_path, rows, REF_COLUMNS)
     msgs.append(f"基準の値段（調整していない始値・終値）を {len(rows)} 件書き足した")
     return msgs
+
+
+# --------------------------------------------------------------------------- iPhone への知らせ（cfdbot/notify.py で送る）
+def notice_text(rows: list[dict] | pd.DataFrame, cfg: dict, now: pd.Timestamp) -> tuple[str, str, bool]:
+    """知らせの題・本文・注文があるか。空運転なら「空運転: 出すはずの注文」と分かるように書く。"""
+    df = pd.DataFrame(rows)
+    real = cfg.get("mode") == "real"
+    title = f"株の予行演習（{'今日の注文' if real else '空運転: 出すはずの注文'}）{now:%m/%d}"
+    out = [] if real else ["空運転なので、注文は出さない（練習。出したつもりで見る）"]
+
+    def code(t) -> str:
+        return str(t).split(".")[0]
+
+    def nm(r) -> str:
+        return f" {r['name']}" if isinstance(r.get("name"), str) and r.get("name") else ""
+
+    sells = df[df["side"] == "売り"] if len(df) else df
+    buys = df[df["side"] == "買い"] if len(df) else df
+    has = bool(len(sells) + len(buys))
+    if has:
+        out.append(f"出す時刻: {TARGET_TIME} までを目安に、遅くとも {cfg.get('deadline') or RULE_DEADLINE}。S 株・成行・預り区分は「特定」")
+    for _, r in sells.iterrows():
+        out.append(f"売り {code(r['ticker'])}{nm(r)} {int(r['shares'])} 株" + (f"（{r['note']}）" if isinstance(r.get("note"), str) and r.get("note") else ""))
+    for _, r in buys.iterrows():
+        out.append(f"買い {code(r['ticker'])}{nm(r)} {int(r['shares'])} 株（約 {int(r['shares']) * float(r['prev_close']):,.0f} 円）")
+    ext = df[df["side"] == "延長"] if len(df) else df
+    if len(ext):
+        out.append("売らずに持ち続ける: " + "、".join(f"{code(t)}" for t in ext["ticker"]))
+    skip = df[df["side"] == "買わない"] if len(df) else df
+    if len(skip):
+        out.append(f"買わない {len(skip)} 社（理由は ./cfd agents orders の一覧）")
+    if not has:
+        out.append("今日は出す注文なし")
+    else:
+        out.append("送信の前に見比べる: 銘柄の番号・買いか売りか・株数")
+    return title, "\n".join(out), has

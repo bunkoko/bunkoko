@@ -27,7 +27,8 @@ def _script():
 def _ns(tmp_path, **kw):
     base = dict(root=str(tmp_path / "agents"), data=str(tmp_path / "stocks"), out=str(tmp_path / "out"), now=f"{TODAY:%Y-%m-%d} 13:10",
                 setup=False, equity=None, deadline=None, real=False, fill=None, fee=0.0, status="約定", at="引け", on=None, error=None,
-                memo=None, void=None, import_csv=None, report=False, no_fetch=True, sells_only=False)
+                memo=None, void=None, import_csv=None, report=False, no_fetch=True, sells_only=False, notify=False, notify_test=False,
+                exclude=None)
     base.update(kw)
     return Namespace(**base)
 
@@ -90,7 +91,9 @@ def test_plan_picks_five_by_date_seed_and_skips_expensive_cheap_and_held():
     assert sorted(df.loc[df["side"] == "買い", "ticker"]) == chosen                       # 7 社 → 日付を種にしたでたらめで 5 社
     assert sorted(df.loc[df["note"].str.contains("でたらめで外した", na=False), "ticker"]) == sorted(set("ABCDEFG") - set(chosen))
     b = df[df["side"] == "買い"].set_index("ticker")
-    assert (b["shares"] == (10_000 // prev[b.index]).astype(int)).all()                   # 1 銘柄 = 5 万円 ÷ 5 = 1 万円、前の終値で切り捨て
+    per = L.daily_budget(300_000) // 5
+    assert L.daily_budget(300_000) == 42_857 and per == 8_571                            # D = X ÷ 7、1 銘柄 = D ÷ 5
+    assert (b["shares"] == (per // prev[b.index]).astype(int)).all()                      # 前の終値で切り捨て
     assert (b["due"] == pd.Timestamp("2026-11-11")).all() and (b["margin_min"] == 50.0).all()
 
     prev2 = pd.Series({"X": 60_000.0, "Y": 120.0, "Z": 2000.0, "H": 2000.0})          # 高い・安い（100 株以上）・持っている株・ふつう
@@ -156,7 +159,11 @@ def test_orders_command_dry_run_then_real_with_mistakes_and_stop(tmp_path, capsy
     mod.cmd_orders(_ns(tmp_path, now=f"{days[0]:%Y-%m-%d} 13:10"))                       # 判断がまだ → 書かない
     assert not files.plan_path.exists()
     _ledger_extra(tmp_path, {d: cols[:7] if d == days[-1] else cols[10:12] for d in days})
-    mod.cmd_orders(_ns(tmp_path, setup=True, deadline="14:00"))
+    mod.cmd_orders(_ns(tmp_path, setup=True, deadline="14:00"))                          # 公式の締め 14:00 は通る（注意も出ない）
+    assert "13:35 より前" not in capsys.readouterr().out and files.config()["deadline"] == "14:00"
+    with pytest.raises(SystemExit):
+        mod.cmd_orders(_ns(tmp_path, setup=True, deadline="14:30"))                       # 14:00 より後は翌日の寄りになるので断る
+    mod.cmd_orders(_ns(tmp_path, setup=True, deadline="13:50"))                           # 決まりは 13:50（docs/stocks_live.md 4.1）
     with pytest.raises(SystemExit):
         mod.cmd_orders(_ns(tmp_path, setup=True, real=True))                              # 空運転が足りない
     for d in days[:-1]:
@@ -194,7 +201,7 @@ def test_orders_command_dry_run_then_real_with_mistakes_and_stop(tmp_path, capsy
     stamp = str(files.fills()["id"].iloc[-1])
     mod.cmd_orders(_ns(tmp_path, void=stamp))                                             # 取り消しは行を足すだけ（元の行は残る）
     assert len(files.fills()) == 2 and len(files.fills(include_voided=True)) == 4
-    mod.cmd_orders(_ns(tmp_path, fill=[real["ticker"].iloc[2], "買い", "40", "2000"]))    # 8 万円 > 5 万円 × 1.5 → すぐ STOP
+    mod.cmd_orders(_ns(tmp_path, fill=[real["ticker"].iloc[2], "買い", "40", "2000"]))    # 8 万円 > 42,857 円 × 1.5 → すぐ STOP
     assert files.stop_path.exists() and "大きすぎる約定" in files.stop_reason()
     capsys.readouterr()
     mod.cmd_orders(_ns(tmp_path, report=True))
@@ -309,3 +316,189 @@ def test_sells_only_duplicate_buy_early_cost_and_early_deadline(tmp_path, capsys
     cal = L.calendar(idx, TODAY)
     hits = L.stop_checks(cfg, (0, 300_000), [], {}, pd.DataFrame(index=idx), cal, TODAY, None, rt)
     assert hits and "4.5 の 3" in hits[0]
+
+
+def test_price_limits_reserve_buying_power_and_skip_outside_holdings():
+    assert L.price_limit(150) == 50 and L.price_limit(2_500) == 500 and L.price_limit(9_999) == 1_500 and L.price_limit(200_000) == 60_000
+    assert L.reserve_price(2_500) == 3_000
+    idx = _index()
+    cal = L.calendar(idx, TODAY)
+    now = TODAY + pd.Timedelta(hours=13, minutes=10)
+    prev = pd.Series({"A": 2000.0, "B": 2000.0})
+    close = pd.DataFrame([prev, prev], index=[idx[-2], TODAY])
+    cfg = {"equity_jpy": 300_000, "mode": "real", "deadline": "13:50", "exclude": ["1001"]}
+    df = pd.DataFrame(L.make_plan(TODAY, now, cfg, _e1(["A", "B"]), "x", close, cal, {}, 30_000, None)).set_index("ticker")
+    assert df.loc["A", "shares"] == 10 and df.loc["A", "side"] == "買い"                    # 10 株 × 2,500 円 = 25,000 円を拘束
+    assert df.loc["B", "side"] == "買わない" and "買付余力" in df.loc["B", "note"]          # 残り 5,000 円では足りない
+    df2 = pd.DataFrame(L.make_plan(TODAY, now, cfg, _e1(["1001.T", "A"]), "x",
+                                   pd.DataFrame([{"1001.T": 2000.0, "A": 2000.0}] * 2, index=[idx[-2], TODAY]), cal, {}, 300_000, None)).set_index("ticker")
+    assert df2.loc["1001.T", "side"] == "買わない" and "すでに持っている株" in df2.loc["1001.T", "note"]
+    assert 5 * L.daily_budget(300_000) + L.daily_budget(300_000) * 1.5 <= 300_000           # 5 日分を持ったまま、値幅 5 割の拘束でも足りる
+
+
+def test_order_stop_is_neither_mistake_nor_nonfill():
+    idx = _index()
+    cal = L.calendar(idx, TODAY)
+    day = idx[-12]
+    base = {"mode": "real", "fee_yen": 0.0, "error": np.nan, "voids": np.nan, "memo": np.nan, "at": "引け"}
+    plan = pd.DataFrame([{"mode": "real", "date": day, "ticker": t, "side": "買い", "shares": 4} for t in ("A", "B")])
+    fills = pd.DataFrame([{**base, "id": "1", "recorded_at": "1", "date": day, "ticker": "A", "side": "買い", "shares": 4, "price": 1000.0, "status": "約定"},
+                          {**base, "id": "2", "recorded_at": "2", "date": day, "ticker": "B", "side": "買い", "shares": 4, "price": 0.0, "status": "受注停止"}])
+    ev = L.events("real", plan, fills, pd.DataFrame())
+    lots = L.open_lots(ev, plan, fills, "real", cal)
+    due = lots["A"].due
+    fills2 = pd.concat([fills, pd.DataFrame([{**base, "id": "3", "recorded_at": "3", "date": due, "ticker": "A", "side": "売り", "shares": 4,
+                                              "price": 0.0, "status": "受注停止"}])], ignore_index=True)
+    lots2 = L.open_lots(ev, plan, fills2, "real", cal)
+    assert L.mistakes("real", plan, fills2, lots2, cal, TODAY) == []                    # 受注停止は、一部だけ出さなかった・出し忘れにならない
+    nxt = L.bday_add(cal, due, 1)
+    assert L.check_fill({"equity_jpy": 300_000}, plan, lots2, nxt, "A", "売り", 4, 1000.0, "約定", "寄り", None) == ("", False)
+    rt = L.round_trips(fills2, plan, pd.DataFrame(columns=L.REF_COLUMNS), pd.DataFrame({"A": 1.0}, index=idx), cal)
+    assert rt["status"].tolist() == ["約定"]                                              # 出した買い・不成立に数えない
+
+
+def test_e1_preview_is_the_same_as_the_ledger_e1_book():
+    idx = _index()
+    cols = [f"{2000 + i}.T" for i in range(8)]
+    rng = np.random.default_rng(4)
+    close = pd.DataFrame(1000 * np.exp(np.cumsum(rng.normal(0, 0.01, (len(idx), 8)), axis=0)), index=idx, columns=cols)
+    open_ = close.shift(1)
+    close.loc[TODAY, cols[1]] = np.nan                                                    # 今日の終値が無い株
+    open_.loc[TODAY, cols[2]] = np.nan                                                    # 今日の寄りが無い株
+    rev = pd.DataFrame({"date": TODAY, "ticker": cols[:4], "fc_rev": [0.2, 0.3, 0.1, 0.01], "kind": 5})
+    day, e1 = D.e1_preview(open_, close, rev, {cols[0]: "会社0"})
+    assert day == TODAY and e1["ticker"].tolist() == [cols[0]] and e1["name"].iloc[0] == "会社0"
+    from cfdbot import stocks_short as H
+
+    tradable = close.notna() & H.parts(open_, close)["night"].notna()                     # 銘柄選定が点数を付ける所
+    sel_row = pd.Series(np.where(tradable.loc[TODAY], 0.0, np.nan), index=cols)
+    rows = D.extra_rows(TODAY, sel_row, 2, rev, {})
+    assert rows.loc[rows["book"] == "e1", "ticker"].tolist() == e1["ticker"].tolist()
+
+
+def test_notify_sends_nothing_without_settings_and_retries_once(tmp_path):
+    from cfdbot import notify as N
+
+    assert N.notify("t", "x", path=tmp_path / "none.json")[0][1] is False
+    bad = tmp_path / "bad.json"
+    bad.write_text('{"channels": [{"type": "ntfy", "topic": "x"}]}', encoding="utf-8")
+    assert N.load_settings(bad)[0] is None                                                # ntfy の公開サーバーは使わない
+    calls, waits = [], []
+
+    class R:
+        def __init__(self, code):
+            self.returncode, self.stderr, self.stdout = code, "error -1743", ""
+
+    def flaky(args, **kw):
+        calls.append(args)
+        return R(1 if len(calls) == 1 else 0)
+
+    s = {"channels": [{"type": "imessage", "to": "me@example.com"}, {"type": "mailapp", "to": "me@example.com"}]}
+    rec = tmp_path / "notify.log"
+    out = N.notify("題", "本文", settings=s, runner=flaky, sleep=waits.append, record=rec)
+    assert [o[1] for o in out] == [True, True] and len(calls) == 3 and waits == [N.RETRY_WAIT]   # 1 回目に失敗 → 1 回だけやり直す
+    assert calls[0][0] == "osascript" and calls[0][-2:] == ["題\n本文", "me@example.com"] and calls[2][-3:] == ["題", "本文", "me@example.com"]
+    assert len(rec.read_text(encoding="utf-8").splitlines()) == 2
+
+    def hang(args, **kw):
+        import subprocess
+
+        raise subprocess.TimeoutExpired(args, kw.get("timeout"))
+
+    out = N.notify("題", "本文", settings={"channels": [{"type": "imessage", "to": "x"}]}, runner=hang, sleep=lambda s: None)
+    assert out[0][1] is False and "TimeoutExpired" in out[0][2]                         # 止まっても例外を出さない
+
+    class Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    seen = []
+
+    def opener(req, timeout):
+        seen.append((req.full_url, req.data))
+        return Resp()
+
+    out = N.notify("題", "本文", settings={"channels": [{"type": "pushover", "token": "T", "user": "U"}]}, opener=opener)
+    assert out[0][1] and seen[0][0].startswith("https://api.pushover.net/") and b"token=T" in seen[0][1]
+
+
+def test_notice_text_marks_dry_run_and_lists_orders():
+    rows = [{"ticker": "1001.T", "name": "会社A", "side": "買い", "shares": 4, "prev_close": 2000.0, "note": ""},
+            {"ticker": "1002.T", "name": "会社B", "side": "売り", "shares": 3, "prev_close": np.nan, "note": ""},
+            {"ticker": "1003.T", "name": "会社C", "side": "買わない", "shares": 0, "prev_close": np.nan, "note": "高くて買えない"}]
+    title, text, has = L.notice_text(rows, {"mode": "dry", "deadline": "13:50"}, TODAY + pd.Timedelta(hours=13))
+    assert "空運転: 出すはずの注文" in title and has and "買い 1001 会社A 4 株（約 8,000 円）" in text and "売り 1002 会社B 3 株" in text
+    assert "13:30 までを目安" in text and "「特定」" in text and "買わない 1 社" in text
+    title, text, has = L.notice_text([{"ticker": "", "name": "", "side": "なし", "shares": 0, "prev_close": np.nan, "note": ""}],
+                                     {"mode": "real"}, TODAY)
+    assert title.startswith("株の予行演習（今日の注文）") and not has and "注文なし" in text
+
+
+def test_run_writes_the_list_before_the_slow_steps_and_ledger_survives_failures(tmp_path, monkeypatch, capsys):
+    idx, cols, close = _prices(tmp_path)
+    mod = _script()
+    order = []
+    for name in ("cmd_numbers", "cmd_collect", "cmd_ir", "cmd_select", "cmd_decide", "cmd_evaluate"):
+        monkeypatch.setattr(mod, name, lambda a, n=name: order.append(n))
+
+    def boom(a):
+        order.append("live_early")
+        raise RuntimeError("作り物の失敗")
+
+    monkeypatch.setattr(mod, "live_early", boom)
+    monkeypatch.setattr(mod, "live_after_decide", lambda a: order.append("live_after"))
+    mod.cmd_run(_ns(tmp_path, prices=False))
+    assert order == ["cmd_numbers", "live_early", "cmd_collect", "cmd_ir", "cmd_select", "cmd_decide", "live_after", "cmd_evaluate"]
+    out = capsys.readouterr().out
+    assert "先に作る一覧は作れなかった（RuntimeError" in out                               # 失敗しても台帳（判断）まで進む
+    log = tmp_path / "run.log"
+    log.write_text("古い行\n[2026-11-03 13:05:00] 自動実行: 始め\n[2026-11-04 13:05:01] 自動実行: 始め\n"
+                   "[2026-11-04 13:07:31] 自動実行: 値段\n[2026-11-04 13:08:01] 自動実行: E1 の一覧と注文の一覧\n"
+                   "[2026-11-04 13:20:01] 自動実行: 判断（台帳）\n", encoding="utf-8")
+    steps = mod.run_timeline(log)
+    assert [s[0] for s in steps] == ["始め", "値段", "E1 の一覧と注文の一覧", "判断（台帳）"]       # 最後の実行だけ
+    assert "E1 の一覧と注文の一覧 3.0 分（13:08）" in mod.timeline_text(steps) and "判断（台帳） 15.0 分" in mod.timeline_text(steps)
+
+
+def test_live_early_writes_the_plan_notifies_and_checks_against_the_ledger(tmp_path, monkeypatch):
+    from cfdbot import notify as N
+
+    idx, cols, close = _prices(tmp_path)
+    pd.DataFrame({"ticker": cols, "name": [f"会社{c[:4]}" for c in cols], "sector": "x"}).to_csv(tmp_path / "stocks" / "universe_jp.csv", index=False)
+    root = tmp_path / "agents"
+    root.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"date": [TODAY] * 3, "ticker": cols[:3], "fc_rev": [0.2, 0.06, 0.01], "kind": 5}).to_csv(root / "revisions_recent.csv", index=False)
+    mod = _script()
+    assert mod.live_early(_ns(tmp_path)) is False                                         # 設定が無ければ何もしない
+    mod.cmd_orders(_ns(tmp_path, setup=True, equity=300_000, deadline="13:50"))
+    conf = tmp_path / "notify.json"
+    conf.write_text('{"channels": [{"type": "imessage", "to": "me@example.com"}]}', encoding="utf-8")
+    monkeypatch.setattr(N, "NOTIFY_FILE", conf)
+    sent = []
+    monkeypatch.setattr(N, "notify", lambda title, text, **kw: sent.append((title, text)) or [("imessage", True, "送った")])
+    assert mod.live_early(_ns(tmp_path, now=f"{TODAY:%Y-%m-%d} 13:08"))
+    files = L.LiveFiles(root / "live")
+    plan = files.plan()
+    assert set(plan.loc[plan["side"].isin(L.E1_SIDES), "ticker"]) == set(cols[:2]) and (plan["source"] == "先に作った E1 の一覧").all()
+    assert len(sent) == 1 and "空運転: 出すはずの注文" in sent[0][0]
+    _ledger_extra(tmp_path, {TODAY: cols[:2]})
+    mod.live_after_decide(_ns(tmp_path, now=f"{TODAY:%Y-%m-%d} 13:20"))                  # 台帳の E1 と同じ → 知らせない
+    assert len(sent) == 1 and len(files.plan()) == len(plan)
+    _ledger_extra(tmp_path, {TODAY: cols[:3]})
+    mod.live_after_decide(_ns(tmp_path, now=f"{TODAY:%Y-%m-%d} 13:20"))                  # 違えば、知らせて記録に残す
+    assert len(sent) == 2 and "違いました" in sent[1][1] and cols[2] in sent[1][1]
+
+
+def test_notify_test_works_before_setup_and_sends_nothing_without_settings(tmp_path, monkeypatch, capsys):
+    from cfdbot import notify as N
+
+    _prices(tmp_path)
+    monkeypatch.setattr(N, "NOTIFY_FILE", tmp_path / "no_such.json")
+    _script().cmd_orders(_ns(tmp_path, notify_test=True))
+    out = capsys.readouterr().out
+    assert "設定が無いので送らない" in out and not (tmp_path / "agents" / "live" / "notify.log").exists()   # 何も送らず、何も書かない
