@@ -12,6 +12,7 @@
     python scripts/agents.py earnings             # 決算の数字で評価する（10 章の E1〜E3。collect --xbrl-history の後）
     python scripts/agents.py extra [--fetch]      # まだ入れていなかった項目（出来高・割安さ・業種・進捗率）を足して確かめる（11 章の F1〜F4）
     python scripts/agents.py status
+    python scripts/agents.py check                # 台帳の点検（自動実行が動いたか・抜けた日）と、先のデータの途中経過・止める決まり（12 章）
     python scripts/agents.py schedule --job collect [--off]   # 毎日 8:00 に collect --docs を動かすよう登録する／外す（Mac の launchd）
     python scripts/agents.py schedule --job run [--off]       # 平日 13:05 に run --prices を動かすよう登録する／外す
 
@@ -174,6 +175,11 @@ def cmd_decide(args) -> None:
     names = pd.read_csv(Path(args.data) / "universe_jp.csv").set_index("ticker")["name"].to_dict()
     today = D.explain(table[(table["date"] == last) & table["book"].isin(["combined", "selector"])],
                       ir_long[ir_long["date"] == last], names)
+    revisions = pd.read_csv(p["revisions"], parse_dates=["date"]) if p["revisions"].exists() else None
+    if revisions is None:
+        print("判断: E1 の帳は、決算の数字の表（revisions_recent.csv）が無いので書かない（./cfd agents run で作られる）", flush=True)
+    extra = D.extra_rows(last, sel.iloc[-1], int(bk["selector"][-1].sum()), revisions, names)
+    today = pd.concat([today, extra], ignore_index=True)
     today.insert(0, "decided_at", pd.Timestamp.now(tz=JST).tz_localize(None).strftime("%Y-%m-%d %H:%M:%S"))
     old = pd.read_csv(p["ledger"], dtype=str) if p["ledger"].exists() else pd.DataFrame()
     if len(old) and f"{last:%Y-%m-%d}" in set(old["date"].str[:10]):
@@ -181,7 +187,9 @@ def cmd_decide(args) -> None:
     else:
         today.assign(date=today["date"].dt.strftime("%Y-%m-%d")).to_csv(p["ledger"], mode="a", header=not p["ledger"].exists(), index=False,
                                                                         float_format="%.5f")
-        print(f"判断: {last:%Y-%m-%d} の判断 {int((today['book'] == 'combined').sum())} 銘柄を台帳に書き足した", flush=True)
+        n_by = today["book"].value_counts()
+        print(f"判断: {last:%Y-%m-%d} の判断 {int(n_by.get('combined', 0))} 銘柄を台帳に書き足した"
+              f"（でたらめの帳 {int(n_by.get(D.RANDOM_BOOK, 0))}・E1 の帳 {int(n_by.get(D.E1_BOOK, 0))}）", flush=True)
     n = table.groupby("book")["date"].nunique()
     print(f"判断: 記録 {len(table):,} 行（{table['date'].min():%Y-%m-%d}〜{last:%Y-%m-%d}。" + "、".join(f"{k} {v} 日" for k, v in n.items()) + "）", flush=True)
 
@@ -687,8 +695,28 @@ def cmd_run(args) -> None:
         o.to_csv(data / "jp_open.csv", float_format="%.6g")
         c.to_csv(data / "jp_close.csv", float_format="%.6g")
         dv.to_csv(data / "jp_div.csv", index=False)
-    for f in (cmd_collect, cmd_ir, cmd_select, cmd_decide, cmd_evaluate):
+    for f in (cmd_collect, cmd_ir, cmd_select, cmd_numbers, cmd_decide, cmd_evaluate):
         f(args)
+
+
+def cmd_numbers(args) -> None:
+    """E1 の帳（docs/agents.md 12 章）のために、直近の決算の数字から予想の変化率の表を書く。失敗しても M2 の帳は書けるよう、止めない。"""
+    from cfdbot.agents import collector as C
+    from cfdbot.agents import earnings as N
+
+    p = paths(args.root)
+    try:
+        _, close = prices(Path(args.data))
+        disc = C.load_disclosures(p["disclosures"])
+        rev = N.recent_revisions(disc, p["disclosures"].parent, close.index, list(close.columns), log=lambda s: None)
+        rev.to_csv(p["revisions"], index=False, float_format="%.6f")
+        today = rev[rev["date"] == close.index[-1]] if len(rev) else rev
+        up = int((today["fc_rev"] >= N.UP_REVISION).sum()) if len(today) else 0
+        print(f"決算の数字: 直近 {N.RECENT_DAYS} 日の開示から {len(rev):,} 行。{close.index[-1]:%Y-%m-%d} の判断に使える開示 {len(today)} 社"
+              f"（予想を 5% 以上引き上げ {up} 社）", flush=True)
+    except Exception as e:  # noqa: BLE001
+        p["revisions"].unlink(missing_ok=True)                                     # 古い表を使わない（判断は「表が無い」と書く）
+        print(f"決算の数字: 表を作れなかった（{str(e)[:120]}）。今日の E1 の帳は書かない", flush=True)
 
 
 def cmd_status(args) -> None:
@@ -709,6 +737,105 @@ def cmd_status(args) -> None:
         print("銘柄選定（点数）: まだ無い")
     reports = sorted(Path(args.out).glob("2*/report.md"))
     print(f"判断の評価（報告書）: {reports[-1] if reports else 'まだ無い'}")
+
+
+def schedule_state(job: str = "run") -> list[str]:
+    """自動実行（launchd）の登録と、最後に動いたときの終わり方。Mac 以外では「確かめられない」と返す。"""
+    import os
+    import subprocess
+
+    label = JOBS[job][0]
+    if sys.platform != "darwin":
+        return [f"自動実行（{label}）: この環境は Mac ではないので確かめられない"]
+    plist = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+    lines = [f"自動実行の登録ファイル: {'ある' if plist.exists() else '無い（./cfd agents schedule --job ' + job + ' で登録）'}（{plist}）"]
+    r = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{label}"], capture_output=True, text=True)
+    if r.returncode != 0:
+        lines.append(f"launchd: {label} は読み込まれていない")
+        return lines
+    keep = [t.strip() for t in r.stdout.splitlines() if any(k in t for k in ("runs =", "last exit code", "state ="))]
+    lines.append("launchd: " + ("、".join(keep) if keep else "読み込まれている（回数・終わり方の行は無い）"))
+    return lines
+
+
+def cmd_check(args) -> None:
+    """台帳の点検と、先のデータの途中経過・止める決まり（docs/agents.md 12 章）。値段・台帳・記録のファイルだけを読む。"""
+    from cfdbot.agents import evaluator as E
+
+    p = paths(args.root)
+    now = pd.Timestamp.now(tz=JST).tz_localize(None) if not args.now else pd.Timestamp(args.now)
+    lines: list[str] = []
+
+    def say(t: str = "") -> None:
+        print(t, flush=True)
+        lines.append(t)
+
+    say("# 台帳の点検と、先のデータの途中経過")
+    say(f"作成: {now:%Y-%m-%d %H:%M}　決まり: docs/agents.md 12 章（結果を見る前に決めたもの）")
+    say("\n## 1. 自動実行\n")
+    for t in schedule_state("run"):
+        say(f"- {t}")
+    log = p["root"] / "run.log"
+    if log.exists():
+        mt = pd.Timestamp(log.stat().st_mtime, unit="s", tz="UTC").tz_convert(JST).tz_localize(None)
+        tail = [t for t in log.read_text(encoding="utf-8", errors="replace").splitlines() if t.strip()][-3:]
+        say(f"- 記録（{log}）の最後の書き込み: {mt:%Y-%m-%d %H:%M}")
+        for t in tail:
+            say(f"  - {t[:160]}")
+    else:
+        say(f"- 記録（{log}）が無い。自動実行がまだ一度も動いていないか、登録の前")
+
+    ledger = pd.read_csv(p["ledger"], dtype={"ticker": str}) if p["ledger"].exists() else pd.DataFrame()
+    try:
+        _, close = prices(Path(args.data))
+    except SystemExit:
+        close = pd.DataFrame()
+    cal = close.index if len(close) else pd.DatetimeIndex([])
+    h = E.ledger_health(ledger, cal, now)
+    say("\n## 2. 台帳\n")
+    if not h["rows"]:
+        say(f"- 台帳（{p['ledger']}）がまだ無い。平日の 13:05 の自動実行か `./cfd agents run --prices` で書かれる")
+    else:
+        say(f"- {h['rows']:,} 行。先の判断として数える日（その日の 15:25 より前に書いた日）: {h['counted_days']} 日"
+            f"（{h['first']:%Y-%m-%d}〜{h['last']:%Y-%m-%d}）。最後に書いた時刻: {h['last_written']}" if h["first"] is not None
+            else f"- {h['rows']:,} 行あるが、15:25 より前に書いた日が無い（先の判断として数える日は 0）")
+        if h["missing"]:
+            say(f"- **抜けた営業日 {len(h['missing'])} 日**: " + "、".join(f"{d:%m-%d}" for d in h["missing"][:15])
+                + ("…" if len(h["missing"]) > 15 else "") + "（Mac が眠っていた・Yahoo が取れなかった など。その日は買わなかったことになる）")
+        else:
+            say("- 抜けた営業日: 無し")
+        if h["missing_weekdays"]:
+            say(f"- 値段のデータより後で、書かれていない平日 {len(h['missing_weekdays'])} 日: "
+                + "、".join(f"{d:%m-%d}" for d in h["missing_weekdays"][:10]) + "（祝日を含むかもしれない。値段の取り直しが止まっている可能性）")
+        if h["late"]:
+            say(f"- 15:25 より後に書いた日（数えない）: " + "、".join(f"{d:%Y-%m-%d}" for d in h["late"][:10]))
+        for b, v in h["books"].items():
+            say(f"- 帳 {b}: {v['days']} 日（{v['first']:%Y-%m-%d}〜）、1 日平均 {v['names_per_day']:.1f} 銘柄")
+
+    say("\n## 3. 先のデータの途中経過と、止める決まり\n")
+    if not len(close) or not h["counted_days"]:
+        say("- まだ計算できない（値段か、数える日のある台帳が無い）")
+    else:
+        cc = E.returns(close)
+        say("全銘柄の平均との差（年率）。コスト前が止める決まりに使う数字。コスト後は往復 0.10%（判定に使ったものと同じ）。")
+        say("\n| 帳 | 始まり | 数えた日 | コスト前 | コスト後 | 1 日の入れ替え | 月の数 | 今の月ごとの t | 判定 |")
+        say("|---|---|---|---|---|---|---|---|---|")
+        for b in E.FORWARD_BOOKS:
+            r = E.forward_book(ledger, b, cc)
+            if r is None:
+                say(f"| {b} | – | 0 | – | – | – | – | – | まだ記録が無い |")
+                continue
+            say(f"| {b} | {r['start']:%Y-%m-%d} | {r['days']} | {pct(r['gross_ann'])} | {pct(r['net_ann'])} | {pct(r['turnover'], 0)} | "
+                f"{r['months']} | {f2(r['t'])} | {E.forward_verdict(r, b)} |")
+        say("")
+        say(f"- 判定は {', '.join(str(n) for n in E.LOOK_DAYS)} 日の時点（その日までの損益）だけで行う。その間の数字は途中経過で、見て何かを変えることはしない")
+        say(f"- 閉じる: M2（selector）か E1 の帳の、コスト前の月ごとの t が {E.STOP_T} 未満。お金を入れる判断は、この台帳だけでは決めない"
+            "（docs/survivorship.md の判定と、測ったコストを合わせてから。docs/agents.md 12.4）")
+    out = Path(args.out) / "check"
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{now:%Y%m%d-%H%M}.md"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"\n保存先: {path}")
 
 
 def make_plist(root: Path, log: Path, job: str = "run") -> dict:
@@ -746,7 +873,8 @@ def cmd_schedule(args) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("command", choices=["collect", "ir", "select", "decide", "evaluate", "run", "status", "schedule", "earnings", "extra"])
+    p.add_argument("command", choices=["collect", "ir", "select", "decide", "evaluate", "run", "status", "schedule", "earnings", "extra",
+                                        "check"])
     p.add_argument("--fetch", action="store_true", help="extra: 先に出来高・終値・株式分割を Yahoo から取る（1 秒に 1 社。取得済みは飛ばす）")
     p.add_argument("--reuse", action="store_true", help="extra: 入力を足した銘柄選定の点数が書いてあれば、学び直さずに使う")
     p.add_argument("--off", action="store_true", help="schedule: 自動実行を外す")
@@ -764,9 +892,11 @@ def main() -> None:
     p.add_argument("--no-embed", action="store_true", help="collect: 埋め込みをしない")
     p.add_argument("--prices", action="store_true", help="run: 先に値段を取り直す")
     p.add_argument("--placebo", type=int, default=300)
+    p.add_argument("--now", help="check: 今の時刻として扱う時刻（試験用。例: 2026-10-20 16:00）")
     args = p.parse_args()
     {"collect": cmd_collect, "ir": cmd_ir, "select": cmd_select, "decide": cmd_decide, "evaluate": cmd_evaluate,
-     "run": cmd_run, "status": cmd_status, "schedule": cmd_schedule, "earnings": cmd_earnings, "extra": cmd_extra}[args.command](args)
+     "run": cmd_run, "status": cmd_status, "schedule": cmd_schedule, "earnings": cmd_earnings, "extra": cmd_extra,
+     "check": cmd_check}[args.command](args)
 
 
 if __name__ == "__main__":

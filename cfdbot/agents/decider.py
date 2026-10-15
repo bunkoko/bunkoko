@@ -7,6 +7,8 @@ import pandas as pd
 
 TOP_SHARE, MIN_VALID = 0.10, 50        # 銘柄選定・足した点数: 上位 10%（値のある銘柄が 50 未満の日は買わない）
 IR_TOP, IR_MIN = 0.20, 5               # IR だけ: 開示のあった株の上位 20%（5 社未満の日は買わない）
+E1_UP = 0.05                           # E1 の帳: 通期の純利益の予想を 5% 以上引き上げた（docs/agents.md 10.2 と同じ）
+RANDOM_BOOK, E1_BOOK = "random", "e1"  # 台帳に足す帳（docs/agents.md 12 章）
 
 
 def ir_matrix(ir: pd.DataFrame, index: pd.DatetimeIndex, columns) -> pd.DataFrame:
@@ -53,6 +55,39 @@ def decisions_table(bk: dict[str, np.ndarray], selector: pd.DataFrame, ir: pd.Da
         parts.append(pd.DataFrame({"date": selector.index[t], "ticker": selector.columns[j], "book": name,
                                    "selector": selector.to_numpy()[t, j], "ir": i.to_numpy()[t, j], "combined": comb.to_numpy()[t, j]}))
     return pd.concat(parts, ignore_index=True)
+
+
+def random_pick(eligible: list[str], k: int, day: pd.Timestamp) -> list[str]:
+    """でたらめの帳（docs/agents.md 12 章）: その日に値のある銘柄から k 個を、日付から作った種で選ぶ（同じ日なら何度でも同じ）。"""
+    names = sorted(eligible)
+    k = min(int(k), len(names))
+    if k <= 0:
+        return []
+    rng = np.random.default_rng(int(pd.Timestamp(day).strftime("%Y%m%d")))
+    return sorted(rng.choice(names, size=k, replace=False).tolist())
+
+
+def e1_pick(revisions: pd.DataFrame, day: pd.Timestamp, eligible: list[str], up: float = E1_UP) -> pd.DataFrame:
+    """E1 の帳: その日の判断に使える開示で、通期の純利益の予想を up 以上引き上げた株（銘柄選定の点数のある株だけ）。列: ticker / fc_rev。"""
+    if revisions is None or revisions.empty:
+        return pd.DataFrame(columns=["ticker", "fc_rev"])
+    r = revisions[(pd.to_datetime(revisions["date"]) == pd.Timestamp(day)) & (revisions["fc_rev"] >= up)
+                  & revisions["ticker"].isin(set(eligible))]
+    return r.drop_duplicates("ticker")[["ticker", "fc_rev"]].sort_values("ticker").reset_index(drop=True)
+
+
+def extra_rows(day: pd.Timestamp, selector_row: pd.Series, n_selector: int, revisions: pd.DataFrame | None,
+               names: dict[str, str]) -> pd.DataFrame:
+    """台帳に足す 2 つの帳（でたらめ・E1）の行。列は explain の結果と同じ（date / ticker / book / selector / ir / combined / name / reason）。"""
+    eligible = selector_row.dropna().index.tolist()
+    rows = []
+    for t in random_pick(eligible, n_selector, day):
+        rows.append((day, t, RANDOM_BOOK, selector_row.get(t), np.nan, np.nan, names.get(t, t),
+                     f"でたらめ（種 {pd.Timestamp(day):%Y%m%d}、{len(eligible)} 銘柄から {n_selector} 個）"))
+    for r in e1_pick(revisions, day, eligible).itertuples():
+        rows.append((day, r.ticker, E1_BOOK, selector_row.get(r.ticker), np.nan, np.nan, names.get(r.ticker, r.ticker),
+                     f"通期の純利益の会社予想 {r.fc_rev:+.0%}（E1: 5% 以上の引き上げ）"))
+    return pd.DataFrame(rows, columns=["date", "ticker", "book", "selector", "ir", "combined", "name", "reason"])
 
 
 def explain(day_rows: pd.DataFrame, ir_day: pd.DataFrame, names: dict[str, str]) -> pd.DataFrame:
