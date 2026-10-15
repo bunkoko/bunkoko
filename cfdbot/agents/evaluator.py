@@ -231,7 +231,9 @@ def forward_book(ledger: pd.DataFrame, book: str, cc: pd.DataFrame) -> dict | No
     run_days = sorted(set(cnt.loc[cnt["date"] >= start, "date"]))      # 判断を書いた日（その帳に買う株が無かった日も数える）
     sel = to_matrix(cnt.assign(date=cnt["date"].dt.strftime("%Y-%m-%d")), book, cc.index, cc.columns)
     pnl = book_pnl(sel, cc)
-    pnl = pnl[pnl.index > start]                                          # 最初の判断の翌日から損益が出る
+    last = int(cc.index.searchsorted(run_days[-1]))
+    end = cc.index[min(last + HOLD, len(cc.index) - 1)]                  # 最後の判断の分を手放すまで（その先は持っていない）
+    pnl = pnl[(pnl.index > start) & (pnl.index <= end)]                   # 最初の判断の翌日から損益が出る
     t_now, months = _monthly_t(pnl["gross"])
     looks = {}
     for n in LOOK_DAYS:
