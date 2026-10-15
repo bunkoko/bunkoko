@@ -54,6 +54,7 @@
 | 「株の短期の売買を確かめて」 | `./cfd shortterm`（10〜20 分。`./cfd stocks --fetch` の後）。`output/shortterm/<日時>/report.md` の 1 章を見せ、`docs/stocks_short.md` 11 章に足す |
 | 「5 つの AI の様子は？」「IR の評価を見せて」 | `./cfd agents status`。採点は最新の `output/agents/<日時>/report.md`（1 章の判定・4 章の台帳）。動かし直すなら `./cfd agents run`（10〜20 分。値段も新しくするなら `--prices`）。結果は `docs/agents.md` 9 章に足す |
 | 「台帳は動いてる？」「M2 の先のデータは？」 | `./cfd agents check`（数秒）。`output/agents/check/<日時>.md` の 1 章（自動実行）・2 章（抜けた営業日）・3 章（途中経過と判定）を伝える。判定は 250・500・750 日の時点と毎週の見張りの警報だけで、途中の数字を見て何も変えない（`docs/agents.md` 12 章）。初めて動かしたら、3 章の「週の差の標準偏差」を 12.6 に書き写す。でたらめ・E1 の帳は `data/agents/ledger_extra.csv`（`ledger.csv` は今までのまま。調査部が読むので書き方を変えない） |
+| 「やることは？」「次は何をすればいい？」 | `docs/todo.md`（利用者が Mac の前や登録でやること）の、済んでいない行を上から伝える。取りかかると言われたら、その行の「やり方」を 1 手ずつ案内する。済んだら「済み」に日付を書く |
 | 「J-Quants を確かめて」 | 初回は利用者に J-Quants の無料の登録と API キーの発行（ダッシュボードの設定 → API Key）を頼み、Mac の前で `./cfd jquants key`（キーを貼る。画面には出ない）。その後 `./cfd jquants check`（数分〜20 分）。`output/jquants/<日時>/check.md` の 2 章を見せ、`docs/survivorship.md` 7 章に記録する。有料の契約は利用者がはっきり頼んだときだけ。取ったデータはコミットしない |
 | 「相方の行き過ぎを確かめて」 | `./cfd partner`（数十分。無い市場は Yahoo から取る）。`output/partner/<日時>/report.md` の 1 章を見せ、`docs/cross_asset.md` 7.6 に記録する。判定の条件（7.3）は変えない。採用候補でも EA にはすぐ入れない（デモの区切りで 1 回に 1 つ） |
 | 「お金の置き場所は？」「NISA はどうする？」 | `docs/portfolio.md` の 1・5・6 章を短く伝える。決めるのは利用者。チームの勧めは案 A。売買の設定は変えない |
