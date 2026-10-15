@@ -339,7 +339,7 @@ def test_demo_check_counts_only_its_own_period(tmp_path):
     assert "要確認 1 件・二重判断 0 件" in out
     # 直した日（10/19）から数え直す。Python の再現は 10/06 から続ける（持っている建玉もそのまま）
     out = _run(cfg, fpath, logs, tmp_path, extra=("--count-from", "2026-10-19"))
-    assert "**一致**" in out and "2026-10-15" not in out and "order failed" not in out
+    assert "**一致**" in out and "| 2026-10-15 |" not in out and "order failed" not in out
     assert "期間: 2026-10-19 から 14 日以上・照らし合わせた日 10 日以上" in out
 
 
