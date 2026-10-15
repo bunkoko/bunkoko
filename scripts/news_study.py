@@ -1016,6 +1016,143 @@ def cmd_report(args) -> Path:
     return out / "report.md"
 
 
+# --------------------------------------------------------------------------- 3: geo_vol を使っていない市場で（docs/text_signals.md 5 章）
+VOL_MARKETS = {"SP500": "^GSPC", "TOPIX": "1306.T", "BTC": "BTC-USD"}   # geo_vol で使っていない市場（S&P500・TOPIX の ETF・ビットコイン）
+VOL_MAX_ABS = 0.25          # 1 日の |値動き|（対数）がこれを超える日は、分割などのデータの誤りとみなして除く（ETF の分割で起きる）
+VOL_PASS_MARKETS = 2        # 3 市場のうち 2 つ以上で geo_vol と同じ条件を満たせば「使えそう」
+VOL_TRIALS_NOTE = "試した数 80 ＋ 1A ＋ 1B ＋ この 1 ＝ 83"
+
+
+def har_forecast(r: np.ndarray, refit: int = 21, min_obs: int = 250) -> np.ndarray:
+    """翌日の |値動き| の予測（HAR: 今日・直近 5 日・22 日の |値動き| の平均への回帰）。その日までに分かっていることだけで、21 日ごとに学び直す。"""
+    a = pd.Series(np.abs(np.asarray(r, float)))
+    x = np.column_stack([np.ones(len(a)), a.to_numpy(), a.rolling(5).mean().to_numpy(), a.rolling(22).mean().to_numpy()])
+    y = a.shift(-1).to_numpy()
+    out = np.full(len(a), np.nan)
+    beta = None
+    for t in range(len(a)):
+        if t >= min_obs and (beta is None or t % refit == 0):
+            ok = np.isfinite(x[:t]).all(axis=1) & np.isfinite(y[:t])      # 答え y[s] = |r[s+1]| は、s < t なら t 日目に分かっている
+            if ok.sum() >= min_obs:
+                beta = np.linalg.lstsq(x[:t][ok], y[:t][ok], rcond=None)[0]
+        if beta is not None and np.isfinite(x[t]).all():
+            out[t] = max(float(x[t] @ beta), 1e-6)
+    return out
+
+
+def vol_market(key: str, close: pd.Series, tz: str) -> MarketDaily:
+    """1 市場の日足（判断はその日の引け）。ビットコイン（UTC の日足）は、その日が終わった時（翌日 0:00 UTC）を引けとする。"""
+    r = np.log(close).diff()
+    r = r.where(r.abs() <= VOL_MAX_ABS)
+    dates = pd.DatetimeIndex(close.index)
+    if tz == "UTC":
+        decide = (dates.tz_localize("UTC") + pd.Timedelta(days=1)).as_unit("ns").asi8.astype(np.int64)
+    else:
+        from cfdbot.leadlag import close_ns
+
+        decide = close_ns(dates, tz)
+    return MarketDaily(key, dates, decide, r.shift(-1).to_numpy(float), r.abs().rolling(60, min_periods=40).mean().to_numpy(float),
+                       r.ewm(span=60, min_periods=40).std().to_numpy(float))
+
+
+def load_vol_markets(args, tickers: dict[str, str]) -> dict[str, MarketDaily]:
+    from cfdbot.context import fetch_yahoo
+    from cfdbot.leadlag import read_yahoo
+
+    out = {}
+    for key, ticker in tickers.items():
+        p = Path(args.universe) / f"{key}.csv"
+        fresh = p.exists() and (now_utc().tz_localize(None) - pd.Timestamp(read_yahoo(p)[0].index[-1])).days <= 4
+        if not fresh and not args.no_fetch:
+            try:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                fetch_yahoo(ticker, "2000-01-01").to_csv(p, index=False)
+            except Exception as e:  # noqa: BLE001
+                print(f"⚠ {key} の価格を取れなかった（{e}）。手元のデータで続ける"[:200])
+        if p.exists():
+            s, tz = read_yahoo(p)
+            out[key] = vol_market(key, s, tz)
+    return out
+
+
+def volcheck_verdict(per_market: dict[str, str]) -> str:
+    if any(v.startswith("途中経過") for v in per_market.values()):
+        return "まだ判定しない（データが足りない市場がある）"
+    ok = sum(v == "有望" for v in per_market.values())
+    return f"使えそう（{ok} 市場で条件を満たした）" if ok >= VOL_PASS_MARKETS else f"使えない（条件を満たしたのは {ok} 市場）"
+
+
+def cmd_volcheck(args) -> Path:
+    """geo_vol（地政学のニュースの急増の翌日は値動きが大きい）を、使っていない市場（S&P500・TOPIX・BTC）で確かめる。"""
+    import dataclasses
+
+    store = NewsStore(args.root)
+    lines: list[str] = []
+
+    def say(t: str = "") -> None:
+        print(t, flush=True)
+        lines.append(t)
+
+    today = now_utc().floor("D")
+    tl = keyword_timelines(store, today)
+    if not tl or "geo" not in tl:
+        raise SystemExit("GDELT の生データが無い（./cfd news run の後に）")
+    geo = tl["geo"]
+    sp = spikes(geo["share"]).to_numpy()
+    markets = load_vol_markets(args, VOL_MARKETS)
+    say(f"# geo_vol を使っていない市場で（{datetime.now():%Y-%m-%d %H:%M}）")
+    say("")
+    say(f"決まり: docs/text_signals.md 5 章（結果を見る前に決めた）。地政学のニュースの量（docs/news.md 4.1 の作り方）が急に増えた翌日の "
+        f"|値動き| ÷ ふだんの値動き（直近 60 日の平均）。偶然 = 日の並びをずらした同じ計算 {args.placebo} 回。{VOL_TRIALS_NOTE}")
+    say("")
+    say(f"- ニュース: {geo.index[0]:%Y-%m-%d}〜{geo.index[-1]:%Y-%m-%d}、急増 {int(sp.sum())} 日")
+    say("")
+    say("## 1. 判定（市場ごとに geo_vol と同じ条件: 値・前半・後半とも 1 を超え、偶然より大きい割合 95% 以上）")
+    say("")
+    say("| 市場 | 回数 | 値 | 前半 | 後半 | 偶然より大きい割合 | 市場ごと |")
+    say("|---|---|---|---|---|---|---|")
+    per = {}
+    for key in VOL_MARKETS:
+        if key not in markets:
+            per[key] = "途中経過（値段が無い）"
+            say(f"| {key} | – | – | – | – | – | 値段が無い |")
+            continue
+        r = Evaluator({key: markets[key]}, args.placebo).vol(geo.index, {key: sp})
+        per[key] = vol_verdict(r)
+        say(f"| {key} | {r['n']} | {fmt(r['value'])} | {fmt(r['h1'])} | {fmt(r['h2'])} | {pct(r['pct'])} | {per[key]} |")
+    say("")
+    say(f"**判定: {volcheck_verdict(per)}**（{len(VOL_MARKETS)} 市場のうち {VOL_PASS_MARKETS} つ以上で満たせば「使えそう」）")
+    say("")
+    say("## 2. 参考（判定しない）: ふだんの値動きを「過去の値動きからの予測（HAR）」にした比")
+    say("")
+    say("値動きの大きさは続きやすいので、ニュースの急増が「前日までの値動き」を超えて翌日の大きさを足すかを見る。1 を超えれば上乗せがある。"
+        "geo_vol で使った 3 商品も並べる")
+    say("")
+    say("| 市場 | 回数 | 値 | 前半 | 後半 | 偶然より大きい割合 |")
+    say("|---|---|---|---|---|---|")
+    ref = dict(markets)
+    try:
+        ref.update({k: v for k, v in load_markets(args).items() if k in ("WTI", "BRENT", "GOLD")})
+    except Exception:  # noqa: BLE001
+        pass
+    for key, m in ref.items():
+        har = har_forecast(np.r_[np.nan, m.next_ret[:-1]])               # その日の値動き（next_ret を 1 日戻す）から、翌日の予測
+        r = Evaluator({key: dataclasses.replace(m, norm_abs=har)}, args.placebo).vol(geo.index, {key: sp})
+        say(f"| {key} | {r['n']} | {fmt(r['value'])} | {fmt(r['h1'])} | {fmt(r['h2'])} | {pct(r['pct'])} |")
+    say("")
+    say("## 3. 読み方")
+    say("")
+    say("- 分かるのは「値動きが大きくなる」ことだけで、上か下かは分からない。使い道（急増の翌日は新しい建玉の量を減らす など）は、"
+        "これと docs/news.md の 2027-10 の先の確かめの両方が通ったときに、別に事前登録してから確かめる")
+    say("- TOPIX は ETF（1306）の値段。1 日の |値動き| が 25% を超える日は分割などの誤りとして除いた。ビットコインは UTC の日足で、その日の終わりを引けとした")
+    out = Path(args.out) / datetime.now().strftime("%Y%m%d-%H%M")
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / "volcheck.md"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"\n保存先: {path}")
+    return path
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--root", default="data/news", help="保存先")
@@ -1056,6 +1193,11 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--config", default="config/train.toml")
     r.add_argument("--context", default="data/context")
     r.add_argument("--out", default="output/news")
+    v = sub.add_parser("volcheck", help="geo_vol を使っていない市場（S&P500・TOPIX・BTC）で確かめる（docs/text_signals.md 5 章）")
+    v.add_argument("--placebo", type=int, default=200)
+    v.add_argument("--no-fetch", action="store_true", help="価格を取りに行かない")
+    v.add_argument("--universe", default="data/universe", help="価格（Yahoo の日足）の置き場")
+    v.add_argument("--out", default="output/news")
     ru = sub.add_parser("run", help="過去の分の取得 → 判定を続けて行う（止まったら待ってやり直す）")
     ru.add_argument("--retries", type=int, default=len(RUN_WAITS), help="やり直す回数（10・30・60 分待つ）")
     return p
@@ -1077,7 +1219,7 @@ def dispatch(args) -> None:
     {"run": cmd_run, "collect": cmd_collect, "backfill": cmd_backfill, "embed": cmd_embed, "selftest": cmd_selftest,
      "compare": cmd_compare,
      "setup": cmd_setup, "schedule": cmd_schedule, "status": cmd_status, "report": cmd_report,
-     "clean": cmd_clean}[args.cmd](args)
+     "clean": cmd_clean, "volcheck": cmd_volcheck}[args.cmd](args)
 
 
 if __name__ == "__main__":
