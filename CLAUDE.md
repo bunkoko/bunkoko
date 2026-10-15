@@ -53,6 +53,10 @@
 | 「株の研究を確かめて」「上がりそうな株は？」 | `./cfd stocks`（数分。データを新しくするなら `--fetch` で 20〜40 分）。`output/stocks/<日時>/report.md` の 1 章（判定）と 4 章（今あてはまるもの）を見せる。「使えそう」以外は勧めない。結果は `docs/stocks.md` 10 章に足す |
 | 「株の短期の売買を確かめて」 | `./cfd shortterm`（10〜20 分。`./cfd stocks --fetch` の後）。`output/shortterm/<日時>/report.md` の 1 章を見せ、`docs/stocks_short.md` 11 章に足す |
 | 「5 つの AI の様子は？」「IR の評価を見せて」 | `./cfd agents status`。採点は最新の `output/agents/<日時>/report.md`（1 章の判定・4 章の台帳）。動かし直すなら `./cfd agents run`（10〜20 分。値段も新しくするなら `--prices`）。結果は `docs/agents.md` 9 章に足す |
+| 「台帳は動いてる？」「M2 の先のデータは？」 | `./cfd agents check`（数秒）。`output/agents/check/<日時>.md` の 1 章（自動実行）・2 章（抜けた営業日）・3 章（途中経過と判定）を伝える。判定は 250・500・750 日の時点と毎週の見張りの警報だけで、途中の数字を見て何も変えない（`docs/agents.md` 12 章）。初めて動かしたら、3 章の「週の差の標準偏差」を 12.6 に書き写す |
+| 「J-Quants を確かめて」 | 初回は利用者に J-Quants の無料の登録と API キーの発行（ダッシュボードの設定 → API Key）を頼み、Mac の前で `./cfd jquants key`（キーを貼る。画面には出ない）。その後 `./cfd jquants check`（数分）。`output/jquants/<日時>/check.md` の 2 章を見せ、`docs/survivorship.md` 7 章に記録する。有料の契約は利用者がはっきり頼んだときだけ。取ったデータはコミットしない |
+| 「相方の行き過ぎを確かめて」 | `./cfd partner`（数十分。無い市場は Yahoo から取る）。`output/partner/<日時>/report.md` の 1 章を見せ、`docs/cross_asset.md` 7.6 に記録する。判定の条件（7.3）は変えない。採用候補でも EA にはすぐ入れない（デモの区切りで 1 回に 1 つ） |
+| 「お金の置き場所は？」「NISA はどうする？」 | `docs/portfolio.md` の 1・5・6 章を短く伝える。決めるのは利用者。チームの勧めは案 A。売買の設定は変えない |
 | 「開示の収集は動いてる？」 | `./cfd agents status`（本文・決算の数字の件数）と `tail -20 data/agents/collect.log`。登録は `launchctl print gui/$(id -u)/com.bunkoko.agents.collect`。過去の数字の取得の様子は `tail -3 data/agents/xbrl_history.log`（止まっていたら `nohup ./cfd agents collect --xbrl-history --max-docs 40000 --no-embed > data/agents/xbrl_history.log 2>&1 &` で続きから） |
 | 「決算の数字の検証をして」 | 過去の数字の取得が終わっていれば `./cfd agents earnings`（数分〜十数分）。`output/agents/<日時>/earnings.md` の 1 章を見せ、`docs/agents.md` 10.4 に記録を足す。条件（10.2）は変えない |
 | 「足した項目の検証をして」 | `./cfd agents extra`（20〜30 分。出来高を取り直すなら `--fetch`、学び直さないなら `--reuse`）。`output/agents/<日時>/extra.md` の 1 章を見せ、`docs/agents.md` 11.7 に記録を足す。条件（11.5）は変えない |

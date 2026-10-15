@@ -175,11 +175,6 @@ def cmd_decide(args) -> None:
     names = pd.read_csv(Path(args.data) / "universe_jp.csv").set_index("ticker")["name"].to_dict()
     today = D.explain(table[(table["date"] == last) & table["book"].isin(["combined", "selector"])],
                       ir_long[ir_long["date"] == last], names)
-    revisions = pd.read_csv(p["revisions"], parse_dates=["date"]) if p["revisions"].exists() else None
-    if revisions is None:
-        print("判断: E1 の帳は、決算の数字の表（revisions_recent.csv）が無いので書かない（./cfd agents run で作られる）", flush=True)
-    extra = D.extra_rows(last, sel.iloc[-1], int(bk["selector"][-1].sum()), revisions, names)
-    today = pd.concat([today, extra], ignore_index=True)
     today.insert(0, "decided_at", pd.Timestamp.now(tz=JST).tz_localize(None).strftime("%Y-%m-%d %H:%M:%S"))
     old = pd.read_csv(p["ledger"], dtype=str) if p["ledger"].exists() else pd.DataFrame()
     if len(old) and f"{last:%Y-%m-%d}" in set(old["date"].str[:10]):
@@ -187,11 +182,41 @@ def cmd_decide(args) -> None:
     else:
         today.assign(date=today["date"].dt.strftime("%Y-%m-%d")).to_csv(p["ledger"], mode="a", header=not p["ledger"].exists(), index=False,
                                                                         float_format="%.5f")
-        n_by = today["book"].value_counts()
-        print(f"判断: {last:%Y-%m-%d} の判断 {int(n_by.get('combined', 0))} 銘柄を台帳に書き足した"
-              f"（でたらめの帳 {int(n_by.get(D.RANDOM_BOOK, 0))}・E1 の帳 {int(n_by.get(D.E1_BOOK, 0))}）", flush=True)
+        print(f"判断: {last:%Y-%m-%d} の判断 {int((today['book'] == 'combined').sum())} 銘柄を台帳に書き足した", flush=True)
+    # 台帳に足す帳（でたらめ・E1。docs/agents.md 12 章）は別のファイルに書く。ledger.csv の書き方・中身は変えない。
+    # 失敗しても ledger.csv はもう書いてあるので、理由を 1 行出して続ける
+    try:
+        write_extra_books(p, last, sel, bk, names, today["decided_at"].iloc[0] if len(today) else None)
+    except Exception as e:  # noqa: BLE001
+        print(f"判断: でたらめ・E1 の帳は書けなかった（{type(e).__name__}: {str(e)[:120]}）。ledger.csv は書いてある", flush=True)
     n = table.groupby("book")["date"].nunique()
     print(f"判断: 記録 {len(table):,} 行（{table['date'].min():%Y-%m-%d}〜{last:%Y-%m-%d}。" + "、".join(f"{k} {v} 日" for k, v in n.items()) + "）", flush=True)
+
+
+def write_extra_books(p: dict, last: pd.Timestamp, sel: pd.DataFrame, bk: dict, names: dict, stamp: str | None) -> None:
+    """でたらめの帳と E1 の帳を data/agents/ledger_extra.csv に書き足す（同じ日は二度書かない。書いた時刻を入れる）。"""
+    from cfdbot.agents import decider as D
+
+    path = p["ledger_extra"]
+    old = pd.read_csv(path, dtype=str) if path.exists() else pd.DataFrame()
+    if len(old) and f"{last:%Y-%m-%d}" in set(old["date"].str[:10]):
+        print(f"判断: {last:%Y-%m-%d} のでたらめ・E1 の帳はもうある（書き足さない）", flush=True)
+        return
+    revisions = pd.read_csv(p["revisions"], parse_dates=["date"]) if p["revisions"].exists() else None
+    if revisions is None:
+        print("判断: E1 の帳は、決算の数字の表（revisions_recent.csv）が無いので書かない（./cfd agents run で作られる）", flush=True)
+    extra = D.extra_rows(last, sel.iloc[-1], int(bk["selector"][-1].sum()), revisions, names)
+    extra.insert(0, "decided_at", stamp or pd.Timestamp.now(tz=JST).tz_localize(None).strftime("%Y-%m-%d %H:%M:%S"))
+    extra.assign(date=pd.to_datetime(extra["date"]).dt.strftime("%Y-%m-%d")).to_csv(path, mode="a", header=not path.exists(), index=False,
+                                                                                   float_format="%.5f")
+    n = extra["book"].value_counts()
+    print(f"判断: でたらめの帳 {int(n.get(D.RANDOM_BOOK, 0))}・E1 の帳 {int(n.get(D.E1_BOOK, 0))} 銘柄を {path.name} に書き足した", flush=True)
+
+
+def read_ledgers(p: dict) -> pd.DataFrame:
+    """台帳（ledger.csv）と、足した帳（ledger_extra.csv）を合わせて読む。どちらも無ければ空。"""
+    parts = [pd.read_csv(p[k], dtype={"ticker": str}) for k in ("ledger", "ledger_extra") if p[k].exists()]
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
 
 # --------------------------------------------------------------------------- 判断の評価
@@ -785,7 +810,7 @@ def cmd_check(args) -> None:
     else:
         say(f"- 記録（{log}）が無い。自動実行がまだ一度も動いていないか、登録の前")
 
-    ledger = pd.read_csv(p["ledger"], dtype={"ticker": str}) if p["ledger"].exists() else pd.DataFrame()
+    ledger = read_ledgers(p)
     try:
         _, close = prices(Path(args.data))
     except SystemExit:
@@ -794,7 +819,7 @@ def cmd_check(args) -> None:
     h = E.ledger_health(ledger, cal, now)
     say("\n## 2. 台帳\n")
     if not h["rows"]:
-        say(f"- 台帳（{p['ledger']}）がまだ無い。平日の 13:05 の自動実行か `./cfd agents run --prices` で書かれる")
+        say(f"- 台帳（{p['ledger']}・{p['ledger_extra'].name}）がまだ無い。平日の 13:05 の自動実行か `./cfd agents run --prices` で書かれる")
     else:
         say(f"- {h['rows']:,} 行。先の判断として数える日（その日の 15:25 より前に書いた日）: {h['counted_days']} 日"
             f"（{h['first']:%Y-%m-%d}〜{h['last']:%Y-%m-%d}）。最後に書いた時刻: {h['last_written']}" if h["first"] is not None
@@ -808,7 +833,7 @@ def cmd_check(args) -> None:
             say(f"- 値段のデータより後で、書かれていない平日 {len(h['missing_weekdays'])} 日: "
                 + "、".join(f"{d:%m-%d}" for d in h["missing_weekdays"][:10]) + "（祝日を含むかもしれない。値段の取り直しが止まっている可能性）")
         if h["late"]:
-            say(f"- 15:25 より後に書いた日（数えない）: " + "、".join(f"{d:%Y-%m-%d}" for d in h["late"][:10]))
+            say("- 15:25 より後に書いた日（数えない）: " + "、".join(f"{d:%Y-%m-%d}" for d in h["late"][:10]))
         for b, v in h["books"].items():
             say(f"- 帳 {b}: {v['days']} 日（{v['first']:%Y-%m-%d}〜）、1 日平均 {v['names_per_day']:.1f} 銘柄")
 
@@ -817,20 +842,33 @@ def cmd_check(args) -> None:
         say("- まだ計算できない（値段か、数える日のある台帳が無い）")
     else:
         cc = E.returns(close)
+        sigma_w = float("nan")
+        if p["selector"].exists():
+            hist = wide(p["selector"]).reindex(index=close.index, columns=close.columns).to_numpy(dtype=float)
+            sigma_w = E.history_sigma(E.top_k(hist, E.TOP_SHARE, E.MIN_VALID), cc)
         say("全銘柄の平均との差（年率）。コスト前が止める決まりに使う数字。コスト後は往復 0.10%（判定に使ったものと同じ）。")
         say("\n| 帳 | 始まり | 数えた日 | コスト前 | コスト後 | 1 日の入れ替え | 月の数 | 今の月ごとの t | 判定 |")
         say("|---|---|---|---|---|---|---|---|---|")
+        watch = None
         for b in E.FORWARD_BOOKS:
             r = E.forward_book(ledger, b, cc)
             if r is None:
                 say(f"| {b} | – | 0 | – | – | – | – | – | まだ記録が無い |")
                 continue
+            cs = E.forward_cusum(r, sigma_w) if b == "selector" else None
+            watch = cs if b == "selector" else watch
             say(f"| {b} | {r['start']:%Y-%m-%d} | {r['days']} | {pct(r['gross_ann'])} | {pct(r['net_ann'])} | {pct(r['turnover'], 0)} | "
-                f"{r['months']} | {f2(r['t'])} | {E.forward_verdict(r, b)} |")
+                f"{r['months']} | {f2(r['t'])} | {E.forward_verdict(r, b, cs)} |")
         say("")
+        if watch is not None:
+            say(f"- 毎週の見張り（M2 の帳、累積和）: {watch['weeks']} 週、今の累積和 {watch['last']:.2f}・これまでの最大 {watch['max']:.2f}"
+                f"（閾値 {E.CUSUM_H}。週の差の標準偏差は {E.SIGMA_FROM[:7]}〜{E.SIGMA_TO[:7]} の記録から {watch['sigma_w']:.4%}）")
+        elif p["selector"].exists():
+            say("- 毎週の見張り: 過去の記録から値動きの大きさを測れなかった（値段か銘柄選定の点数が足りない）")
         say(f"- 判定は {', '.join(str(n) for n in E.LOOK_DAYS)} 日の時点（その日までの損益）だけで行う。その間の数字は途中経過で、見て何かを変えることはしない")
-        say(f"- 閉じる: M2（selector）か E1 の帳の、コスト前の月ごとの t が {E.STOP_T} 未満。お金を入れる判断は、この台帳だけでは決めない"
-            "（docs/survivorship.md の判定と、測ったコストを合わせてから。docs/agents.md 12.4）")
+        say(f"- 閉じる: M2（selector）か E1 の帳の、コスト前の月ごとの t が {E.STOP_T} 未満。または M2 の帳の毎週の見張りが閾値 {E.CUSUM_H} を超えた")
+        say("- お金を入れる判断は、この台帳だけでは決めない（docs/survivorship.md の判定と、測ったコストを合わせてから。金額を増やすのは、台帳が "
+            + "・".join(f"{b} {n} 日" for b, n in E.MIN_RECORD_DAYS.items()) + " を超えてから。docs/agents.md 12.4）")
     out = Path(args.out) / "check"
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{now:%Y%m%d-%H%M}.md"

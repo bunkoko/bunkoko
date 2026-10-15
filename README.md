@@ -9,6 +9,7 @@ Windows は不要: EA のコンパイル・テスト・デモの試運転は Mac
 - 複数銘柄の組み合わせと資金配分をデータから学習（H1、iPad も計算に参加可）: **[docs/training.md](docs/training.md)**
 - **これから何を・どの画面で・どうするか（作業手順書）: [docs/operations.md](docs/operations.md)**
 - **これまでの検証のまとめと、これからの方針（2026-10-11）: [docs/review.md](docs/review.md)**
+- 資金全体の設計（NISA・EA・暗号資産。利用者が決めるための選択肢の草案）: [docs/portfolio.md](docs/portfolio.md)
 - 戦略は差し替え式。`cfdbot/strategies/` に追加するだけで、バックテスト・最適化・テストの対象になる
 
 | 銘柄 | 主力 | 副 |
@@ -100,6 +101,9 @@ python scripts/mt5_files.py install --run output/train/<日時>   # EA とプリ
 ./cfd agents collect --docs   # 適時開示の本文（PDF を文字にしたもの）と決算の数字（XBRL）もためる（毎日 8:00 の自動収集は schedule --job collect）
 ./cfd agents earnings   # 決算の数字（会社予想の変化など）で評価する（docs/agents.md 10 章。collect --xbrl-history の後）
 ./cfd agents extra --fetch    # 出来高・割安さ・大きさ・業種・進捗率を足して確かめる（docs/agents.md 11 章。earnings の後。20〜30 分）
+./cfd agents check      # 台帳の点検（自動実行・抜けた日）と、先のデータの途中経過・止める決まり（docs/agents.md 12 章。数秒）
+./cfd jquants check     # J-Quants の無料プランで、生存者バイアスを取り除けるかを確かめる（docs/survivorship.md。初回は ./cfd jquants key）
+./cfd partner           # 相方の行き過ぎフィルタを、使っていない商品の 5 組で確かめる（docs/cross_asset.md 7 章。Mac で数十分）
 ```
 
 `./cfd meta` は『ファイナンス機械学習』（AFML）の方法で確かめる: パージング・エンバーゴ付きの組み合わせ交差検証（CPCV）、

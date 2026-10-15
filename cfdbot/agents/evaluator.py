@@ -159,6 +159,14 @@ LOOK_DAYS = (250, 500, 750)                # 見る時点（数えた判断の�
 STOP_T = -1.0                              # コスト前の月ごとの t がこれ未満なら閉じる
 RANDOM_ALARM_T = 2.58                      # でたらめの帳の |t| がこれ以上なら、データか計算の誤りを疑って点検する
 LATE_AFTER = pd.Timedelta(hours=15, minutes=25)   # この時刻より後に書いた行は「先の判断」に数えない
+# 毎週の見張り（CUSUM、累積和）: M2 の帳だけ。5 営業日ごとの「コスト前の差」を、過去の記録の値動きの大きさで割って足していく
+BLOCK = 5                                  # 1 週 = 5 営業日（重なる 5 日保有の自己相関を週の中に閉じ込める）
+BLOCKS_PER_YEAR = 252 / BLOCK
+CUSUM_SR_GOOD = 0.5                        # 「良い水準」= コスト前の年のシャープ 0.5（M2 の 2018 年からの記録 約 1.0 の半分）。悪い水準 = 0
+CUSUM_ARL_YEARS = 5.0                      # 良い水準のまま続いているときの、誤った警報の平均の間隔
+CUSUM_H = 12.3                             # 上の 2 つから、作ったデータで決めた閾値（cusum_threshold で再現できる。docs/agents.md 12.3）
+SIGMA_FROM, SIGMA_TO = "2018-01-01", "2026-09-30"   # 値動きの大きさ（週の差の標準偏差）を測る過去の記録の期間（台帳より前）
+MIN_RECORD_DAYS = {"selector": 685, "e1": 970}      # 最小記録長（12.4）: これより短い台帳では、お金を増やす判断をしない
 
 
 def counted_rows(ledger: pd.DataFrame) -> pd.DataFrame:
@@ -243,10 +251,10 @@ def forward_book(ledger: pd.DataFrame, book: str, cc: pd.DataFrame) -> dict | No
             "gross_ann": float(pnl["gross"].mean() * 252) if len(pnl) else np.nan,
             "net_ann": float(pnl["d"].mean() * 252) if len(pnl) else np.nan,
             "turnover": float(pnl["turnover"].mean()) if len(pnl) else np.nan,
-            "months": months, "t": t_now, "looks": looks}
+            "months": months, "t": t_now, "looks": looks, "gross": pnl["gross"]}
 
 
-def forward_verdict(r: dict | None, book: str) -> str:
+def forward_verdict(r: dict | None, book: str, cusum: dict | None = None) -> str:
     """docs/agents.md 12.3 の決まり。250・500・750 日の時点（その日までの損益）だけで判定し、その間は途中経過。
 
     一度「閉じる」になったら、その後の数字が戻っても閉じたまま（先に決めたことを、結果を見て変えない）。
@@ -261,6 +269,8 @@ def forward_verdict(r: dict | None, book: str) -> str:
         return f"正常（{max(looks)} 日の時点まで）" if looks else f"途中経過（{r['days']} 日）"
     if book not in JUDGED_BOOKS:
         return f"参考（{r['days']} 日）"
+    if cusum is not None and cusum.get("alarm") is not None:
+        return f"閉じる（毎週の見張りの警報。{cusum['alarm']} 週目に累積和が {CUSUM_H} を超えた）"
     if not looks:
         nxt = LOOK_DAYS[0]
         return f"まだ判定しない（{r['days']} 日。{nxt} 日で 1 回目、あと {nxt - r['days']} 日）"
@@ -270,3 +280,79 @@ def forward_verdict(r: dict | None, book: str) -> str:
     last = max(looks)
     nxt = next((n for n in LOOK_DAYS if n > last), None)
     return f"続ける（{last} 日の時点の t {looks[last]:+.2f}）" + (f"。次は {nxt} 日" if nxt else "。見る時点は終わり")
+
+
+
+def weekly_blocks(daily: pd.Series, block: int = BLOCK) -> pd.Series:
+    """日ごとの系列を、最初の日から 5 営業日ずつの重ならない合計にする（最後の欠けた週は使わない）。index は週の最後の日。"""
+    d = daily.dropna()
+    n = len(d) // block
+    if n == 0:
+        return pd.Series(dtype=float)
+    v = d.to_numpy()[: n * block].reshape(n, block).sum(axis=1)
+    return pd.Series(v, index=d.index[block - 1: n * block: block])
+
+
+def cusum_k(sr_good: float = CUSUM_SR_GOOD) -> float:
+    """良い水準（週あたり、標準偏差の単位）と 0 の中間。"""
+    return sr_good / np.sqrt(BLOCKS_PER_YEAR) / 2
+
+
+def cusum_path(z: np.ndarray, k: float, h: float = CUSUM_H) -> tuple[np.ndarray, int | None]:
+    """下向きの累積和 S_t = max(0, S_{t-1} + k − z_t)。S が h を超えた最初の週（1 から数える）を返す。無ければ None。"""
+    s, out, alarm = 0.0, np.empty(len(z)), None
+    for i, x in enumerate(np.asarray(z, dtype=float)):
+        s = max(0.0, s + k - x)
+        out[i] = s
+        if alarm is None and s > h:
+            alarm = i + 1
+    return out, alarm
+
+
+def cusum_arl(h: float, drift: float, k: float, n_paths: int = 4000, max_len: int = 5000, seed: int = 0, df: int | None = None) -> float:
+    """作ったデータで、警報が出るまでの週の平均（週ごとの z が平均 drift・標準偏差 1。df を渡せば裾の重い t 分布）。"""
+    rng = np.random.default_rng(seed)
+    s = np.zeros(n_paths)
+    alive = np.ones(n_paths, dtype=bool)
+    when = np.full(n_paths, float(max_len))
+    for t in range(max_len):
+        z = rng.standard_normal(n_paths) if df is None else rng.standard_t(df, n_paths) / np.sqrt(df / (df - 2))
+        s = np.maximum(0.0, s + k - (z + drift))
+        hit = alive & (s > h)
+        when[hit] = t + 1
+        alive &= ~hit
+        if not alive.any():
+            break
+    return float(when.mean())
+
+
+def cusum_threshold(sr_good: float = CUSUM_SR_GOOD, years: float = CUSUM_ARL_YEARS, n_paths: int = 3000, iters: int = 18,
+                    df: int | None = None, seed: int = 0) -> float:
+    """良い水準のまま続いているときの誤った警報の平均の間隔が years 年になる閾値 h を、二分法で求める（docs/agents.md 12.3 の表）。"""
+    target, k, drift = years * BLOCKS_PER_YEAR, cusum_k(sr_good), sr_good / np.sqrt(BLOCKS_PER_YEAR)
+    lo, hi = 1.0, 30.0
+    for i in range(iters):
+        mid = (lo + hi) / 2
+        if cusum_arl(mid, drift, k, n_paths=n_paths, max_len=int(target * 12), seed=seed + i, df=df) < target:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
+def history_sigma(selection: np.ndarray, cc: pd.DataFrame, start: str = SIGMA_FROM, end: str = SIGMA_TO) -> float:
+    """毎週の見張りに使う、週の差の標準偏差。過去の記録（台帳より前）の選び方で、コスト前の差を週ごとに足して測る。"""
+    g = book_pnl(selection, cc)["gross"]
+    g = g[(g.index >= pd.Timestamp(start)) & (g.index <= pd.Timestamp(end))]
+    w = weekly_blocks(g)
+    return float(w.std(ddof=1)) if len(w) >= 20 else float("nan")
+
+
+def forward_cusum(r: dict | None, sigma_w: float, h: float = CUSUM_H) -> dict | None:
+    """M2 の帳の毎週の見張り。z = 週の差 ÷ sigma_w。"""
+    if r is None or not np.isfinite(sigma_w) or sigma_w <= 0:
+        return None
+    w = weekly_blocks(r["gross"])
+    path, alarm = cusum_path((w / sigma_w).to_numpy(), cusum_k(), h)
+    return {"weeks": len(w), "last": float(path[-1]) if len(path) else 0.0, "max": float(path.max()) if len(path) else 0.0,
+            "alarm": alarm, "sigma_w": sigma_w}

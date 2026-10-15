@@ -154,3 +154,30 @@ def test_decide_writes_random_and_e1_books_and_check_reports(tmp_path, capsys):
     text = next((tmp_path / "out" / "check").glob("*.md")).read_text(encoding="utf-8")
     assert "## 2. 台帳" in text and "先の判断として数える日" in text and "抜けた営業日: 無し" in text
     assert "| selector |" in text and "| random |" in text and "| e1 |" in text and "まだ判定しない" in text
+
+
+def test_cusum_threshold_reproduces_the_registered_value_and_paths():
+    s, alarm = E.cusum_path(np.array([0.0, -1.0, -1.0, 2.0]), k=0.5, h=2.5)
+    assert np.allclose(s, [0.5, 2.0, 3.5, 2.0]) and alarm == 3                        # 3 週目に 2.5 を超える
+    assert E.cusum_path(np.array([1.0, 1.0]), k=0.5)[1] is None
+    h = E.cusum_threshold(n_paths=1500, iters=14)
+    assert abs(h - E.CUSUM_H) < 1.0                                                   # 12.3（docs/agents.md 12.3）を作ったデータで再現する
+    k, d = E.cusum_k(), E.CUSUM_SR_GOOD / np.sqrt(E.BLOCKS_PER_YEAR)
+    good = E.cusum_arl(E.CUSUM_H, d, k, n_paths=1500, max_len=4000, seed=5)
+    null = E.cusum_arl(E.CUSUM_H, 0.0, k, n_paths=1500, max_len=4000, seed=6)
+    assert 4.0 < good / E.BLOCKS_PER_YEAR < 6.5 and 2.0 < null / E.BLOCKS_PER_YEAR < 3.5   # 誤った警報は 5 年に 1 回ほど、効きが無ければ 2〜3 年で警報
+
+
+def test_weekly_watch_alarms_on_a_losing_book_and_closes():
+    idx, cc = _market(n_days=900, seed=3)
+    w = E.weekly_blocks(pd.Series(np.arange(12.0), index=idx[:12]))
+    assert w.tolist() == [10.0, 35.0] and list(w.index) == [idx[4], idx[9]]           # 5 日ずつ。欠けた最後の週は使わない
+    bad = ["S2.T", "S3.T"]
+    cc[bad] -= 0.003
+    lg = _ledger(idx[:400], ("selector",), bad)
+    r = E.forward_book(lg, "selector", cc)
+    sigma = E.history_sigma(np.zeros(cc.shape, dtype=bool) | (np.arange(cc.shape[1]) < 6)[None, :], cc, str(idx[0].date()), str(idx[-1].date()))
+    cs = E.forward_cusum(r, sigma)
+    assert cs["alarm"] is not None and cs["alarm"] < 80                               # 負け続ける帳は 250 日を待たずに警報
+    assert E.forward_verdict(r, "selector", cs).startswith("閉じる（毎週の見張り")
+    assert E.forward_cusum(r, float("nan")) is None
