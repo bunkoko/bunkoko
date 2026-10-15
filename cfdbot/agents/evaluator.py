@@ -166,7 +166,8 @@ CUSUM_SR_GOOD = 0.5                        # 「良い水準」= コスト前の
 CUSUM_ARL_YEARS = 5.0                      # 良い水準のまま続いているときの、誤った警報の平均の間隔
 CUSUM_H = 12.3                             # 上の 2 つから、作ったデータで決めた閾値（cusum_threshold で再現できる。docs/agents.md 12.3）
 SIGMA_FROM, SIGMA_TO = "2018-01-01", "2026-09-30"   # 値動きの大きさ（週の差の標準偏差）を測る過去の記録の期間（台帳より前）
-MIN_RECORD_DAYS = {"selector": 685, "e1": 970}      # 最小記録長（12.4）: これより短い台帳では、お金を増やす判断をしない
+# 最小記録長（12.4 の 6）: コスト前とコスト後（c* が決まるまでは往復 0.10%）の記録のシャープで計算し、大きいほう。これより短い台帳では、お金を増やさない
+MIN_RECORD_DAYS = {"selector": 2960, "e1": 2430}
 
 
 def counted_rows(ledger: pd.DataFrame) -> pd.DataFrame:

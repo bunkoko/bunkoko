@@ -38,6 +38,21 @@ def test_partner_gate_blocks_only_the_direction_the_partner_already_ran():
     assert ga["long"].iloc[300:560].mean() > 0.85                                      # ふだんはほとんど止めない
     assert set(g) == {"A", "B"}
     assert P.partner_gates({"A": frames["A"]}, {"A": "B"}) == {}                        # 相方の値が無ければ止めない
+    assert not P.partner_gates(frames, {"A": "B", "B": "A"}, clean=False)["A"]["long"].iloc[-1]   # 6 章の作り方でも同じ向き
+
+
+def test_a_single_roll_gap_in_the_partner_does_not_block_with_the_cleaned_change():
+    idx = pd.date_range("2015-01-01", periods=600, freq="B", tz="UTC")
+    rng = np.random.default_rng(1)
+    a = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, 600)))
+    r = rng.normal(0, 0.01, 600)
+    r[-5] = 0.15                                                                       # 相方に 1 日だけの飛び（つなぎ足の乗り換え）
+    frames = {"A": pd.DataFrame({"close": a}, index=idx), "B": pd.DataFrame({"close": 100 * np.exp(np.cumsum(r))}, index=idx)}
+    raw = P.partner_gates(frames, {"A": "B", "B": "A"}, clean=False)["A"]
+    clean = P.partner_gates(frames, {"A": "B", "B": "A"})["A"]
+    assert not raw["long"].iloc[-3] and clean["long"].iloc[-3]                          # 飛びだけで止めるのは 6 章の作り方の方
+    z, jumps = P.clean_zchange(P.from_bars("B", frames["B"], pd.Timedelta("1D")))
+    assert jumps.sum() >= 1 and jumps[-5] and P.jump_share(frames)["B"] > 0
 
 
 def test_verdict_needs_all_three_conditions():
@@ -46,6 +61,7 @@ def test_verdict_needs_all_three_conditions():
     assert P.verdict(0.05, 0.99, 0.4).startswith("採らない")
     assert P.verdict(-0.02, 1.0, 1.0).startswith("採らない")                          # 逆の結果を反転して「効く」とはしない
     assert P.verdict(float("nan"), None, None).startswith("判定できない")
+    assert P.verdict(0.05, 0.99, 0.9, n_pairs=2).startswith("判定できない（判定に残った組が 2 組")   # 3 組未満は判定しない
 
 
 def test_partner_study_runs_end_to_end(tmp_path, monkeypatch):
@@ -66,3 +82,4 @@ def test_partner_study_runs_end_to_end(tmp_path, monkeypatch):
     assert "## 1. 判定（使っていない組だけ）" in md and "| 判定の 5 組 | 10 |" in md
     assert ("途中（偶然の回数が 4 回" in md) or ("採らない" in md)                   # 200 回より少ないと採用候補にしない
     assert "試した数: 79 ＋ 1 ＝ 80" in md and "## 3. 参考" in md and "素牛" in md
+    assert "| 参考: 飛びを除かない（6 章と同じ作り方） |" in md and "飛びとした日の割合" in md

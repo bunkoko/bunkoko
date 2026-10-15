@@ -39,10 +39,17 @@ def _fake(gone_listed_in_bars=True, revision=True, pages=True):
         if path == "/equities/bars/daily":
             return (200, json.dumps({"data": [{"Date": old, "Code": params["code"], "C": 1.0}] * 5}).encode()) if gone_listed_in_bars \
                 else (210, json.dumps({"message": "no data"}).encode())
+        if path == "/fins/summary" and "code" in params:                                   # その会社の開示（前の短信 → 今回の修正）
+            day = J.check_dates(TODAY)["fins"][-1]
+            rows = [{"Code": params["code"], "DiscDate": f"{day - pd.Timedelta(days=60):%Y-%m-%d}", "DiscTime": "15:00:00",
+                     "DocType": "1QFinancialStatements_Consolidated_JP", "FNP": "100", "CurFYEn": "2026-03-31"},
+                    {"Code": params["code"], "DiscDate": f"{day:%Y-%m-%d}", "DiscTime": "15:00:00", "DocType": "EarnForecastRevision",
+                     "FNP": "120" if revision else "100", "CurFYEn": "2026-03-31"}]
+            return 200, json.dumps({"data": rows}).encode()
         if path == "/fins/summary":
-            kinds = ["2QFinancialStatements_Consolidated_JP"] * 3 + (["EarnForecastRevision"] if revision else [])
-            return 200, json.dumps({"data": [{"DiscDate": params["date"], "DiscTime": "15:00:00", "DocType": k, "FNP": "1", "FSales": "2",
-                                               "FOP": "3"} for k in kinds]}).encode()
+            kinds = ["2QFinancialStatements_Consolidated_JP"] * 3 + ["EarnForecastRevision"]
+            return 200, json.dumps({"data": [{"Code": f"20{i:02d}", "DiscDate": params["date"], "DiscTime": "15:00:00", "DocType": k, "FNP": "1",
+                                               "FSales": "2", "FOP": "3"} for i, k in enumerate(kinds)]}).encode()
         return 400, b'{"message": "bad"}'
     return get, calls
 
@@ -84,9 +91,12 @@ def test_check_finds_gone_companies_their_prices_and_revision_documents(tmp_path
     assert res["n_t500_old"] == 4 and res["gone_with_bars_by_date"] == 2 and res["bars_adj"] == {"AdjC": True, "AdjFactor": True}
     assert res["gone_by_code"]["1003"] == (200, 5)
     assert any("EarnForecastRevision" in f["doc_types"] for f in res["fins"]) and res["fins"][0]["forecast"]["FNP"]
+    pr = res["e1_probe"]
+    assert pr["non_fs"] == len(res["fins"]) and pr["checked"] >= 1 and pr["changed"] >= 1 and pr["fy_field"] == "CurFYEn"   # 操作で決める
     assert ("/equities/master", {"date": f"{J.check_dates(TODAY)['old']:%Y-%m-%d}", "pagination_key": "p2"}) in calls   # 続きを取る
     text = "\n".join(J.report(res, TODAY))
     assert "**入る**" in text and "TOPIX500 だった会社 1 社" in text and "EarnForecastRevision" in text and "AdjC）あり" in text
+    assert "変わっていたもの **" in text and "機械では決めない" in text
 
 
 def test_check_reports_when_gone_companies_or_revisions_are_missing():
@@ -94,7 +104,7 @@ def test_check_reports_when_gone_companies_or_revisions_are_missing():
     res = J.run_check(J.Client(get, sleep=lambda s: None, log=lambda s: None), TODAY, log=lambda s: None)
     text = "\n".join(J.report(res, TODAY))
     assert res["gone_with_bars_by_date"] == 0 and res["gone_by_code"]["1003"][0] == 210
-    assert "見つからなかった（E1 は J-Quants では作り直せない見込み" in text
+    assert res["e1_probe"]["changed"] == 0 and "変わっていたもの **0 件**" in text                 # 予想が動かなければ 0 件と出す
     bad = J.run_check(J.Client(lambda p, q: (403, b'{"message": "invalid key"}'), sleep=lambda s: None, log=lambda s: None), TODAY,
                       log=lambda s: None)
     assert "上場銘柄一覧が取れない（403" in bad["stopped"] and "止めた" in "\n".join(J.report(bad, TODAY))

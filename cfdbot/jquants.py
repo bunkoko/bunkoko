@@ -245,17 +245,70 @@ def run_check(client: Client, today: pd.Timestamp, n_codes: int = 3, log: Callab
         got[c] = (r.status, len(r.rows))
     out["gone_by_code"] = got
     # 財務（決算の多い日）
-    fins = []
+    fins, fin_rows = [], []
     for t in d["fins"]:
         r = get("/fins/summary", {"date": fmt(t)})
+        fin_rows.extend(r.rows)
         f = r.fields()
         dt = pick(f, "DocType", "TypeOfDocument")
         fins.append({"date": fmt(t), "status": r.status, "rows": len(r.rows), "fields": f,
                      "doc_types": pd.Series([str(x.get(dt)) for x in r.rows]).value_counts().to_dict() if dt and r.rows else {},
                      "forecast": {n: pick(f, n) is not None for n in ("FSales", "FOP", "FNP", "FEPS", "DiscDate", "DiscTime")}})
     out["fins"] = fins
+    out["e1_probe"] = probe_revisions(get, fin_rows, d, fmt, n_codes)
     out["calls_total"] = client.calls
     return out
+
+
+def _num(x) -> float:
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def probe_revisions(get, fin_rows: list[dict], d: dict, fmt, n_codes: int = 3) -> dict:
+    """E1 を作り直せるかの、操作での確かめ（docs/survivorship.md 4.4）。
+
+    3 日の財務の行のうち、書類の種類が決算短信（FinancialStatements を含む）でない行を数え、その会社（多くて n_codes 社）の財務を期間で取り、
+    同じ会社の直前の開示（同じ決算期の項目があれば、同じ決算期の中で）から、通期の純利益の会社予想 FNP が変わっているかを数える。
+    書類の種類の名前の意味で決めず、「決算短信でない開示で予想が動いたか」で決める。最後の判断は人が check.md を読んで書く。
+    """
+    out = {"non_fs": 0, "codes": [], "changed": 0, "checked": 0, "fy_field": None, "fields_seen": []}
+    if not fin_rows:
+        return out
+    f = list(dict.fromkeys(k for r in fin_rows[:200] for k in r))
+    dt, code_f, fnp = pick(f, "DocType", "TypeOfDocument"), pick(f, "Code", "LocalCode"), pick(f, "FNP", "ForecastProfit")
+    out["fields_seen"] = f
+    if dt is None or code_f is None or fnp is None:
+        out["missing"] = [n for n, v in (("DocType", dt), ("Code", code_f), ("FNP", fnp)) if v is None]
+        return out
+    non_fs = [r for r in fin_rows if "financialstatements" not in str(r.get(dt, "")).lower()]
+    out["non_fs"] = len(non_fs)
+    codes = list(dict.fromkeys(str(r.get(code_f)) for r in non_fs))[:n_codes]
+    out["codes"] = codes
+    for c in codes:
+        r = get("/fins/summary", {"code": c})
+        if not r.ok or not r.rows:
+            continue
+        rf = r.fields()
+        dd, tt = pick(rf, "DiscDate", "DisclosedDate"), pick(rf, "DiscTime", "DisclosedTime")
+        fy = pick(rf, "CurFYEn", "CurrentFiscalYearEndDate")
+        out["fy_field"] = out["fy_field"] or fy
+        rows = sorted(r.rows, key=lambda x: (str(x.get(dd, "")), str(x.get(tt, ""))))
+        target_dates = {str(x.get(pick(list(x), "DiscDate", "DisclosedDate") or "", "")) for x in non_fs if str(x.get(code_f)) == c}
+        for i, row in enumerate(rows):
+            if "financialstatements" in str(row.get(dt, "")).lower() or str(row.get(dd, "")) not in target_dates:
+                continue
+            prev = [p for p in rows[:i] if fy is None or str(p.get(fy)) == str(row.get(fy))]
+            prev = [p for p in prev if pd.notna(_num(p.get(fnp)))]
+            if not prev or pd.isna(_num(row.get(fnp))):
+                continue
+            out["checked"] += 1
+            if _num(prev[-1].get(fnp)) != _num(row.get(fnp)):
+                out["changed"] += 1
+    return out
+
 
 
 def report(res: dict, today: pd.Timestamp) -> list[str]:
@@ -284,8 +337,15 @@ def report(res: dict, today: pd.Timestamp) -> list[str]:
     for f in res.get("fins", []):
         say(f"4. 財務 {f['date']}（{f['status']}、{f['rows']} 行）の書類の種類: {f['doc_types'] or '（無し）'}。"
             f"会社予想などの項目: " + "、".join(f"{k} {'あり' if v else '無し'}" for k, v in f["forecast"].items()))
-    rev = [k for f in res.get("fins", []) for k in f["doc_types"] if any(w in k.lower() for w in ("revision", "forecast", "修正"))]
-    say(f"   → 業績予想の修正の開示と読める種類: {sorted(set(rev)) or '見つからなかった（E1 は J-Quants では作り直せない見込み。docs/survivorship.md 4.4 の分かれ道）'}")
+    pr = res.get("e1_probe", {})
+    if pr.get("missing"):
+        say(f"   → E1 の確かめ（4.4）: 財務に {', '.join(pr['missing'])} の項目が無く、操作での確かめができなかった")
+    else:
+        say(f"   → E1 の確かめ（4.4、操作で決める）: 3 日の財務のうち、決算短信（FinancialStatements を含む種類）でない行 {pr.get('non_fs', 0)} 件。"
+            f"そのうち {len(pr.get('codes', []))} 社を期間で取り、直前の開示と比べられた {pr.get('checked', 0)} 件のうち、通期の純利益の会社予想（FNP）が"
+            f"変わっていたもの **{pr.get('changed', 0)} 件**（同じ決算期の項目: {pr.get('fy_field') or '見つからず、直前の開示と比べた'}）")
+        say("     1 件以上なら「決算短信でない開示で予想の変化が取れる」= S-E1 を作る側。0 件なら作らない側。どちらにするかは、この報告を人が読んで "
+            "docs/survivorship.md 7 章に書く（機械では決めない）")
     adj = res.get("bars_adj", {})
     say(f"5. 日付だけの全銘柄の日足に、調整後の終値（AdjC）{'あり' if adj.get('AdjC') else '無し'}・調整係数（AdjFactor）{'あり' if adj.get('AdjFactor') else '無し'}。"
         f"古い日の全銘柄の日足に、消えた会社の行 {res.get('gone_with_bars_by_date', 0)} 社分")
@@ -294,9 +354,10 @@ def report(res: dict, today: pd.Timestamp) -> list[str]:
     conts = sorted({c['container'] for c in res["calls"] if c['container']})
     say(f"7. 応答の入れ物の名前: {', '.join(conts) or '–'}（公式の例は data）")
     say(f"\n- 規模区分の値（古い一覧）: {res.get('scale_values', {})}")
-    say(f"- 呼び出しは全部で {res.get('calls_total', 0)} 回（Free は 1 分 5 回なので 13 秒おき）")
+    say(f"- 呼び出しは全部で {res.get('calls_total', 0)} 回（ページ分けを含む。Free は 1 分 5 回なので 13 秒おき）")
     say("\n## 3. 読み方\n")
     say("- 1 が「入る」で 6 が取れれば、時点ごとの TOPIX500（後で消えた会社を含む）を作れる。段階 2（有料 1 か月）に進むかを利用者に聞く")
     say("- 無料の窓は直近の 2 年だけなので、ここで分かるのは仕組みまで。偏りの大きさ（2010 年代）は有料の段階でしか分からない")
-    say("- 取ったデータはこのリポジトリに入れない（J-Quants の規約: 個人の私的利用のみ・再配布は不可）。この報告は数と項目名だけ")
+    say("- 取ったデータはこのリポジトリに入れない（J-Quants の規約: 個人の私的利用のみ・再配布は不可）。この報告は数・項目名・銘柄コードだけ。"
+        "公開のリポジトリに移すときは、銘柄コードの一覧（消えた会社など）を消す")
     return L

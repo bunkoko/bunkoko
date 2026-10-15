@@ -15,15 +15,17 @@ import numpy as np
 import pandas as pd
 
 from .backtest import BacktestConfig, Sleeve, run_backtest
-from .context import fetch_yahoo, from_bars, yahoo_csv_frame
+from .context import CSeries, at_times, change, fetch_yahoo, from_bars, yahoo_csv_frame
 from .diversified import EXTRA_MARKETS
-from .features import Hypothesis, hypothesis_gate
+from .features import Hypothesis, decide_ns, hypothesis_gate
 from .instruments import Instrument
 from .study import shifted
 from .universe import BY_KEY, GROUPS, Market, data_path, day_returns, market_instrument, sharpe, with_costs
 
 N_DAYS, THRESHOLD = 20, 1.5          # cross_asset.md 6 章の相方の行き過ぎと同じ（結果を見て動かさない）
+JUMP_SIGMA, WINDOW = 4.0, 252        # 主の判定: 相方の 1 日の変化がそれまでの 252 日の標準偏差の 4 倍を超えた日は、つなぎ足の乗り換えの飛びとみなして 0 にする
 MIN_YEARS = 3                        # これより短い市場の組は使わない
+MIN_PAIRS = 3                        # 判定に残る組がこれより少なければ判定しない
 PLACEBO = 200                        # 時期をずらした偶然の回数
 PRIOR_TRIALS = 79                    # docs/review.md の 77 ＋ desk の D1・D2
 FEEDER = Market("FEEDER", "GF=F", "commodity", "素牛（フィーダーキャトル）")
@@ -46,13 +48,39 @@ def partner_map(pairs) -> dict[str, str]:
     return out
 
 
+def clean_zchange(cs: CSeries, n: int = N_DAYS, window: int = WINDOW, jump: float = JUMP_SIGMA) -> tuple[np.ndarray, np.ndarray]:
+    """飛びを除いた n 本の変化 ÷ ふだんの大きさ。飛び = 1 本の変化の絶対値が、その前の window 本の標準偏差の jump 倍を超えた日（0 にする）。
+
+    つなぎ足の限月の乗り換えの飛び（docs/cross_asset.md 7.2）が、相方の「行き過ぎ」に入らないようにするため。戻り値の 2 つ目は飛びとした日。
+    """
+    one = pd.Series(change(cs, 1))
+    sd = one.rolling(window, min_periods=window // 2).std().shift(1)        # その日より前だけ
+    is_jump = (one.abs() > jump * sd).fillna(False).to_numpy()
+    cleaned = one.where(~is_jump, 0.0)
+    scale = cleaned.rolling(window, min_periods=window // 2).std() * np.sqrt(n)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        z = (cleaned.rolling(n, min_periods=n).sum() / scale).to_numpy(dtype=float, copy=True)
+    z[~np.isfinite(z)] = np.nan
+    return z, is_jump
+
+
 def partner_gates(frames: dict[str, pd.DataFrame], pmap: dict[str, str], tf: pd.Timedelta = pd.Timedelta("1D"),
-                  n: int = N_DAYS, threshold: float = THRESHOLD) -> dict[str, pd.DataFrame]:
+                  n: int = N_DAYS, threshold: float = THRESHOLD, clean: bool = True) -> dict[str, pd.DataFrame]:
     """相方の直近 n 本の変化が、ふだんの threshold 倍（σ）を超えた向きの新規を止める絞り込み（列 long / short）。
 
-    計算は cross_asset.md の extension_partner と同じ（`features.hypothesis_gate`、`context.zchange`）。相方の値は、
-    自分の足の終わりの時点で終わっている相方の足まで（先読みしない）。
+    clean=True（主の判定）: 相方の変化から飛びの日を除く（clean_zchange）。clean=False（参考）: cross_asset.md 6 章の extension_partner と同じ
+    （`features.hypothesis_gate`、`context.zchange`）。どちらも、相方の値は自分の足の終わりの時点で終わっている相方の足まで（先読みしない）。
     """
+    if clean:
+        out = {}
+        for s, f in frames.items():
+            other = pmap.get(s)
+            if other not in frames:
+                continue
+            cs = from_bars(other, frames[other], tf)
+            z = at_times(cs, clean_zchange(cs, n)[0], decide_ns(f.index, tf))
+            out[s] = pd.DataFrame({"long": ~(z > threshold), "short": ~(z < -threshold)}, index=f.index)
+        return out
     h = Hypothesis("extension_partner", "相方の行き過ぎ", {s: "partner" for s in frames if pmap.get(s) in frames},
                    kind="extension", n=n, threshold=threshold)
 
@@ -153,8 +181,15 @@ def placebo_diffs(group: Group, pk0, gates: dict[str, pd.DataFrame], base_sharpe
     return out
 
 
-def verdict(diff: float, pct: float | None, share: float | None) -> str:
+def jump_share(frames: dict[str, pd.DataFrame], tf: pd.Timedelta = pd.Timedelta("1D")) -> dict[str, float]:
+    """市場ごとの、飛びとした日の割合（報告用）。"""
+    return {s: float(clean_zchange(from_bars(s, f, tf))[1].mean()) for s, f in frames.items()}
+
+
+def verdict(diff: float, pct: float | None, share: float | None, n_pairs: int | None = None) -> str:
     """docs/cross_asset.md 7.3 の判定。"""
+    if n_pairs is not None and n_pairs < MIN_PAIRS:
+        return f"判定できない（判定に残った組が {n_pairs} 組。{MIN_PAIRS} 組未満）"
     if not np.isfinite(diff) or pct is None:
         return "判定できない（データ不足）"
     ok = diff > 0 and pct >= 0.95 and (share or 0.0) >= 0.5

@@ -1,7 +1,7 @@
 """J-Quants（JPX 総研の公式 API）の確認（./cfd jquants）。docs/survivorship.md の段階 1。
 
     python scripts/jquants.py key            # API キーを保存する（入力を求める。~/.bunkoko/jquants.json、権限 600。このリポジトリの外）
-    python scripts/jquants.py check          # 無料プランで、過去の一覧に後で消えた会社が入るか・その値段が取れるか などを確かめる（数分）
+    python scripts/jquants.py check          # 無料プランで、過去の一覧に後で消えた会社が入るか・その値段が取れるか などを確かめる（数分〜20 分。ページ分けしだい）
 
 キーは J-Quants のダッシュボードの設定（Settings → API Key）で発行する（登録は利用者が行う）。
 """
