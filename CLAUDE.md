@@ -57,7 +57,7 @@
 | 「決算の数字の検証をして」 | 過去の数字の取得が終わっていれば `./cfd agents earnings`（数分〜十数分）。`output/agents/<日時>/earnings.md` の 1 章を見せ、`docs/agents.md` 10.4 に記録を足す。条件（10.2）は変えない |
 | 「足した項目の検証をして」 | `./cfd agents extra`（20〜30 分。出来高を取り直すなら `--fetch`、学び直さないなら `--reuse`）。`output/agents/<日時>/extra.md` の 1 章を見せ、`docs/agents.md` 11.7 に記録を足す。条件（11.5）は変えない |
 | 「調査部を動かして」「調査部の成績は？」 | AI の調査部（証券会社・運用会社の手順にならった分業）は、株用のフォルダ `/Users/bunkoko/dev/kabu` に移した（2026-10-14）。そこの `CLAUDE.md` と `docs/desk.md` に従う。このリポジトリの値段・開示・点数は、そこから読まれている（消さない・場所を変えない） |
-| 「毎週の確認をして」 | 書き出し済みなら `./cfd data` → `./cfd replay --start … --equity …`（`--count-from` は付けない）→ `./cfd demo-check`（`docs/operations.md` 12 章の「今の照らし合わせの指定」をすべて付ける。今は `--start 2026-10-06 --equity 10000000`）。`output/demo_check/<日時>/report.md` の「一致／差あり／まだ比べられない」と本番に進む条件の数を伝える。書き出しがまだなら、Mac の前でしてもらう |
+| 「毎週の確認をして」 | 書き出し済みなら `./cfd data` → `./cfd replay --start … --equity …`（`--count-from` は付けない）→ `./cfd demo-check`（`docs/operations.md` 12 章の「今の照らし合わせの指定」をすべて付ける。今は `--start 2026-10-07 --equity 10000000`）。`output/demo_check/<日時>/report.md` の「一致／差あり／まだ比べられない」と本番に進む条件の数を伝える。書き出しがまだなら、Mac の前でしてもらう |
 | 「本番に進んでいい？」 | 最新の demo-check の report.md と `docs/operations.md` 12 章「本番に進む条件」（事前登録）を照らす。口座を替えた後は、前の口座の report.md と期間・取引を足す。条件は変えない |
 | 「EA の照らし合わせで差が出た」 | report.md の「差の理由の候補」を伝える。直したら `--count-from <直した日>` を足して確かめ直し、12 章の「今の照らし合わせの指定」も書き換える |
 
