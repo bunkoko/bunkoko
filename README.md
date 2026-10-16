@@ -9,7 +9,7 @@ Windows は不要: EA のコンパイル・テスト・デモの試運転は Mac
 - 複数銘柄の組み合わせと資金配分をデータから学習（H1、iPad も計算に参加可）: **[docs/training.md](docs/training.md)**
 - **これから何を・どの画面で・どうするか（作業手順書）: [docs/operations.md](docs/operations.md)**
 - **これまでの検証のまとめと、これからの方針（2026-10-11）: [docs/review.md](docs/review.md)**（2026-10-15 の研究チームの見直しは 7 章、元の報告は [docs/team_20261015/](docs/team_20261015/)）
-- 資金全体の設計（NISA・EA・暗号資産。2026-10-15 の答えを反映）: [docs/portfolio.md](docs/portfolio.md)、利用者のやること: [docs/todo.md](docs/todo.md)
+- 資金全体の設計（NISA・EA・暗号資産。2026-10-15 の答えを反映）: [docs/portfolio.md](docs/portfolio.md)、利用者のやること: [docs/todo.md](docs/todo.md)、利益が出るかもしれないルールの一覧: [docs/rules_menu.md](docs/rules_menu.md)
 - 日本株の少額の本番（予行演習）の決まりと、今日の注文の一覧（`./cfd agents orders`。注文は出さない）: [docs/stocks_live.md](docs/stocks_live.md)、毎日の手順: [docs/stocks_live_daily.md](docs/stocks_live_daily.md)
 - 文章とニュースの信号（似た会社のモメンタム・有報の文面の前年との差・ニュースと値動きの大きさ。2026-10-16 に事前登録）: [docs/text_signals.md](docs/text_signals.md)
 - 戦略は差し替え式。`cfdbot/strategies/` に追加するだけで、バックテスト・最適化・テストの対象になる

@@ -63,6 +63,7 @@
 | 「知らせが来ない」「知らせを設定して」 | 設定は `~/.bunkoko/notify.json`（リポジトリの外。権限 600。無ければ何も送らない）。`docs/stocks_live_daily.md` 5 章の順（メッセージ → メール → Pushover）で Mac の前で案内し、`./cfd agents orders --notify-test` で試す。来なかった日は `tail -5 data/agents/live/notify.log` と run.log の「予行演習」の行を見る。もう一度送るなら `./cfd agents orders --notify` |
 | 「株の予行演習を止めて」 | `touch data/agents/live/STOP`（新しく買わない。持っている株は予定の日に売る）。再開（STOP を消す）は利用者がはっきり頼んだときだけで、理由を `docs/stocks_live.md` 10 章に書く。金額（`--setup --equity`）と本物への切り替え（`--setup --real`）も、利用者がはっきり頼んだときだけ |
 | 「予行演習の様子は？」 | `./cfd agents orders --report`（数秒〜1 分。基準の値段を Yahoo から取る）。`output/agents/live/<日時>.md` の 1 章（止める決まり）・3 章（空運転の進み具合）・4 章（c* の途中経過）を伝える。途中の数字を見て決まりを変えない。c* が決まったら `docs/stocks_live.md` 10 章に書き写す |
+| 「儲かりそうなルールは？」「ルールの一覧を見せて」 | `docs/rules_menu.md`（信頼性が低いものも含めた一覧。★の見込み・私たちの数字・実行のしやすさ）。利用者が選んだら、金額の上限・止める決まり・記録のしかたを先に決めて少額の本番で始める（勧めるのは利用者が選んだものだけ。1 銘柄の予測はしない） |
 | 「お金の置き場所は？」「NISA はどうする？」 | `docs/portfolio.md` の 1・5・6 章を短く伝える。決めるのは利用者。チームの勧めは案 A。売買の設定は変えない |
 | 「開示の収集は動いてる？」 | `./cfd agents status`（本文・決算の数字の件数）と `tail -20 data/agents/collect.log`。登録は `launchctl print gui/$(id -u)/com.bunkoko.agents.collect`。過去の数字の取得の様子は `tail -3 data/agents/xbrl_history.log`（止まっていたら `nohup ./cfd agents collect --xbrl-history --max-docs 40000 --no-embed > data/agents/xbrl_history.log 2>&1 &` で続きから） |
 | 「決算の数字の検証をして」 | 過去の数字の取得が終わっていれば `./cfd agents earnings`（数分〜十数分）。`output/agents/<日時>/earnings.md` の 1 章を見せ、`docs/agents.md` 10.4 に記録を足す。条件（10.2）は変えない |
