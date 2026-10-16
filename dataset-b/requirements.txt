@@ -1,0 +1,4 @@
+# dataset-b のツール用（Python 3.10 以上）
+jsonschema>=4.0
+# 任意: validate_records.py --images-root で画像の幅・高さを照合するときに使う
+# Pillow>=10

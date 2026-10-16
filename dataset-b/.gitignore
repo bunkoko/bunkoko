@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.ruff_cache/
+.DS_Store
+*.jpg
+*.jpeg
+*.heic
+*.HEIC
+*.JPG
+metadata.jsonl
+generation_summary.json

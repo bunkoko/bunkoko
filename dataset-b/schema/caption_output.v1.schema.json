@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Caption output v1",
+  "description": "The JSON object a local vision-language model must return for one photo under prompt version caption-v1, and nothing else. This file is passed as-is to the Ollama `format` parameter, so it uses only type, properties, required, enum, items and additionalProperties. Length, sentence-count, uniqueness and style rules are checked by check_caption_output() in tools/validate_records.py at generation time, not by this schema.",
+  "type": "object",
+  "properties": {
+    "ja_short": {
+      "type": "string",
+      "description": "Short Japanese caption: one plain-form sentence ending with the Japanese full stop (U+3002), 15-60 characters, describing the main subject and its situation. No proper nouns, no people."
+    },
+    "ja_detailed": {
+      "type": "string",
+      "description": "Detailed Japanese caption: 3-5 plain-form sentences, each ending with the Japanese full stop (U+3002), 80-300 characters in total, covering composition, colors, and season, time of day and light only when visible cues exist, plus atmosphere. No proper nouns, no people."
+    },
+    "en_short": {
+      "type": "string",
+      "description": "Natural English rendering of ja_short with the same content and nothing added: one sentence ending with a period, 5-30 words, no proper nouns."
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "landscape",
+        "cityscape",
+        "architecture",
+        "railway",
+        "transport",
+        "food",
+        "flora",
+        "interior",
+        "other"
+      ],
+      "description": "Category of the main subject of the photo."
+    },
+    "flags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "person",
+          "license_plate",
+          "logo_or_brand"
+        ]
+      },
+      "description": "Things visible in the photo that keep it out of the dataset: person (a person or any body part), license_plate, logo_or_brand (a readable company, product or shop name, logo or mark). Empty array if none. Values must be unique (checked by check_caption_output() in tools/validate_records.py at generation time). A non-empty array permanently excludes the photo from the dataset, even if the detection looks like a false positive."
+    }
+  },
+  "required": [
+    "ja_short",
+    "ja_detailed",
+    "en_short",
+    "category",
+    "flags"
+  ],
+  "additionalProperties": false
+}
