@@ -1,0 +1,56 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(~/fukugyo-c-jobs/**)",
+      "Edit(~/fukugyo-c-jobs/**)",
+      "Edit(~/.claude/settings.json)"
+    ],
+    "disableBypassPermissionsMode": "disable"
+  },
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "filesystem": {
+      "denyRead": [
+        "~/fukugyo-c-jobs"
+      ],
+      "allowWrite": [
+        "~/.cache/uv",
+        "~/.local/share/uv",
+        "~/.cache/huggingface"
+      ]
+    },
+    "network": {
+      "allowLocalBinding": true,
+      "allowedDomains": [
+        "pypi.org",
+        "files.pythonhosted.org",
+        "huggingface.co",
+        "*.huggingface.co",
+        "*.hf.co",
+        "github.com",
+        "*.githubusercontent.com"
+      ]
+    }
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 '/Library/Application Support/ClaudeCode/hooks/guard_customer_data.py'",
+            "onFailure": "block"
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "DISABLE_FEEDBACK_COMMAND": "1",
+    "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+    "DISABLE_ERROR_REPORTING": "1"
+  }
+}

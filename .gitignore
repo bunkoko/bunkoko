@@ -1,0 +1,42 @@
+# 顧客データは絶対にリポジトリに入れない（案件フォルダはリポジトリの外に置く）
+/jobs/
+/runs/
+*.csv
+*.tsv
+*.xlsx
+*.xls
+*.xlsm
+*.parquet
+*.sqlite
+*.sqlite3
+*.npy
+# 架空データとテスト用の入力だけは例外として追跡する
+!samples/fictional/**/*.csv
+!samples/fictional/**/*.xlsx
+!tests/fixtures/**/*.csv
+!tests/fixtures/**/*.xlsx
+
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# モデルとキャッシュ
+.cache/
+models/
+*.gguf
+*.safetensors
+
+# ローカル設定・秘密情報
+.claude/settings.local.json
+.env
+.env.*
+
+# macOS
+.DS_Store
