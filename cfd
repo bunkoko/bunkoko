@@ -60,6 +60,7 @@ case "$cmd" in
   partner) need_venv; exec "$PY" scripts/partner_study.py "$@" ;;
   jquants) need_venv; exec "$PY" scripts/jquants.py "$@" ;;
   edinet) need_venv; exec "$PY" scripts/edinet.py "$@" ;;
+  overnight) need_venv; exec "$PY" scripts/overnight_study.py "$@" ;;
   stockpick) need_venv; exec "$PY" scripts/stockpick_study.py "$@" ;;
   timing) need_venv; exec "$PY" scripts/timing_study.py "$@" ;;
   stocks) need_venv; exec "$PY" scripts/stocks_study.py "$@" ;;
@@ -116,6 +117,7 @@ case "$cmd" in
   partner  相方の行き過ぎフィルタを、使っていない商品の 5 組で確かめる（docs/cross_asset.md 7 章。Yahoo から取る。Mac で数十分）
   jquants  J-Quants の無料プランで、過去の上場銘柄一覧に後で消えた会社が入るかなどを確かめる（key でキーを保存 → check。docs/survivorship.md）
   edinet   EDINET の有報の本文で文章の信号を確かめる（key → check → fetch → momentum・lazy。docs/text_signals.md）
+  overnight 夜だけ持つ（1306 を引けで買い翌朝の寄りで売る）の記録だけの売買の途中経過（docs/overnight.md。お金は動かさない）
   stockpick 個別株をルールで選ぶ検証（--market jp: docs/stockpick.md、--market us: docs/us_equity.md。--fetch で Yahoo から。数分）
   timing   S&P500 を持ち方で上回れるか（変動で量・10 か月平均。docs/us_equity.md。--fetch で ^GSPC）
   stocks   上がりやすい株を探す（時期・時間帯・業種・会社の 17 の仮説。docs/stocks.md。初回は --fetch で 20〜40 分）
