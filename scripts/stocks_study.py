@@ -72,8 +72,10 @@ def http_get(url: str, tries: int = 3) -> bytes:
 def fetch_universe(root: Path) -> None:
     j = S.read_xlsx(http_get(JPX_LIST))
     j = j[j["規模区分"].isin(JP_SIZES)]
-    pd.DataFrame({"ticker": j["コード"].astype(str) + ".T", "name": j["銘柄名"], "sector": j["33業種区分"],
-                  "size": j["規模区分"]}).to_csv(root / "universe_jp.csv", index=False)
+    uni = pd.DataFrame({"ticker": j["コード"].astype(str) + ".T", "name": j["銘柄名"], "sector": j["33業種区分"], "size": j["規模区分"]})
+    uni.to_csv(root / "universe_jp.csv", index=False)
+    (root / S.ARCHIVE).mkdir(parents=True, exist_ok=True)              # その時の一覧の控え（docs/agents.md 12.7）
+    uni.to_csv(root / S.ARCHIVE / f"universe_jp_{datetime.now():%Y%m%d}.csv", index=False)
     u = pd.read_html(io.StringIO(http_get(SP500_LIST).decode("utf-8")))[0]
     pd.DataFrame({"ticker": u["Symbol"].str.replace(".", "-", regex=False), "name": u["Security"],
                   "sector": u["GICS Sector"], "size": "S&P500"}).to_csv(root / "universe_us.csv", index=False)
@@ -194,6 +196,11 @@ def fetch_all(root: Path, since: str) -> None:
         o.to_csv(root / f"{mkt}_open.csv", float_format="%.6g")
         c.to_csv(root / f"{mkt}_close.csv", float_format="%.6g")
         dv.to_csv(root / f"{mkt}_div.csv", index=False)
+        if mkt == "jp":
+            try:
+                S.archive_prices(root, o, c)
+            except Exception as e:  # noqa: BLE001  控え（docs/agents.md 12.7）が書けなくても、取り直しは続ける
+                print(f"値段の控え（{root / S.ARCHIVE}）を書けなかった（{type(e).__name__}: {str(e)[:120]}）", flush=True)
         print(f"{MARKET[mkt]}の決算日…", flush=True)
         fetch_earnings(list(c.columns), TZ[mkt], root / f"{mkt}_earnings.csv")
         if mkt == "jp":

@@ -10,6 +10,7 @@ import io
 import re
 import zipfile
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -142,6 +143,35 @@ def season_placebo(blocks: pd.DataFrame, n_good: int = 6, n: int = 1000, seed: i
 
 
 # --------------------------------------------------------------------------- 時間帯: 夜と昼（N1・N2）
+# --------------------------------------------------------------------------- 先の記録のための値段の控え（docs/agents.md 12.7）
+ARCHIVE = "archive"   # data/stocks/archive（コミットしない）
+
+
+def archive_prices(root: str | Path, open_: pd.DataFrame, close: pd.DataFrame, prefix: str = "jp") -> Path:
+    """取り直した値段を控え（root/archive/{prefix}_open.csv・_close.csv）に足す。新しく取った値を優先し、
+    取れなくなった銘柄（上場廃止・TOB・一覧から外れた）の過去の値は消さずに残す。"""
+    d = Path(root) / ARCHIVE
+    d.mkdir(parents=True, exist_ok=True)
+    for name, new in (("open", open_), ("close", close)):
+        p = d / f"{prefix}_{name}.csv"
+        merged = new.combine_first(pd.read_csv(p, index_col=0, parse_dates=True)) if p.exists() else new
+        tmp = p.with_name(p.name + ".tmp")
+        merged.sort_index().to_csv(tmp, float_format="%.6g")
+        tmp.replace(p)
+    return d
+
+
+def record_prices(root: str | Path, prefix: str = "jp") -> tuple[pd.DataFrame, pd.DataFrame]:
+    """先の記録に使う値段: 今の値段（優先）に、控えにしか無い銘柄・日を足したもの。控えが無ければ今の値段だけ。"""
+    root = Path(root)
+    out = []
+    for name in ("open", "close"):
+        cur = pd.read_csv(root / f"{prefix}_{name}.csv", index_col=0, parse_dates=True)
+        p = root / ARCHIVE / f"{prefix}_{name}.csv"
+        out.append(cur.combine_first(pd.read_csv(p, index_col=0, parse_dates=True)).sort_index() if p.exists() else cur)
+    return drop_closed_days(out[0], out[1])
+
+
 def drop_closed_days(open_: pd.DataFrame, close: pd.DataFrame, share: float = 0.8) -> tuple[pd.DataFrame, pd.DataFrame]:
     """休場日なのに前日の値のまま入っている日（share 以上の銘柄の終値が前日と同じ）を落とす。Yahoo の古い日本株にある。"""
     same = ((close == close.shift(1)) & close.notna()).sum(axis=1) / close.notna().sum(axis=1).clip(lower=1)

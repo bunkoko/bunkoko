@@ -63,6 +63,38 @@ def prices(data: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     return S.drop_closed_days(wide(data / "jp_open.csv"), wide(data / "jp_close.csv"))
 
 
+def record_prices(data: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """先の記録（台帳の点検・J7 の先の記録）の値段。消えた銘柄の値段も控えから足す（docs/agents.md 12.7）。"""
+    if not (data / "jp_close.csv").exists():
+        sys.exit("data/stocks が無い。先に ./cfd stocks --fetch を実行する")
+    return S.record_prices(data)
+
+
+def save_disclosures(df: pd.DataFrame, start: pd.DataFrame, path: Path) -> int:
+    """disclosures.csv を書く。一覧（universe_jp.csv）から外れて落ちた開示は、消さずに disclosures_removed.csv に残す
+    （先の記録のため。docs/agents.md 12.7）。残した件数を返す。"""
+    gone = start[~start["id"].isin(df["id"])]
+    added = 0
+    if len(gone):
+        keep = path.with_name("disclosures_removed.csv")
+        old = pd.read_csv(keep, dtype=str, keep_default_na=False) if keep.exists() else gone.iloc[:0].astype(str)
+        both = pd.concat([old, gone.astype(str)], ignore_index=True).drop_duplicates("id", keep="first")
+        added = len(both) - len(old)
+        if added:
+            both.to_csv(keep, index=False)
+    df.to_csv(path, index=False)
+    return added
+
+
+def record_disclosures(p: dict) -> pd.DataFrame:
+    """先の記録に使う開示: disclosures.csv と、一覧から外れて残した分（disclosures_removed.csv）を合わせたもの。"""
+    disc = pd.read_csv(p["disclosures"], dtype=str, keep_default_na=False)
+    keep = p["disclosures"].with_name("disclosures_removed.csv")
+    if keep.exists():
+        disc = pd.concat([disc, pd.read_csv(keep, dtype=str, keep_default_na=False)], ignore_index=True).drop_duplicates("id", keep="first")
+    return disc
+
+
 def pct(x: float, digits: int = 1) -> str:
     return f"{x:.{digits}%}" if x is not None and np.isfinite(x) else "–"
 
@@ -79,6 +111,7 @@ def cmd_collect(args) -> None:
     uni = pd.read_csv(Path(args.data) / "universe_jp.csv")
     tickers = set(uni["ticker"])
     df = C.load_disclosures(p["disclosures"])
+    start = df.copy()
     p["disclosures"].parent.mkdir(parents=True, exist_ok=True)
     before = len(df)
     if args.backfill:
@@ -91,7 +124,7 @@ def cmd_collect(args) -> None:
             except Exception as e:  # noqa: BLE001
                 print(f"  {t}: 取れない（{str(e)[:60]}）", flush=True)
             if (i + 1) % 25 == 0 or i == len(todo) - 1:
-                df.to_csv(p["disclosures"], index=False)
+                save_disclosures(df, start, p["disclosures"])
                 print(f"  {i + 1}/{len(todo)} 社、{len(df):,} 件", flush=True)
             time.sleep(0.5)
     else:
@@ -102,7 +135,9 @@ def cmd_collect(args) -> None:
             except Exception as e:  # noqa: BLE001
                 print(f"  {today - pd.Timedelta(days=k):%Y-%m-%d}: 一覧が取れない（{str(e)[:60]}）", flush=True)
             time.sleep(0.5)
-        df.to_csv(p["disclosures"], index=False)
+        kept = save_disclosures(df, start, p["disclosures"])
+        if kept:
+            print(f"情報収集: 一覧から外れた会社の開示 {kept:,} 件を disclosures_removed.csv に残した（消さない）", flush=True)
     print(f"情報収集: 開示 {len(df):,} 件（+{len(df) - before:,}）、{df['ticker'].nunique()} 社、{df['time'].min()[:10]}〜{df['time'].max()[:16]}", flush=True)
     if not args.no_embed:
         from cfdbot.news_embed import make_embedder
@@ -746,6 +781,10 @@ def cmd_run(args) -> None:
         o.to_csv(data / "jp_open.csv", float_format="%.6g")
         c.to_csv(data / "jp_close.csv", float_format="%.6g")
         dv.to_csv(data / "jp_div.csv", index=False)
+        try:
+            S.archive_prices(data, o, c)
+        except Exception as e:  # noqa: BLE001  控えが書けなくても（空き容量など）、台帳は書く
+            print(f"値段の控え（data/stocks/archive）を書けなかった（{type(e).__name__}: {str(e)[:120]}）", flush=True)
         run_stamp("値段")
     cmd_numbers(args)
     run_stamp("決算の数字の表")
@@ -1001,8 +1040,12 @@ def cmd_premium(args) -> None:
     p = paths(args.root)
     if not p["disclosures"].exists():
         sys.exit(f"{p['disclosures']} が無い。先に ./cfd agents collect --backfill を実行する")
-    disc = pd.read_csv(p["disclosures"], dtype=str, keep_default_na=False)
-    open_, close = prices(Path(args.data))
+    if args.test:
+        disc = pd.read_csv(p["disclosures"], dtype=str, keep_default_na=False)
+        open_, close = prices(Path(args.data))
+    else:                                       # 先の記録は、消えた銘柄の値段・開示も控えから足す（docs/agents.md 12.7）
+        disc = record_disclosures(p)
+        open_, close = record_prices(Path(args.data))
     lines: list[str] = []
 
     def say(s: str = "") -> None:
@@ -1161,7 +1204,7 @@ def cmd_check(args) -> None:
 
     ledger = read_ledgers(p)
     try:
-        _, close = prices(Path(args.data))
+        _, close = record_prices(Path(args.data))
     except SystemExit:
         close = pd.DataFrame()
     cal = close.index if len(close) else pd.DatetimeIndex([])
