@@ -19,6 +19,7 @@
     python scripts/agents.py orders --report      # 記録上の資産・止める決まり・空運転の進み具合・コスト（c*）の途中経過
     python scripts/agents.py manual               # 今週の手で買う候補（M2 を週 1 回・10 銘柄・1 日遅れにした形。docs/agents.md 13 章）
     python scripts/agents.py manual --test        # その形の過去の検証（M2a・M2b。数分）
+    python scripts/agents.py premium [--test]     # 決算発表をまたいで持つ（J7）の先の記録の途中経過（--test は使っていない決算での過去の検証）
     python scripts/agents.py schedule --job collect [--off]   # 毎日 8:00 に collect --docs を動かすよう登録する／外す（Mac の launchd）
     python scripts/agents.py schedule --job run [--off]       # 平日 13:05 に run --prices を動かすよう登録する／外す
 
@@ -992,6 +993,76 @@ def manual_test(args) -> None:
     print(f"保存先: {out / 'manual.md'}")
 
 
+# --------------------------------------------------------------------------- J7 決算発表をまたいで持つ（docs/earnings_premium.md）
+def cmd_premium(args) -> None:
+    """3 章の過去の検証（--test。使っていない決算だけ）か、4 章の先の記録の途中経過（既定）。"""
+    from cfdbot import earnings_premium as EP
+
+    p = paths(args.root)
+    if not p["disclosures"].exists():
+        sys.exit(f"{p['disclosures']} が無い。先に ./cfd agents collect --backfill を実行する")
+    disc = pd.read_csv(p["disclosures"], dtype=str, keep_default_na=False)
+    open_, close = prices(Path(args.data))
+    lines: list[str] = []
+
+    def say(s: str = "") -> None:
+        print(s, flush=True)
+        lines.append(s)
+
+    say("# J7 決算発表をまたいで持つ")
+    say(f"作成: {datetime.now():%Y-%m-%d %H:%M}　決まり: docs/earnings_premium.md（結果を見る前に決めたもの）。お金は動かしていない")
+    say("- 決算短信が値段に入る最初の日 t0 の前の営業日の引けで買い、t0 の次の営業日の引けで売る。差 = 持っている株 − 全銘柄の平均 − 入れ替えた割合 × 0.10%")
+    say("")
+    if args.test:
+        earn_path = Path(args.data) / "jp_earnings.csv"
+        if not earn_path.exists():
+            sys.exit(f"{earn_path}（docs/stocks.md の C7 で使った Yahoo の決算日）が無い。どこまでが「見た」決算か分からないので計算しない"
+                     "（./cfd stocks --fetch で取る）")
+        print(f"使っていない決算だけで計算する（偶然との比べ {args.placebo} 回。数分）…", flush=True)
+        r = EP.evaluate_past(disc, pd.read_csv(earn_path), open_, close, placebo=min(args.placebo, EP.PLACEBO))
+        say("## 1. 過去の検証（3 章。C7 で見た Yahoo の決算日より前の決算だけ）")
+        say("")
+        say(f"- 使う決算: {r['events']:,} 回（{r['firms']} 社）" + (f"、{r['start']:%Y-%m}〜{r['end']:%Y-%m}（{r['months']} か月）" if r.get("months") else "")
+            + f"。見たので使わない決算: {r['seen_events']:,} 回")
+        if "judge" in r:
+            j = r["judge"]
+            say("")
+            say("| 差（年率） | 前半 | 後半 | t 値（全期間） | t 値（後半） | 基準 | 偶然より良い割合 | 判定 |")
+            say("|---|---|---|---|---|---|---|---|")
+            say(f"| {pct(j['mean'] * 12)} | {pct(j['mean1'] * 12)} | {pct(j['mean2'] * 12)} | {f2(j['t'])} | {f2(j['t2'])} | {f2(j['threshold'])} | "
+                f"{pct(j['placebo'], 0)} | **{j['verdict']}** |")
+            say(f"- 前半・後半の境目: {r['split']:%Y-%m}。試した数 {EP.TRIALS}")
+        else:
+            say(f"- **{r['verdict']}**")
+        say("")
+        say("参考（判定しない）")
+        say("")
+        say(f"- 使う決算の 2 日の平均（株 − 全銘柄の平均、コストを引く前）: {pct(r['two_day'], 3)}。見た決算では {pct(r['seen_two_day'], 3)}"
+            "（docs/stocks.md の「+0.15%」に当たる）")
+        if r.get("months"):
+            say(f"- 使う期間の差の年率: コストを引く前 {pct(r['gross_ann'])}・引いた後 {pct(r['net_ann'])}・コスト 0 {pct(r['zero_cost_ann'])}。"
+                f"1 日に入れ替える割合 {pct(r['turnover'], 1)}")
+        if "seen" in r:
+            sn = r["seen"]
+            say(f"- 見た期間（{sn['start']:%Y-%m}〜{sn['end']:%Y-%m}）の同じ計算: コストを引く前 {pct(sn['gross_ann'])}・引いた後 {pct(sn['net_ann'])}")
+    else:
+        r = EP.forward(disc, open_, close)
+        say(f"## 1. 先の記録（4 章。{EP.START_FORWARD} から）")
+        say("")
+        say(f"- 営業日 {r['days']} 日・決算 {r['events']} 回（値段は {close.index[-1]:%Y-%m-%d} まで）")
+        if len(r["daily"]):
+            say(f"- 合計（コストの後）{pct(float(r['daily'].sum()), 2)}、2 日の平均（コストを引く前）{pct(r['two_day'], 3)}")
+            say("- 月ごと: " + "、".join(f"{d:%Y-%m} {v:+.2%}" for d, v in r["monthly"].items()))
+        say(f"- 判定: **{r['verdict']}**（250・500・750 営業日の時点だけ。間の数字を見て何も変えない。試した数に入れない）")
+    say("")
+    say("限界: 発表の日を前もって知っている前提（予定日はずれることがある）。今の TOPIX500 の銘柄だけ。税金は入れていない")
+    out = Path(args.out) / datetime.now().strftime("%Y%m%d-%H%M")
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "premium.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("")
+    print(f"保存先: {out / 'premium.md'}")
+
+
 def cmd_status(args) -> None:
     p = paths(args.root)
     for label, key, col in (("情報収集（開示）", "disclosures", "time"), ("IR 評価（点数）", "ir_scores", "date"),
@@ -1521,7 +1592,7 @@ def cmd_schedule(args) -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("command", choices=["collect", "ir", "select", "decide", "evaluate", "run", "status", "schedule", "earnings", "extra",
-                                        "check", "orders", "manual"])
+                                        "check", "orders", "manual", "premium"])
     p.add_argument("--fetch", action="store_true", help="extra: 先に出来高・終値・株式分割を Yahoo から取る（1 秒に 1 社。取得済みは飛ばす）")
     p.add_argument("--reuse", action="store_true", help="extra: 入力を足した銘柄選定の点数が書いてあれば、学び直さずに使う")
     p.add_argument("--off", action="store_true", help="schedule: 自動実行を外す")
@@ -1558,12 +1629,12 @@ def main() -> None:
     p.add_argument("--sells-only", action="store_true", help="orders: 今日の判断が無いとき、売りだけの一覧を書く")
     p.add_argument("--notify", action="store_true", help="orders: 今日の一覧を iPhone にもう一度知らせる（設定 ~/.bunkoko/notify.json）")
     p.add_argument("--notify-test", action="store_true", help="orders: 知らせの試し（設定ができているか）")
-    p.add_argument("--test", action="store_true", help="manual: 手で注文する形の過去の検証（docs/agents.md 13.2。数分）")
+    p.add_argument("--test", action="store_true", help="manual・premium: 過去の検証（docs/agents.md 13.2・docs/earnings_premium.md 3 章。数分）")
     p.add_argument("--exclude", help="orders --setup: 予行演習の外ですでに持っている株（例 7203,6758。空にするなら \"\"）")
     args = p.parse_args()
     {"collect": cmd_collect, "ir": cmd_ir, "select": cmd_select, "decide": cmd_decide, "evaluate": cmd_evaluate,
      "run": cmd_run, "status": cmd_status, "schedule": cmd_schedule, "earnings": cmd_earnings, "extra": cmd_extra,
-     "check": cmd_check, "orders": cmd_orders, "manual": cmd_manual}[args.command](args)
+     "check": cmd_check, "orders": cmd_orders, "manual": cmd_manual, "premium": cmd_premium}[args.command](args)
 
 
 if __name__ == "__main__":

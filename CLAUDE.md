@@ -46,6 +46,7 @@
 | 「トレンドの改良を確かめて」 | `./cfd trend`（数分。期間B が加わる）。結果の `output/trend/<日時>/report.md` を見せ、`docs/trend.md` 5 章に記録を足す |
 | 「短い時間足を確かめて」 | `./cfd intraday --source mt5`（フィリップの M5 が `data/` に要る。無ければ Mac の前で CfdExportBars） |
 | 「暗号資産の記録は動いてる？」 | `./cfd crypto paper --report`。毎朝 6:30 の登録は `launchctl print gui/$(id -u)/com.bunkoko.crypto` |
+| 「他の通貨の記録は？」「C3 を確かめて」 | 記録は毎朝の `crypto paper`（と `crypto live`）が BTC・ETH の後に `data/crypto/paper/log_extra.csv` に書く。様子は `./cfd crypto paper --report` の「他の通貨」の節（GMO の一覧に無くて飛ばした記号も出る）。過去の検証は Mac で `./cfd crypto extra --fetch`（数分。クラウドからは Yahoo に断られる）。`output/crypto/extra/<日時>/report.md` の 1 章を見せ、`docs/crypto.md` 9.5 に記録する。条件（9.2・9.3）と通貨の組は変えない。少額の本番に足すのは 9.2 の条件を満たし、利用者がはっきり頼んだときだけ |
 | 「暗号資産の本番は動いてる？」「止めて」 | `tail -20 data/crypto/live/log.csv`。止めるのは `touch data/crypto/live/STOP`（再開は消す）。`--real` への切り替えと `config.json` の金額は、利用者がはっきり頼んだときだけ変える（`docs/crypto.md` 8 章） |
 | 「キャリーを確かめて」 | `./cfd carry --fetch`（EIA から WTI・天然ガスの限月を取って計算。数分）。`output/carry/<日時>/report.md` を見せ、`docs/carry.md` 6 章に記録を足す |
 | 「キャリーの絞り込みを確かめて」 | `./cfd carry --gate`（タートルに絞り込みを足す 3 期間の検証。数分）。`output/carry/<日時>/gate.md` を見せ、`docs/carry.md` 7 章に記録を足す |
@@ -57,6 +58,11 @@
 | 「やることは？」「次は何をすればいい？」 | `docs/todo.md`（利用者が Mac の前や登録でやること）の、済んでいない行を上から伝える。取りかかると言われたら、その行の「やり方」を 1 手ずつ案内する。済んだら「済み」に日付を書く |
 | 「J-Quants を確かめて」 | 初回は利用者に J-Quants の無料の登録と API キーの発行（ダッシュボードの設定 → API Key）を頼み、Mac の前で `./cfd jquants key`（キーを貼る。画面には出ない）。その後 `./cfd jquants check`（数分〜20 分）。`output/jquants/<日時>/check.md` の 2 章を見せ、`docs/survivorship.md` 7 章に記録する。有料の契約は利用者がはっきり頼んだときだけ。取ったデータはコミットしない |
 | 「EDINET を確かめて」「文章の信号を確かめて」 | 初回は利用者に EDINET の登録と API キーの発行を頼み（`docs/todo.md` の 7）、Mac の前で `./cfd edinet key`。その後 `./cfd edinet check`（数分）の `output/edinet/<日時>/check.md` を見せる。2016-10 ごろまで取れて節が取れていれば、`nohup ./cfd edinet fetch > data/edinet/fetch.log 2>&1 &`（5〜6 時間。止めても続きから。一覧は 2 秒・書類は 3 秒に 1 件、同時に 1 本。速くしない）→ `./cfd edinet momentum`（1C）・`./cfd edinet lazy`（案 2）。`output/edinet/<日時>/` の 1 章を見せ、`docs/text_signals.md` 12 章に記録する。条件（3・4 章）は変えない。取った本文はコミットしない |
+| 「夜だけ持つ記録は？」「J2 の様子は？」 | `./cfd overnight --report`（数秒。1306 の日足を Yahoo から取り直す）。`output/overnight/<日時>/report.md` の 1 章を伝える。判定は 250・500・750 夜の時点だけで、途中の数字を見て何も変えない（`docs/overnight.md`）。届いたら 7 章に書き写す。本物で始めたいと言われたら、6 章（別の現金で引けの買い・まず 1 単位で 3 日試す）を先に案内する |
+| 「今週の手で買う候補は？」「M2 を手で買うなら？」 | `./cfd agents manual`（数秒）。出た 10 銘柄と売る株をそのまま伝え、「買うのは決めた次の営業日、S 株なら 10:30〜13:50 に成行（その日の引け）。M2 は検証中で勧めではない」を添える。週の最初の営業日の 13:05 の自動実行が `ledger_extra.csv` に帳 `m2_manual` を書く（`docs/agents.md` 13 章） |
+| 「手で買う形の検証をして」 | `./cfd agents manual --test`（数分）。`output/agents/<日時>/manual.md` の 1 章（M2a・M2b）を見せ、`docs/agents.md` 13.5 に記録する。条件（13.2）は変えない。M2b の結果の後、先の記録を採点する前に、先の記録の判定の条件を 13.5 に書く |
+| 「キャリーの記録は？」 | `./cfd carry --paper`（1〜2 分。Yahoo の限月ごとの WTI を 1 秒に 1 件）。月に 1 回でよい。`output/carry/paper/<日時>/report.md` の 1・2 章を伝える。判定は 12・24・36 か月の時点だけ（`docs/carry.md` 8 章）。届いたら 8.4 に書き写す |
+| 「決算をまたぐ検証をして」「J7 の様子は？」 | 過去の検証は `./cfd agents premium --test`（数分。C7 で見た Yahoo の決算日より前の決算だけ。足りなければ「判定しない」）。先の記録は `./cfd agents premium`（数秒）。`output/agents/<日時>/premium.md` を見せ、`docs/earnings_premium.md` 6 章に記録する。条件（3・4 章）は変えない |
 | 「geo_vol を他の市場で確かめて」 | `./cfd news volcheck`（数分。S&P500・TOPIX・BTC。値段は Yahoo）。`output/news/<日時>/volcheck.md` の 1 章を見せ、`docs/text_signals.md` 12 章に記録する。判定（5 章）は変えない。通っても EA・暗号資産の量はすぐには変えない（2027-10 の先の確かめの後に別に登録） |
 | 「相方の行き過ぎを確かめて」 | `./cfd partner`（数十分。無い市場は Yahoo から取る）。`output/partner/<日時>/report.md` の 1 章を見せ、`docs/cross_asset.md` 7.6 に記録する。判定の条件（7.3）は変えない。採用候補でも EA にはすぐ入れない（デモの区切りで 1 回に 1 つ） |
 | 「今日の株の注文は？」 | `./cfd agents orders`（日本株の予行演習。注文は出さない。平日 13:05 の自動実行が先に作って知らせていれば、それを出す）。出た一覧（売る株・買う株・株数・締めまでの時間）をそのまま伝え、「13:30 までを目安に（遅くとも 13:50）、預り区分は必ず特定、送信の前に銘柄の番号・買いか売りか・株数を見比べる」を添える。約定を伝えられたら `./cfd agents orders --fill <銘柄> <買い/売り> <株数> <値段>`（`--status 不成立`・`--status 受注停止`・朝の売りは `--at 寄り`）。判断がまだ無い日に売りだけ要るなら `--sells-only`。利用者の手順は `docs/stocks_live_daily.md`、決まりは `docs/stocks_live.md` 4 章 |

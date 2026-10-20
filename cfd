@@ -113,7 +113,7 @@ case "$cmd" in
   trend    トレンドフォローの改良（複数の期間・量の管理・出口）を 3 期間で確かめる（docs/trend.md。数分）
   spread   2 つの差の戻り（WTI−ブレント・金÷銀）を確かめる（docs/spread.md。数分）
   diversify 市場を分散した論文どおりのトレンドフォローを確かめる（docs/diversified.md。数分）
-  carry    キャリー（原油の期間構造）を確かめる（docs/carry.md。--fetch で EIA から取る。Mac で）
+  carry    キャリー（原油の期間構造）を確かめる（docs/carry.md。--fetch で EIA から取る。Mac で。--paper で記録だけの売買）
   partner  相方の行き過ぎフィルタを、使っていない商品の 5 組で確かめる（docs/cross_asset.md 7 章。Yahoo から取る。Mac で数十分）
   jquants  J-Quants の無料プランで、過去の上場銘柄一覧に後で消えた会社が入るかなどを確かめる（key でキーを保存 → check。docs/survivorship.md）
   edinet   EDINET の有報の本文で文章の信号を確かめる（key → check → fetch → momentum・lazy。docs/text_signals.md）
@@ -126,7 +126,9 @@ case "$cmd" in
            earnings = 決算の数字で評価、extra = 出来高・割安さ・進捗率などを足して確かめる、
            check = 台帳の点検（自動実行・抜けた日）と先のデータの途中経過・止める決まり。docs/agents.md 12 章、
            orders = 日本株の予行演習の今日の注文の一覧（注文は出さない。平日 13:05 の run が作って iPhone に知らせる）・--fill で約定・
-           --report で様子・--notify-test で知らせの試し。docs/stocks_live.md・docs/stocks_live_daily.md）
+           --report で様子・--notify-test で知らせの試し。docs/stocks_live.md・docs/stocks_live_daily.md、
+           manual = 今週の手で買う候補（M2 を週 1 回・10 銘柄・1 日遅れにした形。--test で過去の検証。docs/agents.md 13 章）、
+           premium = 決算発表をまたいで持つ（J7）の先の記録（--test で過去の検証。docs/earnings_premium.md）
   ml       59 市場をまとめて学ぶ機械学習でポジションを決めると良くなるかを検証（universe の後。10〜40 分）
   leadlag  先行指標（原油・為替・金利など）で日米の業種・個別株を予測できるかを検証（初回は --fetch。30〜60 分）
   intraday 5 分足〜1 時間足の短い売買を、小さいコストで候補探し → 実際のコストで確認（--source mt5 で data/ の M5）
