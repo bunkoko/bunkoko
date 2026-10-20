@@ -187,6 +187,7 @@
 ./cfd news volcheck          # 案 3（数分。EDINET が無くても動く）
 ./cfd edinet key             # EDINET の API キーを保存（登録の後。画面には出ない）
 ./cfd edinet check           # 何年分さかのぼれるか・3 つの節が取れるかを確かめる（数分。呼び出し 20〜40 回）
+mkdir -p data/edinet                                        # 記録を書くフォルダ（初めてのときだけ要る）
 nohup ./cfd edinet fetch > data/edinet/fetch.log 2>&1 &   # 490 社の有報の本文を集める（5〜6 時間。止めても続きから）
 ./cfd edinet status          # 集めた量
 ./cfd edinet momentum        # 1C（初回は埋め込みで数十分）

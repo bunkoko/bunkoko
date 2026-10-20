@@ -31,13 +31,13 @@ def test_archive_keeps_vanished_tickers_and_prefers_new_values(tmp_path):
     o1, c1 = _prices(d1, ["A.T", "B.T", "C.T"])
     c1.to_csv(tmp_path / "jp_close.csv")
     o1.to_csv(tmp_path / "jp_open.csv")
-    S.archive_prices(tmp_path, o1, c1)
+    S.archive_prices(tmp_path, o1, c1, now=pd.Timestamp("2026-10-20 18:00"))
     # 次の日: C は上場廃止で取れない。A の過去の値は配当で調整し直されて少し変わる。新しい会社 D が入る
     d2 = pd.bdate_range("2026-10-01", "2026-10-21")
     o2, c2 = _prices(d2, ["A.T", "B.T", "D.T"], base=50.0)
     c2.to_csv(tmp_path / "jp_close.csv")
     o2.to_csv(tmp_path / "jp_open.csv")
-    S.archive_prices(tmp_path, o2, c2)
+    S.archive_prices(tmp_path, o2, c2, now=pd.Timestamp("2026-10-21 18:00"))
     arch = pd.read_csv(tmp_path / "archive" / "jp_close.csv", index_col=0, parse_dates=True)
     assert set(arch.columns) == {"A.T", "B.T", "C.T", "D.T"}
     assert np.allclose(arch.loc[d1, "C.T"], c1["C.T"], rtol=1e-5)               # 消えた銘柄の過去は残る
@@ -50,6 +50,24 @@ def test_archive_keeps_vanished_tickers_and_prefers_new_values(tmp_path):
     (tmp_path / "archive" / "jp_close.csv").unlink()
     (tmp_path / "archive" / "jp_open.csv").unlink()
     assert set(S.record_prices(tmp_path)[1].columns) == {"A.T", "B.T", "D.T"}
+
+
+def test_archive_skips_the_midday_row_and_stale_archive_rows(tmp_path):
+    d = pd.bdate_range("2026-10-01", "2026-10-21")
+    o, c = _prices(d, ["A.T", "C.T"])
+    S.archive_prices(tmp_path, o, c, now=pd.Timestamp("2026-10-21 13:05"))        # 場中: 10-21 の行は控えに入れない
+    arch = pd.read_csv(tmp_path / "archive" / "jp_close.csv", index_col=0, parse_dates=True)
+    assert arch.index[-1] == pd.Timestamp("2026-10-20")
+    # 控えに、今の値段に無い日（古い休場日の行）があっても、今の銘柄にも消えた銘柄にも足さない
+    stale = arch.copy()
+    stale.loc[pd.Timestamp("2026-10-10")] = stale.iloc[0]
+    stale.sort_index().to_csv(tmp_path / "archive" / "jp_close.csv")
+    o.drop(columns="C.T").to_csv(tmp_path / "jp_open.csv")
+    c.drop(columns="C.T").to_csv(tmp_path / "jp_close.csv")
+    _, rc = S.record_prices(tmp_path)
+    assert pd.Timestamp("2026-10-10") not in rc.index and "C.T" in rc.columns
+    assert np.allclose(rc["A.T"], c["A.T"].loc[rc.index], rtol=1e-6)                 # 今の銘柄は今の値段だけ
+    assert np.isnan(rc.loc[pd.Timestamp("2026-10-21"), "C.T"])
 
 
 def test_removed_disclosures_are_kept_aside(tmp_path):

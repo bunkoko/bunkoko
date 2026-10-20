@@ -829,7 +829,7 @@ def live_early(args) -> bool:
         return False
     cal = L.calendar(close.index, now.normalize())
     r = orders_today(p, files, cfg, close, cal, now, e1_override=e1, decided_override=f"{now:%Y-%m-%d %H:%M:%S}",
-                     source="先に作った E1 の一覧", say=lambda s: print(s, flush=True))
+                     source="先に作った E1 の一覧", say=lambda s: print(s, flush=True), data=Path(args.data))
     if r["written"]:
         send_notice(files, cfg, r["rows"], now)
     return True
@@ -852,7 +852,7 @@ def live_after_decide(args) -> None:
     done = plan[(plan["mode"] == mode) & (plan["date"] == today)] if len(plan) else plan
     if not len(done):
         cal = L.calendar(close.index, today)
-        r = orders_today(p, files, cfg, close, cal, now, say=lambda s: print(s, flush=True))
+        r = orders_today(p, files, cfg, close, cal, now, say=lambda s: print(s, flush=True), data=Path(args.data))
         if r["written"]:
             send_notice(files, cfg, r["rows"], now)
         return
@@ -1228,6 +1228,10 @@ def cmd_check(args) -> None:
             say("- 15:25 より後に書いた日（数えない）: " + "、".join(f"{d:%Y-%m-%d}" for d in h["late"][:10]))
         for b, v in h["books"].items():
             say(f"- 帳 {b}: {v['days']} 日（{v['first']:%Y-%m-%d}〜）、1 日平均 {v['names_per_day']:.1f} 銘柄")
+        if len(close) and "ticker" in ledger:
+            gone = sorted(set(ledger["ticker"].dropna().astype(str)) - set(close.columns))
+            say("- 値段の無い銘柄（台帳にあるのに、今の値段にも控えにも無い。docs/agents.md 12.7）: "
+                + ("、".join(gone[:20]) + ("…" if len(gone) > 20 else "") if gone else "無し"))
 
     say("\n## 3. 先のデータの途中経過と、止める決まり\n")
     if not len(close) or not h["counted_days"]:
@@ -1274,15 +1278,24 @@ def norm_ticker(t: str) -> str:
     return t if "." in t else f"{t}.T"
 
 
-def e1_closed_reason(p: dict, close: pd.DataFrame) -> str | None:
-    """E1 の帳が 12.3 で閉じていれば、その判定の文。計算できなければ None（止める理由にはしない）。"""
+def e1_closed_reason(p: dict, close: pd.DataFrame, data: Path | None = None) -> str | None:
+    """E1 の帳が 12.3 で閉じていれば、その判定の文。計算できなければ None（止める理由にはしない）。
+
+    data を渡せば、./cfd agents check と同じ控えを足した値段で判定する（docs/agents.md 12.7）。控えが読めなければ close で。
+    """
     from cfdbot.agents import evaluator as E
 
     try:
         ledger = read_ledgers(p)
         if ledger.empty:
             return None
-        v = E.forward_verdict(E.forward_book(ledger, "e1", E.returns(close)), "e1")
+        rc = close
+        if data is not None:
+            try:
+                _, rc = record_prices(data)
+            except (Exception, SystemExit):  # noqa: BLE001
+                rc = close
+        v = E.forward_verdict(E.forward_book(ledger, "e1", E.returns(rc)), "e1")
         return v if v.startswith("閉じる") else None
     except Exception:  # noqa: BLE001
         return None
@@ -1363,13 +1376,14 @@ def cmd_orders(args) -> None:
         orders_report(args, p, files, cfg, plan, fills, ev, lots, close, cal, now)
         return
 
-    r = orders_today(p, files, cfg, close, cal, now, sells_only=args.sells_only)
+    r = orders_today(p, files, cfg, close, cal, now, sells_only=args.sells_only, data=Path(args.data))
     if args.notify:
         send_notice(files, cfg, r["rows"], now, force=True)
 
 
 def orders_today(p: dict, files, cfg: dict, close: pd.DataFrame, cal, now: pd.Timestamp, e1_override: pd.DataFrame | None = None,
-                 decided_override: str | None = None, source: str = "台帳", sells_only: bool = False, say=None) -> dict:
+                 decided_override: str | None = None, source: str = "台帳", sells_only: bool = False, say=None,
+                 data: Path | None = None) -> dict:
     """今日の注文の一覧（止める決まりの確認 → 書いてあれば表示 → 無ければ作って plan.csv に書き足す）。
 
     e1_override を渡せば、台帳の E1 の行の代わりにそれを使う（13:05 の自動実行が先に作った E1 の一覧。同じ作り・同じ入力）。
@@ -1398,7 +1412,7 @@ def orders_today(p: dict, files, cfg: dict, close: pd.DataFrame, cal, now: pd.Ti
     cash, equity = L.cash_and_equity(float(cfg["equity_jpy"]), ev, lots, close)
     errs = L.mistakes(mode, plan, fills, lots, cal, today)
     rt = L.round_trips(fills, plan, files.refs(), close, cal) if mode == "real" else None
-    hits = L.stop_checks(cfg, (cash, equity), errs, lots, close, cal, today, e1_closed_reason(p, close), rt)
+    hits = L.stop_checks(cfg, (cash, equity), errs, lots, close, cal, today, e1_closed_reason(p, close, data), rt)
     if hits and mode == "real" and not stop:
         files.place_stop("・".join(hits), now)
         stop = files.stop_reason()
@@ -1580,7 +1594,7 @@ def orders_report(args, p: dict, files, cfg: dict, plan, fills, ev, lots: dict, 
     errs = L.mistakes(mode, plan, fills, lots, cal, today)
     rec = L.recent_mistakes(errs, cal, today)
     say(f"- 直近 {L.ERR_WINDOW} 営業日の誤り {len(rec)} 回（{L.ERR_MAX} 回で止める）" + ("".join(f"\n  - {d:%m-%d} {t}" for d, t in rec)))
-    hits = L.stop_checks(cfg, (cash, equity), errs, lots, close, cal, today, e1_closed_reason(p, close),
+    hits = L.stop_checks(cfg, (cash, equity), errs, lots, close, cal, today, e1_closed_reason(p, close, Path(args.data)),
                          L.round_trips(fills, plan, files.refs(), close, cal) if mode == "real" else None)
     say("- 止める決まりに当たっているもの: " + ("・".join(hits) if hits else "無し"))
     say("\n## 2. 持っている株\n")

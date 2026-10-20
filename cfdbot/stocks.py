@@ -147,28 +147,43 @@ def season_placebo(blocks: pd.DataFrame, n_good: int = 6, n: int = 1000, seed: i
 ARCHIVE = "archive"   # data/stocks/archive（コミットしない）
 
 
-def archive_prices(root: str | Path, open_: pd.DataFrame, close: pd.DataFrame, prefix: str = "jp") -> Path:
-    """取り直した値段を控え（root/archive/{prefix}_open.csv・_close.csv）に足す。新しく取った値を優先し、
-    取れなくなった銘柄（上場廃止・TOB・一覧から外れた）の過去の値は消さずに残す。"""
+def archive_prices(root: str | Path, open_: pd.DataFrame, close: pd.DataFrame, prefix: str = "jp",
+                   now: pd.Timestamp | None = None) -> Path:
+    """取り直した値段を控え（root/archive/{prefix}_open.csv・_close.csv）に足す。
+
+    取り直した銘柄は、その表で丸ごと置き換える（配当・分割で過去の値が調整し直されるので、古い値と混ぜない）。
+    取れなくなった銘柄（上場廃止・TOB・一覧から外れた）の過去の値は消さずに残す。
+    場中（15:45 より前）に取った今日の行は引けの値ではないので、控えには入れない（13:05 の自動実行の分）。
+    """
+    now = pd.Timestamp.now(tz="Asia/Tokyo") if now is None else pd.Timestamp(now)
+    if now.tzinfo is not None:
+        now = now.tz_convert("Asia/Tokyo").tz_localize(None)
+    if now.hour * 60 + now.minute < 15 * 60 + 45:
+        open_, close = open_[open_.index < now.normalize()], close[close.index < now.normalize()]
     d = Path(root) / ARCHIVE
     d.mkdir(parents=True, exist_ok=True)
     for name, new in (("open", open_), ("close", close)):
         p = d / f"{prefix}_{name}.csv"
-        merged = new.combine_first(pd.read_csv(p, index_col=0, parse_dates=True)) if p.exists() else new
+        if p.exists():
+            old = pd.read_csv(p, index_col=0, parse_dates=True)
+            new = pd.concat([new, old.drop(columns=new.columns, errors="ignore")], axis=1)
         tmp = p.with_name(p.name + ".tmp")
-        merged.sort_index().to_csv(tmp, float_format="%.6g")
+        new.sort_index().to_csv(tmp, float_format="%.6g")
         tmp.replace(p)
     return d
 
 
 def record_prices(root: str | Path, prefix: str = "jp") -> tuple[pd.DataFrame, pd.DataFrame]:
-    """先の記録に使う値段: 今の値段（優先）に、控えにしか無い銘柄・日を足したもの。控えが無ければ今の値段だけ。"""
+    """先の記録に使う値段: 今の値段に、控えにしか無い銘柄を（今の値段の日付の上で）足したもの。控えが無ければ今の値段だけ。"""
     root = Path(root)
     out = []
     for name in ("open", "close"):
         cur = pd.read_csv(root / f"{prefix}_{name}.csv", index_col=0, parse_dates=True)
         p = root / ARCHIVE / f"{prefix}_{name}.csv"
-        out.append(cur.combine_first(pd.read_csv(p, index_col=0, parse_dates=True)).sort_index() if p.exists() else cur)
+        if p.exists():
+            extra = pd.read_csv(p, index_col=0, parse_dates=True).drop(columns=cur.columns, errors="ignore").reindex(cur.index)
+            cur = pd.concat([cur, extra], axis=1)
+        out.append(cur.sort_index())
     return drop_closed_days(out[0], out[1])
 
 
