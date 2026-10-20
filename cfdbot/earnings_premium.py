@@ -179,3 +179,73 @@ def verdict(daily: pd.Series, n_days: int) -> str:
     if np.isfinite(t) and t >= T_CONTINUES:
         return f"続いている（{k} 営業日の時点で、合計 {total:+.2%}・月ごとの t 値 {t:.2f}）"
     return f"まだ分からない（{k} 営業日の時点で、合計 {total:+.2%} だが t 値 {t:.2f} が {T_CONTINUES} 未満）"
+
+
+# --------------------------------------------------------------------------- 7 章の点検（結果を見た後に足した参考。判定は変えない）
+CROWD = 10       # 同じ日に持つ株がこの数以上の日を「混んだ日」とする
+OLD_YEARS = 5    # Yahoo の最初の決算日より、この年数以上前の決算を「古い」とする
+
+
+def _excess(ev: pd.DataFrame, cc: pd.DataFrame) -> np.ndarray:
+    a = cc.sub(cc.mean(axis=1), axis=0).to_numpy()
+    t0, j = ev["t0"].to_numpy(), ev["j"].to_numpy()
+    return a[t0, j] + a[t0 + 1, j]
+
+
+def _crowd(ev: pd.DataFrame, shape: tuple[int, int]) -> np.ndarray:
+    """決算ごとの、買った日（t0−1 の引けの後）に同じ組で持っていた株の数。"""
+    flag = np.zeros(shape, dtype=float)
+    for k in (1, 0):
+        np.maximum.at(flag, (ev["t0"].to_numpy() - k, ev["j"].to_numpy()), 1.0)
+    return flag.sum(axis=1)[ev["t0"].to_numpy() - 1]
+
+
+def _row(label: str, ev: pd.DataFrame, x: np.ndarray, index: pd.DatetimeIndex) -> dict:
+    """1 回に同じ金額で持った形（コストは 1 回 0.10%）の平均と、月ごとの合計の t 値。"""
+    ok = np.isfinite(x)
+    if not ok.any():
+        return {"group": label, "events": 0, "firms": 0, "mean": np.nan, "median": np.nan, "net": np.nan, "t": np.nan}
+    net = pd.Series(x[ok] - COST, index=index[ev["t0"].to_numpy()[ok]])
+    return {"group": label, "events": int(ok.sum()), "firms": int(len(pd.unique(ev["ticker"].to_numpy()[ok]))),
+            "mean": float(np.mean(x[ok])), "median": float(np.median(x[ok])), "net": float(net.mean()),
+            "t": S.t_value(net.resample("ME").sum())}
+
+
+def diagnose(disc: pd.DataFrame, earn: pd.DataFrame, open_: pd.DataFrame, close: pd.DataFrame) -> dict:
+    """7 章: 使った決算と見た決算の差がどこから来るか（年・会社の群・混んだ日・大きな値動き）。"""
+    cc = H.parts(open_, close)["cc"]
+    idx = close.index
+    ev = events(disc, idx, close.columns)
+    ev = ev[ev["time"] < pd.Timestamp(START_FORWARD)].reset_index(drop=True)
+    cut = seen_cutoffs(earn, idx)
+    m = unseen_mask(ev, cut)
+    x = _excess(ev, cc)
+    year = idx[ev["t0"].to_numpy()].year
+    by_year = pd.DataFrame({"year": year, "unseen": m, "x": x}).dropna(subset=["x"]).groupby(["year", "unseen"])["x"].agg(["count", "mean"])
+    by_year = by_year.unstack("unseen")
+    has_date = ev["ticker"].isin(cut).to_numpy()
+    first = pd.to_datetime(earn["date"]).groupby(earn["ticker"]).min() if earn is not None and len(earn) else pd.Series(dtype="datetime64[ns]")
+    years_before = ((ev["ticker"].map(first) - pd.to_datetime(ev["time"])).dt.days / 365.25).to_numpy(float)
+    rows = []
+    for label, sel in (("使った決算（全部）", m), ("　うち Yahoo の決算日が 1 つも無い会社", m & ~has_date),
+                       ("　うち Yahoo の決算日より前（その会社の最初の日より 5 年以上前）", m & has_date & (years_before >= OLD_YEARS)),
+                       ("　うち Yahoo の決算日より前（5 年未満前）", m & has_date & (years_before < OLD_YEARS)),
+                       ("見た決算", ~m)):
+        rows.append(_row(label, ev[sel], x[sel], idx))
+    crowd = []
+    for label, sel in (("使った決算", m), ("見た決算", ~m)):
+        e, xs = ev[sel], x[sel]
+        c = _crowd(e, close.shape) if len(e) else np.array([])
+        for name, s in ((f"混んだ日（同じ日に {CROWD} 社以上）", c >= CROWD), (f"空いた日（{CROWD} 社未満）", c < CROWD)):
+            r = _row(f"{label}・{name}", e[s], xs[s], idx)
+            r["days"] = int(len(np.unique(e[s]["t0"].to_numpy())))
+            crowd.append(r)
+    xu = x[m & np.isfinite(x)]
+    big = {}
+    if len(xu):
+        top = np.sort(xu)[::-1]
+        k = max(1, int(round(len(top) * 0.01)))
+        big = {"mean": float(xu.mean()), "trim": float(np.mean(top[k:])) if len(top) > k else np.nan, "k": k,
+               "top_share": float(top[:k].sum() / xu.sum()) if xu.sum() != 0 else np.nan,
+               "pos": float(np.mean(xu > 0)), "over10": float(np.mean(np.abs(xu) > 0.10))}
+    return {"by_year": by_year, "groups": pd.DataFrame(rows), "crowd": pd.DataFrame(crowd), "big": big}

@@ -1045,6 +1045,35 @@ def cmd_premium(args) -> None:
         if "seen" in r:
             sn = r["seen"]
             say(f"- 見た期間（{sn['start']:%Y-%m}〜{sn['end']:%Y-%m}）の同じ計算: コストを引く前 {pct(sn['gross_ann'])}・引いた後 {pct(sn['net_ann'])}")
+        g = EP.diagnose(disc, pd.read_csv(earn_path), open_, close)
+        say("")
+        say("## 2. 点検（docs/earnings_premium.md 7 章。結果を見た後に足した参考で、判定は変えない。試した数も増やさない）")
+        say("")
+        say("2 日の差 = t0 と t0+1 の「株 − 全銘柄の平均」（コストを引く前）。「1 回同じ金額」= 決算 1 回ごとに同じ金額で持ち、1 回 0.10% を引いた平均と、月ごとの合計の t 値")
+        say("")
+        say("| 群 | 決算 | 社 | 2 日の差の平均 | 中央値 | 1 回同じ金額（コストの後） | t 値 |")
+        say("|---|---|---|---|---|---|---|")
+        for _, row in g["groups"].iterrows():
+            say(f"| {row['group']} | {row['events']:,} | {row['firms']} | {pct(row['mean'], 3)} | {pct(row['median'], 3)} | {pct(row['net'], 3)} | {f2(row['t'])} |")
+        say("")
+        say("| 混み具合 | 決算 | 日 | 2 日の差の平均 | 1 回同じ金額（コストの後） | t 値 |")
+        say("|---|---|---|---|---|---|")
+        for _, row in g["crowd"].iterrows():
+            say(f"| {row['group']} | {row['events']:,} | {row['days']:,} | {pct(row['mean'], 3)} | {pct(row['net'], 3)} | {f2(row['t'])} |")
+        b = g["big"]
+        if b:
+            say("")
+            say(f"- 使った決算の大きな値動き: 上位 1%（{b['k']} 回）を除いた平均 {pct(b['trim'], 3)}（全部 {pct(b['mean'], 3)}）。"
+                f"上位 1% が差の合計に占める割合 {pct(b['top_share'], 0)}。プラスの回の割合 {pct(b['pos'], 0)}。2 日で ±10% を超えた回 {pct(b['over10'], 1)}")
+        say("")
+        say("年ごと（2 日の差の平均。回数）")
+        say("")
+        say("| 年 | 使った決算 | 回 | 見た決算 | 回 |")
+        say("|---|---|---|---|---|")
+        by = g["by_year"].reindex(columns=pd.MultiIndex.from_product([["count", "mean"], [True, False]]))
+        for y, row in by.iterrows():
+            nu, ns = (int(row[("count", f)]) if pd.notna(row[("count", f)]) else 0 for f in (True, False))
+            say(f"| {y} | {pct(row[('mean', True)], 3)} | {nu:,} | {pct(row[('mean', False)], 3)} | {ns:,} |")
     else:
         r = EP.forward(disc, open_, close)
         say(f"## 1. 先の記録（4 章。{EP.START_FORWARD} から）")

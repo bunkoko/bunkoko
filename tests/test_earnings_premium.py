@@ -99,6 +99,25 @@ def test_premium_command_writes_both_reports(tmp_path):
     mod.cmd_premium(Namespace(root=str(root), data=str(data), out=str(tmp_path / "out"), test=True, placebo=5))
     text = next((tmp_path / "out").glob("*/premium.md")).read_text(encoding="utf-8")
     assert "## 1. 過去の検証" in text and "判定しない（使っていない決算が" in text and "見た決算では" in text
+    assert "## 2. 点検" in text and "| 2010 |" in text and "混んだ日" in text
     mod.cmd_premium(Namespace(root=str(root), data=str(data), out=str(tmp_path / "out2"), test=False, placebo=5))
     text2 = next((tmp_path / "out2").glob("*/premium.md")).read_text(encoding="utf-8")
     assert "## 1. 先の記録" in text2 and "途中経過" in text2
+
+
+def test_diagnose_splits_groups_years_and_crowding():
+    disc, open_, close = _world()
+    earn = pd.DataFrame({"ticker": close.columns.repeat(2), "date": ["2016-01-15", "2017-01-15"] * len(close.columns)})
+    earn = earn[~earn["ticker"].isin(["1000.T", "1001.T"])]                 # この 2 社は Yahoo の決算日が無い → 全部「使った」
+    g = EP.diagnose(disc, earn, open_, close)
+    grp = g["groups"].set_index("group")
+    total = grp.loc["使った決算（全部）", "events"]
+    parts = grp.loc[[k for k in grp.index if k.startswith("　うち")], "events"].sum()
+    assert total == parts and grp.loc["　うち Yahoo の決算日が 1 つも無い会社", "firms"] == 2
+    assert grp.loc["　うち Yahoo の決算日より前（その会社の最初の日より 5 年以上前）", "events"] > 0
+    assert abs(grp.loc["見た決算", "net"] - (grp.loc["見た決算", "mean"] - EP.COST)) < 1e-12
+    assert grp.loc["使った決算（全部）", "mean"] > 0.015 and grp.loc["使った決算（全部）", "t"] > 2
+    cr = g["crowd"]
+    assert cr["events"].sum() == total + grp.loc["見た決算", "events"] and (cr["days"] > 0).all()
+    assert g["big"]["k"] >= 1 and 0 < g["big"]["pos"] <= 1
+    assert 2016 in g["by_year"].index and g["by_year"][("count", True)].loc[2010] > 0
