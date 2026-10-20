@@ -50,6 +50,15 @@ def test_sections_from_csv_and_xbrl_zips():
     assert ED.ticker_code("7203.T") == "72030" and ED.ticker_code("285A.T") == "285A0"
 
 
+def test_older_mdna_element_name_is_read():
+    old = "jpcrp_cor:AnalysisOfFinancialPositionOperatingResultsAndCashFlowsTextBlock"     # 2018-03 期より前の名前
+    s = ED.sections_from_csv_zip(csv_zip([(old, "<p>売上が増えた</p>"), ("jpcrp_cor:NetSalesTextBlock", "<p>違う</p>")]))
+    assert s == {"mdna": "売上が増えた"}
+    x = ED.sections_from_xbrl_zip(xbrl_zip(f"<{old}>&lt;p&gt;利益が増えた&lt;/p&gt;</{old}>"))
+    assert x == {"mdna": "利益が増えた"}
+    assert ED.section_key("DescriptionOfBusinessTextBlock") == "business" and ED.section_key("jpcrp_cor:Foo") is None
+
+
 class FakeEdinet:
     """一覧（日付ごと）と書類（docID・種類）を返す作り物。2016-08-01 より前は一覧が空（10 年の外）。"""
 

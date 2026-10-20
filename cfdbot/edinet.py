@@ -38,6 +38,9 @@ YUHO = "120"                                   # 有価証券報告書（訂正 
 SECTIONS = {"business": "DescriptionOfBusinessTextBlock", "risks": "BusinessRisksTextBlock",
             "mdna": "ManagementAnalysisOfFinancialPositionOperatingResultsAndCashFlowsTextBlock"}
 SECTION_NAMES = {"business": "事業の内容", "risks": "事業等のリスク", "mdna": "経営者による財政状態・経営成績等の分析"}
+# 経営者による分析は、2018-03 期より前の有報では要素の名前の頭が違う（2017 年の有報で 0 字だった。2026-10-20 の check）。
+# 名前の終わりが同じ要素も同じ節として読む
+MDNA_SUFFIX = "AnalysisOfFinancialPositionOperatingResultsAndCashFlowsTextBlock"
 RETENTION_YEARS = 10
 INDEX_COLUMNS = ["docID", "secCode", "ticker", "filerName", "submitDateTime", "periodStart", "periodEnd", "docTypeCode",
                  "source", "chars_business", "chars_risks", "chars_mdna", "fetched_at"]
@@ -152,10 +155,18 @@ def html_to_text(s: str) -> str:
     return re.sub(r"\n\s*\n+", "\n", t).strip()
 
 
+def section_key(element: str) -> str | None:
+    """要素の名前（接頭辞つきでもよい）から節の記号。対象でなければ None。"""
+    local = str(element).split(":")[-1].strip()
+    for k, v in SECTIONS.items():
+        if local == v:
+            return k
+    return "mdna" if local.endswith(MDNA_SUFFIX) else None
+
+
 def sections_from_csv_zip(blob: bytes) -> dict[str, str]:
     """type=5（XBRL を CSV にした zip。UTF-16・タブ区切り）から、3 つの節の文章。見つからない節は入れない。"""
     out: dict[str, list[str]] = {}
-    want = {v: k for k, v in SECTIONS.items()}
     with zipfile.ZipFile(io.BytesIO(blob)) as z:
         for name in z.namelist():
             if not name.lower().endswith(".csv"):
@@ -174,7 +185,7 @@ def sections_from_csv_zip(blob: bytes) -> dict[str, str]:
             for r in rows[1:]:
                 if len(r) <= max(ei, vi):
                     continue
-                key = want.get(str(r[ei]).split(":")[-1].strip())
+                key = section_key(r[ei])
                 if key:
                     t = html_to_text(r[vi])
                     if t and t not in out.get(key, []):
@@ -185,15 +196,15 @@ def sections_from_csv_zip(blob: bytes) -> dict[str, str]:
 def sections_from_xbrl_zip(blob: bytes) -> dict[str, str]:
     """type=1（XBRL の zip）の本文の XBRL（PublicDoc の .xbrl）から、3 つの節の文章。"""
     out: dict[str, str] = {}
-    pat = re.compile(r"<(?:[\w-]+:)?(" + "|".join(SECTIONS.values()) + r")\b[^>]*>(.*?)</(?:[\w-]+:)?\1>", re.S)
-    want = {v: k for k, v in SECTIONS.items()}
+    names = [SECTIONS["business"], SECTIONS["risks"], r"\w*" + MDNA_SUFFIX]
+    pat = re.compile(r"<(?:[\w-]+:)?(" + "|".join(names) + r")\b[^>]*>(.*?)</(?:[\w-]+:)?\1>", re.S)
     with zipfile.ZipFile(io.BytesIO(blob)) as z:
         for name in z.namelist():
             if not name.lower().endswith(".xbrl") or "auditdoc" in name.lower():
                 continue
             text = z.read(name).decode("utf-8", "replace")
             for m in pat.finditer(text):
-                key = want[m.group(1)]
+                key = section_key(m.group(1))
                 t = html_to_text(m.group(2))
                 if t and len(t) > len(out.get(key, "")):
                     out[key] = t
