@@ -17,6 +17,8 @@
     python scripts/agents.py orders --setup --equity 300000 [--deadline 13:30] [--real]   # 予行演習の設定（--real は空運転の条件を満たした後だけ）
     python scripts/agents.py orders --fill 7203 買い 3 2850 [--fee 0] [--status 約定] [--at 引け] [--on 日付]   # 約定を書き足す
     python scripts/agents.py orders --report      # 記録上の資産・止める決まり・空運転の進み具合・コスト（c*）の途中経過
+    python scripts/agents.py manual               # 今週の手で買う候補（M2 を週 1 回・10 銘柄・1 日遅れにした形。docs/agents.md 13 章）
+    python scripts/agents.py manual --test        # その形の過去の検証（M2a・M2b。数分）
     python scripts/agents.py schedule --job collect [--off]   # 毎日 8:00 に collect --docs を動かすよう登録する／外す（Mac の launchd）
     python scripts/agents.py schedule --job run [--off]       # 平日 13:05 に run --prices を動かすよう登録する／外す
 
@@ -210,11 +212,18 @@ def write_extra_books(p: dict, last: pd.Timestamp, sel: pd.DataFrame, bk: dict, 
     if revisions is None:
         print("判断: E1 の帳は、決算の数字の表（revisions_recent.csv）が無いので書かない（./cfd agents run で作られる）", flush=True)
     extra = D.extra_rows(last, sel.iloc[-1], int(bk["selector"][-1].sum()), revisions, names)
+    try:                                   # 手で注文する形の帳（週の最初の営業日だけ。docs/agents.md 13.3）
+        from cfdbot.agents import manual as M
+
+        extra = pd.concat([extra, M.manual_rows(last, sel.iloc[-1], sel.index, names)], ignore_index=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"判断: 手で買う候補の帳は書けなかった（{type(e).__name__}: {str(e)[:120]}）。でたらめ・E1 の帳は書く", flush=True)
     extra.insert(0, "decided_at", stamp or pd.Timestamp.now(tz=JST).tz_localize(None).strftime("%Y-%m-%d %H:%M:%S"))
     extra.assign(date=pd.to_datetime(extra["date"]).dt.strftime("%Y-%m-%d")).to_csv(path, mode="a", header=not path.exists(), index=False,
                                                                                    float_format="%.5f")
     n = extra["book"].value_counts()
-    print(f"判断: でたらめの帳 {int(n.get(D.RANDOM_BOOK, 0))}・E1 の帳 {int(n.get(D.E1_BOOK, 0))} 銘柄を {path.name} に書き足した", flush=True)
+    print(f"判断: でたらめの帳 {int(n.get(D.RANDOM_BOOK, 0))}・E1 の帳 {int(n.get(D.E1_BOOK, 0))}・手で買う候補 {int(n.get('m2_manual', 0))} 銘柄を "
+          f"{path.name} に書き足した", flush=True)
 
 
 def read_ledgers(p: dict) -> pd.DataFrame:
@@ -880,6 +889,109 @@ def cmd_numbers(args) -> None:
         print(f"決算の数字: 表を作れなかった（{str(e)[:120]}）。今日の E1 の帳は書かない", flush=True)
 
 
+# --------------------------------------------------------------------------- M2 を手で注文する形（docs/agents.md 13 章）
+def cmd_manual(args) -> None:
+    """今週の手で買う候補（既定）か、13.2 の過去の検証（--test）。"""
+    if args.test:
+        manual_test(args)
+    else:
+        manual_show(args)
+
+
+def manual_show(args) -> None:
+    from cfdbot.agents import manual as M
+
+    p = paths(args.root)
+    ex = pd.read_csv(p["ledger_extra"], dtype={"ticker": str}) if p["ledger_extra"].exists() else pd.DataFrame()
+    w = M.this_week(ex)
+    print("# 今週の手で買う候補（M2 を週 1 回・10 銘柄・1 日遅れにした形。docs/agents.md 13 章）")
+    print("")
+    if w["date"] is None:
+        print(f"- まだ無い（週の最初の営業日の 13:05 の自動実行が {p['ledger_extra'].name} に帳 {M.BOOK} を書く）")
+        return
+    now = pd.Timestamp(args.now) if args.now else pd.Timestamp.now(tz=JST).tz_localize(None)
+    this_monday = (now.normalize() - pd.Timedelta(days=now.weekday()))
+    if w["date"] < this_monday:
+        print(f"- ⚠ 今週の分がまだ無い（最新は {w['date']:%Y-%m-%d} の週）。週の最初の営業日の 13:05 の後にもう一度。"
+              "動かなかったなら ./cfd agents check で自動実行の様子を見る")
+    print(f"- 決めた日: {w['date']:%Y-%m-%d}（{w['decided_at']} に記録）。**買うのは次の営業日**。SBI の S 株なら 10:30〜13:50 に成行で出すと"
+          "その日の引けの値段（14:00 より後だと翌朝の寄りになり、検証した形とずれる）")
+    print("- 等分に買う（たとえば 10 万円なら 1 銘柄 1 万円ぶんの株数）。次の週の買いの日に入れ替える")
+    print("")
+    print("| 順位 | 銘柄 | 番号 | 点数 | 前の週から |")
+    print("|---|---|---|---|---|")
+    rows = w["rows"].sort_values("selector", ascending=False)
+    for i, r in enumerate(rows.itertuples(), 1):
+        mark = "持ち続ける" if str(r.ticker) in w["keep"] else ("新しく買う" if w["prev_date"] is not None else "買う")
+        print(f"| {i} | {r.name} | {str(r.ticker).replace('.T', '')} | {float(r.selector):+.3f} | {mark} |")
+    if w["prev_date"] is not None:
+        print("")
+        sells = "、".join(f"{w['names'].get(t, t)}（{t.replace('.T', '')}）" for t in w["sell"]) or "なし"
+        print(f"- 売る（{w['prev_date']:%Y-%m-%d} の週にあって今週に無い）: {sells}")
+    print("")
+    print("- M2 は「まだ判断できない」。13.2 の M2b が「使えそう」になるまでは、検証中のルールが選んだ銘柄で、勧めではない。"
+          "買うなら余剰資金の中で、金額の上限を先に決める")
+
+
+def manual_test(args) -> None:
+    from cfdbot.agents import manual as M
+
+    p = paths(args.root)
+    if not p["selector"].exists():
+        sys.exit(f"{p['selector']} が無い。先に ./cfd agents select（または run）を実行する")
+    open_, close = prices(Path(args.data))
+    score = wide(p["selector"])
+    print("M2a・M2b を計算する（偶然との比べ 300 回ずつ。数分）…", flush=True)
+    r = M.evaluate(score, open_, close, placebo=args.placebo)
+    lines: list[str] = []
+
+    def say(s: str = "") -> None:
+        print(s, flush=True)
+        lines.append(s)
+
+    a0, a1 = r["period"]
+    say("# M2 を手で注文する形の過去の検証（M2a・M2b）")
+    say(f"作成: {datetime.now():%Y-%m-%d %H:%M}　判定の条件: docs/agents.md 13.2（結果を見る前に決めたもの）")
+    say(f"データ: 日本株 {close.shape[1]} 銘柄、M2 の点数（{p['selector'].name}）、{a0:%Y-%m}〜{a1:%Y-%m}（後半 {M.SPLIT[:4]}〜）。"
+        f"コスト 往復 {pct(M.COST, 2)}。差 = 持っている株 − 全銘柄の平均 − 入れ替えた割合 × コスト")
+    say("")
+    say("## 1. 判定")
+    say("")
+    say("| 記号 | 形 | 差（年率） | 前半 | 後半 | t 値（全期間） | t 値（後半） | 基準 | 偶然より良い割合 | 判定 |")
+    say("|---|---|---|---|---|---|---|---|---|---|")
+    for key, label in (("M2a", "1 日遅れの 5 日保有（上位 10%）"), ("M2b", "週 1 回・10 銘柄・1 日遅れ")):
+        v = r[key]
+        say(f"| {key} | {label} | {pct(v['mean'] * 12)} | {pct(v['mean1'] * 12)} | {pct(v['mean2'] * 12)} | {f2(v['t'])} | {f2(v['t2'])} | "
+            f"{f2(v['threshold'])} | {pct(v['placebo'], 0)} | **{v['verdict']}** |")
+    say("")
+    for key in ("M2a", "M2b"):
+        v = r[key]
+        say(f"- {key}: コストを引く前 年 {pct(v['gross_ann'])}、1 日に入れ替える割合 {pct(v['turnover'], 1)}、コストを引いた後 年 {pct(v['net_ann'])}。"
+            f"そのまま持った成績（市場の値動きを含む）: 年 {pct(v['total']['ann'])}・シャープ {f2(v['total']['sharpe'])}・最大の下げ {pct(v['total']['mdd'])}"
+            f"（全銘柄を持ち続けた場合: 年 {pct(v['hold']['ann'])}・{f2(v['hold']['sharpe'])}・{pct(v['hold']['mdd'])}）")
+        yr = v["by_year"]
+        say("  - 年ごとの d: " + "、".join(f"{y}: {x:+.1%}" for y, x in yr.items()) + f"（マイナスの年 {int((yr < 0).sum())}/{len(yr)}）")
+    say("")
+    say("## 2. 参考（判定しない）: 遅れと形でどれだけ変わるか")
+    say("")
+    say("| 形 | コストを引く前（年率） | コストを引いた後 | 後半（2018〜） | 1 日に入れ替える割合 |")
+    say("|---|---|---|---|---|")
+    for name, x in r["ref"].items():
+        say(f"| {name} | {pct(x['gross_ann'])} | {pct(x['net_ann'])} | {pct(x['net_late'])} | {pct(x['turnover'], 1)} |")
+    say("")
+    say("## 3. 読み方・限界（docs/agents.md 13.4）")
+    say("")
+    say("- 今の TOPIX500 の銘柄だけ（生存者バイアス）。下がった株を買う側に寄る M2 では、過去の成績が良く出やすい")
+    say("- 10 銘柄は少なく、1 社の出来事で大きく動く。税金は入れていない。S 株の受付の時刻・受注停止で出せない週がある")
+    say(f"- 試した数: M2a {M.TRIALS['M2a']}・M2b {M.TRIALS['M2b']}（81 ＋ 1C・案 2 ＋ C3 ＋ この 2 つ）")
+    say("- 先の記録（帳 m2_manual）の判定の条件は、この結果を見た後・先の記録を採点する前に docs/agents.md 13.5 に書く（M2b が「使えない」なら判定しない）")
+    out = Path(args.out) / datetime.now().strftime("%Y%m%d-%H%M")
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "manual.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("")
+    print(f"保存先: {out / 'manual.md'}")
+
+
 def cmd_status(args) -> None:
     p = paths(args.root)
     for label, key, col in (("情報収集（開示）", "disclosures", "time"), ("IR 評価（点数）", "ir_scores", "date"),
@@ -1409,7 +1521,7 @@ def cmd_schedule(args) -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("command", choices=["collect", "ir", "select", "decide", "evaluate", "run", "status", "schedule", "earnings", "extra",
-                                        "check", "orders"])
+                                        "check", "orders", "manual"])
     p.add_argument("--fetch", action="store_true", help="extra: 先に出来高・終値・株式分割を Yahoo から取る（1 秒に 1 社。取得済みは飛ばす）")
     p.add_argument("--reuse", action="store_true", help="extra: 入力を足した銘柄選定の点数が書いてあれば、学び直さずに使う")
     p.add_argument("--off", action="store_true", help="schedule: 自動実行を外す")
@@ -1446,11 +1558,12 @@ def main() -> None:
     p.add_argument("--sells-only", action="store_true", help="orders: 今日の判断が無いとき、売りだけの一覧を書く")
     p.add_argument("--notify", action="store_true", help="orders: 今日の一覧を iPhone にもう一度知らせる（設定 ~/.bunkoko/notify.json）")
     p.add_argument("--notify-test", action="store_true", help="orders: 知らせの試し（設定ができているか）")
+    p.add_argument("--test", action="store_true", help="manual: 手で注文する形の過去の検証（docs/agents.md 13.2。数分）")
     p.add_argument("--exclude", help="orders --setup: 予行演習の外ですでに持っている株（例 7203,6758。空にするなら \"\"）")
     args = p.parse_args()
     {"collect": cmd_collect, "ir": cmd_ir, "select": cmd_select, "decide": cmd_decide, "evaluate": cmd_evaluate,
      "run": cmd_run, "status": cmd_status, "schedule": cmd_schedule, "earnings": cmd_earnings, "extra": cmd_extra,
-     "check": cmd_check, "orders": cmd_orders}[args.command](args)
+     "check": cmd_check, "orders": cmd_orders, "manual": cmd_manual}[args.command](args)
 
 
 if __name__ == "__main__":
