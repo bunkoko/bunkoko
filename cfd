@@ -109,7 +109,7 @@ case "$cmd" in
   study    外部データで絞り込むと成績が良くなるかを検証（./cfd context の後。5 分前後）
   meta     2 次モデル（メタラベリング）で取引を選ぶと成績が良くなるかを検証（./cfd context の後。数分）
   universe 売買の対象を FX・株価指数・国債・個別株・暗号資産に広げたら良くなるかを検証（初回は --fetch。数分）
-  crypto   暗号資産: check（手数料の確かめ直し）・paper（記録だけの売買）・live（少額の本番。既定は空運転）・schedule（毎朝の登録。docs/crypto.md）
+  crypto   暗号資産: check（手数料の確かめ直し）・paper（記録だけの売買）・live（少額の本番。既定は空運転）・schedule（毎朝の登録）・extra（他の通貨の過去の検証。docs/crypto.md 9 章）
   trend    トレンドフォローの改良（複数の期間・量の管理・出口）を 3 期間で確かめる（docs/trend.md。数分）
   spread   2 つの差の戻り（WTI−ブレント・金÷銀）を確かめる（docs/spread.md。数分）
   diversify 市場を分散した論文どおりのトレンドフォローを確かめる（docs/diversified.md。数分）
