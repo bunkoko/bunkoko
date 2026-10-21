@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import hashlib
 import json
 import os
 import subprocess
@@ -66,20 +67,63 @@ def prices(data: Path) -> pd.DataFrame:
     return S.drop_closed_days(o, c)[1]
 
 
-def docs_meta(store: ED.Store) -> pd.DataFrame:
-    idx = store.index()
+def month_prices(args) -> pd.DataFrame:
+    """月末の終値。まだ終わっていない今月（13:05 の場中の値段のこともある）は落とす（「翌月末まで持つ」のため）。"""
+    today = pd.Timestamp(args.today) if args.today else pd.Timestamp.now(tz="Asia/Tokyo").tz_localize(None)
+    return TS.monthly_close(prices(Path(args.data)), today=today)
+
+
+def docs_meta(store: ED.Store) -> tuple[pd.DataFrame, dict]:
+    """判定に使う有報の一覧と、集めた量。取得が終わっていない・動いているときは止める（1 回きりの判定を途中のデータで使わない）。"""
+    lock = store.root / ".lock"
+    if lock.exists():
+        try:
+            os.kill(int(lock.read_text().strip() or 0), 0)
+            sys.exit("有報の取得（./cfd edinet fetch）がまだ動いている。終わってから動かす（1 回きりの判定を途中のデータで使わない）")
+        except (OSError, ValueError):
+            pass
+    idx, cand = store.index(), store.candidates()
+    left = cand[~cand["docID"].isin(idx["docID"])] if len(cand) else cand
+    if len(left):
+        sys.exit(f"有報の本文の取得がまだ終わっていない（見つけた {len(cand):,} 件のうち、残り {len(left):,} 件）。"
+                 "先に nohup ./cfd edinet fetch >> data/edinet/fetch.log 2>&1 & で終える（1 回きりの判定を途中のデータで使わない）")
+    counts = {"candidates": len(cand), "fetched": len(idx), "none": int((idx["source"] == "none").sum()) if len(idx) else 0}
     idx = idx[idx["source"] != "none"]
     if idx.empty:
         sys.exit("有報の本文がまだ無い。先に ./cfd edinet fetch で集める")
-    return TS.first_docs(idx).merge(idx[["docID", "filerName"]], on="docID", how="left")
+    return TS.first_docs(idx).merge(idx[["docID", "filerName"]], on="docID", how="left"), counts
+
+
+def counts_line(counts: dict) -> str:
+    return (f"- 集めた有報: 見つけた {counts['candidates']:,} 件・本文を取った {counts['fetched']:,} 件（うち本文なし {counts['none']:,} 件）。"
+            "取得は終わっている（残り 0 件）")
 
 
 def section_text(store: ED.Store, meta: pd.DataFrame, names: dict[str, str], section: str) -> dict[str, str]:
+    """節の文章（社名は東証の銘柄名と、その有報の提出者名の両方を消す）。"""
     out = {}
     for r in meta.itertuples(index=False):
         t = store.load_doc(r.ticker, r.docID).get(section, "")
-        out[r.docID] = TS.clean_text(t, names.get(r.ticker, "") or r.filerName)
+        out[r.docID] = TS.clean_text(t, [names.get(r.ticker, ""), r.filerName or ""])
     return out
+
+
+def conditions_line(v: dict) -> str:
+    """4 つの条件の成否を、丸めない値で（表の丸めで境目が分からなくならないように）。"""
+    ok = lambda b: "○" if b else "×"  # noqa: E731
+    c1 = bool(np.isfinite(v["mean1"]) and np.isfinite(v["mean2"]) and v["mean1"] > 0 and v["mean2"] > 0)
+    k, n = v.get("placebo_k"), v.get("placebo_n")
+    plac = f"{k}/{n} = {v['placebo']:.4f}" if v.get("placebo") is not None else "–"
+    return (f"- 条件: ① 前半 {v['mean1']:+.5f}・後半 {v['mean2']:+.5f}（月の平均）が両方プラス {ok(c1)}　"
+            f"② 後半の t 値 {v['t2']:.3f} ≥ 1.65 {ok(np.isfinite(v['t2']) and v['t2'] >= 1.65)}　"
+            f"③ 全期間の t 値 {v['t']:.3f} ≥ {v['threshold']:.3f} {ok(np.isfinite(v['t']) and v['t'] >= v['threshold'])}　"
+            f"④ 偶然より良い割合 {plac} ≥ 0.95 {ok(v.get('placebo') is not None and v['placebo'] >= 0.95)}")
+
+
+def period_line(book: pd.DataFrame) -> str:
+    low = int((book["firms"] < TS.MIN_FIRMS).sum()) if "firms" in book else 0
+    return (f"- 持った月: {book.index[0]:%Y-%m}〜{book.index[-1]:%Y-%m}（{len(book)} か月。まだ終わっていない今月は数えない）。"
+            f"始まりの後で信号のある会社が {TS.MIN_FIRMS} 社に届かなかった月: {low} か月（決まりどおり数えた）" if len(book) else "- 持った月: 無し")
 
 
 def fmt(x, d: int = 2) -> str:
@@ -127,21 +171,31 @@ def cmd_momentum(args, encoder=None) -> Path:
     uni = universe(Path(args.data))
     names = dict(zip(uni["ticker"], uni.get("name", uni["ticker"])))
     sectors = pd.Series(uni["sector"].to_numpy(), index=uni["ticker"]) if "sector" in uni else None
-    meta = docs_meta(store)
+    meta, counts = docs_meta(store)
     text = section_text(store, meta, names, "business")
-    meta = meta[meta["docID"].map(lambda d: len(text.get(d, "")) >= TS.MIN_CHARS)]
+    empty = int(sum(1 for d in meta["docID"] if not text.get(d, "")))
+    short = int(sum(1 for d in meta["docID"] if 0 < len(text.get(d, "")) < TS.MIN_CHARS))
     lines: list[str] = []
 
     def say(t: str = "") -> None:
         print(t, flush=True)
         lines.append(t)
 
+    # 埋め込みの取っておき: float32 のまま。文章（前処理の後）の印とモデルが同じものだけ使い回す（初回と次で同じ近さになるように）
     cache = Path(args.root) / f"vecs_business_{MODEL}.npz"
+    mark = {d: hashlib.sha256(text[d].encode("utf-8")).hexdigest()[:16] for d in meta["docID"] if text.get(d, "")}
     have: dict[str, np.ndarray] = {}
     if cache.exists():
         z = np.load(cache, allow_pickle=False)
-        have = dict(zip(z["ids"].astype(str), z["vecs"].astype(np.float32)))
-    todo = [d for d in meta["docID"] if d not in have]
+        if "marks" in z and str(z["model"]) == MODEL:
+            have = {i: v.astype(np.float32) for i, v, m in zip(z["ids"].astype(str), z["vecs"], z["marks"].astype(str)) if mark.get(i) == m}
+
+    def save() -> None:
+        ids = np.array(list(have), dtype=str)
+        np.savez_compressed(cache, ids=ids, vecs=np.vstack([have[i] for i in ids]).astype(np.float32),
+                            marks=np.array([mark[i] for i in ids], dtype=str), model=np.array(MODEL))
+
+    todo = [d for d in meta["docID"] if d in mark and d not in have]
     if todo:
         enc = encoder or make_embedder(MODEL)
         print(f"埋め込み: 有報の「事業の内容」{len(todo):,} 件（{MODEL}。1,000 字ずつに切って平均）", flush=True)
@@ -149,12 +203,13 @@ def cmd_momentum(args, encoder=None) -> Path:
             have[d] = TS.doc_vector(text[d], enc.encode)
             if (k + 1) % 200 == 0:
                 print(f"  {k + 1}/{len(todo)}", flush=True)
-        ids = np.array(list(have), dtype=str)
-        np.savez_compressed(cache, ids=ids, vecs=np.vstack([have[i] for i in ids]).astype(np.float16))
+                save()
+        save()
+    have = {d: have[d] for d in mark}                     # 本文の空の有報には近さが無い（その月はその会社の信号なし。古い有報に戻さない）
     hashed = HashEmbedder(512)
-    hash_vec = {d: TS.doc_vector(text[d], hashed.encode) for d in meta["docID"]}
+    hash_vec = {d: TS.doc_vector(text[d], hashed.encode) for d in mark}
 
-    mclose = TS.monthly_close(prices(Path(args.data)))
+    mclose = month_prices(args)
     sig = TS.momentum_signals(meta, have, mclose, sectors=sectors)
     sig_hash = TS.momentum_signals(meta, hash_vec, mclose)
     start = TS.first_month(sig["main"], mclose)
@@ -162,8 +217,10 @@ def cmd_momentum(args, encoder=None) -> Path:
     say("")
     say(f"作成: {datetime.now():%Y-%m-%d %H:%M}　決まり: docs/text_signals.md 3 章（結果を見る前に決めたもの）。試した数 {TS.TRIALS}"
         f"（全期間の t 値の基準 {fmt(S.expected_max_z(TS.TRIALS))}）")
+    say(counts_line(counts))
     say(f"- 有報の「事業の内容」: {len(meta):,} 件・{meta['ticker'].nunique()} 社（{meta['submit'].min():%Y-%m}〜{meta['submit'].max():%Y-%m}）。"
-        f"社名と数字を消し、{MODEL} で埋め込んだ（近さにだけ使う）")
+        f"社名（東証の銘柄名と提出者名）と数字を消し、{MODEL} で埋め込んだ（近さにだけ使う）。"
+        f"節が空の有報 {empty} 件（その会社はその有報の間、信号なし）・200 字未満 {short} 件（そのまま使う）")
     if start is None:
         say(f"- 信号のある会社が {TS.MIN_FIRMS} 社そろった月がまだ無い。判定しない")
         return write(Path(args.out), "momentum.md", lines)
@@ -172,12 +229,14 @@ def cmd_momentum(args, encoder=None) -> Path:
     null = TS.placebo(sig["main"], mclose, start, args.placebo, rng)
     v = TS.judge(book, null)
     say(f"- 判定の期間: {start:%Y-%m} 末に選んだ月から（信号のある会社が {TS.MIN_FIRMS} 社以上）。偶然 = 毎月同じ数をでたらめに選ぶ {args.placebo} 回")
+    say(period_line(book))
     say("")
     say("## 1. 判定")
     say("")
     for h in HEAD:
         say(h)
     say(verdict_row("1C", f"近い {TS.K_PEERS} 社の直近 {TS.LOOKBACK} か月のリターンの上位 5 分の 1 を 1 か月持つ", v))
+    say(conditions_line(v))
     say("")
     say("## 2. 参考（判定しない。試した数に入れない）")
     say("")
@@ -211,14 +270,15 @@ def cmd_lazy(args) -> Path:
     store = ED.Store(args.root)
     uni = universe(Path(args.data))
     names = dict(zip(uni["ticker"], uni.get("name", uni["ticker"])))
-    meta = docs_meta(store)
+    meta, counts = docs_meta(store)
     lines: list[str] = []
 
     def say(t: str = "") -> None:
         print(t, flush=True)
         lines.append(t)
 
-    mclose = TS.monthly_close(prices(Path(args.data)))
+    mclose = month_prices(args)
+    mdna_empty = int(sum(1 for r in meta.itertuples(index=False) if not store.load_doc(r.ticker, r.docID).get("mdna")))
     pairs = {}
     for sec in ("risks", "mdna", "business"):
         text = section_text(store, meta, names, sec)
@@ -229,6 +289,7 @@ def cmd_lazy(args) -> Path:
     say("")
     say(f"作成: {datetime.now():%Y-%m-%d %H:%M}　決まり: docs/text_signals.md 4 章（結果を見る前に決めたもの）。試した数 {TS.TRIALS}"
         f"（全期間の t 値の基準 {fmt(S.expected_max_z(TS.TRIALS))}）")
+    say(counts_line(counts))
     say(f"- 有報: {len(meta):,} 件・{meta['ticker'].nunique()} 社。前年と組にできた「事業等のリスク」{len(pairs['risks']):,} 組"
         f"（近さの中央値 {fmt(pairs['risks']['sim'].median(), 3) if len(pairs['risks']) else '–'}）")
     if start is None:
@@ -239,12 +300,14 @@ def cmd_lazy(args) -> Path:
     null = TS.placebo(sig["risks"], mclose, start, args.placebo, rng)
     v = TS.judge(book, null)
     say(f"- 判定の期間: {start:%Y-%m} 末に選んだ月から。偶然 = 毎月同じ数をでたらめに選ぶ {args.placebo} 回")
+    say(period_line(book))
     say("")
     say("## 1. 判定")
     say("")
     for h in HEAD:
         say(h)
     say(verdict_row("案 2", "「事業等のリスク」を前年から変えていない上位 5 分の 1 を 1 か月持つ", v))
+    say(conditions_line(v))
     say("")
     say("## 2. 参考（判定しない。試した数に入れない）")
     say("")
@@ -254,6 +317,8 @@ def cmd_lazy(args) -> Path:
     say(ref_row("変えた会社（近さの下位 5 分の 1）", TS.monthly_book(sig["risks"], mclose, start, highest=False)))
     say(ref_row("「経営者による分析」の節", TS.monthly_book(sig["mdna"], mclose, start) if sig["mdna"] else pd.DataFrame()))
     say(ref_row("「事業の内容」の節", TS.monthly_book(sig["business"], mclose, start) if sig["business"] else pd.DataFrame()))
+    say("")
+    say(f"- 「経営者による分析」が空の有報 {mdna_empty:,} 件（多くは古い要素の名前の 2017 年ごろまでの有報。参考の行だけに効き、判定には効かない）")
     say("")
     say("## 3. 読み方・限界")
     say("")

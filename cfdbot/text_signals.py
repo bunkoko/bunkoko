@@ -24,6 +24,7 @@ QUANTILE = 0.2               # 上位 5 分の 1
 MIN_FIRMS = 300              # 信号のある会社がこれ以上そろった最初の月末から判定の期間
 DOC_VALID_DAYS = 455         # 有報は提出日の翌日から 455 日まで使う（次の有報が遅れても 15 か月）
 PAIR_DAYS = (300, 430)       # 案 2: 前年の有報と組にする期末の間（決算期の変更は組にしない）
+YEAR_DAYS = (350, 380)       # 案 2: 決算期の長さ（期首〜期末）がこの間でない有報は、決算期を変えた年として組にしない
 PAIR_VALID_DAYS = 365        # 案 2: 近さは提出日の翌日から 1 年使う
 MIN_CHARS = 200              # これより短い節は使わない
 NGRAM = 3
@@ -34,11 +35,17 @@ SINCE_REF = "2025-01-01"     # 参考: 2025 年以降（埋め込みのモデル
 
 
 # --------------------------------------------------------------------------- 文章
-def clean_text(text: str, company: str = "") -> str:
-    """全角・半角をそろえ、その会社の名前を消し、数字を 0 にする（どの会社か・いつかを分かりにくくする。前年と同じ手順）。"""
+def clean_text(text: str, company: str | list[str] | tuple[str, ...] = "") -> str:
+    """全角・半角をそろえ、その会社の名前を消し、数字を 0 にする（どの会社か・いつかを分かりにくくする。前年と同じ手順）。
+
+    company には名前を 1 つか、いくつか（東証の銘柄名と、EDINET の提出者名など）渡せる。長い名前から消す。
+    """
     t = unicodedata.normalize("NFKC", str(text or ""))
-    name = re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(company or "")))
-    for n in {name, re.sub(r"(株式会社|\(株\))", "", name)}:
+    names = set()
+    for c in ([company] if isinstance(company, str) else list(company)):
+        name = re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(c or "")))
+        names |= {name, re.sub(r"(株式会社|\(株\))", "", name)}
+    for n in sorted(names, key=len, reverse=True):
         if len(n) >= 2:
             t = t.replace(n, "")
     t = re.sub(r"\d+", "0", t)
@@ -73,15 +80,20 @@ def month_ends(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
     return pd.DatetimeIndex(s.groupby(index.to_period("M")).max().to_numpy())
 
 
-def monthly_close(close: pd.DataFrame) -> pd.DataFrame:
-    return close.loc[month_ends(close.index)]
+def monthly_close(close: pd.DataFrame, today: pd.Timestamp | None = None) -> pd.DataFrame:
+    """各月の最後の日の終値。today を渡せば、その月（まだ終わっていない月。場中の値段のこともある）の行は落とす。"""
+    m = close.loc[month_ends(close.index)]
+    if today is not None and len(m) and m.index[-1].to_period("M") >= pd.Timestamp(today).to_period("M"):
+        m = m.iloc[:-1]
+    return m
 
 
 def first_docs(meta: pd.DataFrame) -> pd.DataFrame:
     """同じ会社・同じ決算期の有報が複数あれば、最初に出したもの（後の訂正の本文で検証しない）。列: ticker / docID / submit / periodEnd。"""
-    m = meta.assign(submit=pd.to_datetime(meta["submitDateTime"]), periodEnd=pd.to_datetime(meta["periodEnd"], errors="coerce"))
+    m = meta.assign(submit=pd.to_datetime(meta["submitDateTime"]), periodEnd=pd.to_datetime(meta["periodEnd"], errors="coerce"),
+                    periodStart=pd.to_datetime(meta["periodStart"], errors="coerce") if "periodStart" in meta else pd.NaT)
     m = m.sort_values("submit").drop_duplicates(["ticker", "periodEnd"], keep="first")
-    return m[["ticker", "docID", "submit", "periodEnd"]].reset_index(drop=True)
+    return m[["ticker", "docID", "submit", "periodStart", "periodEnd"]].reset_index(drop=True)
 
 
 def active_docs(meta: pd.DataFrame, when: pd.Timestamp, valid_days: int = DOC_VALID_DAYS) -> pd.DataFrame:
@@ -150,14 +162,27 @@ def momentum_signals(meta: pd.DataFrame, vec_of: dict[str, np.ndarray], mclose: 
 
 
 # --------------------------------------------------------------------------- 案 2: 有報の文面の前年との差
+def full_year(start, end, year_days: tuple[int, int] = YEAR_DAYS) -> bool:
+    """決算期が 1 年の長さか（期首の分からない有報は、期末の間だけで見る）。"""
+    if pd.isna(start) or pd.isna(end):
+        return True
+    return year_days[0] <= (pd.Timestamp(end) - pd.Timestamp(start)).days <= year_days[1]
+
+
 def lazy_pairs(meta: pd.DataFrame, text_of: Callable[[str], str], pair_days: tuple[int, int] = PAIR_DAYS) -> pd.DataFrame:
-    """会社ごとに、決算期が 1 年ちがう前年の有報と組にし、節の近さ（文字 3 つ組のコサイン）。列: ticker / date（提出日）/ sim。"""
+    """会社ごとに、決算期が 1 年ちがう前年の有報と組にし、節の近さ（文字 3 つ組のコサイン）。列: ticker / date（提出日）/ sim。
+
+    決算期を変えた年（どちらかの有報の期首〜期末が 1 年の長さでない）は組にしない（docs/text_signals.md 4.2）。
+    """
     rows = []
     for t, g in meta.sort_values("periodEnd").groupby("ticker"):
         g = g.dropna(subset=["periodEnd"]).reset_index(drop=True)
         for a, b in zip(g.index[:-1], g.index[1:]):
             gap = (g.at[b, "periodEnd"] - g.at[a, "periodEnd"]).days
             if not pair_days[0] <= gap <= pair_days[1]:
+                continue
+            if "periodStart" in g and not (full_year(g.at[a, "periodStart"], g.at[a, "periodEnd"])
+                                           and full_year(g.at[b, "periodStart"], g.at[b, "periodEnd"])):
                 continue
             x, y = text_of(g.at[a, "docID"]), text_of(g.at[b, "docID"])
             if len(x) < MIN_CHARS or len(y) < MIN_CHARS:
@@ -199,9 +224,12 @@ def turnover_of(prev: set, cur: set) -> float:
 
 
 def monthly_book(signals: dict[pd.Timestamp, pd.Series], mclose: pd.DataFrame, start: pd.Timestamp | None = None,
-                 q: float = QUANTILE, highest: bool = True, min_firms: int = MIN_FIRMS,
+                 q: float = QUANTILE, highest: bool = True, min_firms: int = 1,
                  picker: Callable[[pd.Series], list[str]] | None = None) -> pd.DataFrame:
-    """月末に選んで次の月末まで持つ。行は持った月（次の月末の日付）。列: port / mkt / gross / turnover / d / n。"""
+    """月末に選んで次の月末まで持つ。行は持った月（次の月末の日付）。列: port / mkt / gross / turnover / d / n / firms。
+
+    判定の期間は「300 社そろった最初の月末（first_month）から、データの最後まで」なので、始まりの後の月は社数が減っても数える
+    （選ぶ株が 1 つも無い月だけ飛ばす）。"""
     fwd = mclose.shift(-1) / mclose - 1
     rows, prev = [], set()
     for when, sig in sorted(signals.items()):
@@ -215,14 +243,16 @@ def monthly_book(signals: dict[pd.Timestamp, pd.Series], mclose: pd.DataFrame, s
         if not len(nxt):
             continue
         pick = picker(sig) if picker else select_top(sig, q, highest)
+        if not pick:
+            continue
         r = fwd.loc[when]
         port = r.reindex(pick).mean()
         mkt = r.mean()
         cur = set(pick)
         turnover = turnover_of(prev, cur)
         prev = cur
-        rows.append((nxt[0], port, mkt, port - mkt, turnover, port - mkt - turnover * COST, len(pick)))
-    return pd.DataFrame(rows, columns=["month", "port", "mkt", "gross", "turnover", "d", "n"]).set_index("month")
+        rows.append((nxt[0], port, mkt, port - mkt, turnover, port - mkt - turnover * COST, len(pick), int(sig.notna().sum())))
+    return pd.DataFrame(rows, columns=["month", "port", "mkt", "gross", "turnover", "d", "n", "firms"]).set_index("month")
 
 
 def placebo(signals: dict[pd.Timestamp, pd.Series], mclose: pd.DataFrame, start: pd.Timestamp | None, n: int,
@@ -257,8 +287,10 @@ def judge(book: pd.DataFrame, null: np.ndarray, n_trials: int = TRIALS) -> dict:
 
     d = book["d"].dropna()
     real = float(book["gross"].mean()) if len(book) else float("nan")
-    pct = float(np.mean(null[np.isfinite(null)] < real)) if np.isfinite(null).any() and np.isfinite(real) else None
+    ok = null[np.isfinite(null)]
+    pct = float(np.mean(ok < real)) if len(ok) and np.isfinite(real) else None
     v = S.judge(d, midpoint(d.index), n_trials, pct)
+    v.update(placebo_k=int(np.sum(ok < real)) if pct is not None else None, placebo_n=len(ok))
     since = d[d.index >= pd.Timestamp(SINCE_REF)]
     v.update(placebo=pct, months=len(d), split=midpoint(d.index), since_mean=float(since.mean()) if len(since) else float("nan"),
              since_months=len(since), gross_ann=real * 12 if np.isfinite(real) else float("nan"),

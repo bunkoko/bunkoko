@@ -154,3 +154,58 @@ def test_volcheck_pieces_har_has_no_lookahead_and_btc_closes_at_midnight():
     assert news.volcheck_verdict({"SP500": "有望", "TOPIX": "有望", "BTC": "偶然の範囲"}).startswith("使えそう")
     assert news.volcheck_verdict({"SP500": "有望", "TOPIX": "偶然の範囲", "BTC": "偶然の範囲"}).startswith("使えない")
     assert news.volcheck_verdict({"SP500": "有望", "TOPIX": "途中経過（x）", "BTC": "有望"}).startswith("まだ判定しない")
+
+
+def test_preflight_rules_match_the_preregistration(tmp_path):
+    # 社名は東証の銘柄名と提出者名の両方を消す
+    t = TS.clean_text("日本たばこ産業株式会社とＪＴの子会社", ["ＪＴ", "日本たばこ産業株式会社"])
+    assert "日本たばこ産業" not in t and "JT" not in t
+    # まだ終わっていない今月は落とす
+    idx = pd.bdate_range("2026-08-03", "2026-10-21")
+    mc = TS.monthly_close(pd.DataFrame({"A": np.arange(len(idx), dtype=float)}, index=idx), today=pd.Timestamp("2026-10-21 13:05"))
+    assert mc.index[-1] == pd.Timestamp("2026-09-30")
+    assert TS.monthly_close(pd.DataFrame({"A": np.arange(len(idx), dtype=float)}, index=idx), today=pd.Timestamp("2026-11-02")).index[-1] == idx[-1]
+    # 決算期を変えた年（9 か月・13 か月）は組にしない
+    meta = pd.DataFrame({"ticker": ["A"] * 4, "docID": ["a1", "a2", "a3", "a4"],
+                         "submit": pd.to_datetime(["2018-06-25", "2019-06-25", "2020-03-25", "2021-03-25"]),
+                         "periodStart": pd.to_datetime(["2017-04-01", "2018-04-01", "2019-04-01", "2020-01-01"]),
+                         "periodEnd": pd.to_datetime(["2018-03-31", "2019-03-31", "2019-12-31", "2020-12-31"])})
+    pairs = TS.lazy_pairs(meta, lambda d: "為替の変動と原材料の価格" * 30)
+    assert pairs["date"].tolist() == [pd.Timestamp("2019-06-25")]                     # 2019-12 期（9 か月）とその次は組にしない
+    # 始まりの後は 300 社に届かない月も数える（選ぶ株が無い月だけ飛ばす）
+    ends = pd.DatetimeIndex(["2020-01-31", "2020-02-28", "2020-03-31", "2020-04-30"])
+    mclose = pd.DataFrame(100.0 + np.arange(4)[:, None] * np.arange(1, 401)[None, :] * 0.01, index=ends,
+                          columns=[f"{i}.T" for i in range(400)])
+    sig = {ends[0]: pd.Series(np.arange(400.0), index=mclose.columns),
+           ends[1]: pd.Series(np.arange(50.0), index=mclose.columns[:50]),
+           ends[2]: pd.Series(np.arange(3.0), index=mclose.columns[:3])}
+    assert TS.first_month(sig, mclose) == ends[0]
+    book = TS.monthly_book(sig, mclose, ends[0])
+    assert len(book) == 2 and book["firms"].tolist() == [400, 50]                    # 3 社の月は上位 5 分の 1 が 0 社なので飛ばす
+    v = TS.judge(pd.concat([book] * 3).set_axis(pd.date_range("2020-02-29", periods=6, freq="ME")), np.array([-1.0, -1.0, 1.0, np.nan]))
+    assert v["placebo_k"] == 2 and v["placebo_n"] == 3
+
+
+def test_commands_refuse_an_unfinished_fetch_and_reports_are_reproducible(tmp_path):
+    import os
+
+    import pytest
+
+    idx, tick, close, data, store = _world(tmp_path)
+    mod = _script("edinet_pf", "edinet.py")
+    enc = HashEmbedder(256)
+    base = ["--root", str(tmp_path / "edinet"), "--data", str(data), "--placebo", "10"]
+    first = mod.main(["momentum", *base, "--out", str(tmp_path / "o1")], encoder=enc).read_text(encoding="utf-8")
+    again = mod.main(["momentum", *base, "--out", str(tmp_path / "o2")], encoder=enc).read_text(encoding="utf-8")
+    pick = lambda s: [x for x in s.splitlines() if x.startswith("| 1C |") or x.startswith("- 条件")]  # noqa: E731
+    assert pick(first) == pick(again) and "④ 偶然より良い割合" in first and "残り 0 件" in first   # 取っておきを使う 2 回目も同じ数字
+    # 取得が途中（見つけた有報のうち本文の無いものがある）なら止める
+    store._append(store.cand_path, [{"docID": "NOTYET", "secCode": "10000", "ticker": "1000.T", "filerName": "x", "submitDateTime": "2024-06-25 15:00",
+                                     "periodStart": "2023-04-01", "periodEnd": "2024-03-31", "docTypeCode": "120", "csvFlag": "1", "xbrlFlag": "1",
+                                     "withdrawalStatus": "0", "listed_on": "2024-06-25"}], ED.CAND_COLUMNS)
+    with pytest.raises(SystemExit, match="まだ終わっていない"):
+        mod.main(["lazy", *base, "--out", str(tmp_path / "o3")])
+    # 取得が動いている間も止める
+    (tmp_path / "edinet" / ".lock").write_text(str(os.getpid()))
+    with pytest.raises(SystemExit, match="まだ動いている"):
+        mod.main(["momentum", *base, "--out", str(tmp_path / "o4")], encoder=enc)
