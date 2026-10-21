@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Claude Code の PreToolUse フック：顧客データ（案件フォルダ）へのアクセスを止める。
 
-- 案件フォルダ（既定 ~/fukugyo-c-jobs）を指すパス、その名前を含む入力、
-  案件フォルダを丸ごと含む範囲への再帰検索を拒否する。
-- Write / Edit などは「書き込み先のパス」だけを調べる。
-  ドキュメントやコードにフォルダ名を書くこと自体は止めない。
-- 入力を読めないなど判断できないときも拒否する（fail-closed）。
+調べる範囲はツールの種類で変える。文章の中にフォルダ名が出てくるだけでは止めない。
+
+- コマンド系（Bash・Monitor・PowerShell）：入力の全文。フォルダ名・パス・ワイルドカード・
+  シンボリックリンク・ホームからの再帰検索・Spotlight を止める。
+  他のツールでも、command・script など「コマンドを表す項目」は同じ扱いにする。
+- ファイル系（Read・Write・Edit・Grep・Glob など）：パスの項目だけ。
+- それ以外（MCP、StructuredOutput など）：パスを表す項目（path・file・dir・uri など）と、
+  値が1つのパスそのものの場合だけ。
+- 入力を読めないなど判断できないときは拒否する（fail-closed）。
 
 macOS 標準の /usr/bin/python3（3.9）でも動くよう、標準ライブラリだけで書く。
 """
@@ -18,22 +22,21 @@ import shlex
 import sys
 
 TOKEN = "fukugyo-c-jobs"
-# 案件フォルダを追加するとき（例：暗号化ディスクイメージのマウント先）に ":" 区切りで指定する
+# 案件フォルダを追加するときに ":" 区切りで指定する（通常は不要。暗号化イメージも案件フォルダ内にマウントする）
 EXTRA_ROOTS_ENV = "SC_EXTRA_JOB_ROOTS"
 
-# 書き込み系：書き込み先のパスだけを調べる
-PATH_ONLY_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
-PATH_KEYS = ("file_path", "notebook_path", "path")
-# 文章だけを扱い、ファイルに触れないツール
-TEXT_ONLY_TOOLS = {
-    "Agent",
-    "Task",
-    "TodoWrite",
-    "TaskCreate",
-    "TaskUpdate",
-    "SendMessage",
-    "AskUserQuestion",
-    "ExitPlanMode",
+COMMAND_TOOLS = {"Bash", "Monitor", "PowerShell"}
+# ファイル系：ツールごとのパスの項目
+FILE_TOOLS = {
+    "Read": ("file_path",),
+    "Write": ("file_path",),
+    "Edit": ("file_path",),
+    "MultiEdit": ("file_path",),
+    "NotebookEdit": ("notebook_path",),
+    "NotebookRead": ("notebook_path",),
+    "LS": ("path",),
+    "Grep": ("path",),
+    "Glob": ("path", "pattern"),
 }
 # 案件フォルダの親を指定されると中まで読みに行くツールやコマンド
 RECURSIVE_TOOLS = {"Grep", "Glob"}
@@ -44,8 +47,22 @@ RECURSIVE_FLAG_COMMANDS = {"grep", "egrep", "fgrep", "ls", "cp", "chmod", "chown
 # Spotlight の索引から中身を引けるので常に拒否する
 BLOCKED_COMMANDS = {"mdfind", "mdls"}
 
+# その他のツールで「パスを表す項目」とみなす名前（キーの最後の単語）
+PATH_KEY_WORDS = {
+    "path", "paths", "filepath", "file", "files", "filename", "filenames",
+    "dir", "dirs", "directory", "directories", "folder", "folders",
+    "cwd", "root", "roots", "uri", "uris",
+}
+# その他のツールで「コマンドを表す項目」とみなす名前（Bash と同じく全文を調べる）
+COMMAND_KEY_WORDS = {"command", "commands", "cmd", "script", "shell", "args", "argv", "code"}
+PATH_PREFIXES = ("/", "~", "./", "../", "$HOME", "${HOME}", "file://")
+MAX_PATH_LEN = 4096
+
 SHELL_SPLIT = re.compile(r"[;&|<>()`\n]")
+KEY_WORD_SPLIT = re.compile(r"[^a-z0-9]+")
+CAMEL = re.compile(r"([a-z0-9])([A-Z])")
 GLOB_CHARS = set("*?[")
+HINT = "顧客データは Claude Code から扱いません。架空データ（samples/fictional/ や tests/fixtures/）を使ってください。"
 
 
 def deny(reason):
@@ -55,7 +72,7 @@ def deny(reason):
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "deny",
-                    "permissionDecisionReason": reason,
+                    "permissionDecisionReason": reason + "。" + HINT,
                 }
             },
             ensure_ascii=False,
@@ -84,6 +101,12 @@ def job_roots():
     return sorted(roots)
 
 
+def key_word(key):
+    """項目名の最後の単語（file_path → path、notebookPath → path、profile → profile）。"""
+    parts = [p for p in KEY_WORD_SPLIT.split(CAMEL.sub(r"\1_\2", str(key)).lower()) if p]
+    return parts[-1] if parts else ""
+
+
 def strings_in(value):
     if isinstance(value, str):
         yield value
@@ -95,6 +118,37 @@ def strings_in(value):
         for v in value:
             for s in strings_in(v):
                 yield s
+
+
+def classify_strings(value, kind=None):
+    """その他のツールの入力を (種類, 文字列) に分ける。種類は path / command / None。"""
+    if isinstance(value, str):
+        yield kind, value
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            word = key_word(k)
+            if word in PATH_KEY_WORDS:
+                child = "path"
+            elif word in COMMAND_KEY_WORDS:
+                child = "command"
+            else:
+                child = kind
+            for item in classify_strings(v, child):
+                yield item
+    elif isinstance(value, list):
+        for v in value:
+            for item in classify_strings(v, kind):
+                yield item
+
+
+def is_single_path(text):
+    """値が1つのパスそのものか（1行で、空白を含まないか、パスの書き出しで始まる）。"""
+    s = text.strip()
+    if not s or len(s) > MAX_PATH_LEN or "\n" in s or "\r" in s:
+        return False
+    if not any(c.isspace() for c in s):
+        return True
+    return s.startswith(PATH_PREFIXES)
 
 
 def words(text):
@@ -113,6 +167,8 @@ def words(text):
 
 
 def resolve(candidate, cwd):
+    if candidate.startswith("file://"):
+        candidate = candidate[len("file://"):]
     expanded = os.path.expandvars(os.path.expanduser(candidate))
     if not os.path.isabs(expanded):
         expanded = os.path.join(cwd, expanded)
@@ -138,12 +194,12 @@ def glob_reaches(pattern, root):
 
 
 def looks_like_path(s):
-    return s.startswith(("~", "/", "./", "../", "$HOME", "${HOME}")) or "/" in s
+    return s.startswith(PATH_PREFIXES) or "/" in s
 
 
 def check_path(candidate, cwd, roots, recursive):
     """候補パスが案件フォルダの中、またはそれを丸ごと含む範囲なら理由を返す。"""
-    if not looks_like_path(candidate):
+    if not looks_like_path(candidate) or len(candidate) > MAX_PATH_LEN:
         return None
     has_glob = any(c in GLOB_CHARS for c in candidate)
     for p in resolve(candidate, cwd):
@@ -188,6 +244,37 @@ def blocked_command(text):
     return None
 
 
+def check_name(text, roots):
+    """フォルダ名や案件フォルダのパスが文字列に含まれていれば拒否する。"""
+    low = text.lower()
+    if TOKEN in low:
+        deny("案件フォルダ（" + TOKEN + "）を指す入力は拒否します")
+    for root in roots:
+        if root in low:
+            deny("案件フォルダのパスを含む入力は拒否します")
+
+
+def check_command(text, cwd, roots):
+    """コマンド系：全文を調べる。"""
+    check_name(text, roots)
+    name = blocked_command(text)
+    if name:
+        deny(name + " は Spotlight の索引から顧客データを引けるので拒否します")
+    rec = command_is_recursive(text)
+    for cand in words(text):
+        reason = check_path(cand, cwd, roots, rec)
+        if reason:
+            deny(reason)
+
+
+def check_path_field(text, cwd, roots, recursive):
+    """パスの項目：フォルダ名を含むか、案件フォルダに届くかを調べる。"""
+    check_name(text, roots)
+    reason = check_path(text.strip(), cwd, roots, recursive)
+    if reason:
+        deny(reason)
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -199,37 +286,45 @@ def main():
     tool = payload.get("tool_name") or ""
     tool_input = payload.get("tool_input") or {}
     cwd = payload.get("cwd") or os.getcwd()
-    if tool in TEXT_ONLY_TOOLS:
+    roots = job_roots()
+
+    if tool in COMMAND_TOOLS:
+        for text in strings_in(tool_input):
+            check_command(text, cwd, roots)
         sys.exit(0)
 
-    roots = job_roots()
-    hint = "顧客データは Claude Code から扱いません。架空データ（samples/fictional/ や tests/fixtures/）を使ってください。"
-
-    if tool in PATH_ONLY_TOOLS and isinstance(tool_input, dict):
-        texts = [tool_input.get(k) for k in PATH_KEYS if isinstance(tool_input.get(k), str)]
-    else:
-        texts = list(strings_in(tool_input))
-
-    recursive = tool in RECURSIVE_TOOLS
-    for text in texts:
-        if TOKEN in text.lower():
-            deny("案件フォルダ（" + TOKEN + "）を指す入力は拒否します。" + hint)
-        for root in roots:
-            if root in text.lower():
-                deny("案件フォルダのパスを含む入力は拒否します。" + hint)
-        if tool in ("Bash", "Monitor", "PowerShell"):
-            name = blocked_command(text)
-            if name:
-                deny(name + " は Spotlight の索引から顧客データを引けるので拒否します。" + hint)
-            candidates = words(text)
-            rec = command_is_recursive(text)
-        else:
-            candidates = [text]
-            rec = recursive
-        for cand in candidates:
-            reason = check_path(cand, cwd, roots, rec)
+    if tool in FILE_TOOLS and isinstance(tool_input, dict):
+        recursive = tool in RECURSIVE_TOOLS
+        path = tool_input.get("path")
+        has_path = isinstance(path, str) and path.strip()
+        if recursive and not has_path:
+            # 検索範囲の指定がなければ作業フォルダから再帰的に読む
+            reason = check_path(cwd, cwd, roots, True)
             if reason:
-                deny(reason + "。" + hint)
+                deny(reason)
+        for key in FILE_TOOLS[tool]:
+            value = tool_input.get(key)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            if tool == "Glob" and key == "pattern":
+                base = os.path.expanduser(path) if has_path else cwd
+                value = os.path.join(base, os.path.expanduser(value))
+            check_path_field(value, cwd, roots, recursive)
+        sys.exit(0)
+
+    # その他（MCP、StructuredOutput など）
+    for kind, text in classify_strings(tool_input):
+        if kind == "command":
+            check_command(text, cwd, roots)
+        elif kind == "path":
+            check_path_field(text, cwd, roots, False)
+        elif is_single_path(text):
+            s = text.strip()
+            if not any(c.isspace() for c in s):
+                check_name(s, roots)
+            reason = check_path(s, cwd, roots, False)
+            if reason:
+                deny(reason)
     sys.exit(0)
 
 

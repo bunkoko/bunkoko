@@ -7,7 +7,9 @@
 ## 絶対に守ること
 
 1. **顧客データを扱わない。** 顧客データはリポジトリの外の案件フォルダ（`~/fukugyo-c-jobs/`）にだけあります。
+   受け取った原本が一時的に置かれる `~/Downloads/` も同じ扱いです。
    読む・開く・一覧する・検索する・コマンドの引数に渡す、のどれもしないでください。
+   ユーザーが案件のエラー出力やログを貼ってきたら、内容を使わずに、架空データで再現する方法を提案してください。
    開発・テスト・デバッグは架空データ（`samples/fictional/`、`tests/fixtures/`）だけで行います。
 2. **案件の処理を実行しない。** 実在の案件ID に対する `survey-coder` の各コマンドは、
    ユーザーが Claude Code の外のターミナルで実行します。手順を書いて渡すのはかまいません。
@@ -19,6 +21,12 @@
 
 これらは `.claude/settings.json` の読み取り禁止ルールとフック（`.claude/hooks/guard_customer_data.py`）、
 Mac 全体の管理設定（`ops/claude-guard/`）でも止めています。フックに拒否されたら、回避せずに架空データで進めてください。
+survey-coder 自身も、環境変数 `CLAUDECODE` か `CLAUDE_CODE_CHILD_SESSION` が `1` のときは実在の案件フォルダを開きません。
+
+フックを直すときは、このセッションにもすぐ効き、壊れると全ツールが止まることに注意します。
+新版を `.claude/hooks/.guard_customer_data.py.new` に書き、
+`GUARD_HOOK=.claude/hooks/.guard_customer_data.py.new python3 -m unittest discover -s tests/guard` を通してから、1回の `mv` で置き換えます。
+Bash のコマンドは全文が調べられるので、案件フォルダの名前を含むファイルは Edit / Write で直します。
 
 ## サブエージェント（`.claude/agents/`）
 

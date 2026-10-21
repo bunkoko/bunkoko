@@ -3,7 +3,9 @@
   "permissions": {
     "deny": [
       "Read(~/fukugyo-c-jobs/**)",
-      "Edit(~/fukugyo-c-jobs/**)"
+      "Edit(~/fukugyo-c-jobs/**)",
+      "Read(~/Downloads/**)",
+      "Edit(~/Downloads/**)"
     ]
   },
   "hooks": {

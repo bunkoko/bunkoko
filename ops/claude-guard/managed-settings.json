@@ -3,18 +3,24 @@
     "deny": [
       "Read(~/fukugyo-c-jobs/**)",
       "Edit(~/fukugyo-c-jobs/**)",
+      "Read(~/Downloads/**)",
+      "Edit(~/Downloads/**)",
       "Edit(~/.claude/settings.json)"
     ],
-    "disableBypassPermissionsMode": "disable"
+    "disableBypassPermissionsMode": "disable",
+    "disableAutoMode": "disable"
   },
+  "allowManagedHooksOnly": true,
   "sandbox": {
     "enabled": true,
     "failIfUnavailable": true,
     "allowUnsandboxedCommands": false,
     "filesystem": {
       "denyRead": [
-        "~/fukugyo-c-jobs"
+        "~/fukugyo-c-jobs",
+        "~/Downloads"
       ],
+      "allowManagedReadPathsOnly": true,
       "allowWrite": [
         "~/.cache/uv",
         "~/.local/share/uv",

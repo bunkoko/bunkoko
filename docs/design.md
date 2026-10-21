@@ -4,7 +4,27 @@
 構築係・検品係はこの文書を正として実装・検品します。Mac の機種とメモリが決まるまで、
 モデルと並列数は「候補」のままにし、架空データでの比較（8章）で確定します。
 
-最終更新：2026-10-16
+最終更新：2026-10-21
+
+## 0. 計画書からの変更と構築の順番
+
+計画書（「計画」タブ）から変えるのは次の5点です。
+
+| 項目 | 計画書 | この設計 |
+| --- | --- | --- |
+| 抜き取り検証 | カテゴリごとに偏りなく100〜200件 | 無作為100件の盲検＋少ないカテゴリの補充（4.6） |
+| 埋め込みモデル | multilingual-e5-large など | multilingual-e5-large-instruct を第一候補に、架空データで比較して決める（4.4、8章） |
+| データの削除 | 納品後に削除 | 納品後7日（修正受付の期間）残してから削除（4.8） |
+| 見本データの作成 | 構築のあと | 2か月目前半の最初に前倒し。パイプラインの検品にも使う（6章） |
+| サブエージェント | 構築係・レポート係・検品係・出品文係 | 本文書き係（sample-writer、sonnet）を追加。架空回答の本文だけを書く |
+
+構築の優先順位（上から順に作り、前の段階が架空データで通ってから次へ進む）：
+
+1. ライト（1,000件・1問）の全工程（intake〜purge）
+2. スタンダード（3問・クロス集計）
+3. モデルの比較（8章）と既定値の確定
+4. 案件ごとの暗号化ディスクイメージ（4.8）
+5. EC レビューの見本（300件）
 
 ## 1. 全体の流れ
 
@@ -17,11 +37,12 @@
 | 3 カテゴリ案 | `survey-coder propose-codeframe <job-id> [--question Q1]` | ― | `30_review/codeframe.draft.yaml` |
 | 4 コード表の確定 | `survey-coder approve-codeframe <job-id> --file <yaml>` | 案の確認、依頼者の修正1回 | `30_review/codeframe.v1.yaml` |
 | 5 全件分類 | `survey-coder classify <job-id>` | ― | `20_work/classified.parquet`、`llm_cache.sqlite` |
-| 6 抜き取り検証 | `survey-coder review export` → 入力 → `survey-coder review score` | 約1時間の判定 | `30_review/review_sheet.xlsx`、`review_metrics.json` |
+| 6 抜き取り検証 | `survey-coder review export` → 入力 → `survey-coder review score` | ライト約1時間、スタンダード約2時間の判定 | `30_review/review_sheet.xlsx`、`review_metrics.json` |
 | 7 納品物の作成 | `survey-coder build-report <job-id>` | 納品前の目視 | `40_output/` |
-| 8 納品と削除 | `survey-coder purge <job-id> --confirm <job-id>` | ― | 台帳への記録のみ |
+| 8 削除 | 納品7日後に `survey-coder purge <job-id> --confirm <job-id>` | ― | 台帳への記録のみ |
 
 - 実在の案件のコマンドは、Claude Code を起動していない別のターミナルで実行する。
+- 納品後7日以内の修正依頼は 4.9 の手順で受ける。削除はその期間が過ぎてから。
 - 各工程は入力のハッシュ・パラメータ・プロンプト版・モデル版から指紋（fingerprint）を作り、一致すればスキップする。`--force` で再実行。上流を再実行したら下流は stale にする。
 - 出力は一時ファイルに書いてから `os.replace` で置き換える。案件ごとに lock ファイルで二重起動を防ぐ。
 
@@ -32,7 +53,7 @@
 ```text
 src/survey_coder/
 ├── cli.py              # Typer。1工程＝1サブコマンド。pretty_exceptions_show_locals=False
-├── settings.py         # pydantic-settings（env_prefix="SC_"）。jobs_root はテスト中に実フォルダを指すと例外
+├── settings.py         # pydantic-settings（env_prefix="SC_"）。jobs_root はテスト中や Claude Code の中で実フォルダを指すと例外（5章）
 ├── logging_safe.py     # 回答本文を出さないログ設定。外部ライブラリのロガーは WARNING
 ├── netguard.py         # socket.connect を 127.0.0.1 / ::1 に制限。HF_HUB_OFFLINE を設定
 ├── job/                # paths, manifest, lock, fingerprint
@@ -53,6 +74,7 @@ src/survey_coder/
 <job-id>/              # 例 C2610-001（C＋年月＋連番。顧客名は入れない）
 ├── manifest.json      # 状態・ハッシュ・モデル版。回答本文と氏名は入れない
 ├── job.yaml           # メニュー、設問IDと列名の対応、ID列、属性列、締切
+├── vol/               # 暗号化ディスクイメージのマウント先（使う場合。/Volumes には出さない）
 ├── 00_input/          # 受領原本（chmod 400）
 ├── 10_masked/         # answers_masked.parquet、pii_report.xlsx（ローカル専用・納品しない）
 ├── 20_work/           # normalized.parquet、embeddings.npy、clusters.parquet、llm_cache.sqlite、classified.parquet
@@ -61,7 +83,7 @@ src/survey_coder/
 └── 90_logs/           # 回答本文を含まないログ
 ```
 
-テキストは3層で持つ：`text_raw`（原本。00_input にだけある）、`text_masked`（伏せ字済み。引用と LLM 入力の元）、
+テキストは3層で持つ：`text_raw`（原本。00_input にだけある）、`text_masked`（NFKC をかけてから伏せ字にしたもの。引用と LLM 入力の元）、
 `text_norm`（正規化済み。埋め込みと分類用）。納品物の引用には必ず `text_masked` を使う。
 
 ## 3. 環境
@@ -84,14 +106,19 @@ src/survey_coder/
 - ヘッダが `/氏名|名前|フリガナ|ふりがな|メール|mail|e-?mail|電話|TEL|携帯|住所|郵便|〒|生年月日|誕生日|会員番号|顧客番号/i` に当たる列、
   または値の30%以上で連絡先の個人情報が見つかる列は「個人情報の列」として取り込みを止め、差し戻す。
 - 回答ID列がなければ intake 時に連番を振って固定する。answer_id = 回答ID ＋ 設問ID。
+- `--file` が `~/Downloads` の下にあるときは、`00_input/` にコピーし、SHA256 が一致することを確かめてから `~/Downloads` の原本を削除する
+  （ゴミ箱を経由しない）。削除したことと SHA256 を manifest に記録する。`~/Downloads` は Claude Code から読めないよう管理設定で封じている。
+- 読み込んだ回答は、伏せ字の前に NFKC をかける（4.2）。
 
 ### 4.2 伏せ字（PII）
 
-検出は NFKC 後のテキストに対して、次の順に行う（先に見つけたものを優先し、重なりは長い方）。
+伏せ字は必ず NFKC をかけた後のテキストに対して行う。全角数字・全角の「＠」・全角ハイフンを半角にしてから検出しないと、
+「０９０－０１２３－４５６７」のような番号を取りこぼすため。検出は次の順に行う（先に見つけたものを優先し、重なりは長い方）。
 
 1. URL：`(?:https?://|www\.)[A-Za-z0-9\-._~:/?#\[\]@!$&'*+,;=%]+`（ASCII だけ。後ろの日本語を巻き込まない）
 2. メール：`[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}`、加えて `(at)` `[at]` `アットマーク` 表記
-3. 電話：`phonenumbers.PhoneNumberMatcher(text, "JP", leniency=Leniency.VALID)`。補助に `(?<!\d)0\d{9,10}(?!\d)`（英字が隣接する場合の取りこぼし用）
+3. 電話：`phonenumbers.PhoneNumberMatcher(text, "JP", leniency=Leniency.POSSIBLE)`。VALID にすると、割り当てのない番号帯
+   （架空データの `03-0XXX`・`090-0XXX` など）や、書き間違えた番号を拾わない。補助に `(?<!\d)0\d{9,10}(?!\d)`（英字が隣接する場合の取りこぼし用）
 4. SNS：`(?<![A-Za-z0-9_@.])@[A-Za-z0-9_]{3,30}` と「LINE ID」の文脈
 5. 郵便番号：`〒\s*\d{3}DASH?\d{4}`（確度高）、前後に数字がない `\d{3}DASH\d{4}`（確度中）
 6. 住所：都道府県名＋市区郡町村、または「〇〇市／区／郡」の後に番地（n丁目、n番地、n号、n-n、n-n-n）が続く場合だけ。「渋谷区のお店」のような地名だけの言及は伏せない
@@ -114,8 +141,9 @@ src/survey_coder/
 
 ### 4.3 下ごしらえ（normalize）
 
-- v1（表示・引用・伏せ字用）：NFKC → URL とメールの検出 → `neologdn.normalize(s, tilde="normalize_zenkaku", remove_space=False)`
+- v1（表示・引用用）：`text_masked`（NFKC と伏せ字は intake で済んでいる）→ `neologdn.normalize(s, tilde="normalize_zenkaku", remove_space=False)`
   → 制御文字とゼロ幅文字の除去（ZWJ と VS16 は絵文字のために残す）→ 改行を `\n` に統一、連続空白を1つに、前後の空白を削除。
+  伏せ字トークン（[氏名] など）は neologdn の前に退避し、後で戻す。
 - v2（LLM・埋め込みの入力）：伏せ字済みの v1 から、改行を ` / ` に置き換え、`neologdn` の `repeat=3` で過剰な繰り返しを縮める。
 - 無回答・無効の判定（記号・空白・絵文字を除いた「芯」に対する完全一致）。行は削除せず、理由コードを付けて残す。
   - 空欄 → 無回答（集計対象外）
@@ -127,7 +155,8 @@ src/survey_coder/
 ### 4.4 カテゴリ案（propose-codeframe）
 
 - 埋め込み：第一候補 `intfloat/multilingual-e5-large-instruct`（入力の先頭に `Instruct: Identify the topic or theme of the given survey response\nQuery: `）。
-  比較候補 `cl-nagoya/ruri-v3-310m`（先頭に `トピック: `）、`Qwen/Qwen3-Embedding-0.6B`。いずれも `normalize_embeddings=True`、device は mps。
+  比較候補 `cl-nagoya/ruri-v3-310m`（先頭に `トピック: `）、`Qwen/Qwen3-Embedding-0.6B`、`microsoft/harrier-oss-v1-0.6b`（MIT とされるが、モデルカードでライセンスと指示文の書き方を要確認）。
+  いずれも `normalize_embeddings=True`、device は mps。
   モデルはリビジョンを固定し、取得は事前に済ませ、処理中は `HF_HUB_OFFLINE=1`。埋め込みが終わったらモデルを破棄し `torch.mps.empty_cache()` してから LLM を使う。
 - 重複：正規化後の完全一致をまとめ、cos ≥ 0.95（0.93〜0.97 で較正）を union-find でつなぐ。5文字以下は完全一致だけ。クラスタリングは一意の文単位で行い、件数を重みとして持つ。
 - クラスタリング：UMAP（n_neighbors=15（1,500件以下）/30、n_components=10、min_dist=0.0、metric="cosine"、random_state=42）→ hdbscan
@@ -144,23 +173,39 @@ src/survey_coder/
 - llama-server の起動（モデル取得は顧客データを扱わない日に済ませる）：
 
   ```bash
-  llama-server -m <model.gguf> --host 127.0.0.1 --port 8080 --offline --reasoning off \
+  export SC_LLM_API_KEY="$(openssl rand -hex 24)"   # 案件ごとに作り、ファイルには保存しない
+  llama-server -m <model.gguf> --host 127.0.0.1 --port 8090 --offline --reasoning off \
+    --api-key "$SC_LLM_API_KEY" --no-slots \
     -c <スロット数×4096〜8192> -np <2〜4>
   ```
 
-  v0.7.0 から既定ポートが 9931 に変わったので `--port` は必ず指定する。版は semver のタグで固定し、版・GGUF のファイル名・SHA256 を manifest に記録する。
-- 呼び出し：openai SDK（`base_url="http://127.0.0.1:8080/v1"`）、`temperature=0`、`max_tokens=64`、
+  - `--port` は必ず指定する（v0.7.0 から既定ポートが 9931 に変わった）。案件用は 8090、架空データの検品用は 8080 と分ける。
+  - `--api-key`：管理設定の `allowLocalBinding` で、Claude Code のサンドボックス内のコマンドも 127.0.0.1 に届く。
+    キーを知らないプロセスから案件用のサーバーに問い合わせられないようにする。survey-coder は同じ環境変数からキーを読む。
+  - `--no-slots`：`/slots`（処理中のスロットの状態を返す監視用の窓口）を閉じる。
+  - 版は semver のタグで固定し、版・GGUF のファイル名・SHA256 を manifest に記録する。
+- 呼び出し：openai SDK（`base_url="http://127.0.0.1:8090/v1"`、`api_key=SC_LLM_API_KEY`）、`temperature=0`、`max_tokens=64`、
+  `logprobs=True`、`top_logprobs=5`、
   `response_format={"type":"json_schema","json_schema":{"name":"coding","strict":True,"schema":SCHEMA}}`、
   `extra_body={"chat_template_kwargs":{"enable_thinking":False}}`。
-- スキーマ：`{"labels": array(enum=コード一覧, minItems=1, maxItems=3), "confidence": enum(high, medium, low)}`、`additionalProperties: false`。
-  コード一覧には「その他」と「判別不能」を必ず含める。重複は Python 側で除く。
+  openai SDK は OpenAI 互換の書き方で手元の llama-server を呼ぶためのライブラリで、OpenAI 社には接続しない（`base_url` が 127.0.0.1 以外なら起動時に止める）。
+- スキーマ：`{"labels": array(enum=コード一覧, minItems=1, maxItems=3)}`、`additionalProperties: false`。
+  コードは `c01` のような短い記号にし、1〜2トークンで決まるようにする。コード一覧には「その他」と「判別不能」を必ず含める。重複は Python 側で除く。
+- 確信度は LLM に自己申告させない（自己申告はほぼ常に high になり、当たり外れと結びつきにくい）。
+  llama-server が返すトークンの確率（logprobs）から、1つ目のラベルを構成するトークンの確率の積 p を出し、
+  p ≥ 0.90 を high、0.60 ≤ p < 0.90 を medium、それ未満を low とする（しきい値は架空データで較正）。
+  2つ目以降のラベルも同じ方法で確率を記録する。low は抜き取り検証の照合や、48GB 機での再判定の対象にする。
 - system メッセージ（コード表、分類規則、例）は全リクエストで1文字も変えず、回答本文と ID は user メッセージの末尾に置く（プロンプトキャッシュを効かせる）。
 - 受け取った JSON は pydantic で再検証し、失敗は2回まで再試行、それでも失敗したら要確認に回す（キャッシュしない）。
-- 起動時の自動テスト：思考の出力（reasoning_content）が空で、finish_reason が length でないこと。Gemma 4 でも行う。
+- 起動時の自動テスト：思考の出力（reasoning_content）が空で、finish_reason が length でないこと、logprobs が返ること、
+  キーなしの問い合わせが 401 で断られること、`/slots` が開いていないこと。Gemma 4 でも行う。
 - キャッシュ：`20_work/llm_cache.sqlite`（WAL）。key = sha256(answer_id | sha256(text_norm) | prompt_version | model@sha256 | codeframe_sha | 温度・種)。50件ごとに commit。
 - 重複グループは代表の1件だけ分類し、結果を全員に展開する。
 - 高速化（任意）：1リクエストに10〜20件をまとめる方式。items の id を enum にし、minItems=maxItems=件数。精度が1件ずつと同等なことを比較で確かめてから使う。
 - メモリ帯ごとの初期値（要実測）：16GB は `-np 1〜2`・スロット 4K、24GB は `-np 2`・4K・KV キャッシュ q8_0、32GB 以上は `-np 4`・8K。
+- 24GB 機では、GPU が使えるメモリの上限（既定はメモリの約3分の2、約16GB）に 26B-A4B の Q4_K_M（約15GB）と KV キャッシュが収まらないことがある。
+  そのときは処理の前に `sudo sysctl iogpu.wired_limit_mb=19456`（約19GB。再起動で元に戻る）で上限を上げる。
+  他のアプリを閉じ、メモリの圧迫で遅くなる場合は Gemma 4 12B（8bit）に切り替える。
 
 ### 4.6 抜き取り検証（review）
 
@@ -169,10 +214,19 @@ src/survey_coder/
 - A（盲検）：有効回答から無作為に100件（乱数の種を記録）。検証シートに AI の結果を載せず、作業者が分類1〜3をドロップダウンで選ぶ。
 - 照合：スクリプトが A の不一致だけを「照合」シートに出し、作業者が「AI が正しい／自分が正しい／両方可／両方誤り」を選んで正解を決める。
 - B（確認）：A を含めて検査数が8件未満のカテゴリだけ、そのカテゴリが付いた回答から無作為に補充し、AI のラベルを見せて正誤を付ける（40〜60件）。
-- 合計140〜160件、約1時間（推定）。スタンダード（3問）の配分は未決（9章）。
+- ライト：合計140〜160件、約1時間（推定）。
+- スタンダード（3問）：1問あたり A を60〜70件に減らし、B の補充も1問ずつ行う。それでも3問で約2時間かかる。
+- 見本データ（6章）でも本番と同じ手順・同じ盲検で正解率を出し、作業時間を測って上の見込みを確かめる。
 - 指標（依頼者向け）：回答単位の正解率（両方可は一致扱い）と Wilson の95%信頼区間（`scipy.stats.binomtest(k, n).proportion_ci(method="wilson")`）、
   付け間違いなし率、付け漏れなし率、カテゴリ別の当否を件数で（例 9/10）。全体の指標は A だけから出し、B はカテゴリ別にだけ使う。
-- 社内の基準：正解率85%未満、または検査数8以上で適合率70%未満のカテゴリがあれば、定義とプロンプトを直して再分類し、30件を追加検査する。
+- 社内の基準（不合格）：正解率85%未満、または検査数8以上で適合率70%未満のカテゴリ（誤りの多いカテゴリ）がある。
+- 不合格のときの手順：
+  1. 照合シートの誤りを見て、原因のカテゴリを決める（定義があいまい、似たカテゴリと重なる、例が足りない など）
+  2. コード表のそのカテゴリの定義・含める例・除く規則を直す（`codeframe.v1.1.yaml`。依頼者の確認は取り直さない範囲に限る）
+  3. `survey-coder classify --force` で全件を再分類する（キャッシュの key にコード表の sha が入っているので、直した版で分類し直される）
+  4. 先の検査に使っていない回答から30件を無作為に選んで追加検査し（原因のカテゴリが付いたものを優先）、A と合わせて正解率を出し直す
+  5. それでも基準に届かないときは、精度レポートにそのカテゴリを「参考値」と明記し、依頼者に理由を書いて納品する
+  再分類のぶん、ライトで約1.5時間、スタンダードで約2〜3時間の作業が増える。
 - 検証シート：`A_盲検`（No｜回答ID｜回答｜判定1｜判定2｜判定3｜メモ）、`B_確認`（No｜回答ID｜回答｜AI のカテゴリ｜判定｜正しいカテゴリ｜メモ）、
   `照合`（自動生成）、非表示の `codes`。ドロップダウンは `=codes!$B$2:$B$31` の範囲参照。保護は `protect("", {"autofilter": True, "sort": True})` で入力セルだけ解除。
 
@@ -193,20 +247,49 @@ src/survey_coder/
 
 ### 4.8 削除（purge）
 
-- 納品済みを確認してから、案件フォルダ（または案件ごとの暗号化ディスクイメージ）を削除する。上書き消去（`rm -P`）には頼らない。
-- 暗号化ディスクイメージを使う場合：作成時のパスフレーズは乱数で作り、キーチェーンに保存しない。削除時は detach → イメージ削除 → パスフレーズ破棄。
-  `hdiutil` の構文は Mac 実機の `man hdiutil` で確認してから実装する。
+- 納品後7日（修正受付の期間）は案件フォルダを残し、過ぎてから削除する。`purge` は manifest の納品日から7日経っていなければ止まる。
+- 案件フォルダ（または案件ごとの暗号化ディスクイメージ）を削除する。上書き消去（`rm -P`）には頼らない。
+- 暗号化ディスクイメージを使う場合：作成時のパスフレーズは乱数で作り、キーチェーンに保存しない。
+  マウント先は `/Volumes` ではなく案件フォルダの中（`~/fukugyo-c-jobs/<job-id>/vol`、`hdiutil attach -mountpoint … -nobrowse`）にする。
+  案件フォルダへの読み取り禁止とサンドボックスがそのまま効き、Finder のサイドバーにも出ない。
+  削除時は detach → イメージ削除 → パスフレーズ破棄。`hdiutil` の構文は Mac 実機の `man hdiutil` で確認してから実装する。
+- ココナラのトークルームに添付されたファイルはこちらから消せない。依頼者への連絡は「作業に使ったMac上のデータを削除しました」とし、
+  「お預かりしたデータをすべて削除」とは書かない。
 - 台帳 `~/fukugyo-c-jobs/_ledger/purge_log.csv` には案件ID・日時・件数・方法だけを書く。
+
+### 4.9 修正（納品後7日以内に1回）
+
+誤分類の指摘を受けたら、コード表を直して分類と納品物を作り直す。案件フォルダが残っている7日の間だけ受ける。
+
+1. 依頼者の指摘を、カテゴリの定義・含める例・除く規則の修正に置き換える（個別の回答を手で付け替えるのではなく、定義を直す）
+2. `codeframe.v2.yaml` を作り、`survey-coder approve-codeframe <job-id> --file codeframe.v2.yaml`
+3. `survey-coder classify <job-id>`（キャッシュの key にコード表の sha が入っているので、全件が新しいコード表で分類し直される）
+4. 抜き取り検証の判定を新しいコードに読み替え、変わったカテゴリにかかる行だけ判定し直して `survey-coder review score <job-id>`
+5. `survey-coder build-report <job-id>`。精度レポートと「はじめに」に修正の版と日付を書く
+6. 納品前の目視をして再納品する。削除は最初の納品日から7日後のまま
 
 ## 5. 通信と安全
 
 - 処理プロセスの起動時、huggingface_hub を import する前に `HF_HUB_OFFLINE=1`、`HF_HUB_DISABLE_TELEMETRY=1` を設定する。
 - `netguard` で `socket.connect` を 127.0.0.1 と ::1 に制限する。LLM の接続先が loopback 以外なら起動時に止める。
+- Claude Code の中から動かされたときは実在の案件フォルダを開かない。環境変数 `CLAUDECODE` または `CLAUDE_CODE_CHILD_SESSION` が `1` なら、
+  `settings.py` が jobs_root（`~/fukugyo-c-jobs` とその実体パス）とその下を指す設定を例外で止める。
+  架空データの検品は一時ディレクトリの jobs_root（`tmp_path` など）で行う。止めたときのメッセージには件数やパスの中身を出さない。
 - `doctor` が確かめること：FileVault（`fdesetup status`）、案件フォルダの場所（iCloud 同期下でない）、Time Machine の除外、llama-server が 127.0.0.1 だけで待ち受けていること、
   HF_HUB_OFFLINE、macOS の版、MPS が使えること、メモリ容量。
 - Claude Code 側の遮断は `ops/claude-guard/README.md`。
 
+### 5.1 運用ルール
+
+- 案件のエラー出力やログを Claude Code に貼らない。直したいときは、架空データで同じエラーを再現してから見せる。
+- Claude Code とつながったエディタ（Claude Code の拡張機能を入れた VS Code など）で案件のファイルを開かない。開いているファイルや選択範囲が会話に渡るため。
+  案件のファイルは Excel か、Claude Code とつながっていないアプリで開く。
+- Excel の Copilot と、プライバシー設定の「コンテンツを分析する」接続エクスペリエンスをオフにする。案件のファイルを OneDrive に保存しない（ローカルの案件フォルダにだけ置く）。
+- 同時に2件受けていても、工程3（カテゴリ案）と工程5（全件分類）は1件ずつ流す。llama-server とメモリを2件で取り合うと、遅くなるうえに処理時間が読めなくなるため。
+
 ## 6. 架空アンケート（見本・検品用）
+
+作るのは2か月目前半の最初（構築の最初）です。計画書では構築のあとでしたが、パイプラインの検品とモデルの比較にこのデータが要るので前倒しします。
 
 ### 6.1 内容
 
@@ -233,7 +316,8 @@ src/survey_coder/
 
 1. 仕様表（`tools/samplegen/spec.py`、乱数の種 20261016）：正解ラベル・属性・回答の種類・文字数帯・文体・感情・難しさを決める。LLM にラベルは書かせない。
 2. 人手の見本：ユーザーが Q1 を中心に30〜50件書く（source=human）。毎バッチ3件を文体の参考として示す。
-3. 本文：Claude Code の対話セッションで `sample-writer` に20〜25行ずつのバッチを渡す。プロンプト・応答は `raw_llm/` に保存して凍結し、以後は作り直さない。
+3. 本文：Claude Code の対話セッションで `sample-writer`（本文書き係）に約20行ずつのバッチを渡す。中身のある回答は Q1〜Q3 で約2,000件
+   （800＋700＋450）なので、約100回に分けて書かせる。プロンプト・応答は `raw_llm/` に保存して凍結し、以後は作り直さない。
    Python から `claude -p` を大量に呼ぶ自動化はしない（個人プランの規約への配慮）。自動化する場合は API キーと Batch API に切り替える。温度は変えられない前提で、多様さは行ごとの指定で作る。
 4. バッチの自動チェック：row_id の欠落なし、文字数帯、個人情報らしき文字列がない、文体の簡易判定、禁止フレーズがない、既存と似すぎていない。
    全体で2%以上の回答に出る言い回しは以後の禁止フレーズに足す。
@@ -241,9 +325,12 @@ src/survey_coder/
    誤変換4%（異動→移動、保障→保証、以外↔意外 など）、記号の連続5%、改行・全角空白8%、機種依存文字3%。「9時〜18時」「2〜3年」などの範囲表現を必ず含める。
 6. 個人情報（全ノイズの後に入れ、最終テキスト上の位置で記録）：約40行・約55か所。氏名30（姓＋役職18、姓＋さん6、フルネーム4、カナ・ローマ字2）、電話8、メール8、社員番号5、その他4。
    紛らわしいが個人情報でないもの（「品川の倉庫」「A課長」「年収400万円」「2026-10-16」など）を15件。
-   電話は `03-0XXX-XXXX`・`090-0XXX-XXXX`・`070-0XXX-XXXX` だけを使い、全番号で `phonenumbers.is_valid_number` が False になることをテストする。メールは `example.*` だけ（Faker の `email(domain=...)` 可、`company_email` と `free_email` は不可）。
+   電話は `03-0XXX-XXXX`・`090-0XXX-XXXX`・`070-0XXX-XXXX` だけを使い、全番号で `phonenumbers.is_valid_number` が False になること
+   （実在しない）と、`Leniency.POSSIBLE` の PhoneNumberMatcher で検出されること（伏せ字で拾える）の両方をテストする。メールは `example.*` だけ（Faker の `email(domain=...)` 可、`company_email` と `free_email` は不可）。
 7. 重複：中身のある回答のうち文字3-gram の Jaccard ≥ 0.5、または埋め込みの cos ≥ 0.92 なら後の行を同じ仕様で作り直す（削除すると割合が崩れるため）。短い回答と「特になし」は対象外。
 8. 監査：`qa-checker` が正解を見ずにラベルを付け、不一致と無作為100件をユーザーが裁定する（1.5〜2時間）。結果を audit_status に記録。
+   これとは別に、見本の正解率は本番と同じ抜き取り検証（4.6 の盲検）で出し、ライト・スタンダードそれぞれの作業時間を測る。
+   出品ページに載せる正解率はこの盲検の値を使う。
 9. 凍結：行を乱数で並べ替え、ID を R0001〜R1000 に振る。`manifest.json`（種、生成モデル、CLI 版、ライブラリ版、プロンプトの sha256、日付）と `checksums.sha256` を作り、タグ `sample-es-v1` を付ける。
 
 ### 6.3 ファイル
@@ -275,30 +362,52 @@ samples/fictional/es_survey_v1/
 
 - サブエージェントの定義は `.claude/agents/`。呼び出し時に model・effort を渡さない。
 - 検品係は Bash を持つので、作業の前後で `git status --porcelain` を比べて変更がないことを確かめる。
-- 顧客データの遮断は3層（読み取り禁止ルール、OS のサンドボックス、フック）。管理設定の設置と見張りファイルでの確認は `ops/claude-guard/README.md`。
+- 顧客データの遮断は3層（読み取り禁止ルール、OS のサンドボックス、フック）。Mac では管理設定の `allowManagedHooksOnly` により、
+  root 所有の写し（`/Library/Application Support/ClaudeCode/hooks/`）のフックだけが動く。管理設定の設置と見張りファイルでの確認は `ops/claude-guard/README.md`。
+- フックは文章の中のフォルダ名では止めない。コマンド系は全文、ファイル系はパスの項目、その他はパスの項目と値が1つのパスの場合だけを調べる。
+- フックを直すときは、新版を `.claude/hooks/.guard_customer_data.py.new` に書き、`GUARD_HOOK=<新版> python3 -m unittest discover -s tests/guard`
+  を通してから1回の `mv` で置き換える。フックは書き換えた瞬間に動いているセッションにも効き、壊れると全ツールが止まるため。
 
 ## 8. モデルの比較（Mac 確定後）
 
 架空データ（6章）で、次を同じ手順にかけて表にまとめ、`docs/benchmarks.md` に残す。
 
 - LLM：メモリ帯の第一候補と代替 × 量子化（Q4_K_M / Q6_K / Q8_0）× 並列数（-np 1/2/4）。
-  指標は micro/macro F1、完全一致率、JSON の妥当率、生成 tok/s、総処理時間、ピークメモリ。思考オフの本番条件で測る。
-- 埋め込み：multilingual-e5-large-instruct、ruri-v3-310m、Qwen3-Embedding-0.6B。指標は正解カテゴリとの ARI と V-measure、所要時間、ピークメモリ。
+  指標は micro/macro F1、完全一致率、JSON の妥当率、確信度（4.5）と正誤の対応、生成 tok/s、総処理時間、ピークメモリ。思考オフの本番条件で測る。
+- 26B-A4B は4bit（Q4_K_M）でも品質が落ちたという報告がある。載るメモリ帯では Q4_K_M と 8bit（Q8_0）を同じ架空データで比べ、
+  F1 の差が2pt以内なら速くて軽い Q4_K_M を既定にする。8bit が載らない 24GB 機では、26B-A4B の Q4_K_M と Gemma 4 12B の 8bit を比べる。
+- 埋め込み：multilingual-e5-large-instruct、ruri-v3-310m、Qwen3-Embedding-0.6B、harrier-oss-v1-0.6b。
+  指標は正解カテゴリとの ARI と V-measure、所要時間、ピークメモリ。複数カテゴリの回答があるので、ARI と V-measure は主カテゴリ（正解の1つ目）で比べる。
 
 メモリ帯ごとの候補（推定。実測で確定）：
 
 | メモリ | LLM 第一候補 | 代替 |
 | --- | --- | --- |
-| 16GB | Gemma 4 12B（4bit QAT）／Gemma 4 E4B | Qwen3.5-9B（思考オフが効くことを確認してから） |
-| 24GB | Gemma 4 26B-A4B（Q4_K_M。3bit には下げない） | Gemma 4 12B（8bit） |
-| 32〜36GB | Gemma 4 26B-A4B（Q4_K_M〜Q6_K） | Qwen3.6-35B-A3B（4bit） |
+| 16GB | Gemma 4 12B（GGUF Q4_K_M、約7〜8GB） | Qwen3.5-9B（思考オフが効くことを確認してから） |
+| 24GB | Gemma 4 26B-A4B（Q4_K_M。3bit には下げない。`iogpu.wired_limit_mb` を上げる、4.5） | Gemma 4 12B（8bit） |
+| 32〜36GB | Gemma 4 26B-A4B（Q4_K_M〜Q8_0 を比較） | Qwen3.6-35B-A3B（4bit） |
 | 48GB 以上 | Gemma 4 26B-A4B（Q8_0） | Gemma 4 31B（確信度の低い回答の再判定） |
+
+Gemma 4 12B の公式の QAT 版（量子化を前提に学習した4bit版）は vLLM 向けの形式で配られていて、llama-server ではそのまま使えない。
+16GB 機では GGUF の Q4_K_M を使う。
 
 ## 9. 未決事項
 
-- Mac の機種・チップ・メモリ・macOS の版（モデル、並列数、torch の版が決まる）
-- 管理設定（sudo）を置けるか
+- Mac の機種・チップ・メモリ・macOS の版。アップルメニュー →「このMacについて」に表示される。これで LLM のモデルと量子化、並列数、torch の版が決まる
+- この Mac で `sudo`（管理者権限）が使えるか。使えれば管理設定（`ops/claude-guard/`）と `iogpu.wired_limit_mb` の変更ができる
 - Mac に Excel があるか（検証シートと納品物の確認）
-- 抜き取り検証の方式変更の承認と、スタンダード（3問）での配分（1問あたり60〜70件案）
+- 抜き取り検証の方式変更の承認。スタンダード（3問）は1問60〜70件でも約2時間かかるが、この時間で受けてよいか
 - 見本の業種（製造業でよいか）、EC レビュー300件を後から作るか
 - 見本の本文を Claude の対話セッションで書くか、ローカルLLM で書くか
+
+## 10. 用語
+
+| 用語 | 意味 |
+| --- | --- |
+| 量子化 | モデルの数値を少ないビット数（8bit、4bit など）で持ち、ファイルとメモリを小さくすること。小さくするほど速く軽くなるが、精度が落ちることがある。Q4_K_M・Q8_0 は llama.cpp の量子化の種類 |
+| QAT | 量子化を前提に学習させる方法（Quantization-Aware Training）。同じ4bitでも、学習後に量子化したものより精度が落ちにくい |
+| GGUF | llama.cpp（llama-server）が読むモデルファイルの形式 |
+| 信頼区間（95%） | 抜き取り検査の正解率がどのくらいぶれうるかの幅。同じ方法で抜き取り検査を繰り返すと、約95%の回でこの範囲に全件の本当の正解率が入る、という目安 |
+| openai SDK | OpenAI 互換の書き方で LLM を呼ぶ Python ライブラリ。ここでは手元の llama-server（127.0.0.1）を呼ぶためだけに使い、OpenAI 社のサーバーには接続しない |
+| logprobs | LLM が各トークンを出す確率（の対数）。分類の確信度の計算に使う |
+| ARI | 2つの分け方がどのくらい一致しているかの指標。1 で完全一致、0 で偶然と同程度 |
