@@ -69,3 +69,15 @@ def test_universe_command_writes_the_check_report(tmp_path):
     text = path.read_text(encoding="utf-8")
     assert "## 1. 判定" in text and "点検 1: 通った" in text and "OLD2" in text
     assert (tmp_path / "edgar" / "universe" / "members.csv").exists() and (tmp_path / "edgar" / "us_close.csv").exists()
+
+
+def test_changes_table_with_header_rows_inside_the_body_is_found():
+    t = _tables()
+    body = pd.DataFrame([["Effective Date", "Added", "Added", "Removed", "Removed", "Reason"],
+                         ["Effective Date", "Ticker", "Security", "Ticker", "Security", "Reason"],
+                         ["March 18, 2024", "T1", "Co 1", "OLD1", "Old 1", "x"]])
+    current, changes = EG.parse_wiki([t[0], body])
+    assert changes.loc[0, "added"] == "T1" and changes.loc[0, "removed"] == "OLD1" and changes.loc[0, "date"] == pd.Timestamp("2024-03-18")
+    import pytest
+    with pytest.raises(ValueError, match="表の形"):
+        EG.parse_wiki([t[0], pd.DataFrame({"a": [1]})])

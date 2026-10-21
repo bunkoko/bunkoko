@@ -35,10 +35,13 @@ def write(out_dir: Path, name: str, lines: list[str]) -> Path:
     return path
 
 
-def wiki_tables() -> list[pd.DataFrame]:
+def wiki_tables(root: Path | None = None) -> list[pd.DataFrame]:
     import stocks_study as M
 
-    return pd.read_html(io.StringIO(M.http_get(EG.WIKI_SP500).decode("utf-8")))
+    html = M.http_get(EG.WIKI_SP500).decode("utf-8")
+    if root is not None:
+        (root / "wiki.html").write_text(html, encoding="utf-8")          # 表の形が変わったときに見直すため（コミットしない）
+    return pd.read_html(io.StringIO(html))
 
 
 def fetch_prices(tickers: list[str], since: str) -> pd.DataFrame:
@@ -53,7 +56,10 @@ def cmd_universe(args, tables=None, prices=None) -> Path:
     today = pd.Timestamp(args.today) if args.today else pd.Timestamp.now(tz="America/New_York").tz_localize(None).normalize()
     last = (today.to_period("M") - 1).to_timestamp(how="end").normalize()          # 終わった最後の月
     print("Wikipedia の S&P500 の一覧と変更の表…", flush=True)
-    current, changes = EG.parse_wiki(tables if tables is not None else wiki_tables())
+    try:
+        current, changes = EG.parse_wiki(tables if tables is not None else wiki_tables(root))
+    except ValueError as e:
+        sys.exit(f"止めた: {e}\n（この文を Claude に貼ってください。ページは {root / 'wiki.html'} に保存した）")
     current.to_csv(root / "wiki_current.csv", index=False)
     changes.to_csv(root / "wiki_changes.csv", index=False)
     ends = EG.month_ends(EG.START, last)

@@ -28,25 +28,55 @@ def _flat(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _words(x) -> str:
+    return " ".join(str(v) for v in (x if isinstance(x, (list, tuple)) else [x])).lower()
+
+
+def find_changes(tables: list[pd.DataFrame]) -> pd.DataFrame | None:
+    """変更の表（追加と除外の列がある表）。見出しが表の中の行になっている形（見出しが th でない）にも対応する。"""
+    for t in tables:
+        f = _flat(t)
+        head = " ".join(str(c) for c in f.columns).lower()
+        if ("added" in head or "addition" in head) and ("removed" in head or "deletion" in head):
+            return f
+        for k in (2, 1):                                   # 見出しが最初の 1〜2 行に入っている（2 行目が「Ticker・Security」なら 2 行）
+            if len(f) <= k:
+                continue
+            rows = f.iloc[:k].astype(str)
+            text = " ".join(rows.to_numpy().ravel()).lower()
+            sub = " ".join(rows.iloc[-1].to_numpy()).lower()
+            if k == 2 and not any(w in sub for w in ("ticker", "symbol", "security")):
+                continue
+            if ("added" in text or "addition" in text) and ("removed" in text or "deletion" in text):
+                names = [" ".join(dict.fromkeys(v for v in rows[c] if v and v != "nan")) for c in f.columns]
+                g = f.iloc[k:].copy()
+                g.columns = names
+                return g.reset_index(drop=True)
+    return None
+
+
+def describe(tables: list[pd.DataFrame]) -> str:
+    """表の数・形・最初の列の名前（変更の表が見つからないときに、直すための手がかり）。"""
+    out = []
+    for i, t in enumerate(tables[:12]):
+        f = _flat(t)
+        out.append(f"[{i}] {f.shape[0]}行×{f.shape[1]}列 列={[str(c)[:24] for c in f.columns[:6]]} 1行目={[str(v)[:16] for v in f.iloc[0, :6]] if len(f) else []}")
+    return f"全部で {len(tables)} 個。" + " / ".join(out)
+
+
 def parse_wiki(tables: list[pd.DataFrame]) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Wikipedia の表から、今の一覧（ticker / name / sector / cik）と変更の表（date / added / added_name / removed / removed_name）。"""
     cur = next(_flat(t) for t in tables if {"Symbol", "Security"} <= set(_flat(t).columns))
     current = pd.DataFrame({"ticker": cur["Symbol"].map(yahoo_symbol), "name": cur["Security"].astype(str),
                             "sector": cur.get("GICS Sector", pd.Series(UNKNOWN_SECTOR, index=cur.index)).astype(str),
                             "cik": pd.to_numeric(cur.get("CIK"), errors="coerce").astype("Int64") if "CIK" in cur else pd.NA})
-    ch = None
-    for t in tables:
-        f = _flat(t)
-        cols = " ".join(f.columns)
-        if "Added" in cols and "Removed" in cols:
-            ch = f
-            break
+    ch = find_changes(tables)
     if ch is None:
-        raise ValueError("Wikipedia のページに変更の表が無い")
+        raise ValueError("Wikipedia のページに変更の表が見つからない。表の形: " + describe(tables))
 
     def col(*words: str) -> pd.Series:
         for c in ch.columns:
-            if all(w in c for w in words):
+            if all(any(w.lower() in str(c).lower() for w in alt.split("|")) for alt in words):
                 return ch[c]
         return pd.Series([None] * len(ch), index=ch.index)
 
@@ -56,8 +86,10 @@ def parse_wiki(tables: list[pd.DataFrame]) -> tuple[pd.DataFrame, pd.DataFrame]:
         s = s.astype(str).str.strip()
         return s.where(s.ne("") & s.ne("nan") & s.ne("None") & s.ne("—") & s.ne("-")).map(lambda x: yahoo_symbol(x) if isinstance(x, str) else None)
 
-    changes = pd.DataFrame({"date": date, "added": tick(col("Added", "Ticker")), "added_name": col("Added", "Security"),
-                            "removed": tick(col("Removed", "Ticker")), "removed_name": col("Removed", "Security")})
+    changes = pd.DataFrame({"date": date, "added": tick(col("Added|Addition", "Ticker|Symbol")),
+                            "added_name": col("Added|Addition", "Security|Company|Name"),
+                            "removed": tick(col("Removed|Deletion", "Ticker|Symbol")),
+                            "removed_name": col("Removed|Deletion", "Security|Company|Name")})
     changes = changes.dropna(subset=["date"])
     return current.reset_index(drop=True), changes.sort_values("date", ascending=False).reset_index(drop=True)
 
