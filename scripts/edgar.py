@@ -224,6 +224,8 @@ def sec_client(args, getter=None, sleep=None) -> SEC.Client:
         ua = SEC.load_user_agent()
         if not ua:
             sys.exit("SEC に名乗る名前と連絡先が無い。先に ./cfd edgar key で保存する（リポジトリの外に置く）")
+        if not ua.isascii():
+            sys.exit("SEC に名乗る名前と連絡先は、半角の英数字（ローマ字）で要る。./cfd edgar key で保存し直す")
         getter = SEC.http_getter(ua)
     kw = {"sleep": sleep} if sleep else {}
     return SEC.Client(getter, log=lambda t: print(t, flush=True), **kw)
@@ -233,18 +235,27 @@ def all_filings(args, client: SEC.Client, members: pd.DataFrame) -> pd.DataFrame
     """2021-12〜の月末に一度でもいた会社の 10-K の一覧（期末が 2019-01-01 以降）。提出の一覧は data/edgar/sec/submissions に残して使い回す。"""
     store = SEC.Store(Path(args.root) / "sec")
     ciks = sorted({int(c) for c in members["cik"].dropna()})
-    todo = [c for c in ciks if not store.load_sub(c)]
+    subs = {c: store.load_sub(c) for c in ciks}
+    todo = [c for c in ciks if not subs[c] or subs[c].get("pages_missing")]      # 古いページが欠けた会社も取り直す
     if todo:
         print(f"SEC の提出の一覧: {len(todo):,} 社（全部で {len(ciks):,} 社。1 秒に 1 件）…", flush=True)
     for k, c in enumerate(todo):
         sub = SEC.submissions(client, c)
         if sub:
             store.save_sub(c, sub)
+            subs[c] = sub
         if (k + 1) % 50 == 0:
             print(f"  {k + 1}/{len(todo)}", flush=True)
-    parts = [SEC.tenk_filings(store.load_sub(c), c) for c in ciks if store.load_sub(c)]
+    parts = [SEC.tenk_filings(subs[c], c) for c in ciks if subs[c]]
     f = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=SEC.COLUMNS)
     f.to_csv(Path(args.root) / "sec" / "filings.csv", index=False)
+    none = [c for c in ciks if not subs[c]]
+    partial = [c for c in ciks if subs[c] and subs[c].get("pages_missing")]
+    pd.Series(none, name="cik", dtype=int).to_csv(Path(args.root) / "sec" / "no_submissions.csv", index=False)
+    f.attrs["notes"] = (f"一覧の会社 {members['ticker'].nunique():,} 記号のうち CIK の無い記号 "
+                        f"{members.loc[members['cik'].isna(), 'ticker'].nunique():,}・SEC の提出の一覧が取れない CIK {len(none):,}"
+                        f"・古いページが欠けた CIK {len(partial):,}（次の取得で取り直す）")
+    print(f.attrs["notes"], flush=True)
     return f
 
 
@@ -253,21 +264,32 @@ def cmd_key(args) -> None:
     mail = getpass.getpass("連絡先のメール（画面には出ません）: ").strip()
     if not name or "@" not in mail:
         sys.exit("名前とメールの両方が要る。保存していない")
+    if not (name + mail).isascii():
+        sys.exit("名前とメールは、半角の英数字（ローマ字）で入れる（SEC への名乗りは英字だけ使える）。保存していない")
     print(f"保存した: {SEC.save_user_agent(f'{name} {mail}')}（権限 600。このリポジトリの外。記録・報告には出さない）")
 
 
 def cmd_check(args, getter=None, sleep=None) -> Path:
     members = members_frame(args)
-    client = sec_client(args, getter, sleep)
     store = SEC.Store(Path(args.root) / "sec")
-    filings = all_filings(args, client, members)
-    sample = SEC.sample_for_check(filings, SEC.CHECK_PER_YEAR)
-    print(f"点検 2: くじで選んだ 10-K {len(sample)} 件を取る…", flush=True)
-    SEC.fetch_docs(client, store, sample, pd.Timestamp.now(), log=lambda t: print(t, flush=True))
+    if not store.lock():
+        sys.exit("ほかの取得が動いている（同時に 1 本だけ）")
+    keep_awake()
+    try:
+        client = sec_client(args, getter, sleep)
+        filings = all_filings(args, client, members)
+        sample = SEC.sample_for_check(filings, SEC.CHECK_PER_YEAR)
+        print(f"点検 2: くじで選んだ 10-K {len(sample)} 件を取る…", flush=True)
+        SEC.fetch_docs(client, store, sample, pd.Timestamp.now(), log=lambda t: print(t, flush=True))
+    except SEC.Stop as e:
+        raise SystemExit(f"止めた: {e}（同じコマンドで続きから）")
+    finally:
+        store.unlock()
     rows = SEC.check_rows(store, sample)
     lines = ["# 案 2-US の点検 2: リスク要因を取り出せるか", "",
              f"作成: {datetime.now():%Y-%m-%d %H:%M}　決まり: docs/us_text.md 9.1（くじ: 2020 年 6 件・2021〜2026 年 各 9 件。決まった種）",
              f"- 10-K の一覧: {len(filings):,} 件・{filings['cik'].nunique() if len(filings) else 0:,} 社。くじ {len(rows)} 件",
+             f"- {filings.attrs.get('notes', '')}",
              "- 通る条件: 57 件以上で、始まりが本文の「Item 1A. Risk Factors」の見出し、終わりが Item 1B・1C・2 の前。どの年も失敗が 2 割未満。"
              "**判定は指令役が、下の始まりと終わりの文を読んで行う**（コードの自己判定ではない）", "",
              "| # | 年 | CIK | 受付番号 | 文字数 | 状態 |", "|---|---|---|---|---|---|"]
@@ -290,7 +312,8 @@ def cmd_fetch(args, getter=None, sleep=None) -> None:
         filings = all_filings(args, client, members)
         print(f"10-K の本文: {len(filings):,} 件のうち、まだ取っていないもの（1 秒に 1 件。止めても続きから）…", flush=True)
         got = SEC.fetch_docs(client, store, filings, pd.Timestamp.now(), log=lambda t: print(t, flush=True))
-        print(f"10-K: 取った {got['docs']:,}・リスク要因が無い {got['empty']:,}・取れない {got['missing']:,}・残り {got['left']:,}", flush=True)
+        print(f"10-K: 取った {got['docs']:,}・リスク要因が無い {got['empty']:,}・取れない {got['missing']:,}・残り {got['left']:,}。"
+              f"{filings.attrs.get('notes', '')}", flush=True)
     except SEC.Stop as e:
         raise SystemExit(f"止めた: {e}（同じコマンドで続きから）")
     finally:
@@ -334,7 +357,7 @@ def lazy_inputs(args) -> dict:
     mclose = EG.monthly_last(close)
     trade_days = {m: close.index[close.index <= m].max() for m in mclose.index}
     return {"members": members, "filings": filings, "index": ix, "text_of": text_of, "names_of": names_of,
-            "mclose": mclose, "trade_days": trade_days}
+            "mclose": mclose, "trade_days": trade_days, "close_last": close.index.max()}
 
 
 def cmd_status(args) -> None:
@@ -358,15 +381,18 @@ def cmd_lazy(args) -> Path:
     ends = sorted(d["members"]["month"].unique())
     sig, sigm = U.signals(pr, ends, d["trade_days"]), U.signals(pm, ends, d["trade_days"])
     today = pd.Timestamp(args.today) if args.today else pd.Timestamp.now(tz="America/New_York").tz_localize(None)
+    today = min(today, pd.Timestamp(d["close_last"]).normalize() + pd.offsets.BDay(1))   # 値段の最後の日の月が終わっていなければ、その月は数えない
     print(f"判定を計算する（偶然との比べ {U.PLACEBO} 回。数分）…", flush=True)
     res = U.evaluate(d["members"], sig, d["mclose"], np.random.default_rng(20261021), sig_mdna=sigm, today=today)
     meta = {"made": f"{datetime.now():%Y-%m-%d %H:%M}", "filings": len(d["filings"]), "firms": int(d["filings"]["cik"].nunique()),
             "pairs": len(pr), "pairs_mdna": len(pm), "sim_median": float(pr["sim"].median()) if len(pr) else float("nan"),
-            "no_cik": int(d["members"].loc[d["members"]["cik"].isna(), "ticker"].nunique())}
+            "no_cik": int(d["members"].loc[d["members"]["cik"].isna(), "ticker"].nunique()),
+            "notes": [f"値段は {pd.Timestamp(d['close_last']):%Y-%m-%d} まで（それより後の月は数えない）"]}
     lines = U.report_lines(res, meta)
+    path = write(Path(args.out), "lazy.md", lines)          # 先に保存する（表示の途中で止まっても、1 回だけの決まりが働くように）
     for t in lines:
         print(t, flush=True)
-    return write(Path(args.out), "lazy.md", lines)
+    return path
 
 
 def main(argv: list[str] | None = None, api=None, prices=None, refetch=None, getter=None, sleep=None):

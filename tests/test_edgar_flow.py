@@ -85,3 +85,32 @@ def test_check_fetch_status_lazy_flow_and_user_agent_never_written(tmp_path, mon
                 raw = gzip.decompress(raw)
             assert b"secret.person" not in raw and b"Secret Person" not in raw            # 名乗りはどこにも残らない
     assert "secret.person" not in out
+
+
+def test_key_rejects_non_ascii_and_partial_month_is_cut_by_the_price_date(tmp_path, monkeypatch):
+    mod = _mod()
+    answers = iter(["山田 太郎", "taro@example.com"])
+    monkeypatch.setattr(mod.getpass, "getpass", lambda prompt="": next(answers))
+    with pytest.raises(SystemExit, match="半角"):
+        mod.main(["key"])
+    root, getter = _world(tmp_path)
+    close = pd.read_csv(root / "us_close.csv", index_col=0, parse_dates=True)
+    close[close.index <= "2026-09-17"].to_csv(root / "us_close.csv")                # 値段は 9 月の途中まで
+    base = ["--root", str(root), "--out", str(tmp_path / "out")]
+    nosleep = lambda s: None  # noqa: E731
+    mod.main(["fetch", *base], getter=getter, sleep=nosleep)
+    text = mod.main(["lazy", *base, "--today", "2026-11-02"]).read_text(encoding="utf-8")
+    assert "値段は 2026-09-17 まで" in text and "〜2026-08（" in text                   # 9 月（途中まで）は持った月に入らない
+
+
+def test_a_changed_extractor_refetches_documents(tmp_path, monkeypatch):
+    root, getter = _world(tmp_path)
+    mod = _mod()
+    base = ["--root", str(root), "--out", str(tmp_path / "out")]
+    nosleep = lambda s: None  # noqa: E731
+    mod.main(["check", *base], getter=getter, sleep=nosleep)
+    n1 = len(SEC.Store(root / "sec").index())
+    monkeypatch.setattr(SEC, "EXTRACT_VERSION", "2")
+    calls = []
+    mod.main(["check", *base], getter=lambda u: (calls.append(u), getter(u))[1], sleep=nosleep)
+    assert n1 == 60 and sum("/Archives/" in u for u in calls) == 60                   # 取り出し方を変えたら、くじの 60 件を取り直す

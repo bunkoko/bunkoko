@@ -37,7 +37,8 @@ MIN_SECTION = 200                                # これより短い節は「�
 CHECK_PER_YEAR = {2020: 6, **{y: 9 for y in range(2021, 2027)}}   # 点検 2 のくじ（9.1。60 件）
 CHECK_SEED = 20261021
 COLUMNS = ["cik", "accession", "form", "filing_date", "report_date", "acceptance", "primary"]
-INDEX_COLUMNS = COLUMNS + ["chars_risks", "chars_mdna", "status", "fetched_at"]
+INDEX_COLUMNS = COLUMNS + ["chars_risks", "chars_mdna", "status", "fetched_at", "extract"]
+EXTRACT_VERSION = "1"        # 取り出し方を直したら上げる（前の版で取り出した書類は、次の取得で取り直す）
 
 
 class Stop(Exception):
@@ -320,7 +321,9 @@ def _text(body: bytes) -> str:
 def fetch_docs(client: Client, store: Store, filings: pd.DataFrame, now: pd.Timestamp, max_docs: int = 100_000,
                log: Callable[[str], None] = print) -> dict[str, int]:
     """まだ取っていない 10-K を取り、2 つの節の文字だけを残す（止めても続きから）。"""
-    done = set(store.index()["accession"])
+    ix = store.index()
+    ver = ix["extract"] if "extract" in ix else pd.Series("", index=ix.index)
+    done = set(ix.loc[(ver.astype(str) == EXTRACT_VERSION) | (ix["status"] == "missing"), "accession"])
     todo = filings[~filings["accession"].astype(str).isin(done)].drop_duplicates("accession")
     got = {"docs": 0, "empty": 0, "missing": 0, "left": max(len(todo) - max_docs, 0)}
     total = min(len(todo), max_docs)
@@ -339,7 +342,7 @@ def fetch_docs(client: Client, store: Store, filings: pd.DataFrame, now: pd.Time
                              "filing_date": _ts(r.filing_date, "%Y-%m-%d"), "report_date": _ts(r.report_date, "%Y-%m-%d"),
                              "acceptance": _ts(r.acceptance, "%Y-%m-%d %H:%M:%S"), "primary": r.primary,
                              "chars_risks": len(secs["risks"]), "chars_mdna": len(secs["mdna"]), "status": st,
-                             "fetched_at": f"{pd.Timestamp(now):%Y-%m-%d %H:%M}"}])
+                             "fetched_at": f"{pd.Timestamp(now):%Y-%m-%d %H:%M}", "extract": EXTRACT_VERSION}])
         if (k + 1) % 50 == 0:
             log(f"  10-K {k + 1}/{total}（取れた {got['docs']}・リスク要因なし {got['empty']}・書類なし {got['missing']}）")
     return got
