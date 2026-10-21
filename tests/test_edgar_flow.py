@@ -114,3 +114,48 @@ def test_a_changed_extractor_refetches_documents(tmp_path, monkeypatch):
     calls = []
     mod.main(["check", *base], getter=lambda u: (calls.append(u), getter(u))[1], sleep=nosleep)
     assert n1 == 60 and sum("/Archives/" in u for u in calls) == 60                   # 取り出し方を変えたら、くじの 60 件を取り直す
+
+
+@pytest.mark.parametrize("when, found", [("after", True), ("before", False)])
+def test_planted_effect_is_found_through_the_cli_and_the_future_is_not_used(tmp_path, monkeypatch, when, found):
+    """英字の単語の 10-K で通しを流す。前年から変えていない会社が受付の後に上がる世界では「使えそう」、
+    受付の前にだけ上がる世界（先読みの罠）では見えない（2026-10-21、本番の前の確かめ）。"""
+    root, getter0 = _world(tmp_path)
+    rng = np.random.default_rng(42)
+    vocab = np.array(sorted({"".join(rng.choice(list("abcdefghijklmnopqrstuvwxyz"), rng.integers(4, 10))) for _ in range(3000)}))
+    years = range(2019, 2026)
+    share = {(c, y): float(rng.uniform(0, 0.8)) for c in range(1, N + 1) for y in years}       # 前年から入れ替えた割合
+    texts = {}
+    for c in range(1, N + 1):
+        r = np.random.default_rng(c)
+        cur = r.choice(vocab, 600)
+        for y in years:
+            if y > 2019:
+                cur = cur.copy()
+                k = int(share[(c, y)] * len(cur))
+                cur[r.choice(len(cur), k, replace=False)] = r.choice(vocab, k)
+            texts[(c, y)] = " ".join(cur)
+    idx = pd.bdate_range("2021-11-01", "2026-09-30")
+    ret = np.random.default_rng(7).normal(0, 0.015, (len(idx), N))
+    for (c, y), v in share.items():
+        if v < 0.16 and y > 2019:
+            a = pd.Timestamp(f"{y + 1}-02-20")                                                 # 受付の日
+            span = (idx > a) & (idx <= a + pd.Timedelta(days=365)) if when == "after" else (idx > a - pd.Timedelta(days=365)) & (idx <= a)
+            ret[span, c - 1] += 0.015 / 21                                                     # 月 +1.5%
+    pd.DataFrame(100 * np.exp(np.cumsum(ret, axis=0)), index=idx, columns=[f"S{i}" for i in range(N)]).to_csv(root / "us_close.csv")
+
+    def getter(url):
+        if "submissions/CIK" in url:
+            return getter0(url)
+        cik, acc = url.split("/Archives/edgar/data/")[1].split("/")[:2]
+        body = texts[(int(cik), 2000 + int(acc[10:12]))]                                       # 番号の 11〜12 文字目 = 期末の年
+        return 200, (f"<html><body><p>Item 1A. Risk Factors</p><p>Firm{int(cik) - 1} Inc faces risks. {body}</p>"
+                     f"<p>Item 1B. Unresolved Staff Comments</p></body></html>").encode()
+
+    mod = _mod()
+    monkeypatch.setattr(SEC, "KEY_FILE", tmp_path / "home" / "sec.json")
+    SEC.save_user_agent(UA, SEC.KEY_FILE)
+    base = ["--root", str(root), "--out", str(tmp_path / "out")]
+    mod.main(["fetch", *base], getter=getter, sleep=lambda s: None)
+    verdict = mod.main(["lazy", *base, "--today", "2026-10-21"]).read_text(encoding="utf-8").split("## 1. 判定")[1].split("\n- ")[0]
+    assert ("**使えそう**" in verdict) == found
