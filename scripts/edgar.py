@@ -82,7 +82,29 @@ def fetch_prices(tickers: list[str], since: str) -> pd.DataFrame:
     return M.fetch_daily(tickers, since)[1]
 
 
-def cmd_universe(args, api=None, prices=None) -> Path:
+def refetch_prices(symbols: list[str], since: str, sleep=time.sleep) -> pd.DataFrame:
+    """まとめての取得で値段の無かった記号を、1 つずつもう 1 回だけ取る（9 章。待ちのやり直しはしない）。"""
+    import yfinance as yf  # type: ignore
+
+    got = {}
+    for s in symbols:
+        sleep(1.0)
+        try:
+            d = yf.download([s], start=since, auto_adjust=True, progress=False, threads=False, group_by="column")
+        except Exception:  # noqa: BLE001
+            continue
+        if d is None or d.empty or "Close" not in d:
+            continue
+        c = d["Close"]
+        c = c.iloc[:, 0] if isinstance(c, pd.DataFrame) else c
+        if c.index.tz is not None:
+            c.index = c.index.tz_localize(None)
+        if c.notna().any():
+            got[s] = c
+    return pd.DataFrame(got)
+
+
+def cmd_universe(args, api=None, prices=None, refetch=None) -> Path:
     root = Path(args.root) / "universe"
     root.mkdir(parents=True, exist_ok=True)
     today = pd.Timestamp(args.today) if args.today else pd.Timestamp.now(tz="America/New_York").tz_localize(None).normalize()
@@ -97,14 +119,24 @@ def cmd_universe(args, api=None, prices=None) -> Path:
             sys.exit(f"止めた: {m:%Y-%m} の版: {e}\n（この文を Claude に貼ってください）")
         if (k + 1) % 24 == 0:
             print(f"  {k + 1}/{len(ends)}（{m:%Y-%m}: {len(snaps[m])} 社）", flush=True)
-    members, info = EG.membership_from_snapshots(snaps)
+    _, info = EG.membership_from_snapshots(snaps)
+    info = EG.link_symbols(info)
     info.to_csv(root / "members.csv", index=False)
-    ever = sorted({t for ts in members.values() for t in ts})
-    print(f"値段（Yahoo）: これまでに S&P500 にいた {len(ever)} 社…", flush=True)
+    linked = info[info["symbol"] != info["ticker"]].drop_duplicates("ticker")
+    members_all = EG.members_by_symbol(info)
+    members = EG.members_by_symbol(info, EG.WINDOW_START)
+    ever = sorted({t for ts in members_all.values() for t in ts})
+    print(f"値段（Yahoo）: これまでに S&P500 にいた {len(ever)} 社（記号は CIK でつないだもの）…", flush=True)
     close = prices(ever, "2014-01-01") if prices is not None else fetch_prices(ever, "2014-01-01")
+    lost = [t for t in ever if t not in close.columns or not close[t].notna().any()]
+    print(f"値段の無かった {len(lost)} 社を、1 つずつもう 1 回だけ取る…", flush=True)
+    again = (refetch or refetch_prices)(lost, "2014-01-01") if lost else pd.DataFrame()
+    if len(again.columns):
+        close = pd.concat([close.drop(columns=[c for c in again.columns if c in close.columns]), again], axis=1).sort_index()
     close.to_csv(Path(args.root) / "us_close.csv", float_format="%.6g")
     mclose = EG.monthly_last(close)
     cov = EG.coverage(members, mclose)
+    cov_all = EG.coverage(members_all, mclose)
     miss = EG.missing_names(members, mclose)
     tab = cov["table"]
 
@@ -116,9 +148,11 @@ def cmd_universe(args, api=None, prices=None) -> Path:
 
     say("# 案 2-US の点検 1: 時点ごとの S&P500 と値段のそろい方")
     say("")
-    say(f"作成: {datetime.now():%Y-%m-%d %H:%M}　決まり: docs/us_text.md 4 章（データを取る前に決めたもの）。SEC は使っていない")
+    say(f"作成: {datetime.now():%Y-%m-%d %H:%M}　決まり: docs/us_text.md 9 章（判定の版: {EG.WINDOW_START:%Y-%m} 末からの月末。成績を見る前に決めたもの）。SEC は使っていない")
     say(f"- Wikipedia: 「{EG.WIKI_TITLE}」の月末ごとの古い版 {len(snaps)} 個（版の番号は data/edgar/universe/snapshots/revisions.csv）。業種はその時点の版の GICS")
-    say(f"- 月末: {ends[0]:%Y-%m}〜{ends[-1]:%Y-%m}（{len(ends)} か月）。これまでにいた会社 {len(ever)} 社、Yahoo の値段のある会社 {int(close.notna().any().sum())} 社")
+    say(f"- 判定の版の月末: {EG.WINDOW_START:%Y-%m}〜{ends[-1]:%Y-%m}（{len(members)} か月）。これまでにいた会社 {len(ever)} 社、Yahoo の値段のある会社 {int(close.notna().any().sum())} 社")
+    say(f"- 記号を CIK でつないだ会社 {len(linked)} 社（例: " + "、".join(f"{r.ticker}→{r.symbol}" for r in linked.head(8).itertuples()) + "）。"
+        f"まとめての取得で値段の無かった {len(lost)} 社のうち、取り直して取れた {len(again.columns)} 社")
     say("")
     say("## 1. 判定")
     say("")
@@ -131,6 +165,8 @@ def cmd_universe(args, api=None, prices=None) -> Path:
     say("")
     say(f"- **点検 1: {'通った' if cov['ok'] else '通らなかった'}**" + ("（次は ./cfd edgar key → check）" if cov["ok"] else
         "（無料のデータでは正直に確かめられない。計算しない・試した数も足さない。有料のデータで組むかは利用者に聞く）"))
+    say("")
+    say(f"- 参考（判定しない）: 2015 年からの版（2〜5 章。2026-10-21 に止めた）を同じ直しで数えると、値段の無い割合 {pct(cov_all['missing'])}")
     say("")
     say("## 2. 年ごと")
     say("")
@@ -154,7 +190,7 @@ def cmd_universe(args, api=None, prices=None) -> Path:
     return write(Path(args.out), "universe.md", lines)
 
 
-def main(argv: list[str] | None = None, api=None, prices=None):
+def main(argv: list[str] | None = None, api=None, prices=None, refetch=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("command", choices=["universe"])
     p.add_argument("--root", default="data/edgar")
@@ -162,7 +198,7 @@ def main(argv: list[str] | None = None, api=None, prices=None):
     p.add_argument("--today", help="今日として扱う日（試験用）")
     args = p.parse_args(argv)
     if args.command == "universe":
-        return cmd_universe(args, api, prices)
+        return cmd_universe(args, api, prices, refetch)
     return None
 
 

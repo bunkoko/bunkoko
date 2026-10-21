@@ -10,7 +10,8 @@ import pandas as pd
 
 WIKI_API = "https://en.wikipedia.org/w/api.php"
 WIKI_TITLE = "List of S&P 500 companies"
-START = pd.Timestamp("2014-12-31")       # この月末から（保有月 2015-01〜）
+START = pd.Timestamp("2014-12-31")       # この月末から（保有月 2015-01〜。2〜5 章の版。点検 1 で止まった）
+WINDOW_START = pd.Timestamp("2021-12-31")  # 9 章（判定の版）: この月末から
 COUNT_RANGE = (490, 515)                 # 点検 1 (a): 毎月末の会社の数
 MAX_BAD_MONTHS = 6                       # 点検 1 (a): 数が外れてよい月の数
 MAX_MISSING = 0.10                       # 点検 1 (b): 会社 × 月のうち、値段の無い割合の上限
@@ -67,6 +68,31 @@ def membership_from_snapshots(snaps: dict[pd.Timestamp, pd.DataFrame]) -> tuple[
     return members, info
 
 
+def link_symbols(info: pd.DataFrame) -> pd.DataFrame:
+    """値段に使う記号（列 symbol）を足す（9 章）。同じ CIK の会社が後の版で 1 つの別の記号になっていれば、その記号でつなぐ（FB→META など）。
+
+    その会社の最後の版にその記号が残っていればそのまま。最後の版の記号が 2 つ以上（株の種類が複数）なら、つながずにそのまま。CIK の無い行もそのまま。
+    """
+    out = info.copy()
+    out["symbol"] = out["ticker"]
+    ok = out["cik"].notna()
+    if not ok.any():
+        return out
+    last = out[ok].groupby("cik")["month"].transform("max")
+    final = out[ok][out[ok]["month"] == last].groupby("cik")["ticker"].agg(lambda s: sorted(set(s)))
+    for i in out.index[ok]:
+        names = final.get(out.at[i, "cik"], [])
+        if out.at[i, "ticker"] not in names and len(names) == 1:
+            out.at[i, "symbol"] = names[0]
+    return out
+
+
+def members_by_symbol(info: pd.DataFrame, start: pd.Timestamp | None = None) -> dict[pd.Timestamp, frozenset]:
+    """月末ごとの会社を、値段に使う記号で（start より前の月は除く）。"""
+    rows = info if start is None else info[info["month"] >= start]
+    return {m: frozenset(g["symbol"]) for m, g in rows.groupby("month")}
+
+
 def month_ends(start: pd.Timestamp, last: pd.Timestamp) -> pd.DatetimeIndex:
     return pd.date_range(pd.Timestamp(start), pd.Timestamp(last), freq="ME")
 
@@ -87,7 +113,7 @@ def coverage(members: dict[pd.Timestamp, frozenset], mclose: pd.DataFrame) -> di
             row = mclose.loc[m]
             have = int(sum(1 for t in tick if t in row.index and pd.notna(row[t])))
         rows.append({"month": m, "members": len(tick), "with_price": have})
-    df = pd.DataFrame(rows).set_index("month")
+    df = pd.DataFrame(rows, columns=["month", "members", "with_price"]).set_index("month")
     bad = df[(df["members"] < COUNT_RANGE[0]) | (df["members"] > COUNT_RANGE[1])]
     total = int(df["members"].sum())
     missing = 1 - df["with_price"].sum() / total if total else 1.0

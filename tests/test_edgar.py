@@ -72,19 +72,31 @@ def test_universe_command_reads_monthly_versions_reuses_them_and_reports(tmp_pat
     spec = importlib.util.spec_from_file_location("edgar_cmd", ROOT / "scripts" / "edgar.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    # 2016-01 から OLD1 が外れて NEW1 が入る
-    lists = lambda m: _list(old=m < pd.Timestamp("2015-06-30"), extra=("OLD1",) if m < pd.Timestamp("2016-01-31") else ("NEW1",), drop=1)  # noqa: E731
+    # 2022-01 から OLD1 が外れて NEW1 が入る
+    lists = lambda m: _list(old=m < pd.Timestamp("2015-06-30"), extra=("OLD1",) if m < pd.Timestamp("2022-01-31") else ("NEW1",), drop=1)  # noqa: E731
     api = _api(lists)
 
     def prices(tickers, since):
-        idx = pd.bdate_range(since, "2016-12-30")
+        idx = pd.bdate_range(since, "2022-02-28")
         return pd.DataFrame(100.0, index=idx, columns=[t for t in tickers if t != "OLD1"])
 
-    args = ["universe", "--root", str(tmp_path / "edgar"), "--out", str(tmp_path / "out"), "--today", "2017-01-15"]
-    path = mod.main(args, api=api, prices=prices)
+    args = ["universe", "--root", str(tmp_path / "edgar"), "--out", str(tmp_path / "out"), "--today", "2022-03-15"]
+    path = mod.main(args, api=api, prices=prices, refetch=lambda syms, since: pd.DataFrame())
     text = path.read_text(encoding="utf-8")
-    assert "## 1. 判定" in text and "点検 1: 通った" in text and "OLD1" in text and "古い版 25 個" in text
+    assert "## 1. 判定" in text and "点検 1: 通った" in text and "古い版 87 個" in text and "2015 年からの版" in text
     info = pd.read_csv(tmp_path / "edgar" / "universe" / "members.csv")
-    assert {"OLD1", "NEW1"} <= set(info["ticker"]) and len(api.calls) == 50                # 25 か月 × 2 回
-    mod.main(args, api=api, prices=prices)
-    assert len(api.calls) == 50                                                           # 2 回目は取った版を使い回す
+    assert {"OLD1", "NEW1"} <= set(info["ticker"]) and len(api.calls) == 174               # 87 か月 × 2 回
+    mod.main(args, api=api, prices=prices, refetch=lambda syms, since: pd.DataFrame())
+    assert len(api.calls) == 174                                                          # 2 回目は取った版を使い回す
+
+
+def test_link_symbols_follows_renames_by_cik_but_not_share_classes():
+    m1, m2 = pd.Timestamp("2021-12-31"), pd.Timestamp("2022-12-31")
+    info = pd.DataFrame({"month": [m1, m1, m1, m1, m2, m2, m2],
+                         "ticker": ["FB", "GOOG", "GOOGL", "XGONE", "META", "GOOG", "GOOGL"],
+                         "cik": pd.array([1, 2, 2, 9, 1, 2, 2], dtype="Int64")})
+    out = EG.link_symbols(info).set_index(["month", "ticker"])["symbol"]
+    assert out[(m1, "FB")] == "META" and out[(m1, "GOOG")] == "GOOG" and out[(m1, "GOOGL")] == "GOOGL"
+    assert out[(m1, "XGONE")] == "XGONE"                                            # 消えた会社は自分の記号のまま
+    mem = EG.members_by_symbol(EG.link_symbols(info), m2)
+    assert list(mem) == [m2] and mem[m2] == frozenset({"META", "GOOG", "GOOGL"})
