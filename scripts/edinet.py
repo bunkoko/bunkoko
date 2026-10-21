@@ -16,6 +16,8 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -260,6 +262,12 @@ def cmd_lazy(args) -> Path:
     return write(Path(args.out), "lazy.md", lines)
 
 
+def keep_awake() -> None:
+    """取得が終わるまで Mac を眠らせない（画面は消えてよい。ふたを閉じると眠る）。眠ると回線が切れて「状態 -1」で止まる（2026-10-21）。"""
+    if sys.platform == "darwin":
+        subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())])
+
+
 def main(argv: list[str] | None = None, getter=None, sleep=None, encoder=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("command", choices=["key", "check", "fetch", "status", "momentum", "lazy"])
@@ -307,6 +315,7 @@ def main(argv: list[str] | None = None, getter=None, sleep=None, encoder=None):
     store = ED.Store(args.root)
     if not store.lock():
         raise SystemExit("ほかの取得が動いている（同時に 1 本だけ）")
+    keep_awake()
     try:
         days = ED.fetch_days(today)
         n = ED.fetch_lists(cl, store, days, codes, pd.Timestamp.now(), log=lambda s: print(s, flush=True))

@@ -188,7 +188,7 @@
 ./cfd edinet key             # EDINET の API キーを保存（登録の後。画面には出ない）
 ./cfd edinet check           # 何年分さかのぼれるか・3 つの節が取れるかを確かめる（数分。呼び出し 20〜40 回）
 mkdir -p data/edinet                                        # 記録を書くフォルダ（初めてのときだけ要る）
-nohup ./cfd edinet fetch > data/edinet/fetch.log 2>&1 &   # 490 社の有報の本文を集める（5〜6 時間。止めても続きから）
+nohup ./cfd edinet fetch >> data/edinet/fetch.log 2>&1 &  # 490 社の有報の本文を集める（5〜6 時間。止めても続きから。記録は書き足す）
 ./cfd edinet status          # 集めた量
 ./cfd edinet momentum        # 1C（初回は埋め込みで数十分）
 ./cfd edinet lazy            # 案 2（数分）
@@ -211,3 +211,7 @@ nohup ./cfd edinet fetch > data/edinet/fetch.log 2>&1 &   # 490 社の有報の�
   1C・案 2 に使う 2 つの節は 3 つの年とも取れたので、`fetch` に進む。
   経営者による分析は 2017 年の有報で 0 字（2018-03 期より前は要素の名前の頭が違う見込み）。名前の終わりが同じ要素も読むように直した
   （`cfdbot/edinet.py` の `MDNA_SUFFIX`。この節は 4.3 の参考にだけ使う。判定の条件は変えない）
+- 2026-10-20 夜〜10-21（Mac）`./cfd edinet fetch`: 一覧を見終わり、有報 4,786 件のうち 400 件（どれも本文あり）を取ったところで、「状態 -1」（回線がつながらない）が
+  10・30・60 分の待ちの後も続いて止まった。夜中に Mac が眠って回線が切れたとみられる。取得の間は Mac を眠らせないようにした（`caffeinate`。ニュースの取得と同じ）。
+  つながらないときの理由も記録に出すようにした。取った分はそのまま、同じコマンドで続きから
+

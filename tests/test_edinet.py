@@ -109,6 +109,11 @@ def test_client_waits_between_calls_and_after_refusals():
         ED.Client(lambda p, q: (403, b""), sleep=sleep, clock=clock, log=lambda s: None).documents(TODAY)   # キーが通らなければ止める
     with pytest.raises(ED.Stop):
         ED.Client(lambda p, q: (429, b""), sleep=sleep, clock=clock, log=lambda s: None, waits=(1.0, 1.0)).documents(TODAY)
+    said = []
+    with pytest.raises(ED.Stop):                                                     # つながらないときは、理由も記録に出す
+        ED.Client(lambda p, q: (-1, b"[Errno 8] nodename nor servname provided"), sleep=sleep, clock=clock,
+                  log=said.append, waits=(1.0,)).documents(TODAY)
+    assert "つながらない: [Errno 8]" in said[0]
 
 
 def test_fetch_lists_and_docs_resume_and_keep_only_first_reports(tmp_path):

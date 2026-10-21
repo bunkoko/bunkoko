@@ -114,7 +114,8 @@ class Client:
             if status in (429, -1) or status >= 500:
                 if attempt == len(self.waits):
                     raise Stop(f"断られ続けた（状態 {status}）。時間をおいて、同じコマンドで続きから")
-                self.log(f"  EDINET が状態 {status}。{self.waits[attempt] / 60:.0f} 分待ってやり直す")
+                why = f"（つながらない: {body.decode('utf-8', 'replace')[:80]}）" if status == -1 else ""
+                self.log(f"  EDINET が状態 {status}{why}。{self.waits[attempt] / 60:.0f} 分待ってやり直す")
                 self.sleep(self.waits[attempt])
                 continue
             if status in (401, 403):
