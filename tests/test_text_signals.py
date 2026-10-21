@@ -199,6 +199,14 @@ def test_commands_refuse_an_unfinished_fetch_and_reports_are_reproducible(tmp_pa
     again = mod.main(["momentum", *base, "--out", str(tmp_path / "o2")], encoder=enc).read_text(encoding="utf-8")
     pick = lambda s: [x for x in s.splitlines() if x.startswith("| 1C |") or x.startswith("- 条件")]  # noqa: E731
     assert pick(first) == pick(again) and "④ 偶然より良い割合" in first and "残り 0 件" in first   # 取っておきを使う 2 回目も同じ数字
+    # 本文の取れなかった有報（source が none）も一覧に残る（古い有報に戻さないため）
+    store._append(store.index_path, [{"docID": "NOTEXT", "secCode": "10010", "ticker": "1001.T", "filerName": "x", "submitDateTime": "2025-06-25 15:00",
+                                      "periodStart": "2024-04-01", "periodEnd": "2025-03-31", "docTypeCode": "120", "source": "none",
+                                      "chars_business": 0, "chars_risks": 0, "chars_mdna": 0, "fetched_at": "x"}], ED.INDEX_COLUMNS)
+    meta, counts = mod.docs_meta(store)
+    assert "NOTEXT" in set(meta["docID"]) and counts["none"] == 1
+    act = TS.active_docs(meta, pd.Timestamp("2025-07-31"))
+    assert act.loc[act["ticker"] == "1001.T", "docID"].tolist() == ["NOTEXT"]           # 一番新しいのは本文なしの有報 → 信号なし
     # 取得が途中（見つけた有報のうち本文の無いものがある）なら止める
     store._append(store.cand_path, [{"docID": "NOTYET", "secCode": "10000", "ticker": "1000.T", "filerName": "x", "submitDateTime": "2024-06-25 15:00",
                                      "periodStart": "2023-04-01", "periodEnd": "2024-03-31", "docTypeCode": "120", "csvFlag": "1", "xbrlFlag": "1",

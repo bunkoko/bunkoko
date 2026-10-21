@@ -88,9 +88,9 @@ def docs_meta(store: ED.Store) -> tuple[pd.DataFrame, dict]:
         sys.exit(f"有報の本文の取得がまだ終わっていない（見つけた {len(cand):,} 件のうち、残り {len(left):,} 件）。"
                  "先に nohup ./cfd edinet fetch >> data/edinet/fetch.log 2>&1 & で終える（1 回きりの判定を途中のデータで使わない）")
     counts = {"candidates": len(cand), "fetched": len(idx), "none": int((idx["source"] == "none").sum()) if len(idx) else 0}
-    idx = idx[idx["source"] != "none"]
-    if idx.empty:
+    if not len(idx) or (idx["source"] != "none").sum() == 0:
         sys.exit("有報の本文がまだ無い。先に ./cfd edinet fetch で集める")
+    # 本文の取れなかった有報も残す（文章は空。1C ではその有報の間その会社は信号なし、古い有報に戻さない。案 2 では組にならない）
     return TS.first_docs(idx).merge(idx[["docID", "filerName"]], on="docID", how="left"), counts
 
 
