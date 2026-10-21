@@ -11,6 +11,10 @@
   何体も出すのは、利用者が頼んだときだけ
 - Mac で記録（`git commit`）したら、その場で `git push` する（Mac の中だけの記録があると、`./cfd update` が
   クラウドの更新を取り込めずに止まる。2026-10-14 に 5 つの記録がそうなり、`claude/mac-local` に送って合わせた）
+- Mac の `~/bunkoko` は枝 `claude/gracious-gates-f8a38x` のまま使う（毎日の自動実行がここの `./cfd` を呼ぶ）。同じ GitHub の入れ物にある別の作業の枝
+  （koten など。`master` から分かれた別物で `cfd` が無い）は `git worktree add ~/<名前> <枝>` で別のフォルダに出す。2026-10-21 に `~/bunkoko` で
+  koten の枝に切り替えて `uv run` したため、「`./cfd` が無い」になり、`.venv` から 52 個の部品が消えた。「`./cfd` が無い」と言われたら
+  `git -C ~/bunkoko branch --show-current` を見て、別の枝なら `git switch claude/gracious-gates-f8a38x` → `./cfd update` で戻す
 
 ## ニュースの取得・判定（`./cfd news`）が止まったとき
 
