@@ -509,3 +509,54 @@ def test_core_mark_from_the_e1_reason():
     assert L.core_mark(D.e1_reason(0.12, 0.01)) == "本業以外" and L.core_mark(D.e1_reason(0.12, float("nan"))) == ""
     rows = [{"ticker": "1001.T", "name": "会社A", "side": "買い", "shares": 4, "prev_close": 2000.0, "note": "", "reason": D.e1_reason(0.2, 0.3)}]
     assert "約 8,000 円・本業）" in L.notice_text(rows, {"mode": "real"}, TODAY)[1]
+
+
+def test_price_fetch_is_retried_until_14_45_and_a_stop_before_the_ledger_is_notified(tmp_path, monkeypatch):
+    """2026-10-19・10-20 は値段の取得が止まって台帳が抜けた。14:45 までは 10 分おきに取り直し、それでも止まれば知らせる。"""
+    mod = _script()
+    calls, waits, t = [], [], [pd.Timestamp("2026-10-19 13:25")]
+
+    class FakeM:
+        @staticmethod
+        def fetch_daily(tickers, start):
+            calls.append(start)
+            if len(calls) < 3:
+                raise RuntimeError("名前が引けない")
+            return "値段"
+
+    def sleep(s):
+        waits.append(s)
+        t[0] += pd.Timedelta(seconds=s)
+
+    assert mod.fetch_prices_patiently(FakeM, ["7203.T"], clock=lambda: t[0], sleep=sleep) == "値段"
+    assert waits == [600, 600] and calls == ["2000-01-01"] * 3                         # Mac が起きた直後の不調は、待てば取れる
+    calls.clear(), waits.clear()
+    t[0] = pd.Timestamp("2026-10-19 14:40")
+    with pytest.raises(RuntimeError, match="1 回目。RuntimeError: 名前が引けない。空き容量"):
+        mod.fetch_prices_patiently(FakeM, ["7203.T"], clock=lambda: t[0], sleep=sleep)
+    assert waits == []                                                                  # 14:45 を過ぎるなら待たない
+
+    sent = []
+    monkeypatch.setattr(mod, "notify_send", lambda files, title, text: sent.append((title, text)) or [("メッセージ", True, "送った")])
+
+    def full(a):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(mod, "cmd_numbers", full)
+    with pytest.raises(OSError):
+        mod.cmd_run(_ns(tmp_path, prices=False))
+    assert sent[0][0] == "株の自動実行が止まった" and "「決算の数字の表」で止まった（OSError: No space left on device）" in sent[0][1]
+    assert "15:25 までに ./cfd agents run --prices" in sent[0][1]
+
+
+def test_fetch_daily_says_why_when_yahoo_returns_nothing(monkeypatch):
+    import sys
+    import types
+
+    spec = importlib.util.spec_from_file_location("stocks_study_t", ROOT / "scripts" / "stocks_study.py")
+    M = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(M)
+    monkeypatch.setitem(sys.modules, "yfinance", types.SimpleNamespace(download=lambda *a, **k: pd.DataFrame()))
+    monkeypatch.setattr(M.time, "sleep", lambda s: None)
+    with pytest.raises(RuntimeError, match="Yahoo から値段が取れない（7203.T からの 2 銘柄。3 回試した）"):
+        M.fetch_daily(["7203.T", "6758.T"], "2000-01-01")                             # 前は KeyError: 'Dividends' で落ちた

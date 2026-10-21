@@ -762,40 +762,87 @@ def run_stamp(what: str) -> None:
     print(f"[{pd.Timestamp.now(tz=JST).tz_localize(None):%Y-%m-%d %H:%M:%S}] 自動実行: {what}", flush=True)
 
 
+PRICE_RETRY_UNTIL = pd.Timedelta(hours=14, minutes=45)   # 値段が取れないとき、この時刻（日本時間）までは取り直す（15:25 までに台帳を書くため）
+PRICE_RETRY_WAIT = 600                                    # 取り直すまでの秒
+PRICE_RETRY_MAX = 10
+
+
+def fetch_prices_patiently(M, tickers: list[str], clock=None, sleep=time.sleep):
+    """値段の取得が回線・Yahoo の一時の不調で止まっても、14:45 までは 10 分おきに取り直す。それでもだめなら RuntimeError。
+
+    2026-10-19（Mac が起きた直後で名前が引けない）と 10-20（空き容量の不足とみられる）に、値段の取得が止まって台帳が抜けた。
+    取り直しても、判断に使う値段（その日の寄りまで）と台帳の決まりは変わらない。
+    """
+    import shutil
+
+    clock = clock or (lambda: pd.Timestamp.now(tz=JST).tz_localize(None))
+    for k in range(1, PRICE_RETRY_MAX + 1):
+        try:
+            return M.fetch_daily(tickers, "2000-01-01")
+        except Exception as e:  # noqa: BLE001
+            now = clock()
+            free = shutil.disk_usage(ROOT).free / 1e9
+            msg = f"値段が取れなかった（{k} 回目。{type(e).__name__}: {str(e)[:160]}。空き容量 {free:.1f}GB）"
+            if k == PRICE_RETRY_MAX or now + pd.Timedelta(seconds=PRICE_RETRY_WAIT) > now.normalize() + PRICE_RETRY_UNTIL:
+                raise RuntimeError(msg) from e
+            print(f"{msg}。{PRICE_RETRY_WAIT // 60} 分後にもう一度", flush=True)
+            sleep(PRICE_RETRY_WAIT)
+
+
+def notify_stopped(args, step: str, e: BaseException) -> None:
+    """台帳を書く前に自動実行が止まったら、iPhone に知らせる（設定 ~/.bunkoko/notify.json が無ければ送らない）。"""
+    from cfdbot.agents import live as L
+
+    text = (f"「{step}」で止まった（{type(e).__name__}: {str(e)[:200]}）。今日の判断はまだ台帳に無い。"
+            "Mac の回線と空き容量を確かめて、15:25 までに ./cfd agents run --prices を動かせば今日の分になる")
+    try:
+        for kind, ok, detail in notify_send(L.LiveFiles(paths(args.root)["root"] / "live"), "株の自動実行が止まった", text):
+            print(f"知らせ（{kind}）: {detail}", flush=True)
+    except Exception as x:  # noqa: BLE001  知らせの失敗で、止まった理由の表示を隠さない
+        print(f"知らせを送れなかった（{type(x).__name__}）", flush=True)
+
+
 def cmd_run(args) -> None:
     """値段 → 決算の数字の表 → （予行演習）E1 の一覧と今日の注文の一覧・知らせ → 情報収集 → IR → 銘柄選定 → 判断（台帳）→ 評価。
 
     E1 の一覧に要るのは、決算の数字の表と、銘柄選定の点数の付く株（値段だけで分かる）なので、時間のかかる学び直しの前に作る
     （docs/stocks_live.md 4.2）。台帳（ledger.csv・ledger_extra.csv）の中身と書く順番・時刻の決まりは変えない。
-    予行演習の部分が失敗しても、台帳は書く。
+    予行演習の部分が失敗しても、台帳は書く。台帳を書く前に止まったら、iPhone に知らせる。
     """
     run_stamp("始め")
-    if args.prices:
-        sys.path.insert(0, str(ROOT / "scripts"))
-        import stocks_study as M
-
-        data = Path(args.data)
-        uni = pd.read_csv(data / "universe_jp.csv")
-        print("値段を取り直す（日本株）…", flush=True)
-        o, c, dv = M.fetch_daily(uni["ticker"].tolist(), "2000-01-01")
-        o.to_csv(data / "jp_open.csv", float_format="%.6g")
-        c.to_csv(data / "jp_close.csv", float_format="%.6g")
-        dv.to_csv(data / "jp_div.csv", index=False)
-        try:
-            S.archive_prices(data, o, c)
-        except Exception as e:  # noqa: BLE001  控えが書けなくても（空き容量など）、台帳は書く
-            print(f"値段の控え（data/stocks/archive）を書けなかった（{type(e).__name__}: {str(e)[:120]}）", flush=True)
-        run_stamp("値段")
-    cmd_numbers(args)
-    run_stamp("決算の数字の表")
+    step = "値段"
     try:
-        if live_early(args):
-            run_stamp("E1 の一覧と注文の一覧")
-    except Exception as e:  # noqa: BLE001
-        print(f"予行演習: 先に作る一覧は作れなかった（{type(e).__name__}: {str(e)[:120]}）。判断の後にもう一度作る", flush=True)
-    for name, f in (("情報収集", cmd_collect), ("IR 評価", cmd_ir), ("銘柄選定", cmd_select), ("判断（台帳）", cmd_decide)):
-        f(args)
-        run_stamp(name)
+        if args.prices:
+            sys.path.insert(0, str(ROOT / "scripts"))
+            import stocks_study as M
+
+            data = Path(args.data)
+            uni = pd.read_csv(data / "universe_jp.csv")
+            print("値段を取り直す（日本株）…", flush=True)
+            o, c, dv = fetch_prices_patiently(M, uni["ticker"].tolist())
+            o.to_csv(data / "jp_open.csv", float_format="%.6g")
+            c.to_csv(data / "jp_close.csv", float_format="%.6g")
+            dv.to_csv(data / "jp_div.csv", index=False)
+            try:
+                S.archive_prices(data, o, c)
+            except Exception as e:  # noqa: BLE001  控えが書けなくても（空き容量など）、台帳は書く
+                print(f"値段の控え（data/stocks/archive）を書けなかった（{type(e).__name__}: {str(e)[:120]}）", flush=True)
+            run_stamp("値段")
+        step = "決算の数字の表"
+        cmd_numbers(args)
+        run_stamp("決算の数字の表")
+        try:
+            if live_early(args):
+                run_stamp("E1 の一覧と注文の一覧")
+        except Exception as e:  # noqa: BLE001
+            print(f"予行演習: 先に作る一覧は作れなかった（{type(e).__name__}: {str(e)[:120]}）。判断の後にもう一度作る", flush=True)
+        for name, f in (("情報収集", cmd_collect), ("IR 評価", cmd_ir), ("銘柄選定", cmd_select), ("判断（台帳）", cmd_decide)):
+            step = name
+            f(args)
+            run_stamp(name)
+    except Exception as e:
+        notify_stopped(args, step, e)
+        raise
     try:
         live_after_decide(args)
     except Exception as e:  # noqa: BLE001

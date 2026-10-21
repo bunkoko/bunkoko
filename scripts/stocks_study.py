@@ -93,6 +93,8 @@ def fetch_daily(tickers: list[str], start: str, chunk: int = 100) -> tuple[pd.Da
             if not d.empty and d["Close"].notna().any().mean() > 0.5:
                 break
             time.sleep(30 * (k + 1))
+        if d.empty or "Dividends" not in d:                       # 3 回とも空（回線・Yahoo・空き容量の不調）。読めない理由で落ちないように
+            raise RuntimeError(f"Yahoo から値段が取れない（{part[0]} からの {len(part)} 銘柄。3 回試した）")
         if d.index.tz is not None:
             d.index = d.index.tz_localize(None)
         opens.append(d["Open"])
