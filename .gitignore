@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+dist/
+# 大きなデータは HDD/SSD に置く（SPEC §5）
+data/
+*.parquet
+*.npy
+*.mp4
+*.wav

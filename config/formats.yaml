@@ -1,0 +1,48 @@
+# 回の形式と章の配分（SPEC §8.5）。target_sec は12分の回を基準にした目安
+formats:
+  A:
+    name: 悩みを古典で考える
+    description: 1つの悩みを、別々の作品の一節でたどる
+    passages: {min: 4, max: 6}
+    distinct_works: true
+    chapters:
+      - {role: opening, target_sec: [30, 60]}
+      - {role: context, target_sec: [60, 120]}
+      - {role: classic, repeat: [3, 5], target_sec: [90, 180]}
+      - {role: research, optional: true, target_sec: [45, 90]}
+      - {role: summary, target_sec: [60, 120]}
+      - {role: ending, target_sec: [20, 45]}
+  B:
+    name: 1冊を読む
+    description: 1作品（例：『人生論ノート』の1章）を読み、3〜5の悩みに当てはめる
+    passages: {min: 4, max: 6}
+    same_work: true
+    chapters:
+      - {role: opening, target_sec: [30, 60]}
+      - {role: work_intro, target_sec: [60, 120]}
+      - {role: classic, repeat: [3, 5], target_sec: [90, 180]}
+      - {role: summary, target_sec: [60, 120]}
+      - {role: ending, target_sec: [20, 45]}
+  C:
+    name: テーマ回
+    description: 1テーマ（例：孤独）で、3つの悩みに1〜2節ずつ当てる
+    passages: {min: 4, max: 6}
+    worries: 3
+    chapters:
+      - {role: opening, target_sec: [30, 60]}
+      - {role: context, target_sec: [60, 120]}
+      - {role: worry_block, repeat: [3, 3], target_sec: [150, 240]}
+      - {role: summary, target_sec: [60, 120]}
+      - {role: ending, target_sec: [20, 45]}
+  D:
+    name: 対立する2つの考え
+    description: 同じ悩みへの逆の見方を2人の著者で比べ、視聴者に問う
+    passages: {min: 2, max: 4}
+    distinct_authors: 2
+    chapters:
+      - {role: opening, target_sec: [30, 60]}
+      - {role: context, target_sec: [60, 120]}
+      - {role: view_a, target_sec: [150, 240]}
+      - {role: view_b, target_sec: [150, 240]}
+      - {role: compare, target_sec: [90, 150]}
+      - {role: ending, target_sec: [30, 60]}

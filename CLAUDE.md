@@ -1,0 +1,24 @@
+# koten-videos
+
+悩み×古典の一節で10分以上の長尺動画を作るパイプライン。仕様は docs/SPEC.md。
+
+## 進め方
+- docs/SPEC.md §13 のマイルストーン順に進める。1つ終えるごとにテストを通し、受け入れ条件を確認してから次へ
+- 「要確認」の箇所は実装前に公式ドキュメント・利用規約で確かめ、結果を docs/decisions.md に書く
+- 判断に迷ったら実装を止めて質問する
+- 進捗は docs/decisions.md の「マイルストーンの状況」に書く
+
+## 絶対に守ること
+- 権利判定（src/koten/license.py、SPEC §3 の R1〜R7）を緩めない・迂回しない
+- 引用・出典・著者情報・統計の数字はDBから差し込む。LLMに書かせない
+- 除外カテゴリ（医療・自傷・お金の判断・法律相談など）の悩みで回を作らない
+- 大きなデータはGitに入れない。HDD/SSDのパスは config/settings.toml から読む
+- 検索・APIの処理中にHDDを読まない（索引とDBはSSD）
+- 外部サイトへのアクセスは必ずレート制限とキャッシュを通す（src/koten/net.py）
+- VOICEVOXの audio_query と synthesis には同じ speaker ID を渡す
+
+## よく使うコマンド
+- uv run pytest
+- uv run ruff check .
+- uv run koten doctor
+- uv run koten ingest aozora --limit 5 && uv run koten normalize aozora && uv run koten chunk aozora

@@ -1,0 +1,163 @@
+"""青空文庫の取得〜チャンク化を、フィクスチャと偽のHTTPで通す（M1）。"""
+
+import json
+
+import httpx
+
+from koten.chunk.chunker import chunk_source
+from koten.config import load_settings
+from koten.ingest import aozora
+from koten.license import License
+from koten.net import Fetcher
+from koten.normalize.aozora import normalize
+from koten.parquet import read_rows
+from tests.conftest import SAMPLE_TEXT, list_zip, row, text_zip
+
+ROWS = [
+    # NDC 159・新字新仮名（使用可）
+    row(
+        "100",
+        "人生のノート",
+        "NDC 159",
+        "新字新仮名",
+        "000001",
+        "架空",
+        "太郎",
+        "著者",
+        "1945-09-26",
+    ),
+    # 同じ作品の旧字旧仮名（重複として除かれる）
+    row(
+        "101",
+        "人生のノート",
+        "NDC 159",
+        "旧字旧仮名",
+        "000001",
+        "架空",
+        "太郎",
+        "著者",
+        "1945-09-26",
+    ),
+    # 随筆 914。著者が1968年没（フラグが「なし」でも R3 で保護中）
+    row("200", "随筆", "NDC 914", "新字新仮名", "000002", "架空", "次郎", "著者", "1968-01-01"),
+    # 著作権フラグ「あり」
+    row(
+        "300",
+        "日記",
+        "NDC 915",
+        "新字新仮名",
+        "000003",
+        "架空",
+        "三郎",
+        "著者",
+        "1990-01-01",
+        person_flag="あり",
+    ),
+    # 対象外の NDC
+    row("400", "小説", "NDC 913", "新字新仮名", "000004", "架空", "四郎", "著者", "1930-01-01"),
+    # 対象外の NDC だが include_works で指定
+    row(
+        "500", "人生論ノート", "NDC 913", "新字新仮名", "000005", "三木", "清", "著者", "1945-09-26"
+    ),
+    # 翻訳：原著者は国籍不明で1960年没 → R4 で手動確認
+    row("600", "省察", "NDC 131", "新字新仮名", "000006", "外国", "著者", "著者", "1960-01-01"),
+    row("600", "省察", "NDC 131", "新字新仮名", "000007", "日本", "訳者", "翻訳者", "1940-01-01"),
+]
+
+CONF = {
+    "list_url": "https://www.aozora.gr.jp/index_pages/list_person_all_extended_utf8.zip",
+    "text_base_url": "https://mirror.example/aozora/",
+    "ndc_prefixes": ["1", "914", "915"],
+    "include_works": [{"title": "人生論ノート", "author": "三木清"}],
+    "exclude_work_ids": [],
+}
+
+
+class FakeServer:
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        self.calls.append(url)
+        assert request.headers["User-Agent"] == "test-agent"
+        if url.endswith("list_person_all_extended_utf8.zip"):
+            return httpx.Response(200, content=list_zip(ROWS), headers={"ETag": '"v1"'})
+        if url.startswith("https://mirror.example/aozora/cards/"):
+            return httpx.Response(200, content=text_zip(SAMPLE_TEXT))
+        return httpx.Response(404)
+
+
+def make_fetcher(hdd, server):
+    client = httpx.Client(
+        transport=httpx.MockTransport(server), headers={"User-Agent": "test-agent"}
+    )
+    return Fetcher(
+        hdd / "raw" / "aozora", user_agent="test-agent", per_host_per_sec=1000, client=client
+    )
+
+
+def test_select_and_judge():
+    works = aozora.select_works(aozora.read_work_list(list_zip(ROWS)), CONF)
+    picked = {w.work_id: w for w in works}
+    assert set(picked) == {"100", "200", "300", "500", "600"}
+    assert aozora.judge_license(picked["100"])[0] == License.PD_JP
+    assert aozora.judge_license(picked["200"])[0] == License.COPYRIGHTED
+    assert aozora.judge_license(picked["300"])[0] == License.COPYRIGHTED
+    assert aozora.judge_license(picked["500"])[0] == License.PD_JP
+    assert aozora.judge_license(picked["600"])[0] == License.NEEDS_REVIEW
+
+
+def test_ndc_parsing():
+    assert aozora.ndc_codes("NDC 159 914") == ["159", "914"]
+    assert aozora.ndc_codes("NDC K913") == ["913"]
+    assert aozora.matches_ndc("NDC 121", ["1"])
+    assert not aozora.matches_ndc("NDC 913", ["1", "914", "915"])
+
+
+def test_ingest_normalize_chunk_end_to_end(settings_file):
+    s = load_settings(settings_file)
+    hdd = s.require_hdd()
+    server = FakeServer()
+
+    r = aozora.ingest(hdd, CONF, make_fetcher(hdd, server), limit=1)
+    assert (r.selected, r.usable, r.fetched) == (5, 2, 1)
+    assert r.blocked == {"COPYRIGHTED": 2, "NEEDS_REVIEW": 1}
+    # 中断しても続きから：2回目は残りの1件だけ取り、作品CSVは再取得しない
+    server2 = FakeServer()
+    r2 = aozora.ingest(hdd, CONF, make_fetcher(hdd, server2))
+    assert (r2.fetched, r2.skipped) == (1, 1)
+    assert len(server2.calls) == 1 and "mirror.example" in server2.calls[0]
+
+    works = {w["source_work_id"]: w for w in read_rows(hdd / "clean/aozora/works.parquet")}
+    # 本文を保存しない作品は書誌情報だけ持ち、原本も取らない（R2）
+    assert works["200"]["raw_path"] is None and works["200"]["license"] == "COPYRIGHTED"
+    assert works["600"]["review_required"] is True and works["600"]["raw_path"] is None
+    assert works["100"]["work_id"] == "aozora:100"
+    assert works["100"]["raw_path"] == "cards/000001/files/100_ruby_1.zip"
+    manifest = [json.loads(x) for x in (hdd / "raw/aozora/manifest.jsonl").read_text().splitlines()]
+    assert {m["license"] for m in manifest if "cards/" in m["path"]} == {"PD_JP"}
+    assert all(len(m["sha256"]) == 64 and m["fetched_at"] for m in manifest)
+
+    assert normalize(hdd) == 2
+    n = chunk_source(hdd, "aozora", 20, 80)
+    chunks = read_rows(hdd / "chunks/aozora.parquet")
+    assert n == len(chunks) > 0
+    assert {c["work_id"] for c in chunks} == {"aozora:100", "aozora:500"}
+    assert {c["section"] for c in chunks} == {"嫉妬について", "孤独について"}
+    assert not any(m in c["text_orig"] for c in chunks for m in ("《", "｜", "［＃"))
+
+
+def test_fetch_error_does_not_stop_batch(settings_file):
+    hdd = load_settings(settings_file).require_hdd()
+
+    def flaky(request: httpx.Request) -> httpx.Response:
+        if "/cards/000001/" in str(request.url):
+            return httpx.Response(404)
+        return FakeServer()(request)
+
+    r = aozora.ingest(hdd, CONF, make_fetcher(hdd, flaky))
+    assert r.fetched == 1 and len(r.errors) == 1 and "100" in r.errors[0]
+    works = {w["source_work_id"]: w for w in read_rows(hdd / "clean/aozora/works.parquet")}
+    assert works["100"]["raw_path"] is None
+    assert works["500"]["raw_path"] is not None

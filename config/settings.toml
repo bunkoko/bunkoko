@@ -1,0 +1,62 @@
+# 既定値（SPEC §11）。パスは環境に合わせて変える。
+# KOTEN_SETTINGS 環境変数で別のファイルを指定できる。
+
+[paths]
+hdd_root = "/Volumes/KotenHDD/koten"
+ssd_root = "~/koten-hot"
+photos_dir = "~/Pictures/koten-bg"
+bgm_dir = "~/Music/koten-bgm"
+
+[llm.augment]                 # Mac上のローカルLLM（OpenAI互換API）
+provider = "openai_compatible"
+endpoint = "http://127.0.0.1:1234/v1"
+model = "要確認"
+
+[llm.script]
+provider = "anthropic"
+model = "claude-sonnet-5-5"
+
+[llm.judge]                   # G3 忠実さの判定
+provider = "anthropic"
+model = "claude-haiku-5-5"
+
+[embed]
+model = "intfloat/multilingual-e5-large"
+dtype = "float16"
+
+[rerank]
+model = "要確認"
+
+[episode]
+min_sec = 600
+max_sec = 900
+chars_per_min = 300
+same_format_in_row_max = 2
+
+[recency]
+work_episodes = 10
+author_episodes = 5
+photo_episodes = 5
+worry_cluster_days = 30
+
+[voicevox]
+endpoint = "http://127.0.0.1:50021"
+speaker_id = 3
+
+[video]
+width = 1920
+height = 1080
+fps = 30
+bitrate = "8M"
+
+[rate_limit]
+per_host_per_sec = 1
+
+[http]
+# User-Agent に連絡先を入れる（SPEC §8.1）。自分の連絡先に書き換える
+user_agent = "koten-videos/0.1 (+contact: set-your-email@example.com)"
+timeout_sec = 30
+
+[chunk]
+min_chars = 200
+max_chars = 600

@@ -1,0 +1,8 @@
+stat_id,theme,label,value,unit,survey,year,url
+rodo_r7_amount,仕事の量,強い不安・ストレスの内容（仕事の量）,39.5,%,労働安全衛生調査（令和7年）,2025,https://www.rodo.co.jp/series/225471/
+rodo_r7_failure,失敗・責任,強い不安・ストレスの内容（失敗・責任）,39.5,%,労働安全衛生調査（令和7年）,2025,https://www.rodo.co.jp/series/225471/
+rodo_r7_relations,職場の人間関係,強い不安・ストレスの内容（対人関係。前年から6.8ポイント増）,32.9,%,労働安全衛生調査（令和7年）,2025,https://www.rodo.co.jp/series/225471/
+funso_r7_harassment,いじめ・嫌がらせ,民事上の個別労働紛争の相談件数（14年連続最多）,55614,件,個別労働紛争解決制度の施行状況（令和7年度）,2025,https://www.mhlw.go.jp/stf/houdou/newpage_00235.html
+nf_2026_future,将来への不安,17〜19歳で「自国の将来は良くなる」と答えた割合,16,%,日本財団18歳意識調査 第78回,2026,https://webtan.impress.co.jp/r/prtimes/items/000000511.000025872
+gakujo_2025_jobchange,転職の迷い,20代の転職希望者で「転職すべきか迷った」割合,7割超,,学情 20代の転職意向調査,2025,https://service.gakujo.ne.jp/wp-content/uploads/2025/08/250901-rekatsuenq.pdf
+cao_loneliness,孤独,孤独感は若年・中年層で高く、20代は男女とも高い,報告書から転記,,人々のつながりに関する基礎調査（内閣府）,,https://www.cao.go.jp/kodoku_koritsu/torikumi/yushikisha_arikata/dai5/pdf/siryou1-1.pdf
