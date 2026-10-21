@@ -11,8 +11,9 @@ Excel・グラフ・代表意見・精度報告として納品するための仕
 
 ## いまの状態
 
-設計と安全対策の土台までです。パイプライン本体（`src/survey_coder/`）と架空データの生成（`tools/samplegen/`）は、
-Mac の機種とメモリが決まってから構築係（`.claude/agents/builder.md`）が実装します。
+設計と安全対策の土台までです。使う Mac は MacBook Pro（M5、32GB、macOS 27.0.1）に決まりました。
+2026年11月の初めに架空データの生成（`tools/samplegen/`）、続けてパイプライン本体（`src/survey_coder/`）を
+構築係（`.claude/agents/builder.md`）が実装します。
 
 ## 最初にやること（Mac で）
 
