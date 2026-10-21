@@ -1,6 +1,6 @@
 """案 2-US 米国の 10-K のリスク要因（docs/us_text.md）。
 
-点検 1: 時点ごとの S&P500（Wikipedia の今の一覧と変更の表をさかのぼって作る）と、Yahoo の値段のそろい方。
+点検 1: 時点ごとの S&P500（Wikipedia の「List of S&P 500 companies」の、月末ごとの古い版の一覧）と、Yahoo の値段のそろい方。
 SEC EDGAR からの取得は、点検 1 を通った後に足す。取ったものは data/edgar/（コミットしない）。
 """
 
@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import pandas as pd
 
-WIKI_SP500 = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+WIKI_API = "https://en.wikipedia.org/w/api.php"
+WIKI_TITLE = "List of S&P 500 companies"
 START = pd.Timestamp("2014-12-31")       # この月末から（保有月 2015-01〜）
 COUNT_RANGE = (490, 515)                 # 点検 1 (a): 毎月末の会社の数
 MAX_BAD_MONTHS = 6                       # 点検 1 (a): 数が外れてよい月の数
@@ -28,35 +29,8 @@ def _flat(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _words(x) -> str:
-    return " ".join(str(v) for v in (x if isinstance(x, (list, tuple)) else [x])).lower()
-
-
-def find_changes(tables: list[pd.DataFrame]) -> pd.DataFrame | None:
-    """変更の表（追加と除外の列がある表）。見出しが表の中の行になっている形（見出しが th でない）にも対応する。"""
-    for t in tables:
-        f = _flat(t)
-        head = " ".join(str(c) for c in f.columns).lower()
-        if ("added" in head or "addition" in head) and ("removed" in head or "deletion" in head):
-            return f
-        for k in (2, 1):                                   # 見出しが最初の 1〜2 行に入っている（2 行目が「Ticker・Security」なら 2 行）
-            if len(f) <= k:
-                continue
-            rows = f.iloc[:k].astype(str)
-            text = " ".join(rows.to_numpy().ravel()).lower()
-            sub = " ".join(rows.iloc[-1].to_numpy()).lower()
-            if k == 2 and not any(w in sub for w in ("ticker", "symbol", "security")):
-                continue
-            if ("added" in text or "addition" in text) and ("removed" in text or "deletion" in text):
-                names = [" ".join(dict.fromkeys(v for v in rows[c] if v and v != "nan")) for c in f.columns]
-                g = f.iloc[k:].copy()
-                g.columns = names
-                return g.reset_index(drop=True)
-    return None
-
-
 def describe(tables: list[pd.DataFrame]) -> str:
-    """表の数・形・最初の列の名前（変更の表が見つからないときに、直すための手がかり）。"""
+    """表の数・形・最初の列の名前（一覧が見つからないときに、直すための手がかり）。"""
     out = []
     for i, t in enumerate(tables[:12]):
         f = _flat(t)
@@ -64,56 +38,37 @@ def describe(tables: list[pd.DataFrame]) -> str:
     return f"全部で {len(tables)} 個。" + " / ".join(out)
 
 
-def parse_wiki(tables: list[pd.DataFrame]) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Wikipedia の表から、今の一覧（ticker / name / sector / cik）と変更の表（date / added / added_name / removed / removed_name）。"""
-    cur = next(_flat(t) for t in tables if {"Symbol", "Security"} <= set(_flat(t).columns))
-    current = pd.DataFrame({"ticker": cur["Symbol"].map(yahoo_symbol), "name": cur["Security"].astype(str),
-                            "sector": cur.get("GICS Sector", pd.Series(UNKNOWN_SECTOR, index=cur.index)).astype(str),
-                            "cik": pd.to_numeric(cur.get("CIK"), errors="coerce").astype("Int64") if "CIK" in cur else pd.NA})
-    ch = find_changes(tables)
-    if ch is None:
-        raise ValueError("Wikipedia のページに変更の表が見つからない。表の形: " + describe(tables))
+def parse_constituents(tables: list[pd.DataFrame], min_rows: int = 400) -> pd.DataFrame:
+    """ページのその版の S&P500 の一覧（ticker / name / sector / cik）。昔の版の列の名前（Ticker symbol・Company など）にも対応する。"""
+    for t in tables:
+        f = _flat(t)
+        if len(f) < min_rows:
+            continue
+        low = {c: str(c).lower() for c in f.columns}
+        tick = next((c for c, l in low.items() if "symbol" in l or "ticker" in l), None)
+        name = next((c for c, l in low.items() if "security" in l or "company" in l), None)
+        if tick is None or name is None:
+            continue
+        sector = next((c for c, l in low.items() if "gics" in l and "sector" in l and "sub" not in l), None)
+        cik = next((c for c, l in low.items() if l.strip() == "cik" or "cik" in l.split()), None)
+        tk = f[tick].astype(str).str.replace(r"\[.*?\]", "", regex=True).str.strip()
+        out = pd.DataFrame({"ticker": tk.map(yahoo_symbol), "name": f[name].astype(str).str.strip(),
+                            "sector": f[sector].astype(str).str.strip() if sector is not None else UNKNOWN_SECTOR,
+                            "cik": pd.to_numeric(f[cik], errors="coerce").astype("Int64") if cik is not None else pd.NA})
+        out = out[out["ticker"].str.match(r"^[A-Z][A-Z0-9\-]{0,9}$", na=False)]
+        return out.drop_duplicates("ticker").reset_index(drop=True)
+    raise ValueError("このページの版に S&P500 の一覧が見つからない。表の形: " + describe(tables))
 
-    def col(*words: str) -> pd.Series:
-        for c in ch.columns:
-            if all(any(w.lower() in str(c).lower() for w in alt.split("|")) for alt in words):
-                return ch[c]
-        return pd.Series([None] * len(ch), index=ch.index)
 
-    date = pd.to_datetime(col("Date").astype(str).str.replace(r"\[.*?\]", "", regex=True), errors="coerce", format="mixed")
-
-    def tick(s: pd.Series) -> pd.Series:
-        s = s.astype(str).str.strip()
-        return s.where(s.ne("") & s.ne("nan") & s.ne("None") & s.ne("—") & s.ne("-")).map(lambda x: yahoo_symbol(x) if isinstance(x, str) else None)
-
-    changes = pd.DataFrame({"date": date, "added": tick(col("Added|Addition", "Ticker|Symbol")),
-                            "added_name": col("Added|Addition", "Security|Company|Name"),
-                            "removed": tick(col("Removed|Deletion", "Ticker|Symbol")),
-                            "removed_name": col("Removed|Deletion", "Security|Company|Name")})
-    changes = changes.dropna(subset=["date"])
-    return current.reset_index(drop=True), changes.sort_values("date", ascending=False).reset_index(drop=True)
+def membership_from_snapshots(snaps: dict[pd.Timestamp, pd.DataFrame]) -> tuple[dict[pd.Timestamp, frozenset], pd.DataFrame]:
+    """月末ごとのページの版の一覧から、月末ごとの会社と、その時点の名前・業種・CIK。"""
+    members = {m: frozenset(df["ticker"]) for m, df in sorted(snaps.items())}
+    info = pd.concat([df.assign(month=m) for m, df in sorted(snaps.items())], ignore_index=True) if snaps else pd.DataFrame()
+    return members, info
 
 
 def month_ends(start: pd.Timestamp, last: pd.Timestamp) -> pd.DatetimeIndex:
     return pd.date_range(pd.Timestamp(start), pd.Timestamp(last), freq="ME")
-
-
-def membership(current: pd.DataFrame, changes: pd.DataFrame, ends: pd.DatetimeIndex) -> dict[pd.Timestamp, frozenset]:
-    """月末ごとの会社。今の一覧から、その月末より後の変更を新しい順に取り消していく（足された会社を除き、外された会社を戻す）。"""
-    members = set(current["ticker"])
-    ch = changes.sort_values("date", ascending=False).reset_index(drop=True)
-    out: dict[pd.Timestamp, frozenset] = {}
-    k = 0
-    for m in sorted(ends, reverse=True):
-        while k < len(ch) and ch.at[k, "date"] > m:
-            added, removed = ch.at[k, "added"], ch.at[k, "removed"]
-            if isinstance(added, str) and added:
-                members.discard(added)
-            if isinstance(removed, str) and removed:
-                members.add(removed)
-            k += 1
-        out[m] = frozenset(members)
-    return dict(sorted(out.items()))
 
 
 def monthly_last(close: pd.DataFrame) -> pd.DataFrame:

@@ -1,6 +1,6 @@
 """案 2-US 米国の 10-K のリスク要因（docs/us_text.md）。
 
-    python scripts/edgar.py universe   # 点検 1: 時点ごとの S&P500（Wikipedia）と Yahoo の値段のそろい方（数分。SEC は使わない）
+    python scripts/edgar.py universe   # 点検 1: 時点ごとの S&P500（Wikipedia の月末ごとの古い版）と Yahoo の値段のそろい方（数分。SEC は使わない）
 
 点検 1 を通った後に、key・check・fetch・status・lazy を足す。取ったものは data/edgar/（コミットしない）。
 """
@@ -9,9 +9,14 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 import pandas as pd
 
@@ -35,13 +40,40 @@ def write(out_dir: Path, name: str, lines: list[str]) -> Path:
     return path
 
 
-def wiki_tables(root: Path | None = None) -> list[pd.DataFrame]:
-    import stocks_study as M
+UA = "bunkoko-research/1.0 (https://github.com/bunkoko/bunkoko; personal research)"   # Wikipedia の決まりで、取る人を名乗る（個人の連絡先は入れない）
+WAITS = (10.0, 30.0, 60.0)
 
-    html = M.http_get(EG.WIKI_SP500).decode("utf-8")
-    if root is not None:
-        (root / "wiki.html").write_text(html, encoding="utf-8")          # 表の形が変わったときに見直すため（コミットしない）
-    return pd.read_html(io.StringIO(html))
+
+def wiki_api(params: dict, sleep=time.sleep) -> dict:
+    """Wikipedia の API を 1 回呼ぶ（1 秒に 1 件。断られたら 10・30・60 秒待つ）。"""
+    url = EG.WIKI_API + "?" + urlencode({**params, "format": "json", "formatversion": 2})
+    for k in range(len(WAITS) + 1):
+        sleep(1.0)
+        try:
+            with urlopen(Request(url, headers={"User-Agent": UA}), timeout=60) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except (HTTPError, URLError, TimeoutError) as e:
+            if k == len(WAITS):
+                raise SystemExit(f"Wikipedia に断られ続けた（{type(e).__name__}）。時間をおいて同じコマンドで続きから")
+            sleep(WAITS[k])
+    return {}
+
+
+def snapshot(month: pd.Timestamp, root: Path, api=wiki_api) -> pd.DataFrame:
+    """その月末の時点のページの版（月末の翌日 0 時 UTC より前の、一番新しい版）の一覧。取った版は data/edgar/universe/snapshots/ に残し、次は使い回す。"""
+    d = root / "snapshots"
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"{month:%Y-%m}.html"
+    if not path.exists():
+        t = (month + pd.Timedelta(days=1)).strftime("%Y-%m-%dT00:00:00Z")
+        q = api({"action": "query", "prop": "revisions", "titles": EG.WIKI_TITLE, "rvlimit": 1, "rvdir": "older",
+                 "rvstart": t, "rvprop": "ids|timestamp"})
+        rev = q["query"]["pages"][0]["revisions"][0]
+        html = api({"action": "parse", "oldid": rev["revid"], "prop": "text"})["parse"]["text"]
+        path.write_text(html, encoding="utf-8")
+        with (d / "revisions.csv").open("a", encoding="utf-8") as f:
+            f.write(f"{month:%Y-%m-%d},{rev['revid']},{rev['timestamp']}\n")
+    return EG.parse_constituents(pd.read_html(io.StringIO(path.read_text(encoding="utf-8"))))
 
 
 def fetch_prices(tickers: list[str], since: str) -> pd.DataFrame:
@@ -50,22 +82,23 @@ def fetch_prices(tickers: list[str], since: str) -> pd.DataFrame:
     return M.fetch_daily(tickers, since)[1]
 
 
-def cmd_universe(args, tables=None, prices=None) -> Path:
+def cmd_universe(args, api=None, prices=None) -> Path:
     root = Path(args.root) / "universe"
     root.mkdir(parents=True, exist_ok=True)
     today = pd.Timestamp(args.today) if args.today else pd.Timestamp.now(tz="America/New_York").tz_localize(None).normalize()
     last = (today.to_period("M") - 1).to_timestamp(how="end").normalize()          # 終わった最後の月
-    print("Wikipedia の S&P500 の一覧と変更の表…", flush=True)
-    try:
-        current, changes = EG.parse_wiki(tables if tables is not None else wiki_tables(root))
-    except ValueError as e:
-        sys.exit(f"止めた: {e}\n（この文を Claude に貼ってください。ページは {root / 'wiki.html'} に保存した）")
-    current.to_csv(root / "wiki_current.csv", index=False)
-    changes.to_csv(root / "wiki_changes.csv", index=False)
     ends = EG.month_ends(EG.START, last)
-    members = EG.membership(current, changes, ends)
-    rows = [{"month": m, "ticker": t} for m, ts in members.items() for t in sorted(ts)]
-    pd.DataFrame(rows).to_csv(root / "members.csv", index=False)
+    print(f"Wikipedia の S&P500 の一覧の、月末ごとの古い版 {len(ends)} 個（1 秒に 1 件。取った版は使い回す）…", flush=True)
+    snaps = {}
+    for k, m in enumerate(ends):
+        try:
+            snaps[m] = snapshot(m, root, api or wiki_api)
+        except ValueError as e:
+            sys.exit(f"止めた: {m:%Y-%m} の版: {e}\n（この文を Claude に貼ってください）")
+        if (k + 1) % 24 == 0:
+            print(f"  {k + 1}/{len(ends)}（{m:%Y-%m}: {len(snaps[m])} 社）", flush=True)
+    members, info = EG.membership_from_snapshots(snaps)
+    info.to_csv(root / "members.csv", index=False)
     ever = sorted({t for ts in members.values() for t in ts})
     print(f"値段（Yahoo）: これまでに S&P500 にいた {len(ever)} 社…", flush=True)
     close = prices(ever, "2014-01-01") if prices is not None else fetch_prices(ever, "2014-01-01")
@@ -84,7 +117,7 @@ def cmd_universe(args, tables=None, prices=None) -> Path:
     say("# 案 2-US の点検 1: 時点ごとの S&P500 と値段のそろい方")
     say("")
     say(f"作成: {datetime.now():%Y-%m-%d %H:%M}　決まり: docs/us_text.md 4 章（データを取る前に決めたもの）。SEC は使っていない")
-    say(f"- Wikipedia: 今の一覧 {len(current)} 社・変更の表 {len(changes)} 行（{changes['date'].min():%Y-%m-%d}〜{changes['date'].max():%Y-%m-%d}）")
+    say(f"- Wikipedia: 「{EG.WIKI_TITLE}」の月末ごとの古い版 {len(snaps)} 個（版の番号は data/edgar/universe/snapshots/revisions.csv）。業種はその時点の版の GICS")
     say(f"- 月末: {ends[0]:%Y-%m}〜{ends[-1]:%Y-%m}（{len(ends)} か月）。これまでにいた会社 {len(ever)} 社、Yahoo の値段のある会社 {int(close.notna().any().sum())} 社")
     say("")
     say("## 1. 判定")
@@ -115,13 +148,13 @@ def cmd_universe(args, tables=None, prices=None) -> Path:
     say("")
     say("## 4. 読み方・限界")
     say("")
-    say("- Wikipedia の変更の表は抜けや記号の変更（会社の名前・記号が変わった）がありうる。数が外れる月はその印")
+    say("- Wikipedia の古い版は、その時点の編集者の書いた一覧（抜け・遅れ・いたずらの版がありうる）。数が外れる月はその印")
     say("- 値段の無い会社の多くは、買収・上場廃止で Yahoo から値段が消えた会社。記号を別の会社が使い回していると、別の会社の値段が入ることがある")
     say("- データは data/edgar/（コミットしない）。この一覧（members.csv）を後の計算でもそのまま使う（取り直さない）")
     return write(Path(args.out), "universe.md", lines)
 
 
-def main(argv: list[str] | None = None, tables=None, prices=None):
+def main(argv: list[str] | None = None, api=None, prices=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("command", choices=["universe"])
     p.add_argument("--root", default="data/edgar")
@@ -129,7 +162,7 @@ def main(argv: list[str] | None = None, tables=None, prices=None):
     p.add_argument("--today", help="今日として扱う日（試験用）")
     args = p.parse_args(argv)
     if args.command == "universe":
-        return cmd_universe(args, tables, prices)
+        return cmd_universe(args, api, prices)
     return None
 
 
