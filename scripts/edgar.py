@@ -2,14 +2,23 @@
 
     python scripts/edgar.py universe   # 点検 1: 時点ごとの S&P500（Wikipedia の月末ごとの古い版）と Yahoo の値段のそろい方（数分。SEC は使わない）
 
-点検 1 を通った後に、key・check・fetch・status・lazy を足す。取ったものは data/edgar/（コミットしない）。
+    python scripts/edgar.py key        # SEC に名乗る名前と連絡先を保存（~/.bunkoko/sec.json、権限 600）
+    python scripts/edgar.py check      # 点検 2: くじで選んだ 60 件の 10-K のリスク要因の始まりと終わり（指令役が読んで判定する）
+    python scripts/edgar.py fetch      # 全部の 10-K（1 秒に 1 件。止めても続きから）
+    python scripts/edgar.py status     # 点検 3: 近さのある割合
+    python scripts/edgar.py lazy       # 判定（1 回だけ）
+
+取ったものは data/edgar/（コミットしない）。判定の決まりは docs/us_text.md 9 章。
 """
 
 from __future__ import annotations
 
 import argparse
+import getpass
 import io
 import json
+import os
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -18,6 +27,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +35,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from cfdbot import edgar as EG  # noqa: E402
+from cfdbot import sec as SEC  # noqa: E402
+from cfdbot import us_lazy as U  # noqa: E402
 
 
 def pct(x: float, d: int = 1) -> str:
@@ -190,16 +202,192 @@ def cmd_universe(args, api=None, prices=None, refetch=None) -> Path:
     return write(Path(args.out), "universe.md", lines)
 
 
-def main(argv: list[str] | None = None, api=None, prices=None, refetch=None):
+# --------------------------------------------------------------------------- SEC（点検 2・3 と判定。docs/us_text.md 9 章）
+def keep_awake() -> None:
+    """取得が終わるまで Mac を眠らせない（ふたを閉じると眠る）。"""
+    if sys.platform == "darwin":
+        subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())])
+
+
+def members_frame(args) -> pd.DataFrame:
+    path = Path(args.root) / "universe" / "members.csv"
+    if not path.exists():
+        sys.exit("会社の一覧が無い。先に ./cfd edgar universe（点検 1）を動かす")
+    m = pd.read_csv(path, dtype={"ticker": str, "symbol": str})
+    m["month"] = pd.to_datetime(m["month"])
+    m["cik"] = pd.to_numeric(m["cik"], errors="coerce").astype("Int64")
+    return m[m["month"] >= EG.WINDOW_START].reset_index(drop=True)
+
+
+def sec_client(args, getter=None, sleep=None) -> SEC.Client:
+    if getter is None:
+        ua = SEC.load_user_agent()
+        if not ua:
+            sys.exit("SEC に名乗る名前と連絡先が無い。先に ./cfd edgar key で保存する（リポジトリの外に置く）")
+        getter = SEC.http_getter(ua)
+    kw = {"sleep": sleep} if sleep else {}
+    return SEC.Client(getter, log=lambda t: print(t, flush=True), **kw)
+
+
+def all_filings(args, client: SEC.Client, members: pd.DataFrame) -> pd.DataFrame:
+    """2021-12〜の月末に一度でもいた会社の 10-K の一覧（期末が 2019-01-01 以降）。提出の一覧は data/edgar/sec/submissions に残して使い回す。"""
+    store = SEC.Store(Path(args.root) / "sec")
+    ciks = sorted({int(c) for c in members["cik"].dropna()})
+    todo = [c for c in ciks if not store.load_sub(c)]
+    if todo:
+        print(f"SEC の提出の一覧: {len(todo):,} 社（全部で {len(ciks):,} 社。1 秒に 1 件）…", flush=True)
+    for k, c in enumerate(todo):
+        sub = SEC.submissions(client, c)
+        if sub:
+            store.save_sub(c, sub)
+        if (k + 1) % 50 == 0:
+            print(f"  {k + 1}/{len(todo)}", flush=True)
+    parts = [SEC.tenk_filings(store.load_sub(c), c) for c in ciks if store.load_sub(c)]
+    f = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=SEC.COLUMNS)
+    f.to_csv(Path(args.root) / "sec" / "filings.csv", index=False)
+    return f
+
+
+def cmd_key(args) -> None:
+    name = getpass.getpass("SEC に名乗る名前（個人名か屋号。画面には出ません）: ").strip()
+    mail = getpass.getpass("連絡先のメール（画面には出ません）: ").strip()
+    if not name or "@" not in mail:
+        sys.exit("名前とメールの両方が要る。保存していない")
+    print(f"保存した: {SEC.save_user_agent(f'{name} {mail}')}（権限 600。このリポジトリの外。記録・報告には出さない）")
+
+
+def cmd_check(args, getter=None, sleep=None) -> Path:
+    members = members_frame(args)
+    client = sec_client(args, getter, sleep)
+    store = SEC.Store(Path(args.root) / "sec")
+    filings = all_filings(args, client, members)
+    sample = SEC.sample_for_check(filings, SEC.CHECK_PER_YEAR)
+    print(f"点検 2: くじで選んだ 10-K {len(sample)} 件を取る…", flush=True)
+    SEC.fetch_docs(client, store, sample, pd.Timestamp.now(), log=lambda t: print(t, flush=True))
+    rows = SEC.check_rows(store, sample)
+    lines = ["# 案 2-US の点検 2: リスク要因を取り出せるか", "",
+             f"作成: {datetime.now():%Y-%m-%d %H:%M}　決まり: docs/us_text.md 9.1（くじ: 2020 年 6 件・2021〜2026 年 各 9 件。決まった種）",
+             f"- 10-K の一覧: {len(filings):,} 件・{filings['cik'].nunique() if len(filings) else 0:,} 社。くじ {len(rows)} 件",
+             "- 通る条件: 57 件以上で、始まりが本文の「Item 1A. Risk Factors」の見出し、終わりが Item 1B・1C・2 の前。どの年も失敗が 2 割未満。"
+             "**判定は指令役が、下の始まりと終わりの文を読んで行う**（コードの自己判定ではない）", "",
+             "| # | 年 | CIK | 受付番号 | 文字数 | 状態 |", "|---|---|---|---|---|---|"]
+    lines += [f"| {i + 1} | {r['year']} | {r['cik']} | {r['accession']} | {r['chars']:,} | {r['status']} |" for i, r in enumerate(rows)]
+    lines += ["", "## 始まりと終わり（各 300 字）", ""]
+    for i, r in enumerate(rows):
+        lines += [f"### {i + 1}（{r['year']} 年・{r['chars']:,} 字）", "", "始まり: " + r["head"].replace("\n", " / "), "",
+                  "終わり: " + r["tail"].replace("\n", " / "), ""]
+    return write(Path(args.out), "check.md", lines)
+
+
+def cmd_fetch(args, getter=None, sleep=None) -> None:
+    members = members_frame(args)
+    store = SEC.Store(Path(args.root) / "sec")
+    if not store.lock():
+        sys.exit("ほかの取得が動いている（同時に 1 本だけ）")
+    keep_awake()
+    try:
+        client = sec_client(args, getter, sleep)
+        filings = all_filings(args, client, members)
+        print(f"10-K の本文: {len(filings):,} 件のうち、まだ取っていないもの（1 秒に 1 件。止めても続きから）…", flush=True)
+        got = SEC.fetch_docs(client, store, filings, pd.Timestamp.now(), log=lambda t: print(t, flush=True))
+        print(f"10-K: 取った {got['docs']:,}・リスク要因が無い {got['empty']:,}・取れない {got['missing']:,}・残り {got['left']:,}", flush=True)
+    except SEC.Stop as e:
+        raise SystemExit(f"止めた: {e}（同じコマンドで続きから）")
+    finally:
+        store.unlock()
+
+
+def lazy_inputs(args) -> dict:
+    """判定に使うもの（取得が終わっていて、動いていないときだけ）。"""
+    members = members_frame(args)
+    store = SEC.Store(Path(args.root) / "sec")
+    fpath = Path(args.root) / "sec" / "filings.csv"
+    if not fpath.exists():
+        sys.exit("10-K の一覧が無い。先に ./cfd edgar check → fetch")
+    lock = store.root / ".lock"
+    if lock.exists():
+        try:
+            os.kill(int(lock.read_text().strip() or 0), 0)
+            sys.exit("10-K の取得がまだ動いている。終わってから動かす")
+        except (OSError, ValueError):
+            pass
+    filings = pd.read_csv(fpath, parse_dates=["filing_date", "report_date", "acceptance"])
+    ix = store.index()
+    left = filings[~filings["accession"].astype(str).isin(set(ix["accession"]))]
+    if len(left):
+        sys.exit(f"10-K の本文の取得がまだ終わっていない（{len(filings):,} 件のうち残り {len(left):,} 件）。先に ./cfd edgar fetch を終える")
+    cik_of = dict(zip(filings["accession"], filings["cik"]))
+    cache: dict[str, dict] = {}
+
+    def text_of(acc: str, kind: str) -> str:
+        if acc not in cache:
+            cache[acc] = store.load_doc(int(cik_of[acc]), acc)
+        return str(cache[acc].get(kind, ""))
+
+    names = members.dropna(subset=["cik"]).groupby("cik")["name"].agg(lambda s: sorted(set(map(str, s))))
+    edgar_names = {int(c): str(store.load_sub(int(c)).get("name", "")) for c in members["cik"].dropna().unique()}
+
+    def names_of(cik: int) -> list[str]:
+        return [n for n in names.get(cik, []) + [edgar_names.get(int(cik), "")] if n]
+
+    close = pd.read_csv(Path(args.root) / "us_close.csv", index_col=0, parse_dates=True)
+    mclose = EG.monthly_last(close)
+    trade_days = {m: close.index[close.index <= m].max() for m in mclose.index}
+    return {"members": members, "filings": filings, "index": ix, "text_of": text_of, "names_of": names_of,
+            "mclose": mclose, "trade_days": trade_days}
+
+
+def cmd_status(args) -> None:
+    d = lazy_inputs(args)
+    ix = d["index"]
+    pr = U.pairs(d["filings"], d["text_of"], d["names_of"], "risks")
+    sig = U.signals(pr, sorted(d["members"]["month"].unique()), d["trade_days"])
+    cov = U.coverage(d["members"], sig, EG.WINDOW_START)
+    print(f"10-K: {len(d['filings']):,} 件（取った {int((ix['status'] == 'ok').sum()):,}・リスク要因が無い {int((ix['status'] == 'empty').sum()):,}・"
+          f"取れない {int((ix['status'] == 'missing').sum()):,}）。前年と組にできた「リスク要因」{len(pr):,} 組")
+    print(f"点検 3: 会社 × 月のうち、近さのある割合 {cov:.1%}（線は {U.COVERAGE_MIN:.0%}）→ **{'通った' if cov >= U.COVERAGE_MIN else '通らなかった'}**")
+
+
+def cmd_lazy(args) -> Path:
+    done = sorted(Path(args.out).glob("*/lazy.md"))
+    if done and not args.again:
+        sys.exit(f"判定はもう 1 回計算してある（{done[-1]}）。1 回だけの決まり（docs/us_text.md 5 章）なので、動かし直さない")
+    d = lazy_inputs(args)
+    pr = U.pairs(d["filings"], d["text_of"], d["names_of"], "risks")
+    pm = U.pairs(d["filings"], d["text_of"], d["names_of"], "mdna")
+    ends = sorted(d["members"]["month"].unique())
+    sig, sigm = U.signals(pr, ends, d["trade_days"]), U.signals(pm, ends, d["trade_days"])
+    today = pd.Timestamp(args.today) if args.today else pd.Timestamp.now(tz="America/New_York").tz_localize(None)
+    print(f"判定を計算する（偶然との比べ {U.PLACEBO} 回。数分）…", flush=True)
+    res = U.evaluate(d["members"], sig, d["mclose"], np.random.default_rng(20261021), sig_mdna=sigm, today=today)
+    meta = {"made": f"{datetime.now():%Y-%m-%d %H:%M}", "filings": len(d["filings"]), "firms": int(d["filings"]["cik"].nunique()),
+            "pairs": len(pr), "pairs_mdna": len(pm), "sim_median": float(pr["sim"].median()) if len(pr) else float("nan"),
+            "no_cik": int(d["members"].loc[d["members"]["cik"].isna(), "ticker"].nunique())}
+    lines = U.report_lines(res, meta)
+    for t in lines:
+        print(t, flush=True)
+    return write(Path(args.out), "lazy.md", lines)
+
+
+def main(argv: list[str] | None = None, api=None, prices=None, refetch=None, getter=None, sleep=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("command", choices=["universe"])
+    p.add_argument("command", choices=["universe", "key", "check", "fetch", "status", "lazy"])
+    p.add_argument("--again", action="store_true", help="lazy: 試験用（判定をもう一度。本番では使わない）")
     p.add_argument("--root", default="data/edgar")
     p.add_argument("--out", default="output/edgar")
     p.add_argument("--today", help="今日として扱う日（試験用）")
     args = p.parse_args(argv)
     if args.command == "universe":
         return cmd_universe(args, api, prices, refetch)
-    return None
+    if args.command == "key":
+        return cmd_key(args)
+    if args.command == "check":
+        return cmd_check(args, getter, sleep)
+    if args.command == "fetch":
+        return cmd_fetch(args, getter, sleep)
+    if args.command == "status":
+        return cmd_status(args)
+    return cmd_lazy(args)
 
 
 if __name__ == "__main__":
