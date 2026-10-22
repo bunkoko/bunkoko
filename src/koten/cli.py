@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Annotated
 
 import typer
@@ -130,6 +131,9 @@ def _augment_dir(s: Settings, hdd):
 @app.command()
 def augment(
     limit: Annotated[int | None, typer.Option(help="今回処理するチャンクの上限")] = None,
+    model: Annotated[
+        str | None, typer.Option(help="ローカルLLMのモデル（既定は settings の llm.augment.model）")
+    ] = None,
     resume: Annotated[bool, typer.Option(help="処理済みのチャンクを飛ばす（常に有効）")] = True,
     settings: SettingsOpt = None,
 ) -> None:
@@ -142,7 +146,8 @@ def augment(
     from koten.llm import LLMError, OpenAICompatLLM
 
     conf = s.section("llm.augment")
-    if conf.get("model") in (None, "", "要確認"):
+    model = model or conf.get("model")
+    if model in (None, "", "要確認"):
         typer.secho(
             "settings.toml の [llm.augment] model を、"
             "ローカルLLMで読み込んだモデル名にしてください",
@@ -152,11 +157,12 @@ def augment(
         raise typer.Exit(2)
     llm = OpenAICompatLLM(
         conf["endpoint"],
-        conf["model"],
+        model,
         response_format=conf.get("response_format", "json_schema"),
         timeout_sec=conf.get("timeout_sec", 300),
     )
     cfg = AugmentConfig.from_settings(s.section("augment"))
+    started = time.monotonic()
     try:
         r = run_augment(
             hdd,
@@ -170,10 +176,44 @@ def augment(
     except LLMError as e:
         typer.secho(str(e), fg="red", err=True)
         raise typer.Exit(1) from e
+    elapsed = time.monotonic() - started
+    per_chunk = elapsed / r.processed if r.processed else 0.0
     typer.echo(
         f"処理 {r.processed} チャンク（失敗 {r.failed}）、候補 {r.candidates} 件。"
         f"捨てた一節：{dict(r.dropped) or 'なし'}"
     )
+    typer.echo(f"時間 {elapsed:.0f}秒（1チャンクあたり {per_chunk:.1f}秒）・モデル {model}")
+
+
+@app.command()
+def candidates(
+    model: Annotated[
+        str | None, typer.Option(help="ローカルLLMのモデル（既定は settings の llm.augment.model）")
+    ] = None,
+    n: Annotated[int, typer.Option(help="表示する件数")] = 5,
+    seed: Annotated[int, typer.Option(help="選び方を変えるときの数")] = 0,
+    settings: SettingsOpt = None,
+) -> None:
+    """抜き出した引用候補を何件か表示する（モデルの比べ用）。"""
+    import random
+
+    from koten.augment.extract import iter_candidates, llm_slug
+
+    s = _settings(settings)
+    hdd = _hdd(s)
+    model = model or s.section("llm.augment").get("model", "")
+    adir = hdd / "augment" / llm_slug(model) / s.section("augment").get("prompt", "augment_v1")
+    _require_input(adir, f"augment --model {model}")
+    rows = list(iter_candidates(adir))
+    typer.echo(f"{model}：候補 {len(rows)} 件")
+    for r in random.Random(seed).sample(rows, min(n, len(rows))):
+        flag = f"　※注意：{r['caution_reason']}" if r["caution"] else ""
+        typer.echo(
+            f"\n■ {r['candidate_id']}（{r['section']}）引用映え {r['quotability']:.1f}{flag}"
+        )
+        typer.echo(f"  「{r['quote_text']}」")
+        typer.echo(f"  要旨：{r['summary_ja']}")
+        typer.echo(f"  テーマ：{'、'.join(r['themes'])}　悩み：{' / '.join(r['worries'])}")
 
 
 @app.command()

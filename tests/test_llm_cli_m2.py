@@ -71,3 +71,22 @@ def test_sudachi_index_if_installed(hdd_with_chunks):
     build_index(hdd, s.ssd_root, adir, "hash-bigram", tokenizer="sudachi")
     hits = HotIndex(s.ssd_root, "hash-bigram").search_bm25("比べてしまう", 3)
     assert hits and "比べ" in hits[0].row["summary_ja"] + "".join(hits[0].row["worries"])
+
+
+def test_augment_model_option_and_candidates(hdd_with_chunks, settings_file, monkeypatch):
+    from tests.conftest import FakeLLM
+
+    fake = FakeLLM()
+    monkeypatch.setattr(
+        "koten.llm.OpenAICompatLLM.complete",
+        lambda self, system, user, schema=None: fake.complete(system, user),
+    )
+    st = ["--settings", str(settings_file)]
+    r = CliRunner().invoke(app, ["augment", "--limit", "2", "--model", "other-model", *st])
+    assert r.exit_code == 0, r.output
+    assert "1チャンクあたり" in r.output and "other-model" in r.output
+    _, hdd = hdd_with_chunks
+    assert (hdd / "augment/other-model/augment_v1").exists()
+    r = CliRunner().invoke(app, ["candidates", "--model", "other-model", "--n", "1", *st])
+    assert r.exit_code == 0, r.output
+    assert "other-model：候補" in r.output and "要旨：" in r.output
