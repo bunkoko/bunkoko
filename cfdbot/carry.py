@@ -136,12 +136,13 @@ def switch_days(curve: pd.DataFrame) -> pd.Series:
     return out
 
 
-def front_returns(curve: pd.DataFrame, roll_lead: int = ROLL_LEAD) -> pd.DataFrame:
+def front_returns(curve: pd.DataFrame, roll_lead: int = ROLL_LEAD, sw: pd.Series | None = None) -> pd.DataFrame:
     """限月 1 を持ち、切り替わる roll_lead 営業日前に限月 2 へ乗り換えたときの日々の損益（1 単位の値段に対する割合）。
 
     列: ret（損益 ÷ 前日の持っている限月の値段の絶対値）、held（持っている限月: 1 か 2）、switch（切り替わった日）。
+    sw を渡せば、切り替わった日をデータから探さずにそれを使う（限月を規則で決めた場合。8 章）。
     """
-    sw = switch_days(curve)
+    sw = switch_days(curve) if sw is None else sw
     swa = sw.to_numpy()
     n = len(curve)
     held = np.ones(n, int)

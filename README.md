@@ -8,7 +8,12 @@ Windows は不要: EA のコンパイル・テスト・デモの試運転は Mac
 - 証券会社の決定・口座開設・データ取得から本番までの手順: **[docs/roadmap.md](docs/roadmap.md)**
 - 複数銘柄の組み合わせと資金配分をデータから学習（H1、iPad も計算に参加可）: **[docs/training.md](docs/training.md)**
 - **これから何を・どの画面で・どうするか（作業手順書）: [docs/operations.md](docs/operations.md)**
-- **これまでの検証のまとめと、これからの方針（2026-10-11）: [docs/review.md](docs/review.md)**
+- **これまでの検証のまとめと、これからの方針（2026-10-11）: [docs/review.md](docs/review.md)**（2026-10-15 の研究チームの見直しは 7 章、元の報告は [docs/team_20261015/](docs/team_20261015/)）
+- 資金全体の設計（NISA・EA・暗号資産。2026-10-15 の答えを反映）: [docs/portfolio.md](docs/portfolio.md)、利用者のやること: [docs/todo.md](docs/todo.md)、利益が出るかもしれないルールの一覧: [docs/rules_menu.md](docs/rules_menu.md)
+- 日本株の少額の本番（予行演習）の決まりと、今日の注文の一覧（`./cfd agents orders`。注文は出さない）: [docs/stocks_live.md](docs/stocks_live.md)、毎日の手順: [docs/stocks_live_daily.md](docs/stocks_live_daily.md)
+- 文章とニュースの信号（似た会社のモメンタム・有報の文面の前年との差・ニュースと値動きの大きさ。2026-10-16 に事前登録）: [docs/text_signals.md](docs/text_signals.md)
+- 記録だけの売買と追加の検証（2026-10-20 に事前登録）: 夜だけ持つ [docs/overnight.md](docs/overnight.md)、暗号資産の他の通貨 [docs/crypto.md](docs/crypto.md) 9 章、
+  原油のキャリー [docs/carry.md](docs/carry.md) 8 章、M2 を手で注文する形 [docs/agents.md](docs/agents.md) 13 章、決算発表をまたぐ [docs/earnings_premium.md](docs/earnings_premium.md)
 - 戦略は差し替え式。`cfdbot/strategies/` に追加するだけで、バックテスト・最適化・テストの対象になる
 
 | 銘柄 | 主力 | 副 |
@@ -100,6 +105,17 @@ python scripts/mt5_files.py install --run output/train/<日時>   # EA とプリ
 ./cfd agents collect --docs   # 適時開示の本文（PDF を文字にしたもの）と決算の数字（XBRL）もためる（毎日 8:00 の自動収集は schedule --job collect）
 ./cfd agents earnings   # 決算の数字（会社予想の変化など）で評価する（docs/agents.md 10 章。collect --xbrl-history の後）
 ./cfd agents extra --fetch    # 出来高・割安さ・大きさ・業種・進捗率を足して確かめる（docs/agents.md 11 章。earnings の後。20〜30 分）
+./cfd agents check      # 台帳の点検（自動実行・抜けた日）と、先のデータの途中経過・止める決まり（docs/agents.md 12 章。数秒）
+./cfd agents orders     # 日本株の予行演習: 今日の注文の一覧（注文は出さない）。--fill で約定、--report で様子（docs/stocks_live.md）
+./cfd jquants check     # J-Quants の無料プランで、生存者バイアスを取り除けるかを確かめる（docs/survivorship.md。初回は ./cfd jquants key）
+./cfd edinet check      # EDINET の有報の本文が何年分取れるかを確かめる（docs/text_signals.md。初回は ./cfd edinet key）→ fetch → momentum・lazy
+./cfd news volcheck     # 地政学のニュースの急増の翌日の値動きの大きさを、S&P500・TOPIX・BTC で確かめる（docs/text_signals.md 5 章）
+./cfd partner           # 相方の行き過ぎフィルタを、使っていない商品の 5 組で確かめる（docs/cross_asset.md 7 章。Mac で数十分）
+./cfd overnight --report      # 夜だけ持つ（1306 を引けで買い翌朝の寄りで売る）の記録だけの売買の途中経過（docs/overnight.md）
+./cfd crypto extra --fetch    # 暗号資産の他の 9 通貨の過去の検証（docs/crypto.md 9 章。毎朝の記録は crypto paper が BTC・ETH の後に書く）
+./cfd carry --paper           # 原油のキャリーの記録だけの売買（Yahoo の限月ごとの WTI。月に 1 回。docs/carry.md 8 章）
+./cfd agents manual           # 今週の手で買う候補（M2 を週 1 回・10 銘柄・1 日遅れにした形。--test で過去の検証。docs/agents.md 13 章）
+./cfd agents premium --test   # 決算発表をまたいで持つ（J7）の過去の検証（見ていない決算だけ）。--test 無しで先の記録（docs/earnings_premium.md）
 ```
 
 `./cfd meta` は『ファイナンス機械学習』（AFML）の方法で確かめる: パージング・エンバーゴ付きの組み合わせ交差検証（CPCV）、

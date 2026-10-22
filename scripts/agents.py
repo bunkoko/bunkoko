@@ -12,6 +12,14 @@
     python scripts/agents.py earnings             # 決算の数字で評価する（10 章の E1〜E3。collect --xbrl-history の後）
     python scripts/agents.py extra [--fetch]      # まだ入れていなかった項目（出来高・割安さ・業種・進捗率）を足して確かめる（11 章の F1〜F4）
     python scripts/agents.py status
+    python scripts/agents.py check                # 台帳の点検（自動実行が動いたか・抜けた日）と、先のデータの途中経過・止める決まり（12 章）
+    python scripts/agents.py orders               # 日本株の予行演習: 今日の注文の一覧を作る（注文は出さない。docs/stocks_live.md）
+    python scripts/agents.py orders --setup --equity 300000 [--deadline 13:30] [--real]   # 予行演習の設定（--real は空運転の条件を満たした後だけ）
+    python scripts/agents.py orders --fill 7203 買い 3 2850 [--fee 0] [--status 約定] [--at 引け] [--on 日付]   # 約定を書き足す
+    python scripts/agents.py orders --report      # 記録上の資産・止める決まり・空運転の進み具合・コスト（c*）の途中経過
+    python scripts/agents.py manual               # 今週の手で買う候補（M2 を週 1 回・10 銘柄・1 日遅れにした形。docs/agents.md 13 章）
+    python scripts/agents.py manual --test        # その形の過去の検証（M2a・M2b。数分）
+    python scripts/agents.py premium [--test]     # 決算発表をまたいで持つ（J7）の先の記録の途中経過（--test は使っていない決算での過去の検証）
     python scripts/agents.py schedule --job collect [--off]   # 毎日 8:00 に collect --docs を動かすよう登録する／外す（Mac の launchd）
     python scripts/agents.py schedule --job run [--off]       # 平日 13:05 に run --prices を動かすよう登録する／外す
 
@@ -55,6 +63,38 @@ def prices(data: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     return S.drop_closed_days(wide(data / "jp_open.csv"), wide(data / "jp_close.csv"))
 
 
+def record_prices(data: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """先の記録（台帳の点検・J7 の先の記録）の値段。消えた銘柄の値段も控えから足す（docs/agents.md 12.7）。"""
+    if not (data / "jp_close.csv").exists():
+        sys.exit("data/stocks が無い。先に ./cfd stocks --fetch を実行する")
+    return S.record_prices(data)
+
+
+def save_disclosures(df: pd.DataFrame, start: pd.DataFrame, path: Path) -> int:
+    """disclosures.csv を書く。一覧（universe_jp.csv）から外れて落ちた開示は、消さずに disclosures_removed.csv に残す
+    （先の記録のため。docs/agents.md 12.7）。残した件数を返す。"""
+    gone = start[~start["id"].isin(df["id"])]
+    added = 0
+    if len(gone):
+        keep = path.with_name("disclosures_removed.csv")
+        old = pd.read_csv(keep, dtype=str, keep_default_na=False) if keep.exists() else gone.iloc[:0].astype(str)
+        both = pd.concat([old, gone.astype(str)], ignore_index=True).drop_duplicates("id", keep="first")
+        added = len(both) - len(old)
+        if added:
+            both.to_csv(keep, index=False)
+    df.to_csv(path, index=False)
+    return added
+
+
+def record_disclosures(p: dict) -> pd.DataFrame:
+    """先の記録に使う開示: disclosures.csv と、一覧から外れて残した分（disclosures_removed.csv）を合わせたもの。"""
+    disc = pd.read_csv(p["disclosures"], dtype=str, keep_default_na=False)
+    keep = p["disclosures"].with_name("disclosures_removed.csv")
+    if keep.exists():
+        disc = pd.concat([disc, pd.read_csv(keep, dtype=str, keep_default_na=False)], ignore_index=True).drop_duplicates("id", keep="first")
+    return disc
+
+
 def pct(x: float, digits: int = 1) -> str:
     return f"{x:.{digits}%}" if x is not None and np.isfinite(x) else "–"
 
@@ -71,6 +111,7 @@ def cmd_collect(args) -> None:
     uni = pd.read_csv(Path(args.data) / "universe_jp.csv")
     tickers = set(uni["ticker"])
     df = C.load_disclosures(p["disclosures"])
+    start = df.copy()
     p["disclosures"].parent.mkdir(parents=True, exist_ok=True)
     before = len(df)
     if args.backfill:
@@ -83,7 +124,7 @@ def cmd_collect(args) -> None:
             except Exception as e:  # noqa: BLE001
                 print(f"  {t}: 取れない（{str(e)[:60]}）", flush=True)
             if (i + 1) % 25 == 0 or i == len(todo) - 1:
-                df.to_csv(p["disclosures"], index=False)
+                save_disclosures(df, start, p["disclosures"])
                 print(f"  {i + 1}/{len(todo)} 社、{len(df):,} 件", flush=True)
             time.sleep(0.5)
     else:
@@ -94,7 +135,9 @@ def cmd_collect(args) -> None:
             except Exception as e:  # noqa: BLE001
                 print(f"  {today - pd.Timedelta(days=k):%Y-%m-%d}: 一覧が取れない（{str(e)[:60]}）", flush=True)
             time.sleep(0.5)
-        df.to_csv(p["disclosures"], index=False)
+        kept = save_disclosures(df, start, p["disclosures"])
+        if kept:
+            print(f"情報収集: 一覧から外れた会社の開示 {kept:,} 件を disclosures_removed.csv に残した（消さない）", flush=True)
     print(f"情報収集: 開示 {len(df):,} 件（+{len(df) - before:,}）、{df['ticker'].nunique()} 社、{df['time'].min()[:10]}〜{df['time'].max()[:16]}", flush=True)
     if not args.no_embed:
         from cfdbot.news_embed import make_embedder
@@ -182,8 +225,47 @@ def cmd_decide(args) -> None:
         today.assign(date=today["date"].dt.strftime("%Y-%m-%d")).to_csv(p["ledger"], mode="a", header=not p["ledger"].exists(), index=False,
                                                                         float_format="%.5f")
         print(f"判断: {last:%Y-%m-%d} の判断 {int((today['book'] == 'combined').sum())} 銘柄を台帳に書き足した", flush=True)
+    # 台帳に足す帳（でたらめ・E1。docs/agents.md 12 章）は別のファイルに書く。ledger.csv の書き方・中身は変えない。
+    # 失敗しても ledger.csv はもう書いてあるので、理由を 1 行出して続ける
+    try:
+        write_extra_books(p, last, sel, bk, names, today["decided_at"].iloc[0] if len(today) else None)
+    except Exception as e:  # noqa: BLE001
+        print(f"判断: でたらめ・E1 の帳は書けなかった（{type(e).__name__}: {str(e)[:120]}）。ledger.csv は書いてある", flush=True)
     n = table.groupby("book")["date"].nunique()
     print(f"判断: 記録 {len(table):,} 行（{table['date'].min():%Y-%m-%d}〜{last:%Y-%m-%d}。" + "、".join(f"{k} {v} 日" for k, v in n.items()) + "）", flush=True)
+
+
+def write_extra_books(p: dict, last: pd.Timestamp, sel: pd.DataFrame, bk: dict, names: dict, stamp: str | None) -> None:
+    """でたらめの帳と E1 の帳を data/agents/ledger_extra.csv に書き足す（同じ日は二度書かない。書いた時刻を入れる）。"""
+    from cfdbot.agents import decider as D
+
+    path = p["ledger_extra"]
+    old = pd.read_csv(path, dtype=str) if path.exists() else pd.DataFrame()
+    if len(old) and f"{last:%Y-%m-%d}" in set(old["date"].str[:10]):
+        print(f"判断: {last:%Y-%m-%d} のでたらめ・E1 の帳はもうある（書き足さない）", flush=True)
+        return
+    revisions = pd.read_csv(p["revisions"], parse_dates=["date"]) if p["revisions"].exists() else None
+    if revisions is None:
+        print("判断: E1 の帳は、決算の数字の表（revisions_recent.csv）が無いので書かない（./cfd agents run で作られる）", flush=True)
+    extra = D.extra_rows(last, sel.iloc[-1], int(bk["selector"][-1].sum()), revisions, names)
+    try:                                   # 手で注文する形の帳（週の最初の営業日だけ。docs/agents.md 13.3）
+        from cfdbot.agents import manual as M
+
+        extra = pd.concat([extra, M.manual_rows(last, sel.iloc[-1], sel.index, names)], ignore_index=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"判断: 手で買う候補の帳は書けなかった（{type(e).__name__}: {str(e)[:120]}）。でたらめ・E1 の帳は書く", flush=True)
+    extra.insert(0, "decided_at", stamp or pd.Timestamp.now(tz=JST).tz_localize(None).strftime("%Y-%m-%d %H:%M:%S"))
+    extra.assign(date=pd.to_datetime(extra["date"]).dt.strftime("%Y-%m-%d")).to_csv(path, mode="a", header=not path.exists(), index=False,
+                                                                                   float_format="%.5f")
+    n = extra["book"].value_counts()
+    print(f"判断: でたらめの帳 {int(n.get(D.RANDOM_BOOK, 0))}・E1 の帳 {int(n.get(D.E1_BOOK, 0))}・手で買う候補 {int(n.get('m2_manual', 0))} 銘柄を "
+          f"{path.name} に書き足した", flush=True)
+
+
+def read_ledgers(p: dict) -> pd.DataFrame:
+    """台帳（ledger.csv）と、足した帳（ledger_extra.csv）を合わせて読む。どちらも無ければ空。"""
+    parts = [pd.read_csv(p[k], dtype={"ticker": str}) for k in ("ledger", "ledger_extra") if p[k].exists()]
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
 
 # --------------------------------------------------------------------------- 判断の評価
@@ -675,20 +757,429 @@ def cmd_extra(args) -> None:
 
 
 # --------------------------------------------------------------------------- まとめて・状態
-def cmd_run(args) -> None:
-    if args.prices:
-        sys.path.insert(0, str(ROOT / "scripts"))
-        import stocks_study as M
+def run_stamp(what: str) -> None:
+    """自動実行の段階の時刻を run.log に残す（./cfd agents check と orders --report が、何分かかったかを読む）。"""
+    print(f"[{pd.Timestamp.now(tz=JST).tz_localize(None):%Y-%m-%d %H:%M:%S}] 自動実行: {what}", flush=True)
 
-        data = Path(args.data)
-        uni = pd.read_csv(data / "universe_jp.csv")
-        print("値段を取り直す（日本株）…", flush=True)
-        o, c, dv = M.fetch_daily(uni["ticker"].tolist(), "2000-01-01")
-        o.to_csv(data / "jp_open.csv", float_format="%.6g")
-        c.to_csv(data / "jp_close.csv", float_format="%.6g")
-        dv.to_csv(data / "jp_div.csv", index=False)
-    for f in (cmd_collect, cmd_ir, cmd_select, cmd_decide, cmd_evaluate):
-        f(args)
+
+PRICE_RETRY_UNTIL = pd.Timedelta(hours=14, minutes=45)   # 値段が取れないとき、この時刻（日本時間）までは取り直す（15:25 までに台帳を書くため）
+PRICE_RETRY_WAIT = 600                                    # 取り直すまでの秒
+PRICE_RETRY_MAX = 10
+
+
+def fetch_prices_patiently(M, tickers: list[str], clock=None, sleep=time.sleep):
+    """値段の取得が回線・Yahoo の一時の不調で止まっても、14:45 までは 10 分おきに取り直す。それでもだめなら RuntimeError。
+
+    2026-10-19（Mac が起きた直後で名前が引けない）と 10-20（空き容量の不足とみられる）に、値段の取得が止まって台帳が抜けた。
+    取り直しても、判断に使う値段（その日の寄りまで）と台帳の決まりは変わらない。
+    """
+    import shutil
+
+    clock = clock or (lambda: pd.Timestamp.now(tz=JST).tz_localize(None))
+    for k in range(1, PRICE_RETRY_MAX + 1):
+        try:
+            return M.fetch_daily(tickers, "2000-01-01")
+        except Exception as e:  # noqa: BLE001
+            now = clock()
+            free = shutil.disk_usage(ROOT).free / 1e9
+            msg = f"値段が取れなかった（{k} 回目。{type(e).__name__}: {str(e)[:160]}。空き容量 {free:.1f}GB）"
+            if k == PRICE_RETRY_MAX or now + pd.Timedelta(seconds=PRICE_RETRY_WAIT) > now.normalize() + PRICE_RETRY_UNTIL:
+                raise RuntimeError(msg) from e
+            print(f"{msg}。{PRICE_RETRY_WAIT // 60} 分後にもう一度", flush=True)
+            sleep(PRICE_RETRY_WAIT)
+
+
+def notify_stopped(args, step: str, e: BaseException) -> None:
+    """台帳を書く前に自動実行が止まったら、iPhone に知らせる（設定 ~/.bunkoko/notify.json が無ければ送らない）。"""
+    from cfdbot.agents import live as L
+
+    text = (f"「{step}」で止まった（{type(e).__name__}: {str(e)[:200]}）。今日の判断はまだ台帳に無い。"
+            "Mac の回線と空き容量を確かめて、15:25 までに ./cfd agents run --prices を動かせば今日の分になる")
+    try:
+        for kind, ok, detail in notify_send(L.LiveFiles(paths(args.root)["root"] / "live"), "株の自動実行が止まった", text):
+            print(f"知らせ（{kind}）: {detail}", flush=True)
+    except Exception as x:  # noqa: BLE001  知らせの失敗で、止まった理由の表示を隠さない
+        print(f"知らせを送れなかった（{type(x).__name__}）", flush=True)
+
+
+def cmd_run(args) -> None:
+    """値段 → 決算の数字の表 → （予行演習）E1 の一覧と今日の注文の一覧・知らせ → 情報収集 → IR → 銘柄選定 → 判断（台帳）→ 評価。
+
+    E1 の一覧に要るのは、決算の数字の表と、銘柄選定の点数の付く株（値段だけで分かる）なので、時間のかかる学び直しの前に作る
+    （docs/stocks_live.md 4.2）。台帳（ledger.csv・ledger_extra.csv）の中身と書く順番・時刻の決まりは変えない。
+    予行演習の部分が失敗しても、台帳は書く。台帳を書く前に止まったら、iPhone に知らせる。
+    """
+    run_stamp("始め")
+    step = "値段"
+    try:
+        if args.prices:
+            sys.path.insert(0, str(ROOT / "scripts"))
+            import stocks_study as M
+
+            data = Path(args.data)
+            uni = pd.read_csv(data / "universe_jp.csv")
+            print("値段を取り直す（日本株）…", flush=True)
+            o, c, dv = fetch_prices_patiently(M, uni["ticker"].tolist())
+            o.to_csv(data / "jp_open.csv", float_format="%.6g")
+            c.to_csv(data / "jp_close.csv", float_format="%.6g")
+            dv.to_csv(data / "jp_div.csv", index=False)
+            try:
+                S.archive_prices(data, o, c)
+            except Exception as e:  # noqa: BLE001  控えが書けなくても（空き容量など）、台帳は書く
+                print(f"値段の控え（data/stocks/archive）を書けなかった（{type(e).__name__}: {str(e)[:120]}）", flush=True)
+            run_stamp("値段")
+        step = "決算の数字の表"
+        cmd_numbers(args)
+        run_stamp("決算の数字の表")
+        try:
+            if live_early(args):
+                run_stamp("E1 の一覧と注文の一覧")
+        except Exception as e:  # noqa: BLE001
+            print(f"予行演習: 先に作る一覧は作れなかった（{type(e).__name__}: {str(e)[:120]}）。判断の後にもう一度作る", flush=True)
+        for name, f in (("情報収集", cmd_collect), ("IR 評価", cmd_ir), ("銘柄選定", cmd_select), ("判断（台帳）", cmd_decide)):
+            step = name
+            f(args)
+            run_stamp(name)
+    except Exception as e:
+        notify_stopped(args, step, e)
+        raise
+    try:
+        live_after_decide(args)
+    except Exception as e:  # noqa: BLE001
+        print(f"予行演習: 判断の後の確かめができなかった（{type(e).__name__}: {str(e)[:120]}）。台帳は書いてある", flush=True)
+    cmd_evaluate(args)
+    run_stamp("終わり")
+
+
+def live_early(args) -> bool:
+    """予行演習の設定があれば、E1 の一覧を先に作り（decider.e1_preview）、今日の注文の一覧を書いて iPhone に知らせる。作ったら True。"""
+    from cfdbot.agents import decider as D
+    from cfdbot.agents import live as L
+
+    p = paths(args.root)
+    files = L.LiveFiles(p["root"] / "live")
+    cfg = files.config()
+    if cfg is None:
+        print("予行演習: 設定が無いので、注文の一覧は作らない", flush=True)
+        return False
+    if not p["revisions"].exists():
+        print("予行演習: 決算の数字の表が無いので、先に作る一覧は作らない（判断の後に台帳から作る）", flush=True)
+        return False
+    open_, close = prices(Path(args.data))
+    now = pd.Timestamp.now(tz=JST).tz_localize(None) if not getattr(args, "now", None) else pd.Timestamp(args.now)
+    rev = pd.read_csv(p["revisions"], parse_dates=["date"])
+    names = pd.read_csv(Path(args.data) / "universe_jp.csv").set_index("ticker")["name"].to_dict()
+    day, e1 = D.e1_preview(open_, close, rev, names)
+    if day is None or day != now.normalize():
+        print(f"予行演習: 今日の値段がまだ無い（最後の日 {day:%Y-%m-%d}）ので、先に作る一覧は作らない" if day is not None else
+              "予行演習: 値段が無いので、先に作る一覧は作らない", flush=True)
+        return False
+    cal = L.calendar(close.index, now.normalize())
+    r = orders_today(p, files, cfg, close, cal, now, e1_override=e1, decided_override=f"{now:%Y-%m-%d %H:%M:%S}",
+                     source="先に作った E1 の一覧", say=lambda s: print(s, flush=True), data=Path(args.data))
+    if r["written"]:
+        send_notice(files, cfg, r["rows"], now)
+    return True
+
+
+def live_after_decide(args) -> None:
+    """判断（台帳）の後: 今日の一覧がまだ無ければ台帳から作って知らせる。先に作った一覧があれば、台帳の E1 の帳と同じかを確かめる。"""
+    from cfdbot.agents import live as L
+
+    p = paths(args.root)
+    files = L.LiveFiles(p["root"] / "live")
+    cfg = files.config()
+    if cfg is None:
+        return
+    _, close = prices(Path(args.data))
+    now = pd.Timestamp.now(tz=JST).tz_localize(None) if not getattr(args, "now", None) else pd.Timestamp(args.now)
+    today = now.normalize()
+    plan = files.plan()
+    mode = cfg.get("mode", "dry")
+    done = plan[(plan["mode"] == mode) & (plan["date"] == today)] if len(plan) else plan
+    if not len(done):
+        cal = L.calendar(close.index, today)
+        r = orders_today(p, files, cfg, close, cal, now, say=lambda s: print(s, flush=True), data=Path(args.data))
+        if r["written"]:
+            send_notice(files, cfg, r["rows"], now)
+        return
+    diff = e1_mismatch(p, done, today)
+    if diff:
+        print(f"予行演習: 先に作った E1 の一覧と、台帳の E1 の帳が違う（{diff}）。チームに戻す（docs/stocks_live.md 4.2）", flush=True)
+        title = f"株の予行演習（確かめ）{now:%m/%d}"
+        notify_send(files, title, f"先に知らせた一覧と、後で書いた台帳の E1 が違いました（{diff}）。注文はそのままでよい。Claude に「予行演習の様子は？」と聞いてください")
+    else:
+        print("予行演習: 先に作った E1 の一覧は、台帳の E1 の帳と同じ", flush=True)
+
+
+def e1_mismatch(p: dict, day_plan: pd.DataFrame, day: pd.Timestamp) -> str:
+    """その日の一覧の E1 の株（買い・買わない・延長の行）と、台帳の E1 の帳の株の違い（同じなら空）。一覧が台帳から作られていれば空。"""
+    from cfdbot.agents import live as L
+
+    if "source" not in day_plan or not (day_plan["source"] == "先に作った E1 の一覧").any() or not p["ledger_extra"].exists():
+        return ""
+    ex = pd.read_csv(p["ledger_extra"], dtype={"ticker": str})
+    ex = ex[(pd.to_datetime(ex["date"].astype(str).str[:10]) == day)]
+    if not len(ex):
+        return ""
+    a = set(day_plan.loc[day_plan["side"].isin(L.E1_SIDES), "ticker"].astype(str))
+    b = set(ex.loc[ex["book"] == "e1", "ticker"].astype(str))
+    if a == b:
+        return ""
+    return "、".join(x for x in (("一覧だけ: " + " ".join(sorted(a - b))) if a - b else "",
+                                ("台帳だけ: " + " ".join(sorted(b - a))) if b - a else "") if x)
+
+
+def run_timeline(log: Path) -> list[tuple[str, pd.Timestamp]]:
+    """run.log の最後の自動実行の、段階ごとの時刻（run_stamp の行）。無ければ空。"""
+    import re
+
+    if not log.exists():
+        return []
+    pat = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] 自動実行: (.+)$")
+    steps: list[tuple[str, pd.Timestamp]] = []
+    for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = pat.match(line.strip())
+        if not m:
+            continue
+        if m.group(2) == "始め":
+            steps = []
+        steps.append((m.group(2), pd.Timestamp(m.group(1))))
+    return steps
+
+
+def timeline_text(steps: list[tuple[str, pd.Timestamp]]) -> str:
+    if not steps:
+        return "時刻の記録がまだ無い（2026-10-15 より後の自動実行から run.log に残る）"
+    t0 = steps[0][1]
+    parts = [f"{t0:%m-%d %H:%M:%S} に始め"] + [f"{name} {(t - t0).total_seconds() / 60:.1f} 分（{t:%H:%M}）" for name, t in steps[1:]]
+    return "、".join(parts)
+
+
+def cmd_numbers(args) -> None:
+    """E1 の帳（docs/agents.md 12 章）のために、直近の決算の数字から予想の変化率の表を書く。失敗しても M2 の帳は書けるよう、止めない。"""
+    from cfdbot.agents import collector as C
+    from cfdbot.agents import earnings as N
+
+    p = paths(args.root)
+    try:
+        _, close = prices(Path(args.data))
+        disc = C.load_disclosures(p["disclosures"])
+        rev = N.recent_revisions(disc, p["disclosures"].parent, close.index, list(close.columns), log=lambda s: None)
+        rev.to_csv(p["revisions"], index=False, float_format="%.6f")
+        today = rev[rev["date"] == close.index[-1]] if len(rev) else rev
+        up = int((today["fc_rev"] >= N.UP_REVISION).sum()) if len(today) else 0
+        print(f"決算の数字: 直近 {N.RECENT_DAYS} 日の開示から {len(rev):,} 行。{close.index[-1]:%Y-%m-%d} の判断に使える開示 {len(today)} 社"
+              f"（予想を 5% 以上引き上げ {up} 社）", flush=True)
+    except Exception as e:  # noqa: BLE001
+        p["revisions"].unlink(missing_ok=True)                                     # 古い表を使わない（判断は「表が無い」と書く）
+        print(f"決算の数字: 表を作れなかった（{str(e)[:120]}）。今日の E1 の帳は書かない", flush=True)
+
+
+# --------------------------------------------------------------------------- M2 を手で注文する形（docs/agents.md 13 章）
+def cmd_manual(args) -> None:
+    """今週の手で買う候補（既定）か、13.2 の過去の検証（--test）。"""
+    if args.test:
+        manual_test(args)
+    else:
+        manual_show(args)
+
+
+def manual_show(args) -> None:
+    from cfdbot.agents import manual as M
+
+    p = paths(args.root)
+    ex = pd.read_csv(p["ledger_extra"], dtype={"ticker": str}) if p["ledger_extra"].exists() else pd.DataFrame()
+    w = M.this_week(ex)
+    print("# 今週の手で買う候補（M2 を週 1 回・10 銘柄・1 日遅れにした形。docs/agents.md 13 章）")
+    print("")
+    if w["date"] is None:
+        print(f"- まだ無い（週の最初の営業日の 13:05 の自動実行が {p['ledger_extra'].name} に帳 {M.BOOK} を書く）")
+        return
+    now = pd.Timestamp(args.now) if args.now else pd.Timestamp.now(tz=JST).tz_localize(None)
+    this_monday = (now.normalize() - pd.Timedelta(days=now.weekday()))
+    if w["date"] < this_monday:
+        print(f"- ⚠ 今週の分がまだ無い（最新は {w['date']:%Y-%m-%d} の週）。週の最初の営業日の 13:05 の後にもう一度。"
+              "動かなかったなら ./cfd agents check で自動実行の様子を見る")
+    print(f"- 決めた日: {w['date']:%Y-%m-%d}（{w['decided_at']} に記録）。**買うのは次の営業日**。SBI の S 株なら 10:30〜13:50 に成行で出すと"
+          "その日の引けの値段（14:00 より後だと翌朝の寄りになり、検証した形とずれる）")
+    print("- 等分に買う（たとえば 10 万円なら 1 銘柄 1 万円ぶんの株数）。次の週の買いの日に入れ替える")
+    print("")
+    print("| 順位 | 銘柄 | 番号 | 点数 | 前の週から |")
+    print("|---|---|---|---|---|")
+    rows = w["rows"].sort_values("selector", ascending=False)
+    for i, r in enumerate(rows.itertuples(), 1):
+        mark = "持ち続ける" if str(r.ticker) in w["keep"] else ("新しく買う" if w["prev_date"] is not None else "買う")
+        print(f"| {i} | {r.name} | {str(r.ticker).replace('.T', '')} | {float(r.selector):+.3f} | {mark} |")
+    if w["prev_date"] is not None:
+        print("")
+        sells = "、".join(f"{w['names'].get(t, t)}（{t.replace('.T', '')}）" for t in w["sell"]) or "なし"
+        print(f"- 売る（{w['prev_date']:%Y-%m-%d} の週にあって今週に無い）: {sells}")
+    print("")
+    print("- M2 は「まだ判断できない」。13.2 の M2b が「使えそう」になるまでは、検証中のルールが選んだ銘柄で、勧めではない。"
+          "買うなら余剰資金の中で、金額の上限を先に決める")
+
+
+def manual_test(args) -> None:
+    from cfdbot.agents import manual as M
+
+    p = paths(args.root)
+    if not p["selector"].exists():
+        sys.exit(f"{p['selector']} が無い。先に ./cfd agents select（または run）を実行する")
+    open_, close = prices(Path(args.data))
+    score = wide(p["selector"])
+    print("M2a・M2b を計算する（偶然との比べ 300 回ずつ。数分）…", flush=True)
+    r = M.evaluate(score, open_, close, placebo=args.placebo)
+    lines: list[str] = []
+
+    def say(s: str = "") -> None:
+        print(s, flush=True)
+        lines.append(s)
+
+    a0, a1 = r["period"]
+    say("# M2 を手で注文する形の過去の検証（M2a・M2b）")
+    say(f"作成: {datetime.now():%Y-%m-%d %H:%M}　判定の条件: docs/agents.md 13.2（結果を見る前に決めたもの）")
+    say(f"データ: 日本株 {close.shape[1]} 銘柄、M2 の点数（{p['selector'].name}）、{a0:%Y-%m}〜{a1:%Y-%m}（後半 {M.SPLIT[:4]}〜）。"
+        f"コスト 往復 {pct(M.COST, 2)}。差 = 持っている株 − 全銘柄の平均 − 入れ替えた割合 × コスト")
+    say("")
+    say("## 1. 判定")
+    say("")
+    say("| 記号 | 形 | 差（年率） | 前半 | 後半 | t 値（全期間） | t 値（後半） | 基準 | 偶然より良い割合 | 判定 |")
+    say("|---|---|---|---|---|---|---|---|---|---|")
+    for key, label in (("M2a", "1 日遅れの 5 日保有（上位 10%）"), ("M2b", "週 1 回・10 銘柄・1 日遅れ")):
+        v = r[key]
+        say(f"| {key} | {label} | {pct(v['mean'] * 12)} | {pct(v['mean1'] * 12)} | {pct(v['mean2'] * 12)} | {f2(v['t'])} | {f2(v['t2'])} | "
+            f"{f2(v['threshold'])} | {pct(v['placebo'], 0)} | **{v['verdict']}** |")
+    say("")
+    for key in ("M2a", "M2b"):
+        v = r[key]
+        say(f"- {key}: コストを引く前 年 {pct(v['gross_ann'])}、1 日に入れ替える割合 {pct(v['turnover'], 1)}、コストを引いた後 年 {pct(v['net_ann'])}。"
+            f"そのまま持った成績（市場の値動きを含む）: 年 {pct(v['total']['ann'])}・シャープ {f2(v['total']['sharpe'])}・最大の下げ {pct(v['total']['mdd'])}"
+            f"（全銘柄を持ち続けた場合: 年 {pct(v['hold']['ann'])}・{f2(v['hold']['sharpe'])}・{pct(v['hold']['mdd'])}）")
+        yr = v["by_year"]
+        say("  - 年ごとの d: " + "、".join(f"{y}: {x:+.1%}" for y, x in yr.items()) + f"（マイナスの年 {int((yr < 0).sum())}/{len(yr)}）")
+    say("")
+    say("## 2. 参考（判定しない）: 遅れと形でどれだけ変わるか")
+    say("")
+    say("| 形 | コストを引く前（年率） | コストを引いた後 | 後半（2018〜） | 1 日に入れ替える割合 |")
+    say("|---|---|---|---|---|")
+    for name, x in r["ref"].items():
+        say(f"| {name} | {pct(x['gross_ann'])} | {pct(x['net_ann'])} | {pct(x['net_late'])} | {pct(x['turnover'], 1)} |")
+    say("")
+    say("## 3. 読み方・限界（docs/agents.md 13.4）")
+    say("")
+    say("- 今の TOPIX500 の銘柄だけ（生存者バイアス）。下がった株を買う側に寄る M2 では、過去の成績が良く出やすい")
+    say("- 10 銘柄は少なく、1 社の出来事で大きく動く。税金は入れていない。S 株の受付の時刻・受注停止で出せない週がある")
+    say(f"- 試した数: M2a {M.TRIALS['M2a']}・M2b {M.TRIALS['M2b']}（81 ＋ 1C・案 2 ＋ C3 ＋ この 2 つ）")
+    say("- 先の記録（帳 m2_manual）の判定の条件は、この結果を見た後・先の記録を採点する前に docs/agents.md 13.5 に書く（M2b が「使えない」なら判定しない）")
+    out = Path(args.out) / datetime.now().strftime("%Y%m%d-%H%M")
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "manual.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("")
+    print(f"保存先: {out / 'manual.md'}")
+
+
+# --------------------------------------------------------------------------- J7 決算発表をまたいで持つ（docs/earnings_premium.md）
+def cmd_premium(args) -> None:
+    """3 章の過去の検証（--test。使っていない決算だけ）か、4 章の先の記録の途中経過（既定）。"""
+    from cfdbot import earnings_premium as EP
+
+    p = paths(args.root)
+    if not p["disclosures"].exists():
+        sys.exit(f"{p['disclosures']} が無い。先に ./cfd agents collect --backfill を実行する")
+    if args.test:
+        disc = pd.read_csv(p["disclosures"], dtype=str, keep_default_na=False)
+        open_, close = prices(Path(args.data))
+    else:                                       # 先の記録は、消えた銘柄の値段・開示も控えから足す（docs/agents.md 12.7）
+        disc = record_disclosures(p)
+        open_, close = record_prices(Path(args.data))
+    lines: list[str] = []
+
+    def say(s: str = "") -> None:
+        print(s, flush=True)
+        lines.append(s)
+
+    say("# J7 決算発表をまたいで持つ")
+    say(f"作成: {datetime.now():%Y-%m-%d %H:%M}　決まり: docs/earnings_premium.md（結果を見る前に決めたもの）。お金は動かしていない")
+    say("- 決算短信が値段に入る最初の日 t0 の前の営業日の引けで買い、t0 の次の営業日の引けで売る。差 = 持っている株 − 全銘柄の平均 − 入れ替えた割合 × 0.10%")
+    say("")
+    if args.test:
+        earn_path = Path(args.data) / "jp_earnings.csv"
+        if not earn_path.exists():
+            sys.exit(f"{earn_path}（docs/stocks.md の C7 で使った Yahoo の決算日）が無い。どこまでが「見た」決算か分からないので計算しない"
+                     "（./cfd stocks --fetch で取る）")
+        print(f"使っていない決算だけで計算する（偶然との比べ {args.placebo} 回。数分）…", flush=True)
+        r = EP.evaluate_past(disc, pd.read_csv(earn_path), open_, close, placebo=min(args.placebo, EP.PLACEBO))
+        say("## 1. 過去の検証（3 章。C7 で見た Yahoo の決算日より前の決算だけ）")
+        say("")
+        say(f"- 使う決算: {r['events']:,} 回（{r['firms']} 社）" + (f"、{r['start']:%Y-%m}〜{r['end']:%Y-%m}（{r['months']} か月）" if r.get("months") else "")
+            + f"。見たので使わない決算: {r['seen_events']:,} 回")
+        if "judge" in r:
+            j = r["judge"]
+            say("")
+            say("| 差（年率） | 前半 | 後半 | t 値（全期間） | t 値（後半） | 基準 | 偶然より良い割合 | 判定 |")
+            say("|---|---|---|---|---|---|---|---|")
+            say(f"| {pct(j['mean'] * 12)} | {pct(j['mean1'] * 12)} | {pct(j['mean2'] * 12)} | {f2(j['t'])} | {f2(j['t2'])} | {f2(j['threshold'])} | "
+                f"{pct(j['placebo'], 0)} | **{j['verdict']}** |")
+            say(f"- 前半・後半の境目: {r['split']:%Y-%m}。試した数 {EP.TRIALS}")
+        else:
+            say(f"- **{r['verdict']}**")
+        say("")
+        say("参考（判定しない）")
+        say("")
+        say(f"- 使う決算の 2 日の平均（株 − 全銘柄の平均、コストを引く前）: {pct(r['two_day'], 3)}。見た決算では {pct(r['seen_two_day'], 3)}"
+            "（docs/stocks.md の「+0.15%」に当たる）")
+        if r.get("months"):
+            say(f"- 使う期間の差の年率: コストを引く前 {pct(r['gross_ann'])}・引いた後 {pct(r['net_ann'])}・コスト 0 {pct(r['zero_cost_ann'])}。"
+                f"1 日に入れ替える割合 {pct(r['turnover'], 1)}")
+        if "seen" in r:
+            sn = r["seen"]
+            say(f"- 見た期間（{sn['start']:%Y-%m}〜{sn['end']:%Y-%m}）の同じ計算: コストを引く前 {pct(sn['gross_ann'])}・引いた後 {pct(sn['net_ann'])}")
+        g = EP.diagnose(disc, pd.read_csv(earn_path), open_, close)
+        say("")
+        say("## 2. 点検（docs/earnings_premium.md 7 章。結果を見た後に足した参考で、判定は変えない。試した数も増やさない）")
+        say("")
+        say("2 日の差 = t0 と t0+1 の「株 − 全銘柄の平均」（コストを引く前）。「1 回同じ金額」= 決算 1 回ごとに同じ金額で持ち、1 回 0.10% を引いた平均と、月ごとの合計の t 値")
+        say("")
+        say("| 群 | 決算 | 社 | 2 日の差の平均 | 中央値 | 1 回同じ金額（コストの後） | t 値 |")
+        say("|---|---|---|---|---|---|---|")
+        for _, row in g["groups"].iterrows():
+            say(f"| {row['group']} | {row['events']:,} | {row['firms']} | {pct(row['mean'], 3)} | {pct(row['median'], 3)} | {pct(row['net'], 3)} | {f2(row['t'])} |")
+        say("")
+        say("| 混み具合 | 決算 | 日 | 2 日の差の平均 | 1 回同じ金額（コストの後） | t 値 |")
+        say("|---|---|---|---|---|---|")
+        for _, row in g["crowd"].iterrows():
+            say(f"| {row['group']} | {row['events']:,} | {row['days']:,} | {pct(row['mean'], 3)} | {pct(row['net'], 3)} | {f2(row['t'])} |")
+        b = g["big"]
+        if b:
+            say("")
+            say(f"- 使った決算の大きな値動き: 上位 1%（{b['k']} 回）を除いた平均 {pct(b['trim'], 3)}（全部 {pct(b['mean'], 3)}）。"
+                f"上位 1% が差の合計に占める割合 {pct(b['top_share'], 0)}。プラスの回の割合 {pct(b['pos'], 0)}。2 日で ±10% を超えた回 {pct(b['over10'], 1)}")
+        say("")
+        say("年ごと（2 日の差の平均。回数）")
+        say("")
+        say("| 年 | 使った決算 | 回 | 見た決算 | 回 |")
+        say("|---|---|---|---|---|")
+        by = g["by_year"].reindex(columns=pd.MultiIndex.from_product([["count", "mean"], [True, False]]))
+        for y, row in by.iterrows():
+            nu, ns = (int(row[("count", f)]) if pd.notna(row[("count", f)]) else 0 for f in (True, False))
+            say(f"| {y} | {pct(row[('mean', True)], 3)} | {nu:,} | {pct(row[('mean', False)], 3)} | {ns:,} |")
+    else:
+        r = EP.forward(disc, open_, close)
+        say(f"## 1. 先の記録（4 章。{EP.START_FORWARD} から）")
+        say("")
+        say(f"- 営業日 {r['days']} 日・決算 {r['events']} 回（値段は {close.index[-1]:%Y-%m-%d} まで）")
+        if len(r["daily"]):
+            say(f"- 合計（コストの後）{pct(float(r['daily'].sum()), 2)}、2 日の平均（コストを引く前）{pct(r['two_day'], 3)}")
+            say("- 月ごと: " + "、".join(f"{d:%Y-%m} {v:+.2%}" for d, v in r["monthly"].items()))
+        say(f"- 判定: **{r['verdict']}**（250・500・750 営業日の時点だけ。間の数字を見て何も変えない。試した数に入れない）")
+    say("")
+    say("限界: 発表の日を前もって知っている前提（予定日はずれることがある）。今の TOPIX500 の銘柄だけ。税金は入れていない")
+    out = Path(args.out) / datetime.now().strftime("%Y%m%d-%H%M")
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "premium.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("")
+    print(f"保存先: {out / 'premium.md'}")
 
 
 def cmd_status(args) -> None:
@@ -709,6 +1200,493 @@ def cmd_status(args) -> None:
         print("銘柄選定（点数）: まだ無い")
     reports = sorted(Path(args.out).glob("2*/report.md"))
     print(f"判断の評価（報告書）: {reports[-1] if reports else 'まだ無い'}")
+
+
+def schedule_state(job: str = "run") -> list[str]:
+    """自動実行（launchd）の登録と、最後に動いたときの終わり方。Mac 以外では「確かめられない」と返す。"""
+    import os
+    import subprocess
+
+    label = JOBS[job][0]
+    if sys.platform != "darwin":
+        return [f"自動実行（{label}）: この環境は Mac ではないので確かめられない"]
+    plist = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+    lines = [f"自動実行の登録ファイル: {'ある' if plist.exists() else '無い（./cfd agents schedule --job ' + job + ' で登録）'}（{plist}）"]
+    r = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{label}"], capture_output=True, text=True)
+    if r.returncode != 0:
+        lines.append(f"launchd: {label} は読み込まれていない")
+        return lines
+    keep = [t.strip() for t in r.stdout.splitlines() if any(k in t for k in ("runs =", "last exit code", "state ="))]
+    lines.append("launchd: " + ("、".join(keep) if keep else "読み込まれている（回数・終わり方の行は無い）"))
+    return lines
+
+
+def cmd_check(args) -> None:
+    """台帳の点検と、先のデータの途中経過・止める決まり（docs/agents.md 12 章）。値段・台帳・記録のファイルだけを読む。"""
+    from cfdbot.agents import evaluator as E
+
+    p = paths(args.root)
+    now = pd.Timestamp.now(tz=JST).tz_localize(None) if not args.now else pd.Timestamp(args.now)
+    lines: list[str] = []
+
+    def say(t: str = "") -> None:
+        print(t, flush=True)
+        lines.append(t)
+
+    say("# 台帳の点検と、先のデータの途中経過")
+    say(f"作成: {now:%Y-%m-%d %H:%M}　決まり: docs/agents.md 12 章（結果を見る前に決めたもの）")
+    say("\n## 1. 自動実行\n")
+    for t in schedule_state("run"):
+        say(f"- {t}")
+    log = p["root"] / "run.log"
+    if log.exists():
+        mt = pd.Timestamp(log.stat().st_mtime, unit="s", tz="UTC").tz_convert(JST).tz_localize(None)
+        tail = [t for t in log.read_text(encoding="utf-8", errors="replace").splitlines() if t.strip()][-3:]
+        say(f"- 記録（{log}）の最後の書き込み: {mt:%Y-%m-%d %H:%M}")
+        for t in tail:
+            say(f"  - {t[:160]}")
+    else:
+        say(f"- 記録（{log}）が無い。自動実行がまだ一度も動いていないか、登録の前")
+    say(f"- 最後の自動実行の時刻: {timeline_text(run_timeline(log))}")
+
+    ledger = read_ledgers(p)
+    try:
+        _, close = record_prices(Path(args.data))
+    except SystemExit:
+        close = pd.DataFrame()
+    cal = close.index if len(close) else pd.DatetimeIndex([])
+    h = E.ledger_health(ledger, cal, now)
+    say("\n## 2. 台帳\n")
+    if not h["rows"]:
+        say(f"- 台帳（{p['ledger']}・{p['ledger_extra'].name}）がまだ無い。平日の 13:05 の自動実行か `./cfd agents run --prices` で書かれる")
+    else:
+        say(f"- {h['rows']:,} 行。先の判断として数える日（その日の 15:25 より前に書いた日）: {h['counted_days']} 日"
+            f"（{h['first']:%Y-%m-%d}〜{h['last']:%Y-%m-%d}）。最後に書いた時刻: {h['last_written']}" if h["first"] is not None
+            else f"- {h['rows']:,} 行あるが、15:25 より前に書いた日が無い（先の判断として数える日は 0）")
+        if h["missing"]:
+            say(f"- **抜けた営業日 {len(h['missing'])} 日**: " + "、".join(f"{d:%m-%d}" for d in h["missing"][:15])
+                + ("…" if len(h["missing"]) > 15 else "") + "（Mac が眠っていた・Yahoo が取れなかった など。その日は買わなかったことになる）")
+        else:
+            say("- 抜けた営業日: 無し")
+        if h["missing_weekdays"]:
+            say(f"- 値段のデータより後で、書かれていない平日 {len(h['missing_weekdays'])} 日: "
+                + "、".join(f"{d:%m-%d}" for d in h["missing_weekdays"][:10]) + "（祝日を含むかもしれない。値段の取り直しが止まっている可能性）")
+        if h["late"]:
+            say("- 15:25 より後に書いた日（数えない）: " + "、".join(f"{d:%Y-%m-%d}" for d in h["late"][:10]))
+        for b, v in h["books"].items():
+            say(f"- 帳 {b}: {v['days']} 日（{v['first']:%Y-%m-%d}〜）、1 日平均 {v['names_per_day']:.1f} 銘柄")
+        if len(close) and "ticker" in ledger:
+            gone = sorted(set(ledger["ticker"].dropna().astype(str)) - set(close.columns))
+            say("- 値段の無い銘柄（台帳にあるのに、今の値段にも控えにも無い。docs/agents.md 12.7）: "
+                + ("、".join(gone[:20]) + ("…" if len(gone) > 20 else "") if gone else "無し"))
+
+    say("\n## 3. 先のデータの途中経過と、止める決まり\n")
+    if not len(close) or not h["counted_days"]:
+        say("- まだ計算できない（値段か、数える日のある台帳が無い）")
+    else:
+        cc = E.returns(close)
+        sigma_w = float("nan")
+        if p["selector"].exists():
+            hist = wide(p["selector"]).reindex(index=close.index, columns=close.columns).to_numpy(dtype=float)
+            sigma_w = E.history_sigma(E.top_k(hist, E.TOP_SHARE, E.MIN_VALID), cc)
+        say("全銘柄の平均との差（年率）。コスト前が止める決まりに使う数字。コスト後は往復 0.10%（判定に使ったものと同じ）。")
+        say("\n| 帳 | 始まり | 数えた日 | コスト前 | コスト後 | 1 日の入れ替え | 月の数 | 今の月ごとの t | 判定 |")
+        say("|---|---|---|---|---|---|---|---|---|")
+        watch = None
+        for b in E.FORWARD_BOOKS:
+            r = E.forward_book(ledger, b, cc)
+            if r is None:
+                say(f"| {b} | – | 0 | – | – | – | – | – | まだ記録が無い |")
+                continue
+            cs = E.forward_cusum(r, sigma_w) if b == "selector" else None
+            watch = cs if b == "selector" else watch
+            say(f"| {b} | {r['start']:%Y-%m-%d} | {r['days']} | {pct(r['gross_ann'])} | {pct(r['net_ann'])} | {pct(r['turnover'], 0)} | "
+                f"{r['months']} | {f2(r['t'])} | {E.forward_verdict(r, b, cs)} |")
+        say("")
+        if watch is not None:
+            say(f"- 毎週の見張り（M2 の帳、累積和）: {watch['weeks']} 週、今の累積和 {watch['last']:.2f}・これまでの最大 {watch['max']:.2f}"
+                f"（閾値 {E.CUSUM_H}。週の差の標準偏差は {E.SIGMA_FROM[:7]}〜{E.SIGMA_TO[:7]} の記録から {watch['sigma_w']:.4%}）")
+        elif p["selector"].exists():
+            say("- 毎週の見張り: 過去の記録から値動きの大きさを測れなかった（値段か銘柄選定の点数が足りない）")
+        say(f"- 判定は {', '.join(str(n) for n in E.LOOK_DAYS)} 日の時点（その日までの損益）だけで行う。その間の数字は途中経過で、見て何かを変えることはしない")
+        say(f"- 閉じる: M2（selector）か E1 の帳の、コスト前の月ごとの t が {E.STOP_T} 未満。または M2 の帳の毎週の見張りが閾値 {E.CUSUM_H} を超えた")
+        say("- お金を入れる判断は、この台帳だけでは決めない（docs/survivorship.md の判定と、測ったコストを合わせてから。金額を増やすのは、台帳が "
+            + "・".join(f"{b} {n} 日" for b, n in E.MIN_RECORD_DAYS.items()) + " を超えてから。docs/agents.md 12.4）")
+    out = Path(args.out) / "check"
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{now:%Y%m%d-%H%M}.md"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"\n保存先: {path}")
+
+
+# --------------------------------------------------------------------------- 日本株の予行演習（docs/stocks_live.md）
+def norm_ticker(t: str) -> str:
+    t = str(t).strip().upper()
+    return t if "." in t else f"{t}.T"
+
+
+def e1_closed_reason(p: dict, close: pd.DataFrame, data: Path | None = None) -> str | None:
+    """E1 の帳が 12.3 で閉じていれば、その判定の文。計算できなければ None（止める理由にはしない）。
+
+    data を渡せば、./cfd agents check と同じ控えを足した値段で判定する（docs/agents.md 12.7）。控えが読めなければ close で。
+    """
+    from cfdbot.agents import evaluator as E
+
+    try:
+        ledger = read_ledgers(p)
+        if ledger.empty:
+            return None
+        rc = close
+        if data is not None:
+            try:
+                _, rc = record_prices(data)
+            except (Exception, SystemExit):  # noqa: BLE001
+                rc = close
+        v = E.forward_verdict(E.forward_book(ledger, "e1", E.returns(rc)), "e1")
+        return v if v.startswith("閉じる") else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def show_rows(rows: pd.DataFrame | list[dict], cfg: dict, now: pd.Timestamp, say) -> None:
+    from cfdbot.agents import live as L
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return
+    dl = L.deadline_ts(cfg, now.normalize())
+    left = f"（あと {(dl - now).total_seconds() / 60:.0f} 分）" if dl is not None and dl > now else ""
+    say(f"出す時刻: {L.TARGET_TIME} までを目安に、遅くとも {cfg.get('deadline') or L.RULE_DEADLINE}{left}（公式の締めは {L.OFFICIAL_CUTOFF}）。"
+        "S 株・成行・期間は当日中。**預り区分は「特定」**。送信の前に、銘柄の番号・買いか売りか・株数をこの一覧と見比べる。"
+        "受注停止で出せなかったら --status 受注停止")
+    for side, title in (("売り", "売る（5 営業日たった株）"), ("買い", "買う（E1）"), ("延長", "売らずに持ち続ける（また E1 が出た）"),
+                        ("買わない", "買わない（理由）"), ("なし", "注文なし")):
+        g = df[df["side"] == side]
+        if not len(g):
+            continue
+        say(f"\n## {title}\n")
+        for r in g.itertuples():
+            name = f" {r.name}" if isinstance(r.name, str) and r.name else ""
+            if side == "買い":
+                mark = L.core_mark(getattr(r, "reason", ""))
+                say(f"- {r.ticker}{name} **{int(r.shares)} 株**（前の営業日の終値 {float(r.prev_close):,.0f} 円 → 約 {int(r.shares) * float(r.prev_close):,.0f} 円。"
+                    f"売る日の目安 {pd.Timestamp(r.due):%m-%d}" + (f"。E1 の印: {mark}" if mark else "") + "）")
+            elif side == "売り":
+                say(f"- {r.ticker}{name} **{int(r.shares)} 株**" + (f"（{r.note}）" if isinstance(r.note, str) and r.note else ""))
+            elif side == "延長":
+                say(f"- {r.ticker}{name} {int(r.shares)} 株。注文は出さない。売る日の目安を {pd.Timestamp(r.due):%m-%d} にする")
+            elif side == "買わない":
+                say(f"- {r.ticker}{name}: {r.note}")
+            else:
+                say(f"- {r.reason}")
+
+
+def cmd_orders(args) -> None:
+    """日本株の少額の本番（予行演習）の、今日の注文の一覧・約定の記録・報告（docs/stocks_live.md）。注文は出さない。"""
+    from cfdbot.agents import live as L
+
+    p = paths(args.root)
+    files = L.LiveFiles(p["root"] / "live")
+    now = pd.Timestamp.now(tz=JST).tz_localize(None) if not args.now else pd.Timestamp(args.now)
+    today = now.normalize()
+    if args.import_csv:
+        print("未対応: SBI の約定履歴の CSV の形は、最初の実物を見てから作る（docs/stocks_live.md 6 章）。それまでは --fill で 1 件ずつ書く")
+        return
+    if args.setup:
+        orders_setup(args, files, now)
+        return
+    if args.notify_test:                                  # 予行演習の設定の前でも試せる
+        title, text = "株の予行演習（知らせの試し）", "この知らせが iPhone に届けば、設定はできています（docs/stocks_live_daily.md の 5 章）"
+        for kind, ok, detail in notify_send(files, title, text):
+            print(f"知らせ（{kind}）: {detail}")
+        return
+    cfg = files.config()
+    if cfg is None:
+        sys.exit("予行演習の設定がまだ無い。始めると決めたら: ./cfd agents orders --setup --equity 300000（docs/stocks_live.md 3.1・9 章）")
+    _, close = prices(Path(args.data))
+    cal = L.calendar(close.index, today)
+    if args.void:
+        if str(args.void) not in set(files.fills(include_voided=True)["id"].astype(str)):
+            sys.exit(f"番号 {args.void} の約定の行が無い（--report か fills.csv の id の列で確かめる）")
+        files.append(files.fills_path, [{"id": files.next_fill_id(), "recorded_at": f"{now:%Y-%m-%d %H:%M:%S}", "mode": cfg.get("mode", "dry"),
+                                         "date": today, "voids": str(args.void), "memo": args.memo or "取り消し"}], L.FILL_COLUMNS)
+        print(f"番号 {args.void} の約定の行を取り消した（元の行は消さずに残る）。正しい行は --fill で書き足す")
+        return
+    plan, fills = files.plan(), files.fills()
+    mode = cfg.get("mode", "dry")
+    ev = L.events(mode, plan, fills, close)
+    lots = L.open_lots(ev, plan, fills, mode, cal)
+    if args.fill:
+        orders_fill(args, files, cfg, plan, lots, now)
+        return
+    if args.report:
+        orders_report(args, p, files, cfg, plan, fills, ev, lots, close, cal, now)
+        return
+
+    r = orders_today(p, files, cfg, close, cal, now, sells_only=args.sells_only, data=Path(args.data))
+    if args.notify:
+        send_notice(files, cfg, r["rows"], now, force=True)
+
+
+def orders_today(p: dict, files, cfg: dict, close: pd.DataFrame, cal, now: pd.Timestamp, e1_override: pd.DataFrame | None = None,
+                 decided_override: str | None = None, source: str = "台帳", sells_only: bool = False, say=None,
+                 data: Path | None = None) -> dict:
+    """今日の注文の一覧（止める決まりの確認 → 書いてあれば表示 → 無ければ作って plan.csv に書き足す）。
+
+    e1_override を渡せば、台帳の E1 の行の代わりにそれを使う（13:05 の自動実行が先に作った E1 の一覧。同じ作り・同じ入力）。
+    返り値: rows（今日の行）・written（今書いたか）・judged（判断があったか）。
+    """
+    from cfdbot.agents import live as L
+
+    lines: list[str] = []
+
+    def out(t: str = "") -> None:
+        (say or print)(t)
+        lines.append(t)
+
+    today = now.normalize()
+    plan, fills = files.plan(), files.fills()
+    mode = cfg.get("mode", "dry")
+    ev = L.events(mode, plan, fills, close)
+    lots = L.open_lots(ev, plan, fills, mode, cal)
+    label = "本物" if mode == "real" else "空運転（注文は出さない）"
+    out(f"# 今日（{today:%Y-%m-%d}）の株の注文（予行演習・{label}）\n")
+    res = {"rows": [], "written": False, "judged": False, "lines": lines}
+    if today.weekday() >= 5:
+        out("今日は土日。注文は無い")
+        return res
+    stop = files.stop_reason()
+    cash, equity = L.cash_and_equity(float(cfg["equity_jpy"]), ev, lots, close)
+    errs = L.mistakes(mode, plan, fills, lots, cal, today)
+    rt = L.round_trips(fills, plan, files.refs(), close, cal) if mode == "real" else None
+    hits = L.stop_checks(cfg, (cash, equity), errs, lots, close, cal, today, e1_closed_reason(p, close, data), rt)
+    if hits and mode == "real" and not stop:
+        files.place_stop("・".join(hits), now)
+        stop = files.stop_reason()
+        out("**止める決まりに当たったので STOP を置いた**: " + "・".join(hits) + "\n")
+    elif hits and mode != "real":
+        out("（空運転なので STOP は置かない。本物なら止める）: " + "・".join(hits) + "\n")
+    if stop:
+        out(f"**STOP がある**（{stop}）。新しく買わない。持っている株は予定の日に売る。消すのは利用者がはっきり頼んだときだけ\n")
+    done = plan[(plan["mode"] == mode) & (plan["date"] == today)] if len(plan) else plan
+    if len(done):
+        out(f"今日の一覧は {done['written_at'].iloc[0]} にもう書いてある（同じ日は二度書かない）。書いた内容:\n")
+        show_rows(done, cfg, now, out)
+        res.update(rows=done.to_dict("records"), judged=True)
+    else:
+        if e1_override is not None:
+            e1, decided, judged = e1_override, decided_override, True
+        else:
+            ex = pd.read_csv(p["ledger_extra"], dtype={"ticker": str}) if p["ledger_extra"].exists() else pd.DataFrame()
+            day_rows = ex[pd.to_datetime(ex["date"].astype(str).str[:10]) == today] if len(ex) else ex
+            judged = len(day_rows) > 0
+            e1 = day_rows[day_rows["book"] == "e1"][["ticker", "name", "reason"]] if judged else None
+            decided = str(day_rows["decided_at"].max()) if judged else None
+        names = dict(zip(plan["ticker"], plan["name"])) if len(plan) else {}
+        rows = L.make_plan(today, now, cfg, e1, decided, close, cal, lots, cash, stop, names=names, source=source)
+        if judged or sells_only:
+            files.append(files.plan_path, rows, L.PLAN_COLUMNS)
+            out(f"判断の時刻 {decided}（{source}）。一覧を {files.plan_path} に書き足した\n" if judged else
+                "今日の判断が無いので、売りだけの一覧を書き足した（この日は後から買いを足さない）\n")
+        else:
+            out("今日の判断（13:05 の自動実行）がまだ台帳に無い。書かれた後にもう一度（売りだけ先に書くなら --sells-only）。いまの見込み:\n")
+        show_rows(rows, cfg, now, out)
+        res.update(rows=rows, written=bool(judged or sells_only), judged=judged)
+    x = float(cfg["equity_jpy"])
+    out(f"\n記録上の資産 {equity:,.0f} 円（入れた金額 {x:,.0f} 円の {equity / x:.1%}。{L.DD_STOP:.0%} を下回ったら止める）、現金 {cash:,.0f} 円、"
+        f"持っている株 {len(lots)} 銘柄")
+    rec = L.recent_mistakes(errs, cal, today)
+    if rec:
+        out(f"直近 {L.ERR_WINDOW} 営業日の誤り {len(rec)} 回（{L.ERR_MAX} 回で止める）: " + "、".join(f"{d:%m-%d} {t}" for d, t in rec))
+    return res
+
+
+def notify_send(files, title: str, text: str) -> list[tuple[str, bool, str]]:
+    """知らせを送る（設定 ~/.bunkoko/notify.json が無ければ送らない）。結果は data/agents/live/notify.log にも書く。"""
+    from cfdbot import notify as N
+
+    return N.notify(title, text, record=files.root / "notify.log")
+
+
+def send_notice(files, cfg: dict, rows, now: pd.Timestamp, force: bool = False) -> None:
+    """今日の一覧を iPhone に知らせる。注文の無い日は、設定で send_empty が true のときだけ（force なら送る）。"""
+    from cfdbot import notify as N
+    from cfdbot.agents import live as L
+
+    settings, why = N.load_settings()
+    if settings is None:
+        print(f"知らせ: {why}", flush=True)
+        return
+    title, text, has = L.notice_text(rows, cfg, now)
+    if not (has or force or settings.get("send_empty")):
+        print("知らせ: 今日は出す注文が無いので送らない（send_empty が false）", flush=True)
+        return
+    for kind, ok, detail in N.notify(title, text, settings=settings, record=files.root / "notify.log"):
+        print(f"知らせ（{kind}）: {detail}{'' if ok else '。一覧は plan.csv に書いてある'}", flush=True)
+
+
+def orders_setup(args, files, now: pd.Timestamp) -> None:
+    from cfdbot.agents import live as L
+
+    cfg = files.config()
+    if args.real:
+        if cfg is None:
+            sys.exit("先に --setup --equity で空運転を始める")
+        if cfg.get("mode") == "real":
+            print(f"もう本物で動いている（{cfg.get('started')} から）")
+            return
+        st = L.dry_run_status(files.plan(), cfg)
+        if not st["ok"]:
+            sys.exit("まだ本物にできない（docs/stocks_live.md 4.5）: " + "・".join(st["reasons"]))
+        cfg.update(mode="real", started=f"{now:%Y-%m-%d}")
+        files.save_config(cfg)
+        print(f"本物に切り替えた（{now:%Y-%m-%d}。入れた金額 {cfg['equity_jpy']:,} 円。これから先は金額を変えない）")
+        return
+    if args.equity is not None and not (L.EQUITY_RANGE[0] <= args.equity <= L.EQUITY_RANGE[1]):
+        sys.exit(f"金額は {L.EQUITY_RANGE[0]:,}〜{L.EQUITY_RANGE[1]:,} 円（docs/stocks_live.md 3.1）")
+    if args.deadline is not None:
+        try:
+            h, m = (int(v) for v in args.deadline.split(":"))
+            assert 9 <= h <= 15 and 0 <= m < 60
+        except Exception:  # noqa: BLE001
+            sys.exit("注文の締めは 13:50 のように書く")
+        if pd.Timestamp(f"2000-01-01 {args.deadline}") > pd.Timestamp(f"2000-01-01 {L.OFFICIAL_CUTOFF}"):
+            sys.exit(f"S 株でその日の終値になるのは {L.OFFICIAL_CUTOFF} までの注文（docs/stocks_live.md 4.1）。決まりは {L.RULE_DEADLINE}")
+    exclude = None if args.exclude is None else [norm_ticker(x) for x in str(args.exclude).replace("、", ",").split(",") if x.strip()]
+    if cfg is None:
+        cfg = {"equity_jpy": int(args.equity or L.DEFAULT_EQUITY), "mode": "dry", "started": None, "deadline": args.deadline,
+               "form": L.FORM, "max_names": L.MAX_NAMES, "exclude": exclude or [], "created": f"{now:%Y-%m-%d %H:%M}"}
+    else:
+        if args.equity is not None and int(args.equity) != int(cfg["equity_jpy"]):
+            if cfg.get("mode") == "real":
+                sys.exit("本物を始めた後は金額を変えない（docs/stocks_live.md 3.1・3.3）")
+            cfg["equity_jpy"] = int(args.equity)
+        if args.deadline is not None:
+            cfg["deadline"] = args.deadline
+        if exclude is not None:
+            cfg["exclude"] = exclude
+    files.save_config(cfg)
+    if cfg.get("deadline") and pd.Timestamp(f"2000-01-01 {cfg['deadline']}") < pd.Timestamp(f"2000-01-01 {L.EARLIEST_DEADLINE}"):
+        print(f"**注意**: 受付の終わり {cfg['deadline']} は {L.EARLIEST_DEADLINE} より前なので、13:05 の判断の後に {L.MARGIN_MIN} 分の余裕が取れず、"
+              "買える日が無い。形を変えるなら別に事前登録する（docs/stocks_live.md 4.1）")
+    print(f"予行演習の設定: {files.config_path}（{'本物' if cfg['mode'] == 'real' else '空運転'}、入れる金額 {cfg['equity_jpy']:,} 円、"
+          f"1 日に買うのは {L.daily_budget(cfg['equity_jpy']):,} 円・{L.MAX_NAMES} 銘柄まで、注文の締め {cfg.get('deadline') or '未記入'}、"
+          f"予行演習の外で持っている株 {', '.join(cfg.get('exclude', [])) or 'なし'}）")
+
+
+def orders_fill(args, files, cfg: dict, plan: pd.DataFrame, lots: dict, now: pd.Timestamp) -> None:
+    from cfdbot.agents import live as L
+
+    if cfg.get("mode") != "real":
+        sys.exit("空運転の間は約定を書かない（本物は --setup --real の後）")
+    ticker, side, shares, price = args.fill
+    ticker, side = norm_ticker(ticker), L.SIDES.get(side.strip().lower(), L.SIDES.get(side.strip()))
+    if side is None:
+        sys.exit("向きは 買い か 売り（buy / sell）")
+    try:
+        shares, price = int(shares), float(price)
+    except ValueError:
+        sys.exit("株数は整数、値段は数（例: 3 2850.5）")
+    day = pd.Timestamp(args.on).normalize() if args.on else now.normalize()
+    status = args.status
+    if status == "約定" and (shares <= 0 or price <= 0):
+        sys.exit("約定なら株数と値段が要る（約定しなかったなら --status 不成立）")
+    err, stop_now = L.check_fill(cfg, plan, lots, day, ticker, side, shares, price, status, args.at, files.stop_reason(), files.fills())
+    err = "、".join(e for e in (err, args.error or "") if e)
+    fid = files.next_fill_id()
+    files.append(files.fills_path, [{"id": fid, "recorded_at": f"{now:%Y-%m-%d %H:%M:%S}", "mode": "real", "date": day, "ticker": ticker, "side": side,
+                                     "shares": shares, "price": price, "fee_yen": float(args.fee or 0), "status": status, "at": args.at,
+                                     "error": err, "voids": None, "memo": args.memo}], L.FILL_COLUMNS)
+    print(f"書き足した（番号 {fid}）: {day:%Y-%m-%d} {ticker} {side} {shares} 株 {price:,.2f} 円 手数料 {float(args.fee or 0):,.0f} 円（{status}・{args.at}）")
+    if err:
+        print(f"**誤り**: {err}（docs/stocks_live.md 3.2。直近 {L.ERR_WINDOW} 営業日に {L.ERR_MAX} 回で止める）")
+    if stop_now:
+        files.place_stop(f"1 回の誤りで大きすぎる約定（{ticker} {shares} 株 {price:,.0f} 円）", now)
+        print("**すぐ STOP を置いた**。その株は次に約定できる時点で売る（docs/stocks_live.md 3.2）")
+
+
+def orders_report(args, p: dict, files, cfg: dict, plan, fills, ev, lots: dict, close, cal, now: pd.Timestamp) -> None:
+    from cfdbot.agents import live as L
+
+    today = now.normalize()
+    mode = cfg.get("mode", "dry")
+    lines: list[str] = []
+
+    def say(t: str = "") -> None:
+        print(t, flush=True)
+        lines.append(t)
+
+    say("# 日本株の予行演習の様子")
+    say(f"作成: {now:%Y-%m-%d %H:%M}　決まり: docs/stocks_live.md（始める前に決めたもの）\n")
+    say("## 1. 設定と止める決まり\n")
+    x = float(cfg["equity_jpy"])
+    say(f"- {'本物（' + str(cfg.get('started')) + ' から）' if mode == 'real' else '空運転'}。入れた金額 {x:,.0f} 円、1 日に買うのは "
+        f"{L.daily_budget(x):,.0f} 円・{L.MAX_NAMES} 銘柄まで、注文の締め {cfg.get('deadline') or '未記入'}、"
+        f"予行演習の外で持っている株 {', '.join(cfg.get('exclude', [])) or 'なし'}")
+    stop = files.stop_reason()
+    say(f"- STOP: {'ある（' + stop + '）' if stop else '無い'}")
+    say(f"- 最後の自動実行の時刻（一覧が書けるまで）: {timeline_text(run_timeline(p['root'] / 'run.log'))}")
+    nlog = files.root / "notify.log"
+    if nlog.exists():
+        last = [x for x in nlog.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()][-3:]
+        say("- 最後の知らせ: " + " / ".join(x.replace("\t", " ")[:120] for x in last))
+    else:
+        say("- 知らせ: まだ送っていない（設定は ~/.bunkoko/notify.json。docs/stocks_live_daily.md の 5 章）")
+    days = sorted(set(plan.loc[plan["source"] == "先に作った E1 の一覧", "date"])) if len(plan) and "source" in plan else []
+    bad = [d for d in days if e1_mismatch(p, plan[plan["date"] == d], d)]
+    if days:
+        say(f"- 先に作った E1 の一覧と台帳の E1 の帳が違った日: {len(bad)} 日（{len(days)} 日のうち）" + ("".join(f" {d:%m-%d}" for d in bad)))
+    cash, equity = L.cash_and_equity(x, ev, lots, close)
+    say(f"- 記録上の資産 {equity:,.0f} 円（{equity / x:.1%}。{L.DD_STOP:.0%} を下回ったら止める）、現金 {cash:,.0f} 円")
+    errs = L.mistakes(mode, plan, fills, lots, cal, today)
+    rec = L.recent_mistakes(errs, cal, today)
+    say(f"- 直近 {L.ERR_WINDOW} 営業日の誤り {len(rec)} 回（{L.ERR_MAX} 回で止める）" + ("".join(f"\n  - {d:%m-%d} {t}" for d, t in rec)))
+    hits = L.stop_checks(cfg, (cash, equity), errs, lots, close, cal, today, e1_closed_reason(p, close, Path(args.data)),
+                         L.round_trips(fills, plan, files.refs(), close, cal) if mode == "real" else None)
+    say("- 止める決まりに当たっているもの: " + ("・".join(hits) if hits else "無し"))
+    say("\n## 2. 持っている株\n")
+    if not lots:
+        say("- 無し")
+    for lot in sorted(lots.values(), key=lambda v: v.due):
+        late = L.bdays_after(cal, lot.due, today)
+        say(f"- {lot.ticker} {lot.shares} 株（{lot.buy_date:%m-%d} に買った。売る日 {lot.due:%m-%d}" + (f"、{late} 営業日遅れ" if late else "") + "）")
+    say("\n## 3. 空運転の進み具合（本物に切り替える条件。docs/stocks_live.md 4.5）\n")
+    st = L.dry_run_status(plan, cfg)
+    say(f"- 空運転の日 {st['days']} 日（{L.DRY_MIN_DAYS} 日以上）、E1 の行 {st['e1_rows']} 行（{L.DRY_MIN_ROWS} 行以上。{st['e1_days']} 日分）")
+    say(f"- 受付の終わりの {L.MARGIN_MIN} 分前までに一覧を作れた日: {pct(st['margin_share'], 0)}（{L.DRY_MARGIN_SHARE:.0%} 以上）。"
+        f"台帳の判断がその時刻までに書かれていた日: {pct(st['decided_share'], 0)}")
+    say("- " + ("条件を満たした（本物にするのは利用者がはっきり頼んだときだけ: --setup --real）" if st["ok"] else "まだ: " + "・".join(st["reasons"])))
+    say("\n## 4. コスト（c*）の途中経過（docs/stocks_live.md 5 章）\n")
+    if mode != "real":
+        say("- 本物を始めてから数える")
+    else:
+        if not args.no_fetch:
+            try:
+                for m in L.update_refs(files, fills, plan, today, now, cal):
+                    say(f"- {m}")
+            except Exception as e:  # noqa: BLE001
+                say(f"- 基準の値段を取れなかった（{type(e).__name__}: {str(e)[:100]}）。次の回にまた取る")
+        rt = L.round_trips(fills, plan, files.refs(), close, cal)
+        cs = L.c_star(rt)
+        say(f"- 出した買いの注文 {cs['orders']} 回（約定 {cs['filled']}・不成立 {cs['unfilled']}。不成立のうち、その日に +{L.LIMIT_UP_DAY:.0%} 以上"
+            f"上がっていたもの {cs['limit_up']}）。決めるのは {L.FIX_ORDERS} 回が片づいたとき")
+        say(f"- 往復が済んで計算できたもの {int(rt['c'].notna().sum()) if len(rt) else 0} 回。外したもの {int((rt['excluded'] != '').sum()) if len(rt) else 0} 回")
+        if cs["fixed"]:
+            say(f"- **決める時点に届いた**（最初の {cs['k']} 回）: c* = **{cs['c_star']:.3%}**（{cs['rule']}）。往復 {cs['n']} 回の平均 {cs['mean']:.3%}・"
+                f"標準誤差 {cs['se']:.3%}、不成立 {cs['nf']} 回（{cs['p_nf']:.1%}）")
+            say(f"- docs/agents.md 6 章の「往復 0.10% 以内」: コスト＋時刻のずれ {cs['c6']:.3%} → {'満たす' if cs['ok6'] else '満たさない（お金を入れない）'}"
+                f"（時刻のずれの平均 {cs['mean_t']:.3%}）")
+            say("- この値を docs/stocks_live.md 10 章に書き写す。後から数が増えても計算し直さない")
+        elif cs["gave_up"]:
+            say(f"- {L.GIVE_UP_ORDERS} 回でも往復が {L.MIN_ROUNDTRIPS} 回に届かなかった。c* は決めない（判定は 0.10%。6 章の条件は満たされない）")
+        else:
+            say(f"- まだ決めない。途中の数字（見て何も変えない）: 平均 {pct(cs['mean_now'], 3)}・標準誤差 {pct(cs['se_now'], 3)}")
+        say("- J-Quants（12 週間遅れの公式の値）との照らし合わせは、後から別に行う（docs/stocks_live.md 5.1）")
+    out = Path(args.out) / "live"
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{now:%Y%m%d-%H%M}.md"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"\n保存先: {path}")
 
 
 def make_plist(root: Path, log: Path, job: str = "run") -> dict:
@@ -746,7 +1724,8 @@ def cmd_schedule(args) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("command", choices=["collect", "ir", "select", "decide", "evaluate", "run", "status", "schedule", "earnings", "extra"])
+    p.add_argument("command", choices=["collect", "ir", "select", "decide", "evaluate", "run", "status", "schedule", "earnings", "extra",
+                                        "check", "orders", "manual", "premium"])
     p.add_argument("--fetch", action="store_true", help="extra: 先に出来高・終値・株式分割を Yahoo から取る（1 秒に 1 社。取得済みは飛ばす）")
     p.add_argument("--reuse", action="store_true", help="extra: 入力を足した銘柄選定の点数が書いてあれば、学び直さずに使う")
     p.add_argument("--off", action="store_true", help="schedule: 自動実行を外す")
@@ -764,9 +1743,31 @@ def main() -> None:
     p.add_argument("--no-embed", action="store_true", help="collect: 埋め込みをしない")
     p.add_argument("--prices", action="store_true", help="run: 先に値段を取り直す")
     p.add_argument("--placebo", type=int, default=300)
+    p.add_argument("--now", help="check・orders: 今の時刻として扱う時刻（試験用。例: 2026-10-20 16:00）")
+    p.add_argument("--setup", action="store_true", help="orders: 予行演習の設定を作る・直す（金額・受付の終わり）")
+    p.add_argument("--equity", type=int, help="orders --setup: 口座に入れる金額（10〜50 万円。既定 30 万円）")
+    p.add_argument("--deadline", help="orders --setup: S 株でその日の引けで約定する受付の終わり（例 13:30。口座の画面で確かめた時刻）")
+    p.add_argument("--real", action="store_true", help="orders --setup: 空運転から本物に切り替える（条件を満たした後だけ）")
+    p.add_argument("--fill", nargs=4, metavar=("銘柄", "向き", "株数", "値段"), help="orders: 約定を書き足す（例 7203 買い 3 2850）")
+    p.add_argument("--fee", type=float, default=0.0, help="orders --fill: 手数料（税込、円）")
+    p.add_argument("--status", default="約定", choices=["約定", "不成立", "出さなかった", "受注停止", "取り消し"], help="orders --fill: 結果")
+    p.add_argument("--at", default="引け", choices=["引け", "寄り", "後場寄り"], help="orders --fill: 約定した時刻（引け＝後場終値）")
+    p.add_argument("--on", help="orders --fill: 約定の日（既定は今日）")
+    p.add_argument("--error", help="orders --fill: 誤りの中身（自分で気づいたとき）")
+    p.add_argument("--memo", help="orders --fill: メモ（注文番号など）")
+    p.add_argument("--void", help="orders: この番号（fills.csv の id）の約定の行を取り消す（元の行は残る）")
+    p.add_argument("--import", dest="import_csv", help="orders: SBI の約定履歴の CSV を取り込む（まだ未対応）")
+    p.add_argument("--report", action="store_true", help="orders: 予行演習の様子（output/agents/live/<日時>.md）")
+    p.add_argument("--no-fetch", action="store_true", help="orders --report: 基準の値段を Yahoo から取らない")
+    p.add_argument("--sells-only", action="store_true", help="orders: 今日の判断が無いとき、売りだけの一覧を書く")
+    p.add_argument("--notify", action="store_true", help="orders: 今日の一覧を iPhone にもう一度知らせる（設定 ~/.bunkoko/notify.json）")
+    p.add_argument("--notify-test", action="store_true", help="orders: 知らせの試し（設定ができているか）")
+    p.add_argument("--test", action="store_true", help="manual・premium: 過去の検証（docs/agents.md 13.2・docs/earnings_premium.md 3 章。数分）")
+    p.add_argument("--exclude", help="orders --setup: 予行演習の外ですでに持っている株（例 7203,6758。空にするなら \"\"）")
     args = p.parse_args()
     {"collect": cmd_collect, "ir": cmd_ir, "select": cmd_select, "decide": cmd_decide, "evaluate": cmd_evaluate,
-     "run": cmd_run, "status": cmd_status, "schedule": cmd_schedule, "earnings": cmd_earnings, "extra": cmd_extra}[args.command](args)
+     "run": cmd_run, "status": cmd_status, "schedule": cmd_schedule, "earnings": cmd_earnings, "extra": cmd_extra,
+     "check": cmd_check, "orders": cmd_orders, "manual": cmd_manual, "premium": cmd_premium}[args.command](args)
 
 
 if __name__ == "__main__":

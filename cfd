@@ -58,6 +58,11 @@ case "$cmd" in
   diversify) need_venv; exec "$PY" scripts/diversified_study.py "$@" ;;
   carry)  need_venv; exec "$PY" scripts/carry_study.py "$@" ;;
   costnow) need_venv; exec "$PY" scripts/costnow_study.py "$@" ;;
+  partner) need_venv; exec "$PY" scripts/partner_study.py "$@" ;;
+  jquants) need_venv; exec "$PY" scripts/jquants.py "$@" ;;
+  edinet) need_venv; exec "$PY" scripts/edinet.py "$@" ;;
+  edgar)  need_venv; exec "$PY" scripts/edgar.py "$@" ;;
+  overnight) need_venv; exec "$PY" scripts/overnight_study.py "$@" ;;
   stockpick) need_venv; exec "$PY" scripts/stockpick_study.py "$@" ;;
   timing) need_venv; exec "$PY" scripts/timing_study.py "$@" ;;
   stocks) need_venv; exec "$PY" scripts/stocks_study.py "$@" ;;
@@ -106,22 +111,33 @@ case "$cmd" in
   study    外部データで絞り込むと成績が良くなるかを検証（./cfd context の後。5 分前後）
   meta     2 次モデル（メタラベリング）で取引を選ぶと成績が良くなるかを検証（./cfd context の後。数分）
   universe 売買の対象を FX・株価指数・国債・個別株・暗号資産に広げたら良くなるかを検証（初回は --fetch。数分）
-  crypto   暗号資産: check（手数料の確かめ直し）・paper（記録だけの売買）・live（少額の本番。既定は空運転）・schedule（毎朝の登録。docs/crypto.md）
+  crypto   暗号資産: check（手数料の確かめ直し）・paper（記録だけの売買）・live（少額の本番。既定は空運転）・schedule（毎朝の登録）・extra（他の通貨の過去の検証。docs/crypto.md 9 章）
   trend    トレンドフォローの改良（複数の期間・量の管理・出口）を 3 期間で確かめる（docs/trend.md。数分）
   spread   2 つの差の戻り（WTI−ブレント・金÷銀）を確かめる（docs/spread.md。数分）
   diversify 市場を分散した論文どおりのトレンドフォローを確かめる（docs/diversified.md。数分）
-  carry    キャリー（原油の期間構造）を確かめる（docs/carry.md。--fetch で EIA から取る。Mac で）
+  carry    キャリー（原油の期間構造）を確かめる（docs/carry.md。--fetch で EIA から取る。Mac で。--paper で記録だけの売買）
   costnow  今のスプレッドで計算し直す（既定は銀。docs/costnow.md。./cfd context の先物の日足も使う。数分）
+  partner  相方の行き過ぎフィルタを、使っていない商品の 5 組で確かめる（docs/cross_asset.md 7 章。Yahoo から取る。Mac で数十分）
+  jquants  J-Quants の無料プランで、過去の上場銘柄一覧に後で消えた会社が入るかなどを確かめる（key でキーを保存 → check。docs/survivorship.md）
+  edinet   EDINET の有報の本文で文章の信号を確かめる（key → check → fetch → momentum・lazy。docs/text_signals.md）
+  edgar    米国の 10-K のリスク要因（案 2-US）。まず universe（点検 1: 時点ごとの S&P500 と値段。docs/us_text.md）
+  overnight 夜だけ持つ（1306 を引けで買い翌朝の寄りで売る）の記録だけの売買の途中経過（docs/overnight.md。お金は動かさない）
   stockpick 個別株をルールで選ぶ検証（--market jp: docs/stockpick.md、--market us: docs/us_equity.md。--fetch で Yahoo から。数分）
   timing   S&P500 を持ち方で上回れるか（変動で量・10 か月平均。docs/us_equity.md。--fetch で ^GSPC）
   stocks   上がりやすい株を探す（時期・時間帯・業種・会社の 17 の仮説。docs/stocks.md。初回は --fetch で 20〜40 分）
   shortterm 株の短期の売買（一晩〜5 日）をルール・機械学習・ニュース・強化学習で確かめる（docs/stocks_short.md。stocks --fetch の後。10〜20 分）
   agents   株を 5 つの AI（情報収集・IR 評価・銘柄選定・判断・判断の評価）で扱う（docs/agents.md。collect --backfill → run。status で様子。
-           earnings = 決算の数字で評価、extra = 出来高・割安さ・進捗率などを足して確かめる）
+           earnings = 決算の数字で評価、extra = 出来高・割安さ・進捗率などを足して確かめる、
+           check = 台帳の点検（自動実行・抜けた日）と先のデータの途中経過・止める決まり。docs/agents.md 12 章、
+           orders = 日本株の予行演習の今日の注文の一覧（注文は出さない。平日 13:05 の run が作って iPhone に知らせる）・--fill で約定・
+           --report で様子・--notify-test で知らせの試し。docs/stocks_live.md・docs/stocks_live_daily.md、
+           manual = 今週の手で買う候補（M2 を週 1 回・10 銘柄・1 日遅れにした形。--test で過去の検証。docs/agents.md 13 章）、
+           premium = 決算発表をまたいで持つ（J7）の先の記録（--test で過去の検証。docs/earnings_premium.md）
   ml       59 市場をまとめて学ぶ機械学習でポジションを決めると良くなるかを検証（universe の後。10〜40 分）
   leadlag  先行指標（原油・為替・金利など）で日米の業種・個別株を予測できるかを検証（初回は --fetch。30〜60 分）
   intraday 5 分足〜1 時間足の短い売買を、小さいコストで候補探し → 実際のコストで確認（--source mt5 で data/ の M5）
-  news     ニュースを集めて埋め込み、売買に役立つかを検証（setup → compare でモデルを決め、schedule → backfill → report）
+  news     ニュースを集めて埋め込み、売買に役立つかを検証（setup → compare でモデルを決め、schedule → backfill → report。
+           volcheck = geo_vol を使っていない市場（S&P500・TOPIX・BTC）で。docs/text_signals.md 5 章）
   py       仮想環境の Python で実行（例: ./cfd py scripts/compare_signals.py ...）
 HELP
           ;;

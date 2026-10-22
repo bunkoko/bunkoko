@@ -2,6 +2,7 @@
 
     python scripts/carry_study.py --fetch   # EIA から WTI の限月 1〜4 を取る（Mac で。クラウドからは届かない）
     python scripts/carry_study.py           # data/carry/wti_curve.csv で計算と判定
+    python scripts/carry_study.py --paper   # 記録だけの売買（8 章。Yahoo の限月ごとの WTI。月に 1 回）
 
 仮説と判定の条件は docs/carry.md（結果を見る前に決めたもの）。
 """
@@ -167,7 +168,102 @@ def gate_stage(args, root: Path) -> None:
     print(f"\n保存先: {out}/gate.md")
 
 
-def main() -> None:
+def paper_stage(args, getter=None, now: pd.Timestamp | None = None, sleep=None) -> Path:
+    """docs/carry.md 8 章: Yahoo の限月ごとの WTI で、月末のキャリーの向きを記録し、途中経過を出す。お金は動かさない。"""
+    import time
+
+    from cfdbot import carry_paper as P
+
+    st = P.Store(args.root)
+    now = now or pd.Timestamp.now(tz="Asia/Tokyo").tz_localize(None)
+    since = pd.Timestamp(P.START) - pd.Timedelta(days=P.HISTORY_DAYS)
+    tickers = P.needed(since, now + pd.Timedelta(days=40))
+    if not args.no_fetch:
+        if getter is None:
+            from cfdbot.context import fetch_yahoo as getter
+        wait = sleep or time.sleep
+        for i, t in enumerate(tickers + [P.FRONT]):
+            if i:
+                wait(1.0)                                            # 1 秒に 1 件
+            try:
+                st.save(t, getter(t, f"{since:%Y-%m-%d}"))
+            except Exception as e:  # noqa: BLE001
+                have = len(st.load_close(t))
+                print(f"  ⚠ {t}: 取れなかった（{str(e)[:100]}）。手元の {have} 日分で続ける", flush=True)
+    closes = {t: s for t in tickers if len(s := st.load_close(t))}
+    if not closes:
+        raise SystemExit("限月の値段が 1 つも無い（ネットにつないで ./cfd carry --paper）")
+    r = P.run(closes, st.load_close(P.FRONT), now)
+    added = st.append(r["decisions"], now)
+    log = st.load_log()
+    lines: list[str] = []
+
+    def say(s: str = "") -> None:
+        print(s, flush=True)
+        lines.append(s)
+
+    m = r["monthly"]
+    say("# キャリーの記録だけの売買（C4）")
+    say("")
+    say(f"作成: {now:%Y-%m-%d %H:%M}　決まり: docs/carry.md 8 章（結果を見る前に決めたもの）。お金は動かしていない")
+    say(f"- 毎月の最後の営業日の終値で キャリー ＝ ln(限月 1 ÷ 限月 2) を計算し、プラスなら翌月は買い・マイナスなら売り。{P.START} の終値から")
+    say(f"- 値段: Yahoo の限月ごとの WTI（{tickers[0]}〜{tickers[-1]}）。今回 {added} か月分を記録に書き足した（{st.log_path}）")
+    say("")
+    say("## 1. 途中経過と判定（2026-11 から）")
+    say("")
+    say("| 形 | 月の数 | 合計 | 月ごとの t 値 | 年率 |")
+    say("|---|---|---|---|---|")
+    for key, label in (("cfd", "キャリーの向き（CFD のコスト。判定に使う）"), ("futures", "参考: 同じ向き・先物のコスト"),
+                       ("long", "参考: いつも買い（CFD のコスト）")):
+        x = m[key]
+        say(f"| {label} | {len(x)} | {pct(float(x.sum()), 1) if len(x) else '–'} | {f2(P.t_value(x))} | "
+            f"{pct(float(x.mean() * 12), 1) if len(x) else '–'} |")
+    say("")
+    looks = [k for k in P.LOOKS if len(m["cfd"]) >= k]
+    for k in looks:
+        say(f"- {k} か月の時点: **{P.verdict(m['cfd'].iloc[:k])}**")
+    if not looks:
+        say(f"- 判定: **{P.verdict(m['cfd'])}**（判定は {'・'.join(str(k) for k in P.LOOKS)} か月の時点だけ。間の数字を見て何も変えない）")
+    say("")
+    say("## 2. 月ごとの向き")
+    say("")
+    say("| 月末 | 限月 1 | 限月 2 | 終値 1 | 終値 2 | キャリー | 翌月の向き | 翌月の損益（CFD） | 記録 |")
+    say("|---|---|---|---|---|---|---|---|---|")
+    pnl = {p.to_period("M"): v for p, v in m["cfd"].items()}
+    for row in log.itertuples():
+        d = pd.Timestamp(row.month_end)
+        nxt = pnl.get((d + pd.offsets.MonthBegin(1)).to_period("M"))
+        word = {1: "買い", -1: "売り", 0: "なし"}.get(int(row.position), "?")
+        say(f"| {d:%Y-%m-%d} | {row.c1} | {row.c2} | {float(row.c1_close):.2f} | {float(row.c2_close):.2f} | {float(row.carry):+.2%} | {word} | "
+            f"{pct(nxt, 2) if nxt is not None else 'まだ'} | {row.logged_at}{'（' + row.late + '）' if isinstance(row.late, str) and row.late else ''} |")
+    if log.empty:
+        say("| まだ無い（10 月が終わった後に動かすと、2026-10-30 の向きが入る） | | | | | | | | |")
+    say("")
+    say("## 3. データの点検")
+    say("")
+    c = r["curve"]
+    last = c.index[-1]
+    front = st.load_close(P.FRONT)
+    fc = front.get(last, np.nan) if len(front) else np.nan
+    say(f"- 最後の日 {last:%Y-%m-%d}: 限月 1 {c.at[last, 't1']} {f2(c.at[last, 'c1'])}・限月 2 {c.at[last, 't2']} {f2(c.at[last, 'c2'])}、"
+        f"{P.FRONT} {f2(fc)}（限月 1 と同じ限月なら、ほぼ同じ値になる）")
+    gaps = c[(c.index > pd.Timestamp(P.START)) & (c["c1"].isna() | c["c2"].isna())]
+    say(f"- 始まりの後で、限月 1・2 のどちらかの値が無い日: {len(gaps)} 日" + (f"（{', '.join(f'{d:%m-%d}' for d in gaps.index[:10])}…）" if len(gaps) else ""))
+    say("")
+    say("## 4. 読み方")
+    say("")
+    say("- 6 章のシャープ 0.34 は月ごとにすると 0.10。過去と同じ効きでも、t 値は 12 か月で 0.34、36 か月で 0.59 ほど。3 年でもほぼ「まだ分からない」")
+    say("- この記録は「逆向きに変わっていないか」の見張り。お金を入れる判断は、これだけではしない")
+    out = Path(args.out) / "paper" / datetime.now().strftime("%Y%m%d-%H%M")
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / "report.md"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("")
+    print(f"保存先: {path}")
+    return path
+
+
+def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--root", default="data/carry")
     p.add_argument("--fetch", action="store_true", help="EIA から取る（初回・更新）")
@@ -180,7 +276,12 @@ def main() -> None:
     p.add_argument("--final", default="config/baselines/turtle55_d1_ext.json")
     p.add_argument("--equity", type=float, default=10_000_000)
     p.add_argument("--gate-placebo", type=int, default=30)
-    args = p.parse_args()
+    p.add_argument("--paper", action="store_true", help="8 章: Yahoo の限月で、月末のキャリーの向きを記録して途中経過を出す")
+    p.add_argument("--no-fetch", action="store_true", help="--paper: 値段を取り直さない")
+    args = p.parse_args(argv)
+    if args.paper:
+        paper_stage(args)
+        return
 
     root = Path(args.root)
     if args.fetch or not curve_path(root).exists():
