@@ -41,3 +41,33 @@ def test_short_tail_merged_into_previous():
     text = "あ" * 70 + "。\n" + "い" * 9 + "。"
     chunks = chunk_section(text, 0, len(text), min_chars=20, max_chars=100)
     assert len(chunks) == 1
+
+
+def _check(text, chunks, min_chars, max_chars):
+    for c in chunks:
+        assert min_chars <= len(c) <= max_chars
+        assert text[c.end - 1] == "。"  # 文の途中で切らない
+
+
+def test_short_paragraph_before_long_one_is_rebalanced():
+    # 16字の段落の後に590字の段落。つなぐと600字を超えるので、文の切れ目で分け直す
+    text = "　" + "あ" * 15 + "。\n　" + ("い" * 58 + "。") * 10
+    chunks = chunk_section(text, 0, len(text), min_chars=200, max_chars=600)
+    assert len(chunks) == 2
+    _check(text, chunks, 200, 600)
+    assert text[chunks[0].start :].startswith("あ")
+
+
+def test_short_paragraph_in_middle_joins_next():
+    text = "　" + "う" * 299 + "。\n　" + "え" * 9 + "。\n　" + "お" * 299 + "。"
+    chunks = chunk_section(text, 0, len(text), min_chars=200, max_chars=600)
+    _check(text, chunks, 200, 600)
+    assert (
+        sum(len(text[c.start : c.end].replace("\n", "").replace("　", "")) for c in chunks) == 610
+    )
+
+
+def test_whole_short_section_is_kept():
+    text = "　短い後記。"
+    chunks = chunk_section(text, 0, len(text), min_chars=200, max_chars=600)
+    assert [text[c.start : c.end] for c in chunks] == ["短い後記。"]

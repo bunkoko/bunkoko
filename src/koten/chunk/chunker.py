@@ -100,11 +100,67 @@ def chunk_section(text: str, start: int, end: int, min_chars: int, max_chars: in
             cur = Span(u.start, u.end)
     if cur is not None:
         chunks.append(cur)
-    # 最後が短すぎれば、収まる範囲で前とつなぐ
-    if len(chunks) >= 2 and len(chunks[-1]) < min_chars:
-        if chunks[-1].end - chunks[-2].start <= max_chars:
-            last = chunks.pop()
-            chunks[-1].end = last.end
+    return _fix_short(text, chunks, min_chars, max_chars)
+
+
+def _sentence_units(text: str, start: int, end: int, max_chars: int) -> list[Span]:
+    units: list[Span] = []
+    for p in paragraphs(text, start, end):
+        for s in sentences(text, p):
+            while len(s) > max_chars:
+                units.append(Span(s.start, s.start + max_chars))
+                s = Span(s.start + max_chars, s.end)
+            units.append(s)
+    return units
+
+
+def _rebalance(text: str, a: Span, b: Span, max_chars: int) -> tuple[Span, Span] | None:
+    """隣り合う2チャンクを文の切れ目で分け直し、短い方をできるだけ長くする。"""
+    units = _sentence_units(text, a.start, b.end, max_chars)
+    best, best_score = None, min(len(a), len(b))
+    for k in range(1, len(units)):
+        left = Span(units[0].start, units[k - 1].end)
+        right = Span(units[k].start, units[-1].end)
+        if len(left) > max_chars or len(right) > max_chars:
+            continue
+        score = min(len(left), len(right))
+        if score > best_score:
+            best, best_score = (left, right), score
+    return best
+
+
+def _fix_short(text: str, chunks: list[Span], min_chars: int, max_chars: int) -> list[Span]:
+    """min_chars 未満のチャンクを、前か後ろとつなぐ。
+
+    つなぐと max_chars を超えるときは、隣のチャンクと文の切れ目で分け直す。
+    章が丸ごと短いときは、章をまたがないのでそのまま残す。
+    """
+    i = 0
+    while i < len(chunks):
+        c = chunks[i]
+        if len(c) >= min_chars:
+            i += 1
+            continue
+        prev = chunks[i - 1] if i > 0 else None
+        nxt = chunks[i + 1] if i + 1 < len(chunks) else None
+        if prev is not None and c.end - prev.start <= max_chars:
+            prev.end = c.end
+            del chunks[i]
+            i -= 1
+            continue
+        if nxt is not None and nxt.end - c.start <= max_chars:
+            c.end = nxt.end
+            del chunks[i + 1]
+            continue
+        options = []
+        if nxt is not None and (r := _rebalance(text, c, nxt, max_chars)):
+            options.append((min(len(r[0]), len(r[1])), i, r))
+        if prev is not None and (r := _rebalance(text, prev, c, max_chars)):
+            options.append((min(len(r[0]), len(r[1])), i - 1, r))
+        if options:
+            _, j, (left, right) = max(options, key=lambda o: o[0])
+            chunks[j], chunks[j + 1] = left, right
+        i += 1
     return chunks
 
 
