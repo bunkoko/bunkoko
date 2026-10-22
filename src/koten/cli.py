@@ -143,7 +143,7 @@ def augment(
     if not any((hdd / "chunks").glob("*.parquet")):
         _require_input(hdd / "chunks" / "aozora.parquet", "chunk aozora")
     from koten.augment.extract import AugmentConfig, load_themes, run_augment
-    from koten.llm import LLMError, OpenAICompatLLM
+    from koten.llm import LLMError, OllamaLLM, OpenAICompatLLM, describe_stats
 
     conf = s.section("llm.augment")
     model = model or conf.get("model")
@@ -155,12 +155,23 @@ def augment(
             err=True,
         )
         raise typer.Exit(2)
-    llm = OpenAICompatLLM(
-        conf["endpoint"],
-        model,
-        response_format=conf.get("response_format", "json_schema"),
-        timeout_sec=conf.get("timeout_sec", 300),
-    )
+    if conf.get("provider") == "ollama":
+        llm = OllamaLLM(
+            conf["endpoint"],
+            model,
+            think=conf.get("think", False),
+            num_ctx=conf.get("num_ctx", 4096),
+            num_predict=conf.get("num_predict", 1024),
+            keep_alive=conf.get("keep_alive", "10m"),
+            timeout_sec=conf.get("timeout_sec", 300),
+        )
+    else:
+        llm = OpenAICompatLLM(
+            conf["endpoint"],
+            model,
+            response_format=conf.get("response_format", "json_schema"),
+            timeout_sec=conf.get("timeout_sec", 300),
+        )
     cfg = AugmentConfig.from_settings(s.section("augment"))
     started = time.monotonic()
     try:
@@ -175,6 +186,8 @@ def augment(
         )
     except LLMError as e:
         typer.secho(str(e), fg="red", err=True)
+        if stats := describe_stats(getattr(llm, "stats", {})):
+            typer.echo(stats)
         raise typer.Exit(1) from e
     elapsed = time.monotonic() - started
     per_chunk = elapsed / r.processed if r.processed else 0.0
@@ -183,6 +196,8 @@ def augment(
         f"捨てた一節：{dict(r.dropped) or 'なし'}"
     )
     typer.echo(f"時間 {elapsed:.0f}秒（1チャンクあたり {per_chunk:.1f}秒）・モデル {model}")
+    if stats := describe_stats(getattr(llm, "stats", {})):
+        typer.echo(stats)
 
 
 @app.command()

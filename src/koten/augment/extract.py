@@ -369,7 +369,7 @@ def run_augment(
             if result.processed % 10 == 0:
                 log(f"  {result.processed} チャンク処理、候補 {result.candidates} 件")
     except LLMError:
-        log("LLM に接続できないので止めます。ここまでの結果は保存します")
+        log("LLM の呼び出しに失敗したので止めます。ここまでの結果は保存します")
         raise
     finally:
         writer.flush()

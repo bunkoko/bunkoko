@@ -63,9 +63,15 @@ def check_llm(s: Settings, role: str, client: httpx.Client) -> Check:
         return Check(name, NG, f"anthropic {model}（ANTHROPIC_API_KEY が未設定。.env に書く）")
     endpoint = conf.get("endpoint", "")
     try:
-        r = client.get(f"{endpoint.rstrip('/')}/models")
-        r.raise_for_status()
-        models = [m.get("id") for m in r.json().get("data", [])]
+        if provider == "ollama":
+            base = endpoint.rstrip("/").removesuffix("/v1")
+            r = client.get(f"{base}/api/tags")
+            r.raise_for_status()
+            models = [m.get("name") for m in r.json().get("models", [])]
+        else:
+            r = client.get(f"{endpoint.rstrip('/')}/models")
+            r.raise_for_status()
+            models = [m.get("id") for m in r.json().get("data", [])]
     except (httpx.HTTPError, ValueError) as e:
         return Check(name, NG, f"{endpoint} に接続できません（{type(e).__name__}）")
     if model in models:

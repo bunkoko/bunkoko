@@ -1,6 +1,8 @@
 """LLM の呼び出し。
 
-付加情報づけ（augment）は Mac 上のローカルLLM（OpenAI互換API）で夜間に回す（SPEC §8.3）。
+付加情報づけ（augment）は Mac 上のローカルLLMで夜間に回す（SPEC §8.3）。
+Ollama は独自の /api/chat で呼ぶ（思考モードの切り替え・文脈長・出力長の上限・速度の記録ができる）。
+LM Studio などは OpenAI 互換の /chat/completions で呼ぶ。
 テストでは同じ形の偽物（complete を持つオブジェクト）に差し替える。
 """
 
@@ -8,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from typing import Any, Protocol
 
 import httpx
@@ -21,6 +24,105 @@ class ChatLLM(Protocol):
     name: str
 
     def complete(self, system: str, user: str, schema: dict[str, Any] | None = None) -> str: ...
+
+
+class OllamaLLM:
+    """Ollama の /api/chat を呼ぶ。stats に入出力のトークン数と時間（秒）を積み上げる。"""
+
+    def __init__(
+        self,
+        endpoint: str,
+        model: str,
+        *,
+        think: bool | None = False,
+        num_ctx: int | None = 4096,
+        num_predict: int | None = 1024,
+        temperature: float = 0.2,
+        keep_alive: str = "10m",
+        timeout_sec: float = 300.0,
+        client: httpx.Client | None = None,
+    ):
+        # 設定に /v1（OpenAI 互換）が付いていても、Ollama 独自の API の場所にする
+        self.endpoint = re.sub(r"/v1/?$", "", endpoint.rstrip("/"))
+        self.model = model
+        self.name = model
+        self.think = think
+        self.options = {
+            k: v
+            for k, v in {
+                "temperature": temperature,
+                "num_ctx": num_ctx,
+                "num_predict": num_predict,
+            }.items()
+            if v is not None
+        }
+        self.keep_alive = keep_alive
+        self.client = client or httpx.Client(timeout=timeout_sec)
+        self.stats: Counter[str] = Counter()
+
+    def _post(self, body: dict[str, Any]) -> httpx.Response:
+        try:
+            return self.client.post(f"{self.endpoint}/api/chat", json=body)
+        except httpx.TimeoutException as e:
+            raise LLMError(
+                f"{self.model} の応答が時間切れ（{e}）。"
+                "思考モードが止まっているか（think = false）、"
+                "モデルがメモリに収まっているか（ollama ps）を確かめてください"
+            ) from e
+        except httpx.HTTPError as e:
+            raise LLMError(f"{self.endpoint} に接続できません：{e}") from e
+
+    def complete(self, system: str, user: str, schema: dict[str, Any] | None = None) -> str:
+        body: dict[str, Any] = {
+            "model": self.model,
+            "stream": False,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "format": schema if schema is not None else "json",
+            "options": self.options,
+            "keep_alive": self.keep_alive,
+        }
+        if self.think is not None:
+            body["think"] = self.think
+        r = self._post(body)
+        if r.status_code == 400 and "think" in r.text and "think" in body:
+            # 思考モードの無いモデルは think の指定を受け付けないことがあるので、外して送り直す
+            self.think = None
+            del body["think"]
+            r = self._post(body)
+        if r.status_code >= 400:
+            raise LLMError(f"{self.model} がエラーを返しました（{r.status_code}）：{r.text[:300]}")
+        try:
+            data = r.json()
+            content = data["message"]["content"] or ""
+        except (ValueError, KeyError, TypeError) as e:
+            raise LLMError(f"{self.model} の応答を読めません：{r.text[:300]}") from e
+        self.stats["calls"] += 1
+        self.stats["prompt_tokens"] += int(data.get("prompt_eval_count") or 0)
+        self.stats["output_tokens"] += int(data.get("eval_count") or 0)
+        self.stats["prompt_ns"] += int(data.get("prompt_eval_duration") or 0)
+        self.stats["output_ns"] += int(data.get("eval_duration") or 0)
+        self.stats["load_ns"] += int(data.get("load_duration") or 0)
+        return content
+
+
+def describe_stats(stats: Counter[str]) -> str:
+    """Ollama の stats を「入力・出力のトークン数と速度」の1行にする。"""
+    calls = stats.get("calls", 0)
+    if not calls:
+        return ""
+    out_s = stats["output_ns"] / 1e9
+    in_s = stats["prompt_ns"] / 1e9
+    out_rate = stats["output_tokens"] / out_s if out_s else 0.0
+    in_rate = stats["prompt_tokens"] / in_s if in_s else 0.0
+    return (
+        f"1回あたり 入力 {stats['prompt_tokens'] / calls:.0f}トークン・"
+        f"出力 {stats['output_tokens'] / calls:.0f}トークン。"
+        f"生成 {out_rate:.1f}トークン/秒、入力の読み込み {in_rate:.0f}トークン/秒、"
+        f"モデルの読み込み {stats['load_ns'] / 1e9:.0f}秒"
+    )
 
 
 class OpenAICompatLLM:

@@ -9,12 +9,16 @@ ssd_root = "~/koten-hot"
 photos_dir = "~/Pictures/koten-bg"
 bgm_dir = "~/Music/koten-bgm"
 
-[llm.augment]                 # Mac上のローカルLLM（Ollama の OpenAI互換API。LM Studio なら 1234）
-provider = "openai_compatible"
-endpoint = "http://127.0.0.1:11434/v1"
-model = "要確認"              # ローカルLLMで読み込んだモデル名（docs/decisions.md D-005）
-response_format = "json_schema"   # 対応していなければ "json_object" か "none"
+[llm.augment]                 # Mac上のローカルLLM（docs/decisions.md D-005）
+provider = "ollama"           # Ollama 独自の API。LM Studio などは "openai_compatible"（endpoint に /v1）
+endpoint = "http://127.0.0.1:11434"
+model = "要確認"              # ollama list に出るモデル名
+think = false                 # 思考モードを止める（考える途中経過で時間を使い切らないように）
+num_ctx = 4096                # 文脈の長さ。大きいとメモリを食い、GPU に収まらず遅くなる
+num_predict = 1024            # 出力の上限トークン数
+keep_alive = "10m"
 timeout_sec = 300
+response_format = "json_schema"   # openai_compatible のときだけ使う
 
 [augment]                     # 引用候補の抽出（SPEC §8.3）
 prompt = "augment_v1"         # prompts/<prompt>.md

@@ -95,3 +95,10 @@ uv run koten chunk aozora
 
 100万件を大きく超える、または検索が遅くなったら、LanceDB への移行を検討する（Chroma より Parquet・Arrow と相性が良く、事前の絞り込みができる）。
 
+### 2026-10-22 ローカルLLMの呼び方（Ollama）
+
+- `--limit 20` の比較（Mac・メモリ32GB、OpenAI 互換API・思考モードの指定なし）：gemma4:26b と qwen3.5:27b は1回の応答が300秒を超えて時間切れ。gemma3:27b は完走したが1チャンク48.4秒（候補32件、捨てた一節6件）。約12万チャンクでは約67日かかり、このままでは使えない。
+- 対策として Ollama は独自の /api/chat で呼ぶ（provider = "ollama"）。think = false で思考モードを止め、num_ctx（4096）と num_predict（1024）に上限を付け、format に JSON スキーマを渡す。応答の prompt_eval_count・eval_count・各時間から、入力・出力のトークン数と生成速度を表示し、遅い原因を切り分ける。
+- think を受け付けないモデルには、think を外して送り直す。
+- 時間切れは「LLM の呼び出しに失敗」として、そこまでの結果を保存して止める。
+
