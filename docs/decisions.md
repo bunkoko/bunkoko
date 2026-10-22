@@ -36,6 +36,7 @@ uv run koten chunk aozora
 | D-005 | ローカルLLM（augment）・リランクのモデル | M2・M4 で確認 |
 | D-006 | テキスト類の容量（取得後に実測） | M1 の実データ取得後に記録 |
 | D-007 | YouTube のチャプターの条件（00:00始まり、3つ以上、各10秒以上） | M6 で確認 |
+| D-008 | hdd_root を一時的に内蔵SSD（~/koten-trial）にしている | 外付けHDDかSDカードを用意したら、settings.toml の hdd_root を `/Volumes/<名前>/koten` に戻し、~/koten-trial を丸ごとコピーする。内蔵SSDの空きが少ないので、それまでは `--limit` を付けて取得する |
 
 ## 実装時の判断
 

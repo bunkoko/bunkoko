@@ -2,7 +2,9 @@
 # KOTEN_SETTINGS 環境変数で別のファイルを指定できる。
 
 [paths]
-hdd_root = "/Volumes/KotenHDD/koten"
+# 一時的に内蔵SSDに置いている（外付けHDD／SDカードを用意したら下の行に戻す。docs/decisions.md D-008）
+# hdd_root = "/Volumes/KotenHDD/koten"
+hdd_root = "~/koten-trial"
 ssd_root = "~/koten-hot"
 photos_dir = "~/Pictures/koten-bg"
 bgm_dir = "~/Music/koten-bgm"
