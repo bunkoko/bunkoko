@@ -29,6 +29,7 @@ from koten.parquet import read_rows, write_rows
 
 WORK_FIELDS = [
     ("title", pa.string()),
+    ("author_ids", pa.list_(pa.string())),
     ("author_names", pa.list_(pa.string())),
     ("license", pa.string()),
     ("review_required", pa.bool_()),

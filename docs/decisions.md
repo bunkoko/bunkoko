@@ -34,10 +34,11 @@ uv run koten chunk aozora
 | D-002 | テキストzipの取得元 | 2026-10-22 決定。GitHub のミラー（raw.githubusercontent.com/aozorabunko/aozorabunko の master・main）は本文の zip も index.html も 404 で使えなかった。SPEC §6 の「サイトから取る場合は1秒1件以下」に従い、公式サイト（https://www.aozora.gr.jp/）から取得する。対象約5,100作品の全件取得は約1.5時間かかるので夜間に回す。公式サイトの利用上の注意（robots.txt など）は全件取得の前に確かめる |
 | D-003 | NDL 次世代デジタルライブラリー「ご利用に当たって」 | M8 で確認 |
 | D-004 | Project Gutenberg の名前を出典として記すことの可否 | M8 で確認 |
-| D-005 | ローカルLLM（augment）・リランクのモデル | augment は未決定（利用者の Mac で動く OpenAI 互換サーバーとモデルを決めて settings.toml の [llm.augment] に書く。JSON スキーマ指定に対応しない場合は response_format を json_object か none に）。リランクは M4 で確認 |
+| D-005 | ローカルLLM（augment）・リランクのモデル | 2026-10-22：Ollama（Mac・メモリ32GB）を使う。endpoint は http://127.0.0.1:11434/v1。モデルは `--limit 20` で候補を試し、捨てた一節の件数と1チャンクあたりの時間で決める（未決定）。リランクは M4 で確認 |
 | D-006 | テキスト類の容量（取得後に実測） | M1 の実データ取得後に記録 |
 | D-007 | YouTube のチャプターの条件（00:00始まり、3つ以上、各10秒以上） | M6 で確認 |
 | D-008 | hdd_root を SDカード（/Volumes/SDカード/古典×悩み）にしている | 2026-10-22 決定（場所は利用者の指定）。日本語と「×」を含むパスなので、後段（ffmpeg・Playwright の file:// URL）ではパスを文字列連結せず、引数リストと URL エンコードで渡す。exFAT か APFS で使う（FAT32 は1ファイル4GBまで）。SDカードはHDDより壊れやすいので、M2 以降の augment/・emb/ は定期的に別の場所へコピーする。外付けHDDに移すときは koten フォルダを丸ごとコピーして hdd_root を書き換える |
+| D-009 | ベクトルストア（FAISS・Chroma など） | 2026-10-22：使わない。numpy の全件計算＋絞り込みの配列にする（下の「ベクトルストアの比較」） |
 
 ## 実装時の判断
 
@@ -77,4 +78,20 @@ uv run koten chunk aozora
 - **候補表（SSD）**：cache/candidates.parquet は、使用可（R1）の作品の候補だけに、作品名・著者・license・review_required・文字遣いを付けたもの。caution は残し、検索（M4）で外す。
 - **API**：create_app は SSD の場所と埋め込みモデル名だけを受け取り、HDD のパスを持たない。索引が無いときも起動し、/healthz が no_index を返す。待ち受けは 127.0.0.1 の api.port（既定 8765）。
 - **重い依存**：sentence-transformers・SudachiPy は `uv sync --extra ml` で入れる任意の依存にした（テストは簡易埋め込み HashEncoder と bigram で動く）。
+
+### 2026-10-22 ベクトルストアの比較（D-009）
+
+規模は最大50万件・1024次元（SPEC §5）。検索では、注意フラグ・直近10回の作品・直近5回の著者・1冊回の作品指定・テーマなどで絞り込む（SPEC §3・§8.6）。日本語の BM25 と組み合わせる。
+
+| 方式 | 絞り込み | 正確さ | 日本語のキーワード検索 | 置き場所・運用 |
+|---|---|---|---|---|
+| numpy 全件計算＋真偽の配列（採用） | 列から作った配列でスコアを消すだけ。条件は Python で自由に書ける | 全件計算なので取りこぼし無し | 自前の BM25＋SudachiPy | Parquet・npy を SSD に置くだけ。依存が増えない |
+| FAISS | IDSelector を検索パラメータで渡す必要があり面倒 | IndexFlatIP なら全件計算で numpy と同じ。近似索引は取りこぼしあり | 無い | Python 3.14 の wheel に不安 |
+| Chroma | where 句で書ける | HNSW の近似検索 | 日本語の分かち書きは無い | 独自の保存形式（SQLite＋HNSW）に、Parquet と二重に持つことになる |
+| LanceDB | SQL 風の where で事前に絞れる | 全件計算か近似索引を選べる | 全文検索はあるが日本語は工夫が要る | Arrow 系なので Parquet と相性が良い。将来の候補 |
+| Qdrant | 絞り込みが最も強い | HNSW | 疎ベクトルで対応 | サーバー（Docker）が要り、この規模には大きすぎる |
+
+測定（このクラウド環境の4コアCPU、50万件・1024次元・絞り込みあり）：float16 のまま検索のたびに変換すると約1.26秒／回、float32 でメモリに持つと約50ms／回。そこで索引は SSD に float16 で置き、読み込むときに float32 にする（約2GB。メモリ32GBで問題ない）。
+
+100万件を大きく超える、または検索が遅くなったら、LanceDB への移行を検討する（Chroma より Parquet・Arrow と相性が良く、事前の絞り込みができる）。
 

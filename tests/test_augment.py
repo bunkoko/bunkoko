@@ -188,3 +188,8 @@ def test_llm_down_stops_and_keeps_results(hdd_with_chunks):
     with pytest.raises(LLMError):
         run_augment(hdd, PROMPTS, VOCAB, Down(), AugmentConfig())
     assert len(done_chunk_ids(hdd / "augment/fake-llm/augment_v1")) == 1
+
+
+def test_parse_json_ignores_think_block():
+    content = '<think>{まず考える} quotes は…</think>\n{"quotes": []}'
+    assert parse_json_object(content) == {"quotes": []}

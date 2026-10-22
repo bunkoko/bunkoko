@@ -88,4 +88,8 @@ def top_k(scores: np.ndarray, k: int, *, positive_only: bool = False) -> list[tu
     k = min(k, len(scores))
     idx = np.argpartition(-scores, k - 1)[:k]
     idx = idx[np.argsort(-scores[idx], kind="stable")]
-    return [(int(i), float(scores[i])) for i in idx if not positive_only or scores[i] > 0]
+    return [
+        (int(i), float(scores[i]))
+        for i in idx
+        if np.isfinite(scores[i]) and (not positive_only or scores[i] > 0)
+    ]

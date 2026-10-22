@@ -9,9 +9,9 @@ ssd_root = "~/koten-hot"
 photos_dir = "~/Pictures/koten-bg"
 bgm_dir = "~/Music/koten-bgm"
 
-[llm.augment]                 # Mac上のローカルLLM（OpenAI互換API。LM Studio は 1234、Ollama は 11434）
+[llm.augment]                 # Mac上のローカルLLM（Ollama の OpenAI互換API。LM Studio なら 1234）
 provider = "openai_compatible"
-endpoint = "http://127.0.0.1:1234/v1"
+endpoint = "http://127.0.0.1:11434/v1"
 model = "要確認"              # ローカルLLMで読み込んだモデル名（docs/decisions.md D-005）
 response_format = "json_schema"   # 対応していなければ "json_object" か "none"
 timeout_sec = 300

@@ -68,11 +68,15 @@ class OpenAICompatLLM:
 
 
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$")
+_THINK = re.compile(r"<think>.*?</think>", re.S)
 
 
 def parse_json_object(content: str) -> dict[str, Any]:
-    """応答から JSON オブジェクトを取り出す。コードフェンスや前後の文章があっても読む。"""
-    text = _FENCE.sub("", content.strip())
+    """応答から JSON オブジェクトを取り出す。
+
+    コードフェンス、前後の文章、考える途中経過（<think>…</think>）があっても読む。
+    """
+    text = _FENCE.sub("", _THINK.sub("", content).strip())
     try:
         value = json.loads(text)
     except json.JSONDecodeError:

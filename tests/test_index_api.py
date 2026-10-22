@@ -104,3 +104,33 @@ def test_api_reports_missing_index(tmp_path):
     with TestClient(create_app(tmp_path / "ssd", MODEL)) as client:
         body = client.get("/healthz").json()
     assert body["status"] == "no_index" and "koten index build" in body["error"]
+
+
+def test_filters_are_exact(augmented):
+    from koten.index.search import Filter
+
+    s, hdd, adir = augmented
+    _build(s, hdd, adir)
+    idx = HotIndex(s.ssd_root, MODEL)
+    works = {r["work_id"] for r in idx.rows}
+    assert len(works) == 2
+    a, b = sorted(works)
+    q = HashEncoder(name=MODEL).encode(["他人と比べると心が乱れる"])[0]
+    n = len(idx)
+
+    assert len(idx.search_dense(q, n)) == n
+    only_a = idx.search_dense(q, n, Filter(only_work_ids=[a]))
+    assert only_a and {h.row["work_id"] for h in only_a} == {a}
+    not_a = idx.search_dense(q, n, Filter(exclude_work_ids=[a]))
+    assert {h.row["work_id"] for h in not_a} == {b}
+    authors_a = idx.rows[[r["work_id"] for r in idx.rows].index(a)]["author_ids"]
+    assert {
+        h.row["work_id"] for h in idx.search_bm25("比べる", n, Filter(exclude_author_ids=authors_a))
+    } == {b}
+    assert idx.search_dense(q, n, Filter(themes_any=["孤独"])) == []
+
+    idx._caution[0] = True  # caution の一節は既定で外れる
+    assert idx.ids[0] not in {h.candidate_id for h in idx.search_dense(q, n, Filter())}
+    assert idx.ids[0] in {
+        h.candidate_id for h in idx.search_dense(q, n, Filter(exclude_caution=False))
+    }
