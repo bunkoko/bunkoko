@@ -38,8 +38,8 @@ def _done_rows(out_dir: Path) -> dict[str, dict[str, Any]]:
 
 def compare_models(
     hdd_root: Path, prompt: str, models: list[str], n: int = 10
-) -> tuple[list[ModelSummary], str, int]:
-    """戻り値は（モデルごとの集計, 並べ表示の Markdown, 比べたチャンク数）。"""
+) -> tuple[list[ModelSummary], str, list[str]]:
+    """戻り値は（モデルごとの集計, 並べ表示の Markdown, 比べたチャンクのID）。"""
     dirs = {m: hdd_root / "augment" / llm_slug(m) / prompt for m in models}
     missing = [m for m, d in dirs.items() if not d.exists()]
     if missing:
@@ -71,7 +71,8 @@ def compare_models(
     lines = [
         f"# ローカルLLMの比較（{datetime.now():%Y-%m-%d %H:%M}）",
         "",
-        f"どのモデルも処理したチャンクのうち、先頭の {len(chunks)} 件で比べた。",
+        f"どのモデルも処理したチャンクのうち、先頭の {len(chunks)} 件で比べた：",
+        "、".join(c["chunk_id"] for c in chunks),
         "",
         summary_table(summaries),
     ]
@@ -92,7 +93,7 @@ def compare_models(
                     f"  - 悩み：{' / '.join(q['worries'])}",
                 ]
             lines.append("")
-    return summaries, "\n".join(lines), len(chunks)
+    return summaries, "\n".join(lines), [c["chunk_id"] for c in chunks]
 
 
 def summary_table(summaries: list[ModelSummary]) -> str:

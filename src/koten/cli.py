@@ -247,16 +247,17 @@ def compare(
     hdd = _hdd(s)
     names = [m.strip() for m in models.split(",") if m.strip()]
     try:
-        summaries, markdown, count = compare_models(
+        summaries, markdown, chunk_ids = compare_models(
             hdd, s.section("augment").get("prompt", "augment_v1"), names, n
         )
     except FileNotFoundError as e:
         typer.secho(str(e), fg="red", err=True)
         raise typer.Exit(2) from e
-    if count == 0:
+    if not chunk_ids:
         typer.secho("どのモデルも処理したチャンクがありません", fg="red", err=True)
         raise typer.Exit(2)
-    typer.echo(f"どのモデルも処理したチャンク {count} 件で比べました")
+    typer.echo(f"どのモデルも処理したチャンク {len(chunk_ids)} 件で比べました：")
+    typer.echo("  " + "、".join(chunk_ids))
     typer.echo(summary_table(summaries))
     typer.echo(f"\nチャンクごとの並べ表示：{write_report(hdd, markdown)}")
     if show:
