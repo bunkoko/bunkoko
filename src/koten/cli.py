@@ -31,6 +31,17 @@ def _hdd(s: Settings):
         raise typer.Exit(2) from e
 
 
+def _require_input(path, previous: str) -> None:
+    """前の工程の出力が無ければ、何を先に実行すればよいかを出して止める。"""
+    if not path.exists():
+        typer.secho(
+            f"{path} がありません。先に `koten {previous}` を最後まで実行してください。",
+            fg="red",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+
 def _check_source(source: str) -> None:
     if source not in SUPPORTED_SOURCES:
         typer.secho(
@@ -85,6 +96,7 @@ def normalize(source: str, settings: SettingsOpt = None) -> None:
     """正規化して clean/<source>/texts.parquet に書く。"""
     _check_source(source)
     hdd = _hdd(_settings(settings))
+    _require_input(hdd / "clean" / source / "works.parquet", f"ingest {source}")
     from koten.normalize import aozora
 
     typer.echo(f"正規化 {aozora.normalize(hdd)} 作品")
@@ -96,6 +108,7 @@ def chunk(source: str, settings: SettingsOpt = None) -> None:
     _check_source(source)
     s = _settings(settings)
     hdd = _hdd(s)
+    _require_input(hdd / "clean" / source / "texts.parquet", f"normalize {source}")
     from koten.chunk.chunker import chunk_source
 
     conf = s.section("chunk")

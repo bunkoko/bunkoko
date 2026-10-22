@@ -48,3 +48,16 @@ def test_hdd_missing_stops_ingest(tmp_path, settings_file):
 def test_unsupported_source(settings_file):
     result = CliRunner().invoke(app, ["ingest", "ndl", "--settings", str(settings_file)])
     assert result.exit_code == 2
+
+
+def test_normalize_before_ingest_says_what_to_run(settings_file):
+    result = CliRunner().invoke(app, ["normalize", "aozora", "--settings", str(settings_file)])
+    assert result.exit_code == 2
+    assert "works.parquet がありません" in result.output
+    assert "koten ingest aozora" in result.output
+
+
+def test_chunk_before_normalize_says_what_to_run(settings_file):
+    result = CliRunner().invoke(app, ["chunk", "aozora", "--settings", str(settings_file)])
+    assert result.exit_code == 2
+    assert "koten normalize aozora" in result.output
