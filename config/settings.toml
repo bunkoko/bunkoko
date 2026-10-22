@@ -2,9 +2,9 @@
 # KOTEN_SETTINGS 環境変数で別のファイルを指定できる。
 
 [paths]
-# 本文・埋め込み・動画の置き場所。いまはSDカード（名前を KOTENSD にしておく。docs/decisions.md D-008）
+# 本文・埋め込み・動画の置き場所。いまはSDカード（docs/decisions.md D-008）
 # 外付けHDDに移すときは "/Volumes/<HDDの名前>/koten" に変える
-hdd_root = "/Volumes/KOTENSD/koten"
+hdd_root = "/Volumes/SDカード/古典×悩み"
 ssd_root = "~/koten-hot"
 photos_dir = "~/Pictures/koten-bg"
 bgm_dir = "~/Music/koten-bgm"
