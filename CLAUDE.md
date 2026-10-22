@@ -22,3 +22,7 @@
 - uv run ruff check .
 - uv run koten doctor
 - uv run koten ingest aozora --limit 5 && uv run koten normalize aozora && uv run koten chunk aozora
+- uv sync --extra ml（埋め込みモデルと SudachiPy。M2 以降で必要）
+- uv run koten augment --limit 20 && uv run koten embed && uv run koten index build
+- uv run koten index query "同期の昇進を喜べない"
+- uv run koten serve（127.0.0.1 の API。SSD だけを読む）

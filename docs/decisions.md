@@ -8,7 +8,8 @@ SPEC の「要確認」の調査結果と、実装時に決めたことを残す
 |---|---|---|
 | M0 土台 | 実装済み | uv・pytest・ruff・設定の読み込み・`koten doctor` |
 | M1 青空文庫の取得・正規化・チャンク化 | 一部合格 | 2026-10-22 Mac・SDカードで20作品を取得し、461チャンク。『人生論ノート』（aozora:001914）が23章＋後記に分かれ、ルビ・注記の残りは0件、最大600字。残り：NDC 1類・914・915 の全件取得（約5,100作品。D-002 の確認後） |
-| M2〜M9 | 未着手 | |
+| M2 引用候補・付加情報・埋め込み・索引 | 実装済み（実データ未検証） | 偽のLLM・簡易埋め込みで、中断からの再開・原文一致100%・SSDの索引・HDDを外したままのAPI起動を確かめた（テスト81件）。実データでの確認には、ローカルLLM（D-005）と `uv sync --extra ml` が必要 |
+| M3〜M9 | 未着手 | |
 
 ### M1 の受け入れ確認（Mac で実行）
 
@@ -33,7 +34,7 @@ uv run koten chunk aozora
 | D-002 | テキストzipの取得元 | 2026-10-22 決定。GitHub のミラー（raw.githubusercontent.com/aozorabunko/aozorabunko の master・main）は本文の zip も index.html も 404 で使えなかった。SPEC §6 の「サイトから取る場合は1秒1件以下」に従い、公式サイト（https://www.aozora.gr.jp/）から取得する。対象約5,100作品の全件取得は約1.5時間かかるので夜間に回す。公式サイトの利用上の注意（robots.txt など）は全件取得の前に確かめる |
 | D-003 | NDL 次世代デジタルライブラリー「ご利用に当たって」 | M8 で確認 |
 | D-004 | Project Gutenberg の名前を出典として記すことの可否 | M8 で確認 |
-| D-005 | ローカルLLM（augment）・リランクのモデル | M2・M4 で確認 |
+| D-005 | ローカルLLM（augment）・リランクのモデル | augment は未決定（利用者の Mac で動く OpenAI 互換サーバーとモデルを決めて settings.toml の [llm.augment] に書く。JSON スキーマ指定に対応しない場合は response_format を json_object か none に）。リランクは M4 で確認 |
 | D-006 | テキスト類の容量（取得後に実測） | M1 の実データ取得後に記録 |
 | D-007 | YouTube のチャプターの条件（00:00始まり、3つ以上、各10秒以上） | M6 で確認 |
 | D-008 | hdd_root を SDカード（/Volumes/SDカード/古典×悩み）にしている | 2026-10-22 決定（場所は利用者の指定）。日本語と「×」を含むパスなので、後段（ffmpeg・Playwright の file:// URL）ではパスを文字列連結せず、引数リストと URL エンコードで渡す。exFAT か APFS で使う（FAT32 は1ファイル4GBまで）。SDカードはHDDより壊れやすいので、M2 以降の augment/・emb/ は定期的に別の場所へコピーする。外付けHDDに移すときは koten フォルダを丸ごとコピーして hdd_root を書き換える |
@@ -63,3 +64,17 @@ uv run koten chunk aozora
 - 外部アクセスは net.Fetcher だけを通す。1ホストあたりの間隔は rate_limit.per_host_per_sec、manifest にあるURLは再取得しない（--refresh-list のときは ETag で条件付き取得）。
 - 1件の取得失敗では止めず、失敗を表示して次へ進む。works.parquet の raw_path が空の作品は次回の実行で取り直す。
 - User-Agent は settings.toml の http.user_agent。連絡先を自分のものに書き換えてから実データを取得する。
+
+### 2026-10-22 M2：引用候補・埋め込み・索引
+
+- **一節の照合**：LLM が書き写した一節は、まず原文の完全一致で探し、無ければ空白・改行・全角半角の揺れだけを無視して探す。見つかった位置の原文をそのまま quote_text として保存するので、保存済みの引用は必ず原文と一致する（SPEC §8.3「部分文字列でなければ破棄」を満たす）。言葉が1字でも違えば捨てる。
+- **捨てる条件**（理由ごとに件数を表示）：原文に無い、長さが20〜120字の外、同じ位置の重複、要旨が空か60字超、統制語彙のテーマが無い、20字以内の悩みが無い。統制語彙に無いテーマと、20字を超える悩みは、その項目だけ外す。quotability は0〜1に丸める。
+- **再試行**：JSON として読めない・形が違うときだけ再試行（2回まで）し、だめなら done に failed として残す。LLM に接続できないときは、そこまでの結果を保存して止める（全チャンクを failed にしない）。
+- **再開**：augment/<llm>/<prompt版>/ に part-NNNNN.parquet（候補）と done-NNNNN.parquet（処理済みチャンク）を batch_size ごとに書く。候補を先に、done を後に書くので、途中で落ちたバッチは未処理として次回やり直す。Ctrl+C でも、それまでのバッチは保存してから止まる。
+- **埋め込み**：emb/<embed_model>/ に shard-NNNNN.npy（float16）と ids を書く。meta.json にどの augment の候補かを記録し、別の候補で上書きしそうなときは止める。
+- **密ベクトル索引**：100万件以下は内積の全探索なので、FAISS（IndexFlatIP）と同じ結果を numpy で計算する。Python 3.14 で faiss-cpu の wheel が無い恐れがあるため。100万件を超えたら FAISS の近似索引を足す。
+- **BM25**：自前の Okapi BM25（k1=1.5、b=0.75）を CSR 形式で SSD に保存。分かち書きは SudachiPy（モードC、正規化形、助詞・助動詞・記号を除く）。SudachiPy が無いときは settings の bm25.tokenizer を bigram にする。
+- **候補表（SSD）**：cache/candidates.parquet は、使用可（R1）の作品の候補だけに、作品名・著者・license・review_required・文字遣いを付けたもの。caution は残し、検索（M4）で外す。
+- **API**：create_app は SSD の場所と埋め込みモデル名だけを受け取り、HDD のパスを持たない。索引が無いときも起動し、/healthz が no_index を返す。待ち受けは 127.0.0.1 の api.port（既定 8765）。
+- **重い依存**：sentence-transformers・SudachiPy は `uv sync --extra ml` で入れる任意の依存にした（テストは簡易埋め込み HashEncoder と bigram で動く）。
+

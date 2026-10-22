@@ -116,5 +116,163 @@ def chunk(source: str, settings: SettingsOpt = None) -> None:
     typer.echo(f"チャンク {n} 件")
 
 
+def _augment_dir(s: Settings, hdd):
+    from koten.augment.extract import llm_slug
+
+    return (
+        hdd
+        / "augment"
+        / llm_slug(s.section("llm.augment").get("model", ""))
+        / s.section("augment").get("prompt", "augment_v1")
+    )
+
+
+@app.command()
+def augment(
+    limit: Annotated[int | None, typer.Option(help="今回処理するチャンクの上限")] = None,
+    resume: Annotated[bool, typer.Option(help="処理済みのチャンクを飛ばす（常に有効）")] = True,
+    settings: SettingsOpt = None,
+) -> None:
+    """引用候補の抽出と付加情報（ローカルLLM。夜間向け）。中断しても続きから再開する。"""
+    s = _settings(settings)
+    hdd = _hdd(s)
+    if not any((hdd / "chunks").glob("*.parquet")):
+        _require_input(hdd / "chunks" / "aozora.parquet", "chunk aozora")
+    from koten.augment.extract import AugmentConfig, load_themes, run_augment
+    from koten.llm import LLMError, OpenAICompatLLM
+
+    conf = s.section("llm.augment")
+    if conf.get("model") in (None, "", "要確認"):
+        typer.secho(
+            "settings.toml の [llm.augment] model を、"
+            "ローカルLLMで読み込んだモデル名にしてください",
+            fg="red",
+            err=True,
+        )
+        raise typer.Exit(2)
+    llm = OpenAICompatLLM(
+        conf["endpoint"],
+        conf["model"],
+        response_format=conf.get("response_format", "json_schema"),
+        timeout_sec=conf.get("timeout_sec", 300),
+    )
+    cfg = AugmentConfig.from_settings(s.section("augment"))
+    try:
+        r = run_augment(
+            hdd,
+            s.config_dir.parent / "prompts",
+            load_themes(s.config_dir),
+            llm,
+            cfg,
+            limit=limit,
+            log=typer.echo,
+        )
+    except LLMError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(1) from e
+    typer.echo(
+        f"処理 {r.processed} チャンク（失敗 {r.failed}）、候補 {r.candidates} 件。"
+        f"捨てた一節：{dict(r.dropped) or 'なし'}"
+    )
+
+
+@app.command()
+def embed(
+    model: Annotated[
+        str | None, typer.Option(help="埋め込みモデル（既定は settings の embed.model）")
+    ] = None,
+    settings: SettingsOpt = None,
+) -> None:
+    """引用候補を埋め込み、HDD の emb/<model>/ に書く。"""
+    s = _settings(settings)
+    hdd = _hdd(s)
+    adir = _augment_dir(s, hdd)
+    _require_input(adir, "augment")
+    from koten.embed.encoder import make_encoder
+    from koten.embed.run import run_embed
+
+    conf = s.section("embed")
+    enc = make_encoder(
+        model or conf["model"],
+        device=conf.get("device", "auto"),
+        batch_size=conf.get("batch_size", 32),
+    )
+    r = run_embed(hdd, adir, enc, passage_prefix=conf.get("passage_prefix", ""), log=typer.echo)
+    typer.echo(f"埋め込み {r.embedded} 件（埋め込み済み {r.skipped} 件）：{r.out_dir}")
+
+
+index_app = typer.Typer(no_args_is_help=True, help="索引（SSD）")
+app.add_typer(index_app, name="index")
+
+
+@index_app.command("build")
+def index_build(
+    model: Annotated[
+        str | None, typer.Option(help="埋め込みモデル（既定は settings の embed.model）")
+    ] = None,
+    settings: SettingsOpt = None,
+) -> None:
+    """HDD の候補と埋め込みから、SSD に候補表・密ベクトル・BM25 の索引を作る。"""
+    s = _settings(settings)
+    hdd = _hdd(s)
+    adir = _augment_dir(s, hdd)
+    _require_input(adir, "augment")
+    from koten.index.build import build_index
+
+    meta = build_index(
+        hdd,
+        s.ssd_root,
+        adir,
+        model or s.section("embed")["model"],
+        tokenizer=s.section("bm25").get("tokenizer", "sudachi"),
+        log=typer.echo,
+    )
+    typer.echo(f"索引 {meta['count']} 件（{meta['model']}・{meta['tokenizer']}）")
+
+
+@index_app.command("query")
+def index_query(
+    text: str,
+    k: Annotated[int, typer.Option(help="表示する件数")] = 5,
+    settings: SettingsOpt = None,
+) -> None:
+    """索引の確かめ用：密ベクトルと BM25 で別々に引いた上位を表示する（SSD だけを読む）。"""
+    s = _settings(settings)
+    from koten.embed.encoder import make_encoder
+    from koten.index.search import HotIndex
+
+    conf = s.section("embed")
+    idx = HotIndex(s.ssd_root, conf["model"])
+    enc = make_encoder(conf["model"], device=conf.get("device", "auto"))
+    qvec = enc.encode([conf.get("query_prefix", "") + text])[0]
+    for label, hits in (
+        ("密ベクトル", idx.search_dense(qvec, k)),
+        ("BM25", idx.search_bm25(text, k)),
+    ):
+        typer.echo(f"■ {label}")
+        for h in hits:
+            r = h.row
+            typer.echo(
+                f"  {h.score:.3f} {r['title']}（{'・'.join(r['author_names'])}）{r['section']}"
+            )
+            typer.echo(f"      「{r['quote_text']}」")
+            typer.echo(f"      要旨：{r['summary_ja']}")
+
+
+@app.command()
+def serve(
+    port: Annotated[int | None, typer.Option(help="ポート（既定は settings の api.port）")] = None,
+    settings: SettingsOpt = None,
+) -> None:
+    """ローカルAPIを 127.0.0.1 で起動する（SSD だけを読み、HDD には触れない）。"""
+    import uvicorn
+
+    from koten.api.app import create_app
+
+    s = _settings(settings)
+    application = create_app(s.ssd_root, s.section("embed")["model"])
+    uvicorn.run(application, host="127.0.0.1", port=port or s.section("api").get("port", 8765))
+
+
 if __name__ == "__main__":
     app()

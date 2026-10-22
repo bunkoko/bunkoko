@@ -9,10 +9,23 @@ ssd_root = "~/koten-hot"
 photos_dir = "~/Pictures/koten-bg"
 bgm_dir = "~/Music/koten-bgm"
 
-[llm.augment]                 # Mac上のローカルLLM（OpenAI互換API）
+[llm.augment]                 # Mac上のローカルLLM（OpenAI互換API。LM Studio は 1234、Ollama は 11434）
 provider = "openai_compatible"
 endpoint = "http://127.0.0.1:1234/v1"
-model = "要確認"
+model = "要確認"              # ローカルLLMで読み込んだモデル名（docs/decisions.md D-005）
+response_format = "json_schema"   # 対応していなければ "json_object" か "none"
+timeout_sec = 300
+
+[augment]                     # 引用候補の抽出（SPEC §8.3）
+prompt = "augment_v1"         # prompts/<prompt>.md
+quote_min = 20
+quote_max = 120
+max_quotes = 3
+summary_max = 60
+worry_max = 20
+retries = 2
+batch_size = 200              # この件数ごとに HDD へまとめて書く
+context_chars = 200
 
 [llm.script]
 provider = "anthropic"
@@ -25,6 +38,13 @@ model = "claude-haiku-5-5"
 [embed]
 model = "intfloat/multilingual-e5-large"
 dtype = "float16"
+device = "auto"               # Mac では mps を使う
+batch_size = 32
+passage_prefix = "passage: "  # e5 の接頭辞。Ruri 系に替えるときは「検索文書: 」など
+query_prefix = "query: "
+
+[bm25]
+tokenizer = "sudachi"         # SudachiPy が入らないときは "bigram"
 
 [rerank]
 model = "要確認"
@@ -50,6 +70,9 @@ width = 1920
 height = 1080
 fps = 30
 bitrate = "8M"
+
+[api]
+port = 8765                   # 127.0.0.1 だけで待ち受ける
 
 [rate_limit]
 per_host_per_sec = 1

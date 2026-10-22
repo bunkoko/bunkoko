@@ -6,7 +6,7 @@
 - 判断の記録と進捗：[docs/decisions.md](docs/decisions.md)
 - Claude Code 向けの前提：[CLAUDE.md](CLAUDE.md)
 
-## 使い方（M1 まで）
+## 使い方（M2 まで）
 
 ```sh
 uv sync
@@ -16,5 +16,10 @@ uv run koten doctor             # HDD・SSD・VOICEVOX・LLM・埋め込みモ�
 uv run koten ingest aozora --limit 20
 uv run koten normalize aozora
 uv run koten chunk aozora
+uv sync --extra ml              # 埋め込みモデルと SudachiPy（M2）
+uv run koten augment --limit 20 # ローカルLLM で引用候補を抜き出す（夜間向け）
+uv run koten embed && uv run koten index build
+uv run koten index query "同期の昇進を喜べない"
+uv run koten serve              # 127.0.0.1:8765 の API（SSD だけを読む）
 uv run pytest
 ```

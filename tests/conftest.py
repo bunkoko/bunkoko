@@ -172,3 +172,69 @@ max_chars = 80
         encoding="utf-8",
     )
     return p
+
+
+class FakeLLM:
+    """本文の最初の「20字以上の文」を一節として返す偽のLLM。作り話の一節も1つ混ぜる。"""
+
+    name = "fake-llm"
+
+    def __init__(self, broken_first: int = 0, interrupt_at: int | None = None):
+        self.calls = 0
+        self.broken_first = broken_first
+        self.interrupt_at = interrupt_at
+
+    def complete(self, system, user, schema=None):
+        import json
+        import re
+
+        self.calls += 1
+        if self.interrupt_at is not None and self.calls == self.interrupt_at:
+            raise KeyboardInterrupt
+        if self.calls <= self.broken_first:
+            return "すみません、JSONではありません"
+        body = user.split("本文：", 1)[1]
+        sentences = [s.strip() + "。" for s in re.split("。", body) if s.strip()]
+        real = next((s for s in sentences if 20 <= len(s) <= 120), None)
+        quotes = [
+            {
+                "quote_text": "人生とは比べないことである。だれもが知っている真理だ。",
+                "summary_ja": "作り話",
+                "themes": ["嫉妬・比較"],
+                "worries": ["比べてしまう"],
+                "quotability": 0.9,
+                "caution": False,
+                "caution_reason": "",
+            }
+        ]
+        if real:
+            quotes.insert(
+                0,
+                {
+                    "quote_text": real,
+                    "summary_ja": "他人と比べると心が乱れる",
+                    "themes": ["嫉妬・比較", "存在しないテーマ"],
+                    "worries": ["同期の昇進を喜べない", "SNSで人と比べる", "x" * 30],
+                    "quotability": 1.7,
+                    "caution": False,
+                    "caution_reason": "",
+                },
+            )
+        return "```json\n" + json.dumps({"quotes": quotes}, ensure_ascii=False) + "\n```"
+
+
+@pytest.fixture
+def hdd_with_chunks(settings_file):
+    """フィクスチャの青空文庫2作品を ingest → normalize → chunk まで通した HDD。"""
+    from koten.chunk.chunker import chunk_source
+    from koten.config import load_settings
+    from koten.ingest import aozora
+    from koten.normalize.aozora import normalize
+    from tests.test_ingest_aozora import CONF, FakeServer, make_fetcher
+
+    s = load_settings(settings_file)
+    hdd = s.require_hdd()
+    aozora.ingest(hdd, CONF, make_fetcher(hdd, FakeServer()))
+    normalize(hdd)
+    chunk_source(hdd, "aozora", 20, 80)
+    return s, hdd
