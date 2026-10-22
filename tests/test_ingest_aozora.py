@@ -120,7 +120,10 @@ def test_ingest_normalize_chunk_end_to_end(settings_file):
     hdd = s.require_hdd()
     server = FakeServer()
 
-    r = aozora.ingest(hdd, CONF, make_fetcher(hdd, server), limit=1)
+    logs: list[str] = []
+    r = aozora.ingest(hdd, CONF, make_fetcher(hdd, server), limit=1, log=logs.append)
+    assert logs[0].startswith("作品CSVを確認中")
+    assert any(line.startswith("[1/1] 人生のノート（架空太郎）") for line in logs)
     assert (r.selected, r.usable, r.fetched) == (5, 2, 1)
     assert r.blocked == {"COPYRIGHTED": 2, "NEEDS_REVIEW": 1}
     # 中断しても続きから：2回目は残りの1件だけ取り、作品CSVは再取得しない

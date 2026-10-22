@@ -12,6 +12,7 @@ import io
 import re
 import zipfile
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -269,13 +270,25 @@ def ingest(
     *,
     limit: int | None = None,
     refresh_list: bool = False,
+    log: Callable[[str], None] = lambda _: None,
 ) -> IngestResult:
     """作品CSVを取り、対象作品のテキストzipを raw/aozora/ に保存する。
 
-    中断しても、再実行で続きから進む。
+    中断しても、再実行で続きから進む。log には進み具合の1行ずつが渡される。
     """
-    list_path, _ = fetcher.fetch(conf["list_url"], LIST_FILE, refresh=refresh_list)
+    log(f"作品CSVを確認中：{conf['list_url']}")
+    list_path, got = fetcher.fetch(conf["list_url"], LIST_FILE, refresh=refresh_list)
+    log("作品CSVを取得しました" if got else "作品CSVは取得済みのものを使います")
     works = select_works(read_work_list(list_path.read_bytes()), conf)
+    storable = [
+        rel
+        for w in works
+        if may_store_text(judge_license(w)[0]) and (rel := text_rel_path(w.text_url))
+    ]
+    remaining = sum(1 for rel in storable if not (fetcher.raw_dir / rel).exists())
+    planned = remaining if limit is None else min(limit, remaining)
+    log(f"対象 {len(works)} 作品。本文を保存できるのは {len(storable)} 作品")
+    log(f"未取得 {remaining} 件のうち、今回は {planned} 件を取得します（1秒に1件まで）")
 
     rows = []
     blocked: dict[str, int] = defaultdict(int)
@@ -299,17 +312,21 @@ def ingest(
                 skipped += 1
             elif limit is None or fetched + len(errors) < limit:
                 url = mirror_url(w.text_url, base_url)
+                n = fetched + len(errors) + 1
+                log(f"[{n}/{planned}] {w.title}（{'・'.join(w.names('author'))}）")
                 try:
                     fetcher.fetch(url, rel, license=str(lic))
                 except httpx.HTTPError as e:
                     # 1件の失敗で夜間バッチ全体を止めない。次の実行で取り直す
                     errors.append(f"{w.work_id} {url}: {e}")
+                    log(f"    取得失敗：{e}")
                 else:
                     raw_path = rel
                     fetched += 1
         rows.append(work_row(w, lic, reason, raw_path))
 
     clean_dir = hdd_root / "clean" / SOURCE
+    log(f"書誌と判定結果を書き込み中：{clean_dir}")
     write_rows(clean_dir / "works.parquet", rows, WORKS_SCHEMA)
     write_rows(clean_dir / "persons.parquet", person_rows(works), PERSONS_SCHEMA)
     return IngestResult(len(works), usable, fetched, skipped, dict(blocked), errors)

@@ -69,7 +69,9 @@ def ingest(
         per_host_per_sec=s.section("rate_limit").get("per_host_per_sec", 1),
         timeout_sec=http.get("timeout_sec", 30),
     )
-    r = aozora.ingest(hdd, s.sources["aozora"], fetcher, limit=limit, refresh_list=refresh_list)
+    r = aozora.ingest(
+        hdd, s.sources["aozora"], fetcher, limit=limit, refresh_list=refresh_list, log=typer.echo
+    )
     typer.echo(
         f"対象 {r.selected} 作品（使用可 {r.usable}）："
         f"今回取得 {r.fetched}、取得済み {r.skipped}、本文を保存しない {r.blocked}"
