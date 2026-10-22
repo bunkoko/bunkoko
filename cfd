@@ -57,6 +57,7 @@ case "$cmd" in
   spread) need_venv; exec "$PY" scripts/spread_study.py "$@" ;;
   diversify) need_venv; exec "$PY" scripts/diversified_study.py "$@" ;;
   carry)  need_venv; exec "$PY" scripts/carry_study.py "$@" ;;
+  costnow) need_venv; exec "$PY" scripts/costnow_study.py "$@" ;;
   stockpick) need_venv; exec "$PY" scripts/stockpick_study.py "$@" ;;
   timing) need_venv; exec "$PY" scripts/timing_study.py "$@" ;;
   stocks) need_venv; exec "$PY" scripts/stocks_study.py "$@" ;;
@@ -110,6 +111,7 @@ case "$cmd" in
   spread   2 つの差の戻り（WTI−ブレント・金÷銀）を確かめる（docs/spread.md。数分）
   diversify 市場を分散した論文どおりのトレンドフォローを確かめる（docs/diversified.md。数分）
   carry    キャリー（原油の期間構造）を確かめる（docs/carry.md。--fetch で EIA から取る。Mac で）
+  costnow  今のスプレッドで計算し直す（既定は銀。docs/costnow.md。./cfd context の先物の日足も使う。数分）
   stockpick 個別株をルールで選ぶ検証（--market jp: docs/stockpick.md、--market us: docs/us_equity.md。--fetch で Yahoo から。数分）
   timing   S&P500 を持ち方で上回れるか（変動で量・10 か月平均。docs/us_equity.md。--fetch で ^GSPC）
   stocks   上がりやすい株を探す（時期・時間帯・業種・会社の 17 の仮説。docs/stocks.md。初回は --fetch で 20〜40 分）

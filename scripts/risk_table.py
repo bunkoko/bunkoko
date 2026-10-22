@@ -6,6 +6,9 @@
 1 回の損失を上げるときは、同時に持てる合計（4 銘柄分 = 1 回の損失 × 4）とグループ（原油 2 つ・貴金属 2 つ
 = 1 回の損失 × 2）の上限も同じ比率で上げて比べる（上限を据え置くと、上げた分だけ同時に持てなくなるため）。
 最大DD での停止（25%）は評価のため外しているので、表の最大DD が停止の水準に近い設定は本番では途中で止まる。
+
+--long を付けると、先物の長期データ（期間A、既定 2001-01〜--start の前日。./cfd context の日足）でも同じ表を作る
+（フィリップの 5 年には 2008 年のような大きな下げが無いので、大きく上げるかを決めるときはこちらも見る）。
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from cfdbot.metrics import compute_metrics  # noqa: E402
+from cfdbot.study import Period, build_setup  # noqa: E402
 from cfdbot.train.config import load_train_config  # noqa: E402
 from cfdbot.train.dataset import load_dataset  # noqa: E402
 from cfdbot.train.pipeline import _account_config, _eval_settings, validate_window  # noqa: E402
@@ -29,6 +33,22 @@ from cfdbot.train.portfolio import Pick  # noqa: E402
 
 def _floats(text: str) -> list[float]:
     return [float(x) for x in text.replace("、", ",").split(",") if x.strip()]
+
+
+def _row(res: dict, equity: float, risk: float) -> dict:
+    m = compute_metrics(res["equity"], res["trades"], equity, res.get("leverage"))
+    monthly = res["equity"].resample("ME").last().pct_change().dropna()
+    rejections = res.get("rejections")
+    rej = rejections["reason"].value_counts() if rejections is not None and not rejections.empty \
+        else pd.Series(dtype=int)
+    return {
+        "資金": f"{equity / 1e4:,.0f}万円", "1回の損失": f"{risk:.1%}",
+        "年率": f"{m.get('cagr', 0):.1%}", "最大DD": f"{abs(m.get('max_drawdown', 0)):.1%}",
+        "シャープ": f"{m.get('sharpe', 0):.2f}", "最悪の月": f"{monthly.min():.1%}" if len(monthly) else "–",
+        "取引": int(m.get("trades", 0)), "最小単位で見送り": int(rej.get("min_lot", 0)),
+        "上限で見送り": int(rej.get("heat", 0) + rej.get("cluster", 0)),
+        "最大レバ": f"{m.get('max_leverage', 0):.2f}倍",
+    }
 
 
 def main() -> None:
@@ -40,6 +60,9 @@ def main() -> None:
     p.add_argument("--risk", default="0.01,0.015,0.02", help="1 回の損失（資金比、カンマ区切り）")
     p.add_argument("--config", default="config/train.toml")
     p.add_argument("--data")
+    p.add_argument("--long", action="store_true", help="先物の長期データ（期間A）でも作る")
+    p.add_argument("--long-start", default="2001-01-01")
+    p.add_argument("--context", default="data/context", help="先物の日足の置き場（./cfd context の保存先）")
     args = p.parse_args()
 
     cfg = load_train_config(args.config)
@@ -66,21 +89,34 @@ def main() -> None:
             bt = replace(base, initial_equity=equity, risk=replace(
                 base.risk, max_total_risk=total_per_trade * risk,
                 cluster_max_risk={k: v * risk for k, v in cluster_per_trade.items()}))
-            res = validate_window(ds, settings.instrument_map(), picks, bt, start, end)
-            m = compute_metrics(res["equity"], res["trades"], equity, res["leverage"])
-            monthly = res["equity"].resample("ME").last().pct_change().dropna()
-            rej = res["rejections"]["reason"].value_counts() if not res["rejections"].empty else pd.Series(dtype=int)
-            rows.append({
-                "資金": f"{equity / 1e4:,.0f}万円", "1回の損失": f"{risk:.1%}",
-                "年率": f"{m.get('cagr', 0):.1%}", "最大DD": f"{abs(m.get('max_drawdown', 0)):.1%}",
-                "シャープ": f"{m.get('sharpe', 0):.2f}", "最悪の月": f"{monthly.min():.1%}" if len(monthly) else "–",
-                "取引": int(m.get("trades", 0)), "最小単位で見送り": int(rej.get("min_lot", 0)),
-                "上限で見送り": int(rej.get("heat", 0) + rej.get("cluster", 0)),
-                "最大レバ": f"{m.get('max_leverage', 0):.2f}倍",
-            })
+            # EA と同じく、開始より前の過去を全部使って指標を計算する（./cfd replay と同じ）
+            res = validate_window(ds, settings.instrument_map(), picks, bt, start, end,
+                                  signal_warm=pd.Timedelta(days=365 * 100))
+            rows.append(_row(res, equity, risk))
             print(f"  計算: 資金 {equity:,.0f} 円 / 1回の損失 {risk:.1%}", flush=True)
     print(f"\n期間 {start:%Y-%m-%d} 〜 {end - pd.Timedelta(days=1):%Y-%m-%d}（{Path(args.final).name}）")
     print(pd.DataFrame(rows).to_string(index=False))
+
+    if args.long:
+        setup = build_setup(args.final, args.config, args.context, _floats(args.equity)[0], args.long_start,
+                            f"{start:%Y-%m-%d}")
+        pa = setup.period_a
+        if pa is None:
+            print("\n⚠ 先物の長期データが無い（./cfd context で取ってから --long）")
+        else:
+            rows_a = []
+            for equity in _floats(args.equity):
+                for risk in _floats(args.risk):
+                    picks = [replace(pk, multiplier=pk.multiplier * risk / base_risk) for pk in setup.picks]
+                    bt = replace(pa.bt, initial_equity=equity, risk=replace(
+                        pa.bt.risk, max_total_risk=total_per_trade * risk,
+                        cluster_max_risk={k: v * risk for k, v in cluster_per_trade.items()}))
+                    period = Period(pa.name, pa.label, pa.frames, pa.tfs, pa.instruments, bt, pa.start, pa.end,
+                                    pa.resolve, pa._runner)
+                    rows_a.append(_row(period.run(picks), equity, risk))
+                    print(f"  計算（期間A）: 資金 {equity:,.0f} 円 / 1回の損失 {risk:.1%}", flush=True)
+            print(f"\n{pa.label}（コストは今のスプレッドを値段に比例させる。円換算は {setup.bt_a.fx_rate:g} 円で固定）")
+            print(pd.DataFrame(rows_a).to_string(index=False))
     print(f"\n※ 最大DD が {cfg.account.max_drawdown_halt:.0%} に近い設定は、本番では途中で新規停止になる。"
           "シャープは資金が小さいと最小単位の見送りで下がる")
 
