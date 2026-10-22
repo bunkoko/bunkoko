@@ -175,16 +175,22 @@ def judge_license(w: AozoraWork) -> tuple[License, str]:
 
 
 def select_works(works: dict[str, AozoraWork], conf: dict[str, Any]) -> list[AozoraWork]:
-    """sources.yaml の条件で対象を選び、文字遣い違いの重複を除く。"""
+    """sources.yaml の条件で対象を選び、文字遣い違いの重複を除く。
+
+    include_works で指定した作品を先頭に並べる（--limit を付けても先に取得されるように）。
+    """
     prefixes = [str(p) for p in conf.get("ndc_prefixes", [])]
     include = {(i["title"], i["author"]) for i in conf.get("include_works", [])}
     exclude = {str(i) for i in conf.get("exclude_work_ids", [])}
     picked = []
+    listed: set[str] = set()
     for w in works.values():
         if w.work_id in exclude:
             continue
         authors = w.names("author")
         by_list = any((w.title, a) in include for a in authors)
+        if by_list:
+            listed.add(w.work_id)
         if by_list or matches_ndc(w.ndc, prefixes):
             picked.append(w)
     best: dict[tuple[str, str, tuple[str, ...]], AozoraWork] = {}
@@ -193,7 +199,10 @@ def select_works(works: dict[str, AozoraWork], conf: dict[str, Any]) -> list[Aoz
         cur = best.get(key)
         if cur is None or KANA_PRIORITY.get(w.kana_type, 9) < KANA_PRIORITY.get(cur.kana_type, 9):
             best[key] = w
-    return sorted(best.values(), key=lambda w: int(w.work_id) if w.work_id.isdigit() else 0)
+    return sorted(
+        best.values(),
+        key=lambda w: (w.work_id not in listed, int(w.work_id) if w.work_id.isdigit() else 0),
+    )
 
 
 def text_rel_path(text_url: str) -> str | None:
@@ -318,8 +327,9 @@ def ingest(
                     fetcher.fetch(url, rel, license=str(lic))
                 except httpx.HTTPError as e:
                     # 1件の失敗で夜間バッチ全体を止めない。次の実行で取り直す
-                    errors.append(f"{w.work_id} {url}: {e}")
-                    log(f"    取得失敗：{e}")
+                    msg = str(e).splitlines()[0] if str(e) else type(e).__name__
+                    errors.append(f"{w.work_id} {w.title}: {msg}")
+                    log(f"    取得失敗：{msg}")
                 else:
                     raw_path = rel
                     fetched += 1

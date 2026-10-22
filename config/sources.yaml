@@ -2,9 +2,9 @@
 aozora:
   # 作品CSV（list_person_all_extended_utf8.zip）
   list_url: "https://www.aozora.gr.jp/index_pages/list_person_all_extended_utf8.zip"
-  # テキストzipの取得元。一括取得は GitHub 上の青空文庫ミラーを優先する（要確認：利用条件。docs/decisions.md D-002）
-  # テキストファイルURLの先頭 "https://www.aozora.gr.jp/" をこの値に置き換えて取得する
-  text_base_url: "https://raw.githubusercontent.com/aozorabunko/aozorabunko/master/"
+  # テキストzipの取得元。テキストファイルURLの先頭 "https://www.aozora.gr.jp/" をこの値に置き換えて取得する
+  # GitHub のミラーは 404 だったので公式サイトから1秒1件以下で取る（docs/decisions.md D-002）
+  text_base_url: "https://www.aozora.gr.jp/"
   # NDC の前方一致（"K" 接頭の児童書記号は外して比べる）
   ndc_prefixes: ["1", "914", "915"]
   # NDC に関係なく入れる作品（作品名と著者名で指定。著者名は姓名を空白なしでつなぐ）

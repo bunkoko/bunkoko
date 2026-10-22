@@ -108,6 +108,12 @@ def test_select_and_judge():
     assert aozora.judge_license(picked["600"])[0] == License.NEEDS_REVIEW
 
 
+def test_include_works_come_first():
+    works = aozora.select_works(aozora.read_work_list(list_zip(ROWS)), CONF)
+    assert works[0].title == "人生論ノート"
+    assert [w.work_id for w in works[1:]] == ["100", "200", "300", "600"]
+
+
 def test_ndc_parsing():
     assert aozora.ndc_codes("NDC 159 914") == ["159", "914"]
     assert aozora.ndc_codes("NDC K913") == ["913"]
@@ -123,7 +129,7 @@ def test_ingest_normalize_chunk_end_to_end(settings_file):
     logs: list[str] = []
     r = aozora.ingest(hdd, CONF, make_fetcher(hdd, server), limit=1, log=logs.append)
     assert logs[0].startswith("作品CSVを確認中")
-    assert any(line.startswith("[1/1] 人生のノート（架空太郎）") for line in logs)
+    assert any(line.startswith("[1/1] 人生論ノート（三木清）") for line in logs)
     assert (r.selected, r.usable, r.fetched) == (5, 2, 1)
     assert r.blocked == {"COPYRIGHTED": 2, "NEEDS_REVIEW": 1}
     # 中断しても続きから：2回目は残りの1件だけ取り、作品CSVは再取得しない
@@ -160,7 +166,9 @@ def test_fetch_error_does_not_stop_batch(settings_file):
         return FakeServer()(request)
 
     r = aozora.ingest(hdd, CONF, make_fetcher(hdd, flaky))
-    assert r.fetched == 1 and len(r.errors) == 1 and "100" in r.errors[0]
+    assert r.fetched == 1 and len(r.errors) == 1
+    assert r.errors[0].startswith("100 人生のノート: Client error '404 Not Found'")
+    assert "\n" not in r.errors[0]
     works = {w["source_work_id"]: w for w in read_rows(hdd / "clean/aozora/works.parquet")}
     assert works["100"]["raw_path"] is None
     assert works["500"]["raw_path"] is not None

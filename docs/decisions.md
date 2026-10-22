@@ -30,7 +30,7 @@ uv run koten chunk aozora
 | ID | 項目 | 状況 |
 |---|---|---|
 | D-001 | 青空文庫の作品CSVの列名と値（役割フラグ・著作権フラグ・文字遣い種別） | 未確認。このクラウド環境から青空文庫にアクセスできなかったため、既知の列名で実装しフィクスチャで検証。初回の実データ取得で列名が一致するか確かめる |
-| D-002 | GitHub 上の青空文庫ミラー（aozorabunko/aozorabunko）の利用条件 | 未確認。sources.yaml の text_base_url を既定でミラーにしている。条件を確かめ、問題があれば公式サイト（1秒1件以下）に切り替える |
+| D-002 | テキストzipの取得元 | 2026-10-22 決定。GitHub のミラー（raw.githubusercontent.com/aozorabunko/aozorabunko の master・main）は本文の zip も index.html も 404 で使えなかった。SPEC §6 の「サイトから取る場合は1秒1件以下」に従い、公式サイト（https://www.aozora.gr.jp/）から取得する。対象約5,100作品の全件取得は約1.5時間かかるので夜間に回す。公式サイトの利用上の注意（robots.txt など）は全件取得の前に確かめる |
 | D-003 | NDL 次世代デジタルライブラリー「ご利用に当たって」 | M8 で確認 |
 | D-004 | Project Gutenberg の名前を出典として記すことの可否 | M8 で確認 |
 | D-005 | ローカルLLM（augment）・リランクのモデル | M2・M4 で確認 |
