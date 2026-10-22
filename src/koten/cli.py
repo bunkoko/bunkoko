@@ -232,6 +232,38 @@ def candidates(
 
 
 @app.command()
+def compare(
+    models: Annotated[
+        str, typer.Option(help="比べるモデルをカンマ区切りで（例：gemma4:26b,gemma3:27b）")
+    ],
+    n: Annotated[int, typer.Option(help="比べるチャンクの数（どのモデルも処理したものから）")] = 10,
+    show: Annotated[bool, typer.Option(help="チャンクごとの並べ表示も画面に出す")] = False,
+    settings: SettingsOpt = None,
+) -> None:
+    """ローカルLLMのモデルを、同じチャンクの結果で比べる。並べ表示は HDD の exports/ に書く。"""
+    from koten.augment.compare import compare_models, summary_table, write_report
+
+    s = _settings(settings)
+    hdd = _hdd(s)
+    names = [m.strip() for m in models.split(",") if m.strip()]
+    try:
+        summaries, markdown, count = compare_models(
+            hdd, s.section("augment").get("prompt", "augment_v1"), names, n
+        )
+    except FileNotFoundError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
+    if count == 0:
+        typer.secho("どのモデルも処理したチャンクがありません", fg="red", err=True)
+        raise typer.Exit(2)
+    typer.echo(f"どのモデルも処理したチャンク {count} 件で比べました")
+    typer.echo(summary_table(summaries))
+    typer.echo(f"\nチャンクごとの並べ表示：{write_report(hdd, markdown)}")
+    if show:
+        typer.echo("\n" + markdown)
+
+
+@app.command()
 def embed(
     model: Annotated[
         str | None, typer.Option(help="埋め込みモデル（既定は settings の embed.model）")
