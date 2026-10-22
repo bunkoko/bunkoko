@@ -9,6 +9,10 @@
 
 --long を付けると、先物の長期データ（期間A、既定 2001-01〜--start の前日。./cfd context の日足）でも同じ表を作る
 （フィリップの 5 年には 2008 年のような大きな下げが無いので、大きく上げるかを決めるときはこちらも見る）。
+
+--lev でレバレッジの上限（1 銘柄・合計）にも倍率を掛けて比べる。--max-dd X を付けると、docs/leverage.md 3 章の
+選び方（20 年分と 5 年分の最大DD がどちらも X × 2/3 以下のうち、20 年分の年率が一番高いもの）で 1 つ選んで表示する。
+X は表を見る前に決める。
 """
 
 from __future__ import annotations
@@ -35,7 +39,7 @@ def _floats(text: str) -> list[float]:
     return [float(x) for x in text.replace("、", ",").split(",") if x.strip()]
 
 
-def _row(res: dict, equity: float, risk: float) -> dict:
+def _row(res: dict, equity: float, risk: float, lev: float, rc) -> dict:
     m = compute_metrics(res["equity"], res["trades"], equity, res.get("leverage"))
     monthly = res["equity"].resample("ME").last().pct_change().dropna()
     rejections = res.get("rejections")
@@ -43,12 +47,35 @@ def _row(res: dict, equity: float, risk: float) -> dict:
         else pd.Series(dtype=int)
     return {
         "資金": f"{equity / 1e4:,.0f}万円", "1回の損失": f"{risk:.1%}",
+        "レバ上限": f"{rc.max_leverage_symbol * lev:g}/{rc.max_leverage_total * lev:g}倍",
         "年率": f"{m.get('cagr', 0):.1%}", "最大DD": f"{abs(m.get('max_drawdown', 0)):.1%}",
         "シャープ": f"{m.get('sharpe', 0):.2f}", "最悪の月": f"{monthly.min():.1%}" if len(monthly) else "–",
         "取引": int(m.get("trades", 0)), "最小単位で見送り": int(rej.get("min_lot", 0)),
         "上限で見送り": int(rej.get("heat", 0) + rej.get("cluster", 0)),
         "最大レバ": f"{m.get('max_leverage', 0):.2f}倍",
+        "_key": (equity, risk, lev), "_cagr": float(m.get("cagr", 0)), "_dd": abs(float(m.get("max_drawdown", 0))),
     }
+
+
+def _show(rows: list[dict]) -> str:
+    return pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_")} for r in rows]).to_string(index=False)
+
+
+def choose(rows_b: list[dict], rows_a: list[dict], max_dd: float) -> str:
+    """docs/leverage.md 3 章の選び方。両方の期間の最大DD ≤ max_dd × 2/3 のうち、20 年分の年率が一番高いもの
+    （差が 0.5% 以内ならレバレッジの上限・1 回の損失の小さい方）。"""
+    limit = max_dd * 2 / 3
+    b = {r["_key"]: r for r in rows_b}
+    ok = [(a, b[a["_key"]]) for a in rows_a if a["_key"] in b and a["_dd"] <= limit and b[a["_key"]]["_dd"] <= limit]
+    if not ok:
+        return f"候補なし（両方の期間で最大DD が {limit:.1%} 以下の組み合わせが無い）→ 今のまま（1 回の損失 1.5%・上限 1 倍）"
+    best = max(a["_cagr"] for a, _ in ok)
+    near = [(a, bb) for a, bb in ok if a["_cagr"] >= best - 0.005]
+    a, bb = min(near, key=lambda x: (x[0]["_key"][2], x[0]["_key"][1]))
+    eq, risk, lev = a["_key"]
+    return (f"資金 {eq:,.0f} 円: 1 回の損失 {risk:.1%}・レバレッジの上限 {a['レバ上限']}"
+            f"（20 年分 年率 {a['_cagr']:.1%}・最大DD {a['_dd']:.1%} / 5 年分 年率 {bb['_cagr']:.1%}・最大DD {bb['_dd']:.1%}）。"
+            f"最大DD での停止は {max_dd:.0%} に合わせる")
 
 
 def main() -> None:
@@ -63,6 +90,8 @@ def main() -> None:
     p.add_argument("--long", action="store_true", help="先物の長期データ（期間A）でも作る")
     p.add_argument("--long-start", default="2001-01-01")
     p.add_argument("--context", default="data/context", help="先物の日足の置き場（./cfd context の保存先）")
+    p.add_argument("--lev", default="1", help="レバレッジの上限（1 銘柄・合計）に掛ける倍率（カンマ区切り。例 1,2,4）")
+    p.add_argument("--max-dd", type=float, help="耐えられる最大の下げ（例 0.3）。表を見る前に決める。docs/leverage.md")
     args = p.parse_args()
 
     cfg = load_train_config(args.config)
@@ -80,22 +109,27 @@ def main() -> None:
     total_per_trade = base.risk.max_total_risk / base_risk          # 既定 4%÷1% = 4 銘柄分
     cluster_per_trade = {k: v / base_risk for k, v in base.risk.cluster_max_risk.items()}
 
+    combos = [(e, r, lv) for e in _floats(args.equity) for r in _floats(args.risk) for lv in _floats(args.lev)]
+
+    def scaled(rc, risk: float, lev: float):
+        return replace(rc, max_total_risk=total_per_trade * risk,
+                       cluster_max_risk={k: v * risk for k, v in cluster_per_trade.items()},
+                       max_leverage_symbol=rc.max_leverage_symbol * lev, max_leverage_total=rc.max_leverage_total * lev)
+
     rows = []
-    for equity in _floats(args.equity):
-        for risk in _floats(args.risk):
-            picks = [Pick(s["symbol"], s["strategy"], s["params"], s["exit"], 0, 0.0, 0.0, 0,
-                          s["multiplier"] * risk / base_risk, s["timeframe"], s.get("htf") or {})
-                     for s in final["sleeves"]]
-            bt = replace(base, initial_equity=equity, risk=replace(
-                base.risk, max_total_risk=total_per_trade * risk,
-                cluster_max_risk={k: v * risk for k, v in cluster_per_trade.items()}))
-            # EA と同じく、開始より前の過去を全部使って指標を計算する（./cfd replay と同じ）
-            res = validate_window(ds, settings.instrument_map(), picks, bt, start, end,
-                                  signal_warm=pd.Timedelta(days=365 * 100))
-            rows.append(_row(res, equity, risk))
-            print(f"  計算: 資金 {equity:,.0f} 円 / 1回の損失 {risk:.1%}", flush=True)
+    for equity, risk, lev in combos:
+        picks = [Pick(s["symbol"], s["strategy"], s["params"], s["exit"], 0, 0.0, 0.0, 0,
+                      s["multiplier"] * risk / base_risk, s["timeframe"], s.get("htf") or {})
+                 for s in final["sleeves"]]
+        bt = replace(base, initial_equity=equity, risk=scaled(base.risk, risk, lev))
+        # EA と同じく、開始より前の過去を全部使って指標を計算する（./cfd replay と同じ）
+        res = validate_window(ds, settings.instrument_map(), picks, bt, start, end,
+                              signal_warm=pd.Timedelta(days=365 * 100))
+        rows.append(_row(res, equity, risk, lev, base.risk))
+        print(f"  計算: 資金 {equity:,.0f} 円 / 1回の損失 {risk:.1%} / レバレッジの上限 ×{lev:g}", flush=True)
     print(f"\n期間 {start:%Y-%m-%d} 〜 {end - pd.Timedelta(days=1):%Y-%m-%d}（{Path(args.final).name}）")
-    print(pd.DataFrame(rows).to_string(index=False))
+    print(_show(rows))
+    rows_a: list[dict] = []
 
     if args.long:
         setup = build_setup(args.final, args.config, args.context, _floats(args.equity)[0], args.long_start,
@@ -104,19 +138,19 @@ def main() -> None:
         if pa is None:
             print("\n⚠ 先物の長期データが無い（./cfd context で取ってから --long）")
         else:
-            rows_a = []
-            for equity in _floats(args.equity):
-                for risk in _floats(args.risk):
-                    picks = [replace(pk, multiplier=pk.multiplier * risk / base_risk) for pk in setup.picks]
-                    bt = replace(pa.bt, initial_equity=equity, risk=replace(
-                        pa.bt.risk, max_total_risk=total_per_trade * risk,
-                        cluster_max_risk={k: v * risk for k, v in cluster_per_trade.items()}))
-                    period = Period(pa.name, pa.label, pa.frames, pa.tfs, pa.instruments, bt, pa.start, pa.end,
-                                    pa.resolve, pa._runner)
-                    rows_a.append(_row(period.run(picks), equity, risk))
-                    print(f"  計算（期間A）: 資金 {equity:,.0f} 円 / 1回の損失 {risk:.1%}", flush=True)
+            for equity, risk, lev in combos:
+                picks = [replace(pk, multiplier=pk.multiplier * risk / base_risk) for pk in setup.picks]
+                bt = replace(pa.bt, initial_equity=equity, risk=scaled(pa.bt.risk, risk, lev))
+                period = Period(pa.name, pa.label, pa.frames, pa.tfs, pa.instruments, bt, pa.start, pa.end,
+                                pa.resolve, pa._runner)
+                rows_a.append(_row(period.run(picks), equity, risk, lev, pa.bt.risk))
+                print(f"  計算（期間A）: 資金 {equity:,.0f} 円 / 1回の損失 {risk:.1%} / レバレッジの上限 ×{lev:g}",
+                      flush=True)
             print(f"\n{pa.label}（コストは今のスプレッドを値段に比例させる。円換算は {setup.bt_a.fx_rate:g} 円で固定）")
-            print(pd.DataFrame(rows_a).to_string(index=False))
+            print(_show(rows_a))
+    if args.max_dd is not None:
+        print(f"\n■ 選んだ組み合わせ（docs/leverage.md 3 章。耐えられる最大の下げ {args.max_dd:.0%}）")
+        print("  " + (choose(rows, rows_a, args.max_dd) if rows_a else "期間A（--long）が無いので選べない"))
     print(f"\n※ 最大DD が {cfg.account.max_drawdown_halt:.0%} に近い設定は、本番では途中で新規停止になる。"
           "シャープは資金が小さいと最小単位の見送りで下がる")
 

@@ -98,15 +98,36 @@ def test_costnow_command_end_to_end(phillip_and_futures):
     assert list((tmp_path / "out").glob("*/report.md"))
 
 
-def test_risk_table_long_period(phillip_and_futures):
+def _table(block: str) -> list[dict]:
+    """./cfd table の表（空白区切り）を行ごとの辞書にする。"""
+    lines = [ln for ln in block.splitlines() if ln.strip()]
+    head = lines[0].split()
+    return [dict(zip(head, ln.split())) for ln in lines[1:] if "万円" in ln]
+
+
+def test_risk_table_long_period_leverage_and_choice(phillip_and_futures):
     tmp_path, cfg = phillip_and_futures
     r = subprocess.run([sys.executable, str(ROOT / "scripts" / "risk_table.py"), "--final",
                         str(ROOT / "config" / "baselines" / "turtle55_d1_ext.json"), "--start", "2024-12-01",
-                        "--equity", "10000000", "--risk", "0.01,0.03", "--config", str(cfg),
-                        "--context", str(tmp_path / "context"), "--long"], capture_output=True, text=True, cwd=ROOT)
+                        "--equity", "10000000", "--risk", "0.01,0.03", "--lev", "1,4", "--config", str(cfg),
+                        "--context", str(tmp_path / "context"), "--long", "--max-dd", "0.9"],
+                       capture_output=True, text=True, cwd=ROOT)
     assert r.returncode == 0, r.stderr[-3000:]
-    a = r.stdout.split("期間A 先物の長期データ 2001-01〜2024-11")[1]
-    rows = [ln for ln in a.splitlines() if "万円" in ln]
-    assert len(rows) == 2 and "1.0%" in rows[0] and "3.0%" in rows[1]
-    dd = [float(ln.split("%")[1].split()[-1]) for ln in rows]          # 2 つ目の % の前 = 最大DD
-    assert dd[1] > dd[0]                                              # 1 回の損失を上げると下げも大きくなる
+    out = r.stdout
+    a_block = out.split("期間A 先物の長期データ 2001-01〜2024-11")[1].split("■")[0].split("\n", 1)[1]
+    rows = _table(a_block.split("※")[0])
+    assert [(x["1回の損失"], x["レバ上限"]) for x in rows] == [("1.0%", "1/2倍"), ("1.0%", "4/8倍"),
+                                                              ("3.0%", "1/2倍"), ("3.0%", "4/8倍")]
+    dd = {(x["1回の損失"], x["レバ上限"]): float(x["最大DD"].rstrip("%")) for x in rows}
+    lev = {(x["1回の損失"], x["レバ上限"]): float(x["最大レバ"].rstrip("倍")) for x in rows}
+    assert dd[("3.0%", "1/2倍")] > dd[("1.0%", "1/2倍")]                # 1 回の損失を上げると下げも大きくなる
+    assert lev[("3.0%", "1/2倍")] <= 2.0 + 0.05                         # 合計 2 倍の上限を守る（端数の分だけ超えうる）
+    assert lev[("3.0%", "4/8倍")] >= lev[("3.0%", "1/2倍")]                # 上限を上げても張る量は減らない
+    assert "■ 選んだ組み合わせ（docs/leverage.md 3 章。耐えられる最大の下げ 90%）" in out
+    assert "資金 10,000,000 円: 1 回の損失" in out                        # 90% なら何かは候補に入る
+    r2 = subprocess.run([sys.executable, str(ROOT / "scripts" / "risk_table.py"), "--final",
+                         str(ROOT / "config" / "baselines" / "turtle55_d1_ext.json"), "--start", "2024-12-01",
+                         "--equity", "10000000", "--risk", "0.03", "--config", str(cfg),
+                         "--context", str(tmp_path / "context"), "--long", "--max-dd", "0.001"],
+                        capture_output=True, text=True, cwd=ROOT)
+    assert "候補なし" in r2.stdout and "今のまま" in r2.stdout
