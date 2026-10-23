@@ -80,11 +80,12 @@ def ingest(
     contact = os.environ.get("KOTEN_CONTACT", "").strip()
     if "{contact}" in user_agent:
         user_agent = user_agent.replace("{contact}", contact)
-    if not contact and "contact:" in user_agent or "example.com" in user_agent:
+    looks_valid = "@" in contact or "://" in contact
+    if ("contact:" in user_agent and not looks_valid) or "example.com" in user_agent:
         # SPEC §8.1：User-Agent に連絡先を入れる。連絡先が無いまま外部サイトへ取りに行かない
         typer.secho(
-            "連絡先が設定されていません。リポジトリ直下の .env に "
-            "KOTEN_CONTACT=自分のメールアドレス を書いてから実行してください",
+            f"連絡先（KOTEN_CONTACT）が正しく設定されていません（今の値：{contact or 'なし'}）。"
+            "リポジトリ直下の .env に、メールアドレスか URL を書いてから実行してください",
             fg="red",
             err=True,
         )

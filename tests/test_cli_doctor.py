@@ -77,6 +77,11 @@ def test_ingest_requires_contact(settings_file, monkeypatch):
     assert result.exit_code == 2
     assert "KOTEN_CONTACT" in result.output
 
+    # 書き換え忘れ（メールアドレスでも URL でもない）も止める
+    monkeypatch.setenv("KOTEN_CONTACT", "あなたのメールアドレス")
+    result = CliRunner().invoke(app, ["ingest", "aozora", "--settings", str(settings_file)])
+    assert result.exit_code == 2 and "あなたのメールアドレス" in result.output
+
     # 古い仮の連絡先が settings.toml に残っていても止める
     with settings_file.open("a", encoding="utf-8") as f:
         f.write(
