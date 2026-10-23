@@ -3,13 +3,18 @@
 付加情報づけ（augment）は Mac 上のローカルLLMで夜間に回す（SPEC §8.3）。
 Ollama は独自の /api/chat で呼ぶ（思考モードの切り替え・文脈長・出力長の上限・速度の記録ができる）。
 LM Studio などは OpenAI 互換の /chat/completions で呼ぶ。
+Claude（Haiku など）は Mac の Claude Code を `claude -p` で呼び、
+ログイン中のサブスクリプションで動かす。
 テストでは同じ形の偽物（complete を持つオブジェクト）に差し替える。
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
+import tempfile
 from collections import Counter
 from typing import Any, Protocol
 
@@ -210,6 +215,92 @@ def fill(template: str, **values: Any) -> str:
     )
 
 
+class ClaudeCLILLM:
+    """Claude Code の `claude -p` を1回ずつ呼ぶ。
+
+    API キーを使わず、ログイン中のサブスクリプションで動かす。
+
+    - ツールは使わせない（--tools ""）、会話は保存しない（--no-session-persistence）
+    - CLAUDE.md・MCP・プラグインなどは読まない（--safe-mode。ログインはそのまま使える）
+    - ANTHROPIC_API_KEY は子プロセスに渡さない（渡すと API の課金に切り替わるため）
+    - 空のフォルダで動かし、作業中のリポジトリの中身を読ませない
+    """
+
+    def __init__(
+        self,
+        model: str = "haiku",
+        *,
+        command: str = "claude",
+        extra_args: list[str] | None = None,
+        timeout_sec: float = 300.0,
+        keep_api_key: bool = False,
+    ):
+        self.model = model
+        self.name = f"claude-cli:{model}"
+        self.command = command
+        self.extra_args = ["--safe-mode"] if extra_args is None else list(extra_args)
+        self.timeout_sec = timeout_sec
+        self.keep_api_key = keep_api_key
+        self.stats: Counter[str] = Counter()
+
+    def args(self, system: str, user: str, schema: dict[str, Any] | None) -> list[str]:
+        argv = [
+            self.command,
+            "-p",
+            "--model",
+            self.model,
+            "--output-format",
+            "json",
+            "--system-prompt",
+            system,
+            "--tools",
+            "",
+            "--no-session-persistence",
+            *self.extra_args,
+        ]
+        if schema is not None:
+            argv += ["--json-schema", json.dumps(schema, ensure_ascii=False)]
+        return [*argv, user]
+
+    def complete(self, system: str, user: str, schema: dict[str, Any] | None = None) -> str:
+        env = dict(os.environ)
+        if not self.keep_api_key:
+            env.pop("ANTHROPIC_API_KEY", None)
+        with tempfile.TemporaryDirectory(prefix="koten-claude-") as cwd:
+            try:
+                proc = subprocess.run(
+                    self.args(system, user, schema),
+                    cwd=cwd,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout_sec,
+                )
+            except FileNotFoundError as e:
+                raise LLMError(
+                    f"{self.command} が見つかりません。Claude Code を入れてログインしてください"
+                ) from e
+            except subprocess.TimeoutExpired as e:
+                raise LLMError(f"{self.name} の応答が{self.timeout_sec:.0f}秒で終わりません") from e
+        if proc.returncode != 0:
+            msg = (proc.stderr or proc.stdout).strip()[:300]
+            raise LLMError(f"{self.name} が失敗しました（終了コード {proc.returncode}）：{msg}")
+        try:
+            data = json.loads(proc.stdout)
+        except json.JSONDecodeError as e:
+            raise LLMError(f"{self.name} の出力が JSON ではありません：{proc.stdout[:300]}") from e
+        if data.get("is_error"):
+            raise LLMError(f"{self.name} がエラーを返しました：{str(data.get('result'))[:300]}")
+        self.stats["calls"] += 1
+        self.stats["cost_micro_usd"] += int(float(data.get("total_cost_usd") or 0) * 1e6)
+        self.stats["duration_ms"] += int(data.get("duration_ms") or 0)
+        # --json-schema を付けたときの構造化出力の置き場所は版で違いうるので、両方を見る
+        for key in ("structured_output", "structured_result"):
+            if isinstance(data.get(key), dict):
+                return json.dumps(data[key], ensure_ascii=False)
+        return str(data.get("result") or "")
+
+
 def make_llm(conf: dict[str, Any], model: str | None = None) -> ChatLLM:
     """settings.toml の [llm.<役割>] から、ローカルLLMの呼び出し口を作る。"""
     model = model or conf.get("model", "")
@@ -229,5 +320,13 @@ def make_llm(conf: dict[str, Any], model: str | None = None) -> ChatLLM:
             model,
             response_format=conf.get("response_format", "json_schema"),
             timeout_sec=conf.get("timeout_sec", 300),
+        )
+    if conf.get("provider") == "claude_cli":
+        return ClaudeCLILLM(
+            model or "haiku",
+            command=conf.get("command", "claude"),
+            extra_args=conf.get("extra_args"),
+            timeout_sec=conf.get("timeout_sec", 300),
+            keep_api_key=conf.get("keep_api_key", False),
         )
     raise ValueError(f"このLLMの provider には対応していません：{conf.get('provider')}")

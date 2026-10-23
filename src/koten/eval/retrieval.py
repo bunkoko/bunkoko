@@ -1,12 +1,16 @@
 """検索の評価（SPEC §12）：評価セットで nDCG@10 と Recall@20 を出す。
 
-評価セットは tests/eval/retrieval.csv（悩み × 一節 × 人が付けた点）。
-点は 2＝合う、1＝少し合う、0＝合わない。空欄は未判定で、計算では 0 と同じに扱う。
+評価セットは tests/eval/retrieval.csv（悩み × 一節 × 点）。
+点は 1＝合う、0＝合わない の2値（人がぶれずに付けられるように）。空欄は未判定で、
+計算では 0 と同じに扱う。前の版の 2（合う）は 1 として読む。
+- grade：人が付けた点
+- llm_grade・llm_reason・llm_grader：LLM の grader（Claude Haiku など）が付けた点と理由
 
 1. `koten eval export`：悩みごとに、いくつかの検索のやり方の上位を合わせて（プーリング）
    印付け用の CSV を書き出す。すでに付けた点は残す
-2. 人が grade 列に点を付ける
-3. `koten eval retrieval`：やり方ごとに指標を出して比べる
+2. 人が grade 列に点を付ける。`koten eval grade` で LLM も点を付ける
+3. `koten eval agreement`：人と LLM の点がどれだけ一致するかを見る
+4. `koten eval retrieval`：やり方ごとに指標を出して比べる（--by llm で LLM の点を使う）
 """
 
 from __future__ import annotations
@@ -30,7 +34,21 @@ EVAL_COLUMNS = [
     "quote_text",
     "summary_ja",
     "grade",
+    "llm_grade",
+    "llm_reason",
+    "llm_grader",
 ]
+KEEP_COLUMNS = ["grade", "llm_grade", "llm_reason", "llm_grader"]  # 書き出し直しても残す列
+
+
+def parse_grade(value: str | None) -> int | None:
+    """「1」「0」を点にする。前の版の「2」は 1、空欄や読めない値は None（未判定）。"""
+    v = (value or "").strip()
+    if v in ("1", "2"):
+        return 1
+    if v == "0":
+        return 0
+    return None
 
 
 @dataclass(frozen=True)
@@ -70,14 +88,32 @@ def recall_at_k(ranked: list[str], grades: dict[str, int], k: int = 20) -> float
     return len(relevant & set(ranked[:k])) / len(relevant)
 
 
-def read_eval(path: Path) -> dict[str, dict[str, int]]:
-    """{worry_id: {candidate_id: 点}}。点が空欄の行は読まない。"""
-    out: dict[str, dict[str, int]] = {}
+def read_rows(path: Path) -> list[dict[str, str]]:
     with path.open(encoding="utf-8-sig") as f:
-        for r in csv.DictReader(f):
-            g = (r.get("grade") or "").strip()
-            if g in ("0", "1", "2"):
-                out.setdefault(r["worry_id"], {})[r["candidate_id"]] = int(g)
+        return [{c: r.get(c) or "" for c in EVAL_COLUMNS} for r in csv.DictReader(f)]
+
+
+def write_eval(path: Path, rows: list[dict[str, str]]) -> None:
+    """Excel・Numbers で開けるよう BOM 付きで、書き終えてから置き換える。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".part")
+    with tmp.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=EVAL_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+    tmp.replace(path)
+
+
+def read_eval(path: Path, column: str = "grade") -> dict[str, dict[str, int]]:
+    """{worry_id: {candidate_id: 点}}。未判定は読まない。
+
+    column は grade（人の点）か llm_grade（LLM の点）。
+    """
+    out: dict[str, dict[str, int]] = {}
+    for r in read_rows(path):
+        g = parse_grade(r.get(column))
+        if g is not None:
+            out.setdefault(r["worry_id"], {})[r["candidate_id"]] = g
     return out
 
 
@@ -95,11 +131,10 @@ def export_pool(
     seed: int = 0,
 ) -> tuple[int, int]:
     """印付け用の CSV を書く。戻り値は（行の数, そのうち点が付いている数）。"""
-    existing: dict[tuple[str, str], str] = {}
+    existing: dict[tuple[str, str], dict[str, str]] = {}
     if path.exists():
-        with path.open(encoding="utf-8-sig") as f:
-            for r in csv.DictReader(f):
-                existing[(r["worry_id"], r["candidate_id"])] = (r.get("grade") or "").strip()
+        for r in read_rows(path):
+            existing[(r["worry_id"], r["candidate_id"])] = {c: r[c] for c in KEEP_COLUMNS}
     rows = []
     rng = random.Random(seed)
     for w in worries:
@@ -121,17 +156,12 @@ def export_pool(
                     "section": r["section"] or "",
                     "quote_text": r["quote_text"],
                     "summary_ja": r["summary_ja"],
-                    "grade": existing.get((w["worry_id"], cid), ""),
+                    **{c: "" for c in KEEP_COLUMNS},
+                    **existing.get((w["worry_id"], cid), {}),
                 }
             )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open(
-        "w", encoding="utf-8-sig", newline=""
-    ) as f:  # Excel・Numbers で開けるよう BOM 付き
-        writer = csv.DictWriter(f, fieldnames=EVAL_COLUMNS)
-        writer.writeheader()
-        writer.writerows(rows)
-    return len(rows), sum(1 for r in rows if r["grade"] in ("0", "1", "2"))
+    write_eval(path, rows)
+    return len(rows), sum(1 for r in rows if parse_grade(r["grade"]) is not None)
 
 
 @dataclass

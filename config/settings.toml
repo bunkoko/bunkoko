@@ -66,6 +66,16 @@ rrf_k = 60
 fused_top = 50                # RRF で統合したあとに残す件数
 shortlist = 10                # LLM に最終選択させる候補の数
 
+[llm.grader]                  # 検索の評価の grader（2値）。Mac の Claude Code を呼ぶ（API キーは使わない）
+provider = "claude_cli"
+command = "claude"
+model = "haiku"               # Claude Code の --model に渡す（別名か正式なモデル名）
+extra_args = ["--safe-mode"]  # CLAUDE.md・MCP・プラグインを読まない（ログインはそのまま）
+timeout_sec = 300
+
+[eval]
+grader_prompt = "grader_v1"   # prompts/<prompt>.md
+
 [worries]                     # 悩みマスター（SPEC §9）
 prompt = "worries_v1"         # prompts/<prompt>.md
 text_max = 40                 # 一般化した悩み文の上限

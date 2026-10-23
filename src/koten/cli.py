@@ -679,7 +679,7 @@ def eval_export(
     out: Annotated[str, typer.Option(help="書き出す CSV")] = "tests/eval/retrieval.csv",
     settings: SettingsOpt = None,
 ) -> None:
-    """印付け用の CSV を書き出す（すでに付けた点は残す）。grade 列に 2・1・0 を付ける。"""
+    """印付け用の CSV を書き出す（すでに付けた点は残す）。grade 列に 1・0 を付ける。"""
     from pathlib import Path
 
     from koten.eval.retrieval import export_pool
@@ -698,12 +698,13 @@ def eval_export(
     typer.echo(
         f"{out} に {len(worries)} 件の悩み・{total} 行を書きました（点が付いている行 {judged}）"
     )
-    typer.echo("grade 列に 2＝合う、1＝少し合う、0＝合わない を付けて保存してください")
+    typer.echo("grade 列に 1＝合う、0＝合わない を付けて保存してください")
 
 
 @eval_app.command("retrieval")
 def eval_retrieval(
     file: Annotated[str, typer.Option(help="点を付けた評価セット")] = "tests/eval/retrieval.csv",
+    by: Annotated[str, typer.Option(help="human（人の点）か llm（LLM の点）")] = "human",
     settings: SettingsOpt = None,
 ) -> None:
     """評価セットで、やり方ごとの nDCG@10・Recall@20 を出す。"""
@@ -711,13 +712,115 @@ def eval_retrieval(
 
     from koten.eval.retrieval import evaluate, read_eval, report
 
-    p = _planner(_settings(settings))
-    grades = read_eval(Path(file))
-    if not grades:
-        typer.secho(f"{file} に点の付いた行がありません", fg="red", err=True)
+    column = {"human": "grade", "llm": "llm_grade"}.get(by)
+    if column is None:
+        typer.secho("--by は human か llm です", fg="red", err=True)
         raise typer.Exit(2)
-    typer.echo(f"評価セット：悩み {len(grades)} 件・点 {sum(len(g) for g in grades.values())} 件")
+    p = _planner(_settings(settings))
+    grades = read_eval(Path(file), column)
+    if not grades:
+        typer.secho(f"{file} の {column} 列に点の付いた行がありません", fg="red", err=True)
+        raise typer.Exit(2)
+    who = "人" if by == "human" else "LLM"
+    total = sum(len(g) for g in grades.values())
+    typer.echo(f"評価セット（{who}の点）：悩み {len(grades)} 件・点 {total} 件")
     typer.echo(report(evaluate(grades, _eval_runner(p), _eval_configs(p))))
+
+
+@eval_app.command("grade")
+def eval_grade(
+    file: Annotated[str, typer.Option(help="評価セット")] = "tests/eval/retrieval.csv",
+    redo: Annotated[bool, typer.Option(help="LLM の点がある行も判定し直す")] = False,
+    worry: Annotated[
+        list[str] | None, typer.Option(help="この悩みだけ判定する（くり返し指定できる）")
+    ] = None,
+    settings: SettingsOpt = None,
+) -> None:
+    """評価セットに、LLM（既定は Claude Code の Haiku）が「合う／合わない」を付ける。"""
+    from pathlib import Path
+
+    from koten.eval.grader import grade_file
+    from koten.llm import LLMError, describe_stats, make_llm
+
+    s = _settings(settings)
+    if not Path(file).exists():
+        _require_input(Path(file), "eval export")
+    llm = make_llm(s.section("llm.grader"))
+    typer.echo(f"grader：{llm.name}")
+    try:
+        r = grade_file(
+            Path(file),
+            llm,
+            s.config_dir.parent / "prompts",
+            s.section("eval").get("grader_prompt", "grader_v1"),
+            redo=redo,
+            worry_ids=set(worry) if worry else None,
+            log=typer.echo,
+        )
+    except LLMError as e:
+        typer.secho(f"{e}（ここまでの判定は保存しました）", fg="red", err=True)
+        raise typer.Exit(1) from e
+    typer.echo(f"判定 {r.graded} 件（悩み {r.worries} 件）、判定済みで飛ばした {r.skipped} 件")
+    if r.missing:
+        typer.secho(
+            f"判定が返ってこなかった {len(r.missing)} 件（もう一度実行すると判定し直します）",
+            fg="yellow",
+        )
+    stats = getattr(llm, "stats", {})
+    if stats.get("calls"):
+        typer.echo(
+            f"呼び出し {stats['calls']} 回・合計 {stats['duration_ms'] / 1000:.0f}秒"
+            + (
+                f"・参考の料金 ${stats['cost_micro_usd'] / 1e6:.3f}"
+                if stats["cost_micro_usd"]
+                else ""
+            )
+        )
+    elif line := describe_stats(stats):
+        typer.echo(line)
+
+
+@eval_app.command("agreement")
+def eval_agreement(
+    file: Annotated[str, typer.Option(help="評価セット")] = "tests/eval/retrieval.csv",
+    show: Annotated[int, typer.Option(help="表示する食い違いの数")] = 10,
+    settings: SettingsOpt = None,
+) -> None:
+    """人の点と LLM の点の一致（一致率・κ）と、食い違った組み合わせを出す。"""
+    from pathlib import Path
+
+    from koten.eval.grader import agreement
+
+    a = agreement(Path(file))
+    if a.n == 0:
+        typer.secho("人の点と LLM の点が両方ある行がありません", fg="red", err=True)
+        raise typer.Exit(2)
+
+    def pct(x: float | None) -> str:
+        return "—" if x is None else f"{x:.0%}"
+
+    kappa = "—" if a.kappa is None else f"{a.kappa:.2f}"
+    typer.echo(f"両方に点がある {a.n} 件：一致率 {a.accuracy:.0%}・κ {kappa}")
+    typer.echo(
+        f"  両方「合う」{a.both_yes}／両方「合わない」{a.both_no}／"
+        f"人だけ「合う」{a.human_only}／LLMだけ「合う」{a.llm_only}"
+    )
+    typer.echo(
+        f"  LLM が「合う」とした中で人も「合う」：{pct(a.llm_precision)}、"
+        f"人が「合う」とした中で LLM も「合う」：{pct(a.llm_recall)}"
+    )
+    if a.kappa is not None:
+        verdict = (
+            "LLM の点を広い評価に使ってよい目安（κ 0.6 以上）"
+            if a.kappa >= 0.6
+            else "LLM の点だけで評価するのはまだ早い（κ 0.6 未満）。食い違いを見てください"
+        )
+        typer.echo(f"  → {verdict}")
+    for r in a.disagreements[:show]:
+        who = "人だけ「合う」" if r["grade"] in ("1", "2") else "LLMだけ「合う」"
+        typer.echo(f"\n[{who}] {r['worry_id']} {r['worry_text']}")
+        typer.echo(f"    {r['title']}「{r['quote_text'][:60]}」")
+        typer.echo(f"    LLM の理由：{r['llm_reason']}")
 
 
 @app.command()

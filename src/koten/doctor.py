@@ -64,6 +64,14 @@ def check_llm(s: Settings, role: str, client: httpx.Client) -> Check:
         if os.environ.get("ANTHROPIC_API_KEY"):
             return Check(name, OK, f"anthropic {model}（APIキー設定済み）")
         return Check(name, NG, f"anthropic {model}（ANTHROPIC_API_KEY が未設定。.env に書く）")
+    if provider == "claude_cli":
+        command = conf.get("command", "claude")
+        path = shutil.which(command)
+        if path:
+            return Check(
+                name, OK, f"Claude Code {path}（モデル {model or 'haiku'}・サブスクリプション）"
+            )
+        return Check(name, NG, f"{command} が見つかりません（Claude Code を入れてログインする）")
     endpoint = conf.get("endpoint", "")
     try:
         if provider == "ollama":
@@ -122,6 +130,7 @@ def run_checks(s: Settings, client: httpx.Client | None = None) -> list[Check]:
         check_llm(s, "augment", client),
         check_llm(s, "script", client),
         check_llm(s, "judge", client),
+        check_llm(s, "grader", client),
         check_embed(s),
         check_ffmpeg(),
     ]

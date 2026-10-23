@@ -216,6 +216,8 @@ def test_metrics():
 
 
 def test_eval_export_and_evaluate(tmp_path):
+    from koten.eval.retrieval import read_rows, write_eval
+
     rows = {
         c: {"title": "t", "author_names": ["甲"], "section": "", "quote_text": c, "summary_ja": c}
         for c in "abcd"
@@ -230,11 +232,13 @@ def test_eval_export_and_evaluate(tmp_path):
     path = tmp_path / "eval.csv"
     total, judged = export_pool(path, worries, run, rows.__getitem__, [good, bad])
     assert (total, judged) == (4, 0)
-    text = path.read_text("utf-8-sig").replace(",a,t,", ",a,t,")
-    lines = text.splitlines()
-    graded = [lines[0]] + [ln + ("2" if ",a," in ln else "0") for ln in lines[1:]]
-    path.write_text("\n".join(graded) + "\n", encoding="utf-8-sig")
+    graded = read_rows(path)
+    for r in graded:
+        r["grade"] = "1" if r["candidate_id"] == "a" else "0"
+        r["llm_grade"] = "1"
+    write_eval(path, graded)
     assert export_pool(path, worries, run, rows.__getitem__, [good, bad]) == (4, 4)  # 点は残る
+    assert all(r["llm_grade"] == "1" for r in read_rows(path))
     res = {r.name: r for r in evaluate(read_eval(path), run, [good, bad])}
     assert res["良い"].ndcg10 == pytest.approx(1.0) and res["悪い"].ndcg10 == 0.0
     assert res["良い"].recall20 == 1.0 and res["悪い"].unjudged10 == 0.0
