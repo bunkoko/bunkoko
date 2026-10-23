@@ -61,3 +61,10 @@ def test_chunk_before_normalize_says_what_to_run(settings_file):
     result = CliRunner().invoke(app, ["chunk", "aozora", "--settings", str(settings_file)])
     assert result.exit_code == 2
     assert "koten normalize aozora" in result.output
+
+
+def test_python_arch_check():
+    assert doctor.check_python("Darwin", "x86_64").status == doctor.NG
+    assert "Apple シリコン" in doctor.check_python("Darwin", "x86_64").detail
+    assert doctor.check_python("Darwin", "arm64").status == doctor.OK
+    assert doctor.check_python("Linux", "x86_64").status == doctor.OK

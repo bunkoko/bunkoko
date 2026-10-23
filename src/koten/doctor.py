@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import platform
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -95,9 +97,26 @@ def check_ffmpeg() -> Check:
     return Check("ffmpeg", OK if path else NG, path or "見つかりません（brew install ffmpeg）")
 
 
+def check_python(system: str | None = None, machine: str | None = None) -> Check:
+    """Apple シリコンの Mac で Intel 用の Python（Rosetta）だと torch が入らず、GPU も使えない。"""
+    system = system or platform.system()
+    machine = machine or platform.machine()
+    version = f"Python {sys.version_info.major}.{sys.version_info.minor} {system} {machine}"
+    if system == "Darwin" and machine == "x86_64":
+        return Check(
+            "Python",
+            NG,
+            f"{version}：Intel 用の Python です（torch が入らず GPU も使えない）。"
+            "Apple シリコン用の Python で .venv を作り直してください"
+            "（rm -rf .venv && uv venv --python cpython-3.14-macos-aarch64 && uv sync --extra ml）",
+        )
+    return Check("Python", OK, version)
+
+
 def run_checks(s: Settings, client: httpx.Client | None = None) -> list[Check]:
     client = client or httpx.Client(timeout=3.0)
     return [
+        check_python(),
         check_hdd(s),
         check_ssd(s),
         check_voicevox(s, client),
