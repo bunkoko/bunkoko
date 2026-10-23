@@ -24,7 +24,7 @@ import pyarrow.parquet as pq
 import yaml
 
 from koten.llm import ChatLLM, LLMError, fill, load_prompt, parse_json_object
-from koten.parquet import read_rows, write_rows
+from koten.parquet import data_files, read_rows, write_rows
 from koten.textnorm import locate, normalize_for_match
 
 CANDIDATES_SCHEMA = pa.schema(
@@ -217,7 +217,7 @@ class _Writer:
         self.batch_size = batch_size
         self.cands: list[dict[str, Any]] = []
         self.done: list[dict[str, Any]] = []
-        self.seq = len(list(out_dir.glob("done-*.parquet"))) if out_dir.exists() else 0
+        self.seq = len(data_files(out_dir, "done-*.parquet"))
 
     def add(self, cands: list[dict[str, Any]], done: dict[str, Any]) -> None:
         self.cands.extend(cands)
@@ -237,27 +237,27 @@ class _Writer:
 
 def done_chunk_ids(out_dir: Path) -> set[str]:
     ids: set[str] = set()
-    for p in sorted(out_dir.glob("done-*.parquet")):
+    for p in data_files(out_dir, "done-*.parquet"):
         ids.update(pq.read_table(p, columns=["chunk_id"]).column(0).to_pylist())
     return ids
 
 
 def iter_candidates(out_dir: Path) -> Iterator[dict[str, Any]]:
     """part-*.parquet の候補を、対応する done があるものだけ返す。"""
-    for p in sorted(out_dir.glob("part-*.parquet")):
+    for p in data_files(out_dir, "part-*.parquet"):
         if (out_dir / p.name.replace("part-", "done-")).exists():
             yield from read_rows(p)
 
 
 def _chunks(hdd_root: Path) -> Iterator[dict[str, Any]]:
-    for p in sorted((hdd_root / "chunks").glob("*.parquet")):
+    for p in data_files(hdd_root / "chunks", "*.parquet"):
         yield from read_rows(p)
 
 
 def _works_and_texts(hdd_root: Path) -> tuple[dict[str, dict], dict[str, str]]:
     works: dict[str, dict] = {}
     texts: dict[str, str] = {}
-    for src in sorted((hdd_root / "clean").iterdir()) if (hdd_root / "clean").exists() else []:
+    for src in data_files(hdd_root / "clean", "*"):
         if (src / "works.parquet").exists():
             works.update({w["work_id"]: w for w in read_rows(src / "works.parquet")})
         if (src / "texts.parquet").exists():

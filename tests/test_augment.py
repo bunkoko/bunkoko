@@ -193,3 +193,19 @@ def test_llm_down_stops_and_keeps_results(hdd_with_chunks):
 def test_parse_json_ignores_think_block():
     content = '<think>{まず考える} quotes は…</think>\n{"quotes": []}'
     assert parse_json_object(content) == {"quotes": []}
+
+
+def test_macos_appledouble_files_are_ignored(hdd_with_chunks):
+    """exFAT の SD カードに Mac が作る ._xxx を、本物のデータとして読まない。"""
+    _, hdd = hdd_with_chunks
+    garbage = b"\x00\x05\x16\x07Mac OS X        "
+    (hdd / "chunks" / "._aozora.parquet").write_bytes(garbage)
+    (hdd / "clean" / "._aozora").write_bytes(garbage)
+    (hdd / "clean" / "aozora" / "._works.parquet").write_bytes(garbage)
+    r = run_augment(hdd, PROMPTS, VOCAB, FakeLLM(), AugmentConfig(batch_size=2), limit=3)
+    assert r.processed == 3
+    out = hdd / "augment/fake-llm/augment_v1"
+    (out / "._done-00001.parquet").write_bytes(garbage)
+    (out / "._part-00001.parquet").write_bytes(garbage)
+    assert len(done_chunk_ids(out)) == 3
+    assert run_augment(hdd, PROMPTS, VOCAB, FakeLLM(), AugmentConfig(), limit=1).processed == 1

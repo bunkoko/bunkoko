@@ -25,7 +25,7 @@ from koten.embed.run import emb_dir, load_embeddings
 from koten.index.bm25 import BM25
 from koten.index.tokenize import get_tokenizer
 from koten.license import is_usable
-from koten.parquet import read_rows, write_rows
+from koten.parquet import data_files, read_rows, write_rows
 
 WORK_FIELDS = [
     ("title", pa.string()),
@@ -49,7 +49,7 @@ def index_dir(ssd_root: Path, model: str) -> Path:
 
 def _works(hdd_root: Path) -> dict[str, dict]:
     works: dict[str, dict] = {}
-    for p in sorted((hdd_root / "clean").glob("*/works.parquet")):
+    for p in data_files(hdd_root / "clean", "*/works.parquet"):
         works.update({w["work_id"]: w for w in read_rows(p)})
     return works
 

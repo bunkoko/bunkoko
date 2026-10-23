@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from koten.augment.extract import _chunks, iter_candidates, llm_slug
-from koten.parquet import read_rows
+from koten.parquet import data_files, read_rows
 
 
 @dataclass
@@ -31,7 +31,7 @@ class ModelSummary:
 
 def _done_rows(out_dir: Path) -> dict[str, dict[str, Any]]:
     rows: dict[str, dict[str, Any]] = {}
-    for p in sorted(out_dir.glob("done-*.parquet")):
+    for p in data_files(out_dir, "done-*.parquet"):
         rows.update({r["chunk_id"]: r for r in read_rows(p)})
     return rows
 

@@ -139,3 +139,9 @@ uv run koten chunk aozora
 - sentence-transformers の次元の取得は、新しい名前（get_embedding_dimension）を先に使う。
 
 - 2026-10-23：全件のチャンクは80,205件だったので、gemma4:26b（約4.9秒／チャンク）の全件処理は約4.5日の見込み。
+
+### 2026-10-23 SD カード（exFAT）の ._ ファイル
+
+- 全件の augment が `chunks/._aozora.parquet` を読もうとして止まった。Mac は exFAT などに書いたファイルの付帯情報を `._<名前>` の隠しファイルとして作る。
+- データのファイルを探すところはすべて parquet.data_files を通し、「.」で始まるファイル・フォルダ（._xxx・.DS_Store など）を読み飛ばす。
+

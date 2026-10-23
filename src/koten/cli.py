@@ -155,7 +155,9 @@ def augment(
     """引用候補の抽出と付加情報（ローカルLLM。夜間向け）。中断しても続きから再開する。"""
     s = _settings(settings)
     hdd = _hdd(s)
-    if not any((hdd / "chunks").glob("*.parquet")):
+    from koten.parquet import data_files
+
+    if not data_files(hdd / "chunks", "*.parquet"):
         _require_input(hdd / "chunks" / "aozora.parquet", "chunk aozora")
     from koten.augment.extract import AugmentConfig, load_themes, run_augment
     from koten.llm import LLMError, OllamaLLM, OpenAICompatLLM, describe_stats

@@ -17,7 +17,7 @@ import pyarrow.parquet as pq
 
 from koten.augment.extract import iter_candidates, llm_slug
 from koten.embed.encoder import Encoder, passage_text
-from koten.parquet import write_rows
+from koten.parquet import data_files, write_rows
 
 IDS_SCHEMA = pa.schema([("candidate_id", pa.string())])
 
@@ -35,7 +35,7 @@ def emb_dir(hdd_root: Path, model: str) -> Path:
 
 def embedded_ids(out_dir: Path) -> set[str]:
     ids: set[str] = set()
-    for p in sorted(out_dir.glob("shard-*.ids.parquet")):
+    for p in data_files(out_dir, "shard-*.ids.parquet"):
         if p.with_name(p.name.replace(".ids.parquet", ".npy")).exists():
             ids.update(pq.read_table(p).column(0).to_pylist())
     return ids
@@ -44,7 +44,7 @@ def embedded_ids(out_dir: Path) -> set[str]:
 def load_embeddings(out_dir: Path) -> tuple[list[str], np.ndarray]:
     ids: list[str] = []
     mats: list[np.ndarray] = []
-    for p in sorted(out_dir.glob("shard-*.ids.parquet")):
+    for p in data_files(out_dir, "shard-*.ids.parquet"):
         npy = p.with_name(p.name.replace(".ids.parquet", ".npy"))
         if npy.exists():
             ids.extend(pq.read_table(p).column(0).to_pylist())
@@ -79,7 +79,7 @@ def run_embed(
         )
 
     done = embedded_ids(out_dir)
-    seq = len(list(out_dir.glob("shard-*.npy")))
+    seq = len(data_files(out_dir, "shard-*.npy"))
     pending: list[dict] = []
     embedded = 0
 

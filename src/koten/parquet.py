@@ -17,5 +17,19 @@ def write_rows(path: Path, rows: list[dict[str, Any]], schema: pa.Schema) -> Non
     tmp.replace(path)
 
 
+def data_files(directory: Path, pattern: str) -> list[Path]:
+    """directory の中で pattern に合うファイルを名前順に返す。
+
+    「.」で始まるもの（Mac が exFAT の SD カードなどに作る ._xxx や .DS_Store）は除く。
+    """
+    if not directory.exists():
+        return []
+    return sorted(
+        p
+        for p in directory.glob(pattern)
+        if not any(part.startswith(".") for part in p.relative_to(directory).parts)
+    )
+
+
 def read_rows(path: Path) -> list[dict[str, Any]]:
     return pq.read_table(path).to_pylist()
