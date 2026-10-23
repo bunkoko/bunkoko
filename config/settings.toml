@@ -82,8 +82,8 @@ port = 8765                   # 127.0.0.1 だけで待ち受ける
 per_host_per_sec = 1
 
 [http]
-# User-Agent に連絡先を入れる（SPEC §8.1）。自分の連絡先に書き換える
-user_agent = "koten-videos/0.1 (+contact: set-your-email@example.com)"
+# User-Agent に連絡先を入れる（SPEC §8.1）。{contact} は .env の KOTEN_CONTACT に置き換わる
+user_agent = "koten-videos/0.1 (+contact: {contact})"
 timeout_sec = 30
 
 [chunk]

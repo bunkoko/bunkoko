@@ -132,6 +132,12 @@ SAMPLE_TEXT = """人生のノート
 """
 
 
+@pytest.fixture(autouse=True)
+def _ignore_repo_dotenv(monkeypatch):
+    """テストは手元の .env（APIキー・連絡先）に左右されないようにする。"""
+    monkeypatch.setattr("koten.config.load_dotenv", lambda *a, **k: False)
+
+
 @pytest.fixture
 def settings_file(tmp_path: Path) -> Path:
     hdd = tmp_path / "hdd" / "koten"

@@ -37,7 +37,8 @@ def test_doctor_with_services_up(settings_file, monkeypatch):
     assert checks["HDD"].status == doctor.OK
 
 
-def test_hdd_missing_stops_ingest(tmp_path, settings_file):
+def test_hdd_missing_stops_ingest(tmp_path, settings_file, monkeypatch):
+    monkeypatch.setenv("KOTEN_CONTACT", "me@example.org")
     text = settings_file.read_text().replace(str(tmp_path / "hdd"), str(tmp_path / "nohdd"))
     settings_file.write_text(text)
     result = CliRunner().invoke(app, ["ingest", "aozora", "--settings", str(settings_file)])
@@ -70,11 +71,17 @@ def test_python_arch_check():
     assert doctor.check_python("Linux", "x86_64").status == doctor.OK
 
 
-def test_ingest_refuses_placeholder_contact(settings_file):
+def test_ingest_requires_contact(settings_file, monkeypatch):
+    monkeypatch.delenv("KOTEN_CONTACT", raising=False)
+    result = CliRunner().invoke(app, ["ingest", "aozora", "--settings", str(settings_file)])
+    assert result.exit_code == 2
+    assert "KOTEN_CONTACT" in result.output
+
+    # 古い仮の連絡先が settings.toml に残っていても止める
     with settings_file.open("a", encoding="utf-8") as f:
         f.write(
             '\n[http]\nuser_agent = "koten-videos/0.1 (+contact: set-your-email@example.com)"\n'
         )
+    monkeypatch.setenv("KOTEN_CONTACT", "me@example.org")
     result = CliRunner().invoke(app, ["ingest", "aozora", "--settings", str(settings_file)])
     assert result.exit_code == 2
-    assert "連絡先が仮の値" in result.output

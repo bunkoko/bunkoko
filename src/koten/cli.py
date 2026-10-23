@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Annotated
 
@@ -75,12 +76,15 @@ def ingest(
     from koten.ingest import aozora
 
     http = s.section("http")
-    user_agent = http.get("user_agent", "koten-videos")
-    if "example.com" in user_agent:
-        # SPEC §8.1：User-Agent に連絡先を入れる。仮の値のまま外部サイトへ取りに行かない
+    user_agent = http.get("user_agent", "koten-videos/0.1 (+contact: {contact})")
+    contact = os.environ.get("KOTEN_CONTACT", "").strip()
+    if "{contact}" in user_agent:
+        user_agent = user_agent.replace("{contact}", contact)
+    if not contact and "contact:" in user_agent or "example.com" in user_agent:
+        # SPEC §8.1：User-Agent に連絡先を入れる。連絡先が無いまま外部サイトへ取りに行かない
         typer.secho(
-            "settings.toml の [http] user_agent の連絡先が仮の値（example.com）のままです。"
-            "自分のメールアドレスなどに書き換えてから実行してください",
+            "連絡先が設定されていません。リポジトリ直下の .env に "
+            "KOTEN_CONTACT=自分のメールアドレス を書いてから実行してください",
             fg="red",
             err=True,
         )
