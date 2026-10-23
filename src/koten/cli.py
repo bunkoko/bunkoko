@@ -468,7 +468,7 @@ def worries_list(
             ).fetchone()[0]
             typer.echo(
                 f"{r['score']:5.2f} {r['worry_id']} {r['text_general']}"
-                f"（{'・'.join(r['themes'])}／{r['audience']}／似た悩み {members - 1} 件）"
+                f"（{'、'.join(r['themes'])}／{r['audience']}／似た悩み {members - 1} 件）"
             )
         return
     where = "" if status == "all" else "WHERE status = ?"
@@ -479,7 +479,7 @@ def worries_list(
     ).fetchall()[:top]
     for r in rows:
         mark = "◎" if r["is_representative"] else ("・" if r["cluster_id"] else " ")
-        themes = "・".join(json.loads(r["themes"] or "[]"))
+        themes = "、".join(json.loads(r["themes"] or "[]"))
         extra = r["blocked_reason"] or r["error"] or f"{themes}／{r['audience'] or ''}"
         cluster = f" [{r['cluster_id']}]" if r["cluster_id"] else ""
         typer.echo(

@@ -128,6 +128,17 @@ def test_normalize_and_block(conn):
     assert w["llm"] == "fake-worry-llm" and w["prompt_ver"] == "worries_v1"
 
 
+def test_trailing_period_removed():
+    from koten.worries.master import validate
+
+    out = validate(
+        {"text_general": "働く意味を見失ってしまう。", "themes": ["働く意味"]},
+        set(VOCAB),
+        WorriesConfig(),
+    )
+    assert out["text_general"] == "働く意味を見失ってしまう"
+
+
 def test_llm_exclusion_also_blocks(tmp_path, conn):
     csv = tmp_path / "w.csv"
     csv.write_text(
@@ -222,6 +233,7 @@ def test_cli_flow(settings_file, monkeypatch):
     assert "正規化 26 件、除外 4 件" in r.output and "クラスタ 23 個" in r.output
     r = run(app, ["worries", "list", *st])
     assert r.exit_code == 0 and "W0001" in r.output and "似た悩み 1 件" in r.output
+    assert "嫉妬・比較／" in r.output  # テーマの区切りは「、」（テーマ名の「・」と混ざらない）
     r = run(app, ["worries", "list", "--status", "blocked", *st])
     assert r.output.count("blocked") == 4
     r = run(app, ["worries", "import", "--from", "comments", *st])

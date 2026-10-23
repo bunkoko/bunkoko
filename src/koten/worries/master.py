@@ -141,7 +141,7 @@ def validate(data: dict[str, Any], vocab: set[str], cfg: WorriesConfig) -> dict[
     text = data.get("text_general")
     if not isinstance(text, str) or not text.strip():
         raise WorryOutputBroken("text_general が無い")
-    text = text.strip()
+    text = text.strip().rstrip("。．.")  # 悩み文は文末の句点をそろえて外す
     if len(text) > cfg.text_max:
         raise WorryOutputBroken(f"text_general が{cfg.text_max}字を超える（{len(text)}字）")
     themes = data.get("themes")
