@@ -294,10 +294,9 @@ class ClaudeCLILLM:
         self.stats["calls"] += 1
         self.stats["cost_micro_usd"] += int(float(data.get("total_cost_usd") or 0) * 1e6)
         self.stats["duration_ms"] += int(data.get("duration_ms") or 0)
-        # --json-schema を付けたときの構造化出力の置き場所は版で違いうるので、両方を見る
-        for key in ("structured_output", "structured_result"):
-            if isinstance(data.get(key), dict):
-                return json.dumps(data[key], ensure_ascii=False)
+        # --json-schema を付けると、結果は structured_output に JSON のまま入る（2026-10-24 確認）
+        if isinstance(data.get("structured_output"), dict):
+            return json.dumps(data["structured_output"], ensure_ascii=False)
         return str(data.get("result") or "")
 
 

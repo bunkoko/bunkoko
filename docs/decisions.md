@@ -178,7 +178,7 @@ uv run koten chunk aozora
 
 - **点は2値**（利用者の判断）：1＝合う、0＝合わない。人も LLM もぶれずに付けられるようにする。nDCG@10・Recall@20 は2値でも計算できる。前の版の 2 は 1 として読む。
 - **grader**：Mac の Claude Code を `claude -p` で呼び、ログイン中のサブスクリプションで Haiku を使う（API キーは使わない）。`claude --help`（利用者の Mac）で確かめた指定：`--model haiku`、`--output-format json`、`--json-schema`、`--system-prompt`、`--tools ""`（ツールなし）、`--no-session-persistence`、`--safe-mode`（CLAUDE.md・MCP・プラグインを読まず、ログインはそのまま）。`--bare` は API キーでしか認証しないので使わない。子プロセスには ANTHROPIC_API_KEY を渡さず（API の課金に切り替わらないように）、空のフォルダで動かす。
-- 未確認：`--output-format json` の出力のうち、`--json-schema` の結果がどの欄に入るか。structured_output（など）があればそれを、無ければ result の文を JSON として読む。最初の実行で確かめる。
+- 確認済み（2026-10-24、利用者の Mac で `claude -p --model haiku --output-format json --json-schema ...`）：`--json-schema` の結果は structured_output に JSON のまま入り、result にも同じ内容が文字列で入る。`--model haiku` は claude-haiku-5-5 になった。サブスクリプションのログインで動き、約2秒で返った。total_cost_usd は定価で計算した参考の金額（costBasis: list）。koten は structured_output を先に読み、無ければ result の文を JSON として読む。
 - **呼び方**：悩み1つぶんの一節（20〜30件）をまとめて1回で判定させる。答えが抜けた一節は2回までやり直し、悩み1つ終わるごとに CSV に保存する（止めても判定済みは残る）。判定の基準は「共感・別の見方・前へ進むヒントのどれかを与え、動画でこの悩みと結び付けて紹介できるか」。迷ったら合わない。要旨より原文を優先して読ませる（要旨を書いた gemma の癖に引きずられないように）。
 - **一致の確かめ**：`koten eval agreement` が、人と LLM の点が両方ある行で一致率・コーエンのκ・食い違いの一覧を出す。κ 0.6 以上なら、LLM の点を広い評価（悩み50件、設定を変えたときの比較）に使ってよい目安とする。
 - **gemma のファインチューニング**：今はしない。検索の順位を決めるのは埋め込みとリランクで、gemma は言い換え・HyDE・最終選択の担当のため。26B を 32GB の Mac で学習させるのはメモリが厳しく、学習データも要る。nDCG の基準を測ったあと、足りなければ人と Haiku の点を学習データにしてリランク（または埋め込み）の学習を先に考える。
