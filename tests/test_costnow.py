@@ -131,3 +131,18 @@ def test_risk_table_long_period_leverage_and_choice(phillip_and_futures):
                          "--context", str(tmp_path / "context"), "--long", "--max-dd", "0.001"],
                         capture_output=True, text=True, cwd=ROOT)
     assert "候補なし" in r2.stdout and "今のまま" in r2.stdout
+
+
+def test_set_risk_saves_drawdown_halt(tmp_path):
+    cfg = tmp_path / "train.toml"
+    cfg.write_text((ROOT / "config" / "train.toml").read_text(encoding="utf-8"), encoding="utf-8")
+    r = subprocess.run([sys.executable, str(ROOT / "scripts" / "set_risk.py"), "--risk", "0.02", "--dd-halt", "0.40",
+                        "--config", str(cfg)], capture_output=True, text=True, cwd=ROOT)
+    assert r.returncode == 0, r.stderr
+    from cfdbot.train.config import load_train_config
+    acc = load_train_config(cfg).account
+    assert (acc.base_risk, acc.max_total_risk, acc.max_drawdown_halt) == (0.02, 0.08, 0.4)
+    assert set(acc.cluster_max_risk.values()) == {0.04}
+    bad = subprocess.run([sys.executable, str(ROOT / "scripts" / "set_risk.py"), "--risk", "0.02", "--dd-halt", "0.9",
+                          "--config", str(cfg)], capture_output=True, text=True, cwd=ROOT)
+    assert bad.returncode != 0 and load_train_config(cfg).account.max_drawdown_halt == 0.4
