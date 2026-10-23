@@ -34,7 +34,7 @@ uv run koten chunk aozora
 | D-002 | テキストzipの取得元 | 2026-10-22 決定。GitHub のミラー（raw.githubusercontent.com/aozorabunko/aozorabunko の master・main）は本文の zip も index.html も 404 で使えなかった。SPEC §6 の「サイトから取る場合は1秒1件以下」に従い、公式サイト（https://www.aozora.gr.jp/）から取得する。対象約5,100作品の全件取得は約1.5時間かかるので夜間に回す。公式サイトの利用上の注意（robots.txt など）は全件取得の前に確かめる |
 | D-003 | NDL 次世代デジタルライブラリー「ご利用に当たって」 | M8 で確認 |
 | D-004 | Project Gutenberg の名前を出典として記すことの可否 | M8 で確認 |
-| D-005 | ローカルLLM（augment）・リランクのモデル | 2026-10-22：Ollama（Mac・メモリ32GB）を使う。endpoint は http://127.0.0.1:11434/v1。入っているモデルは gemma4:26b・qwen3.5:27b・gemma3:27b。`koten augment --limit 20 --model <名前>` で比べ、捨てた一節の件数・1チャンクあたりの時間・`koten candidates` で見た質で決める（未決定）。リランクは M4 で確認 |
+| D-005 | ローカルLLM（augment）・リランクのモデル | 2026-10-23 決定：augment は Ollama の gemma4:26b（think=false）。同じ10チャンクの比較で候補が最も多く（1チャンク1.9件）捨てた一節0件、1チャンク約4.9秒で全件（約12万チャンク）を約7日で回せる唯一のモデルだったため（下の「ローカルLLMの比較」）。リランクは M4 で確認 |
 | D-006 | テキスト類の容量（取得後に実測） | M1 の実データ取得後に記録 |
 | D-007 | YouTube のチャプターの条件（00:00始まり、3つ以上、各10秒以上） | M6 で確認 |
 | D-008 | hdd_root を SDカード（/Volumes/SDカード/古典×悩み）にしている | 2026-10-22 決定（場所は利用者の指定）。日本語と「×」を含むパスなので、後段（ffmpeg・Playwright の file:// URL）ではパスを文字列連結せず、引数リストと URL エンコードで渡す。exFAT か APFS で使う（FAT32 は1ファイル4GBまで）。SDカードはHDDより壊れやすいので、M2 以降の augment/・emb/ は定期的に別の場所へコピーする。外付けHDDに移すときは koten フォルダを丸ごとコピーして hdd_root を書き換える |
@@ -125,3 +125,4 @@ uv run koten chunk aozora
 - 引用映え（quotability）はモデル自身の自己評価で、モデルごとに付け方の癖が違うため、モデル間の質の比較には使えない。質は並べ表示（exports/augment-compare-20261023-084902.md）の中身で判断する。
 - 数字の上では gemma4:26b が速く、捨てる一節も無い。中身の確認を待って決める。
 
+- 2026-10-23：利用者の判断で gemma4:26b に決定（settings.toml の llm.augment.model）。
