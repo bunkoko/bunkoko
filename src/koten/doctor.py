@@ -12,6 +12,7 @@ from pathlib import Path
 import httpx
 
 from koten.config import Settings
+from koten.embed.encoder import hf_cache_dir
 
 OK, WARN, NG = "OK", "注意", "NG"
 
@@ -85,9 +86,7 @@ def check_llm(s: Settings, role: str, client: httpx.Client) -> Check:
 
 def check_embed(s: Settings) -> Check:
     model = s.section("embed").get("model", "")
-    hf_home = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
-    cached = hf_home / "hub" / ("models--" + model.replace("/", "--"))
-    if cached.exists():
+    if hf_cache_dir(model).exists():
         return Check("埋め込みモデル", OK, f"{model}（ダウンロード済み）")
     return Check("埋め込みモデル", WARN, f"{model}（未ダウンロード。M2 の koten embed で取得）")
 

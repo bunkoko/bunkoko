@@ -93,7 +93,9 @@ def test_api_starts_without_touching_hdd(augmented, monkeypatch):
     from koten.api.app import create_app
 
     with TestClient(create_app(ssd, MODEL)) as client:
-        body = client.get("/healthz").json()
+        r = client.get("/healthz")
+        body = r.json()
+    assert r.status_code == 200
     assert body["status"] == "ok"
     assert body["index"]["candidates"] > 0 and body["index"]["model"] == MODEL
 
@@ -102,8 +104,9 @@ def test_api_reports_missing_index(tmp_path):
     from koten.api.app import create_app
 
     with TestClient(create_app(tmp_path / "ssd", MODEL)) as client:
-        body = client.get("/healthz").json()
-    assert body["status"] == "no_index" and "koten index build" in body["error"]
+        r = client.get("/healthz")
+    assert r.status_code == 503
+    assert r.json()["status"] == "no_index" and "koten index build" in r.json()["error"]
 
 
 def test_filters_are_exact(augmented):

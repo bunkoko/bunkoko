@@ -9,7 +9,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 
 from koten.index.search import HotIndex
 
@@ -30,9 +30,11 @@ def create_app(ssd_root: Path, embed_model: str) -> FastAPI:
     app = FastAPI(title="koten", lifespan=lifespan)
 
     @app.get("/healthz")
-    def healthz() -> dict:
+    def healthz(response: Response) -> dict:
         index: HotIndex | None = app.state.index
         if index is None:
+            # n8n が状態コードだけで判断できるよう、索引が無ければ 503 にする
+            response.status_code = 503
             return {"status": "no_index", "error": app.state.index_error}
         return {
             "status": "ok",

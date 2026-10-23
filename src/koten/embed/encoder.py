@@ -8,6 +8,8 @@ HashEncoder はモデル無しで動く簡易版で、テストと配線の確�
 from __future__ import annotations
 
 import hashlib
+import os
+from pathlib import Path
 from typing import Protocol
 
 import numpy as np
@@ -22,8 +24,17 @@ class Encoder(Protocol):
         ...
 
 
+def hf_cache_dir(model: str) -> Path:
+    """Hugging Face のキャッシュにあるモデルの場所（ダウンロード済みかの確認用）。"""
+    hf_home = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+    return hf_home / "hub" / ("models--" + model.replace("/", "--"))
+
+
 class SentenceTransformerEncoder:
     def __init__(self, model: str, *, device: str = "auto", batch_size: int = 32):
+        if hf_cache_dir(model).exists():
+            # ダウンロード済みならネットに問い合わせない（検索のたびの通信と警告をなくす）
+            os.environ.setdefault("HF_HUB_OFFLINE", "1")
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError as e:
@@ -38,8 +49,8 @@ class SentenceTransformerEncoder:
         self.batch_size = batch_size
         self._model = SentenceTransformer(model, device=device)
         # 版によってメソッド名が違うので、取れなければ1件埋め込んで次元を測る
-        getter = getattr(self._model, "get_sentence_embedding_dimension", None) or getattr(
-            self._model, "get_embedding_dimension", None
+        getter = getattr(self._model, "get_embedding_dimension", None) or getattr(
+            self._model, "get_sentence_embedding_dimension", None
         )
         dim = getter() if getter else None
         self.dim = int(dim) if dim else int(self.encode(["次元の確認"]).shape[1])
