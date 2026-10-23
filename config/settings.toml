@@ -49,6 +49,23 @@ num_predict = 512
 keep_alive = "10m"
 timeout_sec = 300
 
+[llm.retrieve]                # 検索の言い換え・HyDE と一節の最終選択（SPEC §8.6）
+provider = "ollama"
+endpoint = "http://127.0.0.1:11434"
+model = "gemma4:26b"
+think = false
+num_ctx = 4096                # augment と同じにする
+num_predict = 1024
+keep_alive = "10m"
+timeout_sec = 300
+
+[retrieve]
+query_prompt = "query_v1"     # prompts/<prompt>.md
+select_prompt = "select_v1"
+rrf_k = 60
+fused_top = 50                # RRF で統合したあとに残す件数
+shortlist = 10                # LLM に最終選択させる候補の数
+
 [worries]                     # 悩みマスター（SPEC §9）
 prompt = "worries_v1"         # prompts/<prompt>.md
 text_max = 40                 # 一般化した悩み文の上限
@@ -66,8 +83,9 @@ query_prefix = "query: "
 [bm25]
 tokenizer = "sudachi"         # SudachiPy が入らないときは "bigram"
 
-[rerank]
+[rerank]                      # クロスエンコーダ。"要確認" のままならリランクしない（docs/decisions.md D-010）
 model = "要確認"
+device = "auto"
 
 [episode]
 min_sec = 600

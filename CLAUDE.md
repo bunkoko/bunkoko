@@ -29,3 +29,6 @@
 - uv run koten db init（SSD の SQLite を作り、stats.csv を読み込む）
 - uv run koten worries import --from config/worries_seed.csv && uv run koten worries normalize
 - uv run koten worries list（優先度順）／ --status blocked など
+- uv run koten retrieve --worry W0001 --explain
+- uv run koten plan --worry W0001 --format A --dry-run（--format を省くと形式を自動で選ぶ。形式C は --theme 孤独）
+- uv run koten eval export → tests/eval/retrieval.csv の grade 列に 2/1/0 → uv run koten eval retrieval

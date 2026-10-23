@@ -488,6 +488,238 @@ def worries_list(
         )
 
 
+def _planner(s: Settings, *, log=None):
+    """検索・企画に使う部品（SSD の索引と DB、埋め込み、LLM、リランク）をそろえる。"""
+    from koten.augment.extract import load_themes
+    from koten.db import connect
+    from koten.embed.encoder import make_encoder
+    from koten.index.search import HotIndex
+    from koten.llm import make_llm
+    from koten.plan.planner import PlanConfig, Planner
+    from koten.retrieve.search import make_reranker
+
+    emb = s.section("embed")
+    rec, ep, ret = s.section("recency"), s.section("episode"), s.section("retrieve")
+    cfg = PlanConfig(
+        query_prompt=ret.get("query_prompt", "query_v1"),
+        select_prompt=ret.get("select_prompt", "select_v1"),
+        rrf_k=ret.get("rrf_k", 60),
+        fused_top=ret.get("fused_top", 50),
+        shortlist=ret.get("shortlist", 10),
+        work_episodes=rec.get("work_episodes", 10),
+        author_episodes=rec.get("author_episodes", 5),
+        worry_cluster_days=rec.get("worry_cluster_days", 30),
+        same_format_in_row_max=ep.get("same_format_in_row_max", 2),
+        query_prefix=emb.get("query_prefix", ""),
+        passage_prefix=emb.get("passage_prefix", ""),
+    )
+    try:
+        index = HotIndex(s.ssd_root, emb["model"])
+    except FileNotFoundError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
+    rr = s.section("rerank")
+    return Planner(
+        conn=connect(s.ssd_root),
+        index=index,
+        encoder=make_encoder(emb["model"], device=emb.get("device", "auto")),
+        llm=make_llm(s.section("llm.retrieve")),
+        reranker=make_reranker(rr.get("model"), device=rr.get("device", "auto")),
+        prompts_dir=s.config_dir.parent / "prompts",
+        config_dir=s.config_dir,
+        vocab=load_themes(s.config_dir),
+        cfg=cfg,
+        log=log or typer.echo,
+    )
+
+
+@app.command()
+def retrieve(
+    worry: Annotated[str, typer.Option(help="悩みの ID（例：W0001）")],
+    top: Annotated[int, typer.Option(help="表示する件数")] = 10,
+    explain: Annotated[bool, typer.Option(help="クエリと絞り込みの内訳も出す")] = False,
+    settings: SettingsOpt = None,
+) -> None:
+    """悩みに合う一節の上位を、選んだ理由（どの検索で何位か・リランクの点）と一緒に出す。"""
+    from koten.plan.planner import PlanError
+    from koten.retrieve.search import filter_report
+
+    p = _planner(_settings(settings))
+    try:
+        w = p.worry(worry)
+    except PlanError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
+    q = p.queries(w)
+    flt = p.base_filter()
+    typer.echo(f"悩み：{w['worry_id']} {w['text_general']}（{'、'.join(q.themes)}）")
+    if explain:
+        typer.echo(f"  言い換え：{q.paraphrase}")
+        typer.echo(f"  HyDE：{q.hyde}")
+        if q.fallback:
+            typer.secho("  ※ LLM の出力が使えず、悩みの文だけで検索しました", fg="yellow")
+        typer.echo(
+            "絞り込み：" + "、".join(f"{k} {v}" for k, v in filter_report(p.index, flt).items())
+        )
+        typer.echo(
+            f"リランク：{p.reranker.name if p.reranker else 'なし（rerank.model が未設定）'}"
+        )
+    for i, h in enumerate(p.search(q, flt)[:top], start=1):
+        r = h.row
+        score = f"リランク {h.rerank:.3f}" if h.rerank is not None else f"RRF {h.rrf:.4f}"
+        typer.echo(f"\n{i:2}. {r['title']}（{'・'.join(r['author_names'])}）{r['section'] or ''}")
+        typer.echo(f"    「{r['quote_text']}」")
+        typer.echo(f"    要旨：{r['summary_ja']}")
+        typer.echo(f"    理由：{score}／{h.provenance()}")
+
+
+@app.command()
+def plan(
+    worry: Annotated[
+        str | None, typer.Option(help="悩みの ID（形式C ではテーマの代わりにも使える）")
+    ] = None,
+    format: Annotated[
+        str | None, typer.Option(help="A〜D（省略すると、続かないように選ぶ）")
+    ] = None,
+    theme: Annotated[str | None, typer.Option(help="形式C のテーマ")] = None,
+    work: Annotated[str | None, typer.Option(help="形式B の作品（例：aozora:001914）")] = None,
+    dry_run: Annotated[bool, typer.Option(help="DB に保存しない")] = False,
+    force: Annotated[bool, typer.Option(help="同じクラスタの悩みの30日の間隔を無視する")] = False,
+    show_json: Annotated[bool, typer.Option("--json", help="plan_json をそのまま出す")] = False,
+    settings: SettingsOpt = None,
+) -> None:
+    """回の企画（plan_json）を作り、回を planned で保存する。"""
+    import json
+
+    from koten.plan.planner import PlanError
+
+    p = _planner(_settings(settings))
+    formats = [format.upper()] if format else p.allowed_formats()
+    result, errors = None, []
+    for fmt in formats:
+        try:
+            result = p.plan(fmt, worry_id=worry, theme=theme, work_id=work, force=force)
+            break
+        except PlanError as e:
+            errors.append(f"形式{fmt}：{e}")
+            typer.echo(f"  形式{fmt} は作れません：{e}")
+    if result is None:
+        typer.secho("企画を作れませんでした。この悩みは後回しにします", fg="red", err=True)
+        raise typer.Exit(2)
+    if not dry_run:
+        result["episode_id"] = p.save(result)
+    if show_json:
+        typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    rows = {x["candidate_id"]: x for x in result["selection"]}
+    minutes, seconds = divmod(result["target_total_sec"], 60)
+    chosen_by = "LLM" if result["selected_by"] == "llm" else "検索の順位"
+    typer.echo(
+        f"{result.get('episode_id', '（保存していません）')} 形式{result['format']} "
+        f"{result['format_name']}／テーマ {'、'.join(result['theme'])}／"
+        f"目安 {minutes}分{seconds}秒／選び方 {chosen_by}"
+    )
+    for w in result["worries"]:
+        typer.echo(f"  悩み {w['worry_id']}：{w['text']}")
+    for c in result["chapters"]:
+        extra = "　※人の一言" if c.get("human_take") else ""
+        stats = f"　統計 {', '.join(c['stat_ids'])}" if c["stat_ids"] else ""
+        typer.echo(f"  {c['chapter_id']} {c['role']}（{c['target_sec']}秒）{stats}{extra}")
+        for cid in c["candidate_ids"]:
+            x = rows[cid]
+            side = f"[{x['side']}] " if x["side"] else ""
+            who = "・".join(x["authors"])
+            typer.echo(f"      {side}{x['title']}（{who}）→ {x['worry_id']}：{x['reason']}")
+    if result.get("question"):
+        typer.echo(f"  問いかけ：{result['question']}")
+
+
+eval_app = typer.Typer(no_args_is_help=True, help="検索の評価（SPEC §12）")
+app.add_typer(eval_app, name="eval")
+
+
+def _eval_runner(p):
+    from koten.eval.retrieval import EVAL_FILTER
+    from koten.retrieve.search import apply_rerank, hybrid_search
+
+    cache: dict = {}
+
+    def run(worry_id: str, cfg, k: int) -> list[str]:
+        if worry_id not in cache:
+            cache[worry_id] = p.queries(p.worry(worry_id))
+        q = cache[worry_id]
+        items = hybrid_search(
+            p.index,
+            p.encoder,
+            q,
+            EVAL_FILTER,
+            query_prefix=p.cfg.query_prefix,
+            passage_prefix=p.cfg.passage_prefix,
+            queries=cfg.queries,
+            retrievers=cfg.retrievers,
+            rrf_k=p.cfg.rrf_k,
+            top=p.cfg.fused_top,
+        )
+        if cfg.rerank:
+            items = apply_rerank(items, p.reranker, q.text)
+        return [s.candidate_id for s in items[:k]]
+
+    return run
+
+
+def _eval_configs(p):
+    from koten.eval.retrieval import CONFIGS
+
+    return [c for c in CONFIGS if not c.rerank or p.reranker is not None]
+
+
+@eval_app.command("export")
+def eval_export(
+    n: Annotated[int, typer.Option(help="評価に使う悩みの数（優先度の高い代表から）")] = 20,
+    out: Annotated[str, typer.Option(help="書き出す CSV")] = "tests/eval/retrieval.csv",
+    settings: SettingsOpt = None,
+) -> None:
+    """印付け用の CSV を書き出す（すでに付けた点は残す）。grade 列に 2・1・0 を付ける。"""
+    from pathlib import Path
+
+    from koten.eval.retrieval import export_pool
+    from koten.worries.master import load_theme_weights, ranked_worries
+
+    s = _settings(settings)
+    p = _planner(s)
+    worries = ranked_worries(p.conn, load_theme_weights(s.config_dir), 90)[:n]
+    total, judged = export_pool(
+        Path(out),
+        worries,
+        _eval_runner(p),
+        lambda cid: p._row({"candidate_id": cid}),
+        _eval_configs(p),
+    )
+    typer.echo(
+        f"{out} に {len(worries)} 件の悩み・{total} 行を書きました（点が付いている行 {judged}）"
+    )
+    typer.echo("grade 列に 2＝合う、1＝少し合う、0＝合わない を付けて保存してください")
+
+
+@eval_app.command("retrieval")
+def eval_retrieval(
+    file: Annotated[str, typer.Option(help="点を付けた評価セット")] = "tests/eval/retrieval.csv",
+    settings: SettingsOpt = None,
+) -> None:
+    """評価セットで、やり方ごとの nDCG@10・Recall@20 を出す。"""
+    from pathlib import Path
+
+    from koten.eval.retrieval import evaluate, read_eval, report
+
+    p = _planner(_settings(settings))
+    grades = read_eval(Path(file))
+    if not grades:
+        typer.secho(f"{file} に点の付いた行がありません", fg="red", err=True)
+        raise typer.Exit(2)
+    typer.echo(f"評価セット：悩み {len(grades)} 件・点 {sum(len(g) for g in grades.values())} 件")
+    typer.echo(report(evaluate(grades, _eval_runner(p), _eval_configs(p))))
+
+
 @app.command()
 def serve(
     port: Annotated[int | None, typer.Option(help="ポート（既定は settings の api.port）")] = None,

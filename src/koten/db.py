@@ -1,6 +1,6 @@
 """運用データの SQLite（SPEC §5・§7）。<SSD_ROOT>/db/koten.sqlite に置き、HDD には置かない。
 
-M3 では悩み（worries）と統計（stats）を持つ。回・台本・使用履歴は M4 以降で足す。
+悩み（worries）・統計（stats）・回（episodes）・使用履歴（usage）・検索文の控え（query_cache）。
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ import csv
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -42,6 +42,43 @@ CREATE TABLE IF NOT EXISTS worries (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS worries_text_raw ON worries(text_raw);
 
+CREATE TABLE IF NOT EXISTS episodes (
+    episode_id TEXT PRIMARY KEY,         -- E20261101-01
+    format TEXT NOT NULL,                -- A / B / C / D
+    theme TEXT,                          -- JSON 配列
+    worry_ids TEXT NOT NULL,             -- JSON 配列
+    state TEXT NOT NULL,                 -- yet / planned / script_done / ... / error / discarded
+    state_msg TEXT,
+    plan_json TEXT,
+    script_json TEXT,
+    verification_json TEXT,
+    review_required INTEGER NOT NULL DEFAULT 0,
+    reviewer_note TEXT,
+    human_take TEXT,
+    duration_sec REAL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    published_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS usage (
+    episode_id TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    work_id TEXT NOT NULL,
+    author_id TEXT,
+    role TEXT NOT NULL                   -- main / sub
+);
+CREATE INDEX IF NOT EXISTS usage_episode ON usage(episode_id);
+
+CREATE TABLE IF NOT EXISTS query_cache (
+    worry_key TEXT NOT NULL,             -- worry_id か「theme:<テーマ>」
+    source_text TEXT NOT NULL,
+    llm TEXT NOT NULL,
+    prompt_ver TEXT NOT NULL,
+    queries TEXT NOT NULL,               -- JSON
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (worry_key, source_text, llm, prompt_ver)
+);
+
 CREATE TABLE IF NOT EXISTS stats (
     stat_id TEXT PRIMARY KEY,
     theme TEXT NOT NULL,
@@ -67,7 +104,7 @@ def connect(ssd_root: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
     conn.execute(
-        "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)", (SCHEMA_VERSION,)
+        "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)", (SCHEMA_VERSION,)
     )
     conn.commit()
     return conn
