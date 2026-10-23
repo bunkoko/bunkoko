@@ -75,9 +75,19 @@ def ingest(
     from koten.ingest import aozora
 
     http = s.section("http")
+    user_agent = http.get("user_agent", "koten-videos")
+    if "example.com" in user_agent:
+        # SPEC §8.1：User-Agent に連絡先を入れる。仮の値のまま外部サイトへ取りに行かない
+        typer.secho(
+            "settings.toml の [http] user_agent の連絡先が仮の値（example.com）のままです。"
+            "自分のメールアドレスなどに書き換えてから実行してください",
+            fg="red",
+            err=True,
+        )
+        raise typer.Exit(2)
     fetcher = Fetcher(
         hdd / "raw" / source,
-        user_agent=http.get("user_agent", "koten-videos"),
+        user_agent=user_agent,
         per_host_per_sec=s.section("rate_limit").get("per_host_per_sec", 1),
         timeout_sec=http.get("timeout_sec", 30),
     )

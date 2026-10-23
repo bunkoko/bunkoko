@@ -68,3 +68,13 @@ def test_python_arch_check():
     assert "Apple シリコン" in doctor.check_python("Darwin", "x86_64").detail
     assert doctor.check_python("Darwin", "arm64").status == doctor.OK
     assert doctor.check_python("Linux", "x86_64").status == doctor.OK
+
+
+def test_ingest_refuses_placeholder_contact(settings_file):
+    with settings_file.open("a", encoding="utf-8") as f:
+        f.write(
+            '\n[http]\nuser_agent = "koten-videos/0.1 (+contact: set-your-email@example.com)"\n'
+        )
+    result = CliRunner().invoke(app, ["ingest", "aozora", "--settings", str(settings_file)])
+    assert result.exit_code == 2
+    assert "連絡先が仮の値" in result.output
