@@ -160,7 +160,7 @@ def augment(
     if not data_files(hdd / "chunks", "*.parquet"):
         _require_input(hdd / "chunks" / "aozora.parquet", "chunk aozora")
     from koten.augment.extract import AugmentConfig, load_themes, run_augment
-    from koten.llm import LLMError, OllamaLLM, OpenAICompatLLM, describe_stats
+    from koten.llm import LLMError, describe_stats, make_llm
 
     conf = s.section("llm.augment")
     model = model or conf.get("model")
@@ -172,23 +172,7 @@ def augment(
             err=True,
         )
         raise typer.Exit(2)
-    if conf.get("provider") == "ollama":
-        llm = OllamaLLM(
-            conf["endpoint"],
-            model,
-            think=conf.get("think", False),
-            num_ctx=conf.get("num_ctx", 4096),
-            num_predict=conf.get("num_predict", 1024),
-            keep_alive=conf.get("keep_alive", "10m"),
-            timeout_sec=conf.get("timeout_sec", 300),
-        )
-    else:
-        llm = OpenAICompatLLM(
-            conf["endpoint"],
-            model,
-            response_format=conf.get("response_format", "json_schema"),
-            timeout_sec=conf.get("timeout_sec", 300),
-        )
+    llm = make_llm(conf, model)
     cfg = AugmentConfig.from_settings(s.section("augment"))
     started = time.monotonic()
     try:
@@ -362,6 +346,146 @@ def index_query(
             )
             typer.echo(f"      「{r['quote_text']}」")
             typer.echo(f"      要旨：{r['summary_ja']}")
+
+
+db_app = typer.Typer(no_args_is_help=True, help="運用データの SQLite（SSD）")
+app.add_typer(db_app, name="db")
+
+
+@db_app.command("init")
+def db_init(settings: SettingsOpt = None) -> None:
+    """SSD に SQLite を作り（あれば表を足すだけ）、config/stats.csv を読み込む。"""
+    from koten.db import StatsError, connect, db_path, load_stats
+
+    s = _settings(settings)
+    conn = connect(s.ssd_root)
+    try:
+        n = load_stats(conn, s.config_dir / "stats.csv")
+    except StatsError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
+    typer.echo(f"データベース：{db_path(s.ssd_root)}")
+    typer.echo(f"統計 {n} 件を読み込みました（config/stats.csv）")
+
+
+worries_app = typer.Typer(no_args_is_help=True, help="悩みマスター（SPEC §9）")
+app.add_typer(worries_app, name="worries")
+
+
+@worries_app.command("import")
+def worries_import(
+    from_: Annotated[
+        str, typer.Option("--from", help="CSV のパス（text, source_type, source_ref, demand）")
+    ],
+    settings: SettingsOpt = None,
+) -> None:
+    """悩みを CSV から取り込む（status=new）。同じ文は入れない。"""
+    from pathlib import Path
+
+    from koten.db import connect
+    from koten.worries.master import import_csv
+
+    if from_ == "comments":
+        typer.secho("YouTube のコメントからの取り込みは M9 で足します", fg="red", err=True)
+        raise typer.Exit(2)
+    s = _settings(settings)
+    r = import_csv(connect(s.ssd_root), Path(from_))
+    typer.echo(f"取り込み {r.added} 件、同じ文があり飛ばした {r.duplicated} 件")
+    for msg in r.skipped:
+        typer.secho(f"  飛ばした行：{msg}", fg="yellow", err=True)
+
+
+@worries_app.command("normalize")
+def worries_normalize(
+    limit: Annotated[int | None, typer.Option(help="今回正規化する件数の上限")] = None,
+    settings: SettingsOpt = None,
+) -> None:
+    """新しい悩みを正規化し、除外を判定し、似た悩みをクラスタにまとめる。"""
+    from koten.augment.extract import load_themes
+    from koten.db import connect
+    from koten.embed.encoder import make_encoder
+    from koten.llm import LLMError, make_llm
+    from koten.worries.master import (
+        WorriesConfig,
+        cluster_worries,
+        load_blocked_keywords,
+        run_normalize,
+    )
+
+    s = _settings(settings)
+    conn = connect(s.ssd_root)
+    cfg = WorriesConfig.from_settings(s.section("worries"))
+    llm = make_llm(s.section("llm.worries"))
+    try:
+        r = run_normalize(
+            conn,
+            llm,
+            s.config_dir.parent / "prompts",
+            load_themes(s.config_dir),
+            load_blocked_keywords(s.config_dir),
+            cfg,
+            limit=limit,
+            log=typer.echo,
+        )
+    except LLMError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(1) from e
+    typer.echo(
+        f"正規化 {r.active} 件、除外 {r.blocked} 件 {r.blocked_by or ''}、"
+        f"正規化できなかった {r.errors} 件"
+    )
+    conf = s.section("embed")
+    enc = make_encoder(conf["model"], device=conf.get("device", "auto"))
+    n = cluster_worries(conn, enc, cfg.cluster_threshold, query_prefix=conf.get("query_prefix", ""))
+    total = conn.execute("SELECT COUNT(*) FROM worries WHERE status = 'active'").fetchone()[0]
+    typer.echo(
+        f"クラスタ {n} 個（使える悩み {total} 件。類似度 {cfg.cluster_threshold} 以上で同じ）"
+    )
+
+
+@worries_app.command("list")
+def worries_list(
+    status: Annotated[
+        str, typer.Option(help="ranked（優先度順）/ active / blocked / error / new / all")
+    ] = "ranked",
+    top: Annotated[int, typer.Option(help="表示する件数")] = 30,
+    settings: SettingsOpt = None,
+) -> None:
+    """悩みを一覧にする。既定は、回の主役にできる悩みの優先度順。"""
+    import json
+
+    from koten.db import connect
+    from koten.worries.master import WorriesConfig, load_theme_weights, ranked_worries
+
+    s = _settings(settings)
+    conn = connect(s.ssd_root)
+    if status == "ranked":
+        cfg = WorriesConfig.from_settings(s.section("worries"))
+        rows = ranked_worries(conn, load_theme_weights(s.config_dir), cfg.novelty_days)[:top]
+        for r in rows:
+            members = conn.execute(
+                "SELECT COUNT(*) FROM worries WHERE cluster_id = ?", (r["worry_id"],)
+            ).fetchone()[0]
+            typer.echo(
+                f"{r['score']:5.2f} {r['worry_id']} {r['text_general']}"
+                f"（{'・'.join(r['themes'])}／{r['audience']}／似た悩み {members - 1} 件）"
+            )
+        return
+    where = "" if status == "all" else "WHERE status = ?"
+    params = () if status == "all" else (status,)
+    rows = conn.execute(
+        f"SELECT * FROM worries {where} ORDER BY cluster_id, is_representative DESC, worry_id",
+        params,
+    ).fetchall()[:top]
+    for r in rows:
+        mark = "◎" if r["is_representative"] else ("・" if r["cluster_id"] else " ")
+        themes = "・".join(json.loads(r["themes"] or "[]"))
+        extra = r["blocked_reason"] or r["error"] or f"{themes}／{r['audience'] or ''}"
+        cluster = f" [{r['cluster_id']}]" if r["cluster_id"] else ""
+        typer.echo(
+            f"{mark} {r['worry_id']} {r['status']:7} {r['text_general'] or r['text_raw']}"
+            f"{cluster}（{extra}）"
+        )
 
 
 @app.command()

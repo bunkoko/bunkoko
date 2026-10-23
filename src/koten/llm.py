@@ -208,3 +208,26 @@ def fill(template: str, **values: Any) -> str:
         lambda m: str(values[m.group(1)]) if m.group(1) in values else m.group(0),
         template,
     )
+
+
+def make_llm(conf: dict[str, Any], model: str | None = None) -> ChatLLM:
+    """settings.toml の [llm.<役割>] から、ローカルLLMの呼び出し口を作る。"""
+    model = model or conf.get("model", "")
+    if conf.get("provider") == "ollama":
+        return OllamaLLM(
+            conf["endpoint"],
+            model,
+            think=conf.get("think", False),
+            num_ctx=conf.get("num_ctx", 4096),
+            num_predict=conf.get("num_predict", 1024),
+            keep_alive=conf.get("keep_alive", "10m"),
+            timeout_sec=conf.get("timeout_sec", 300),
+        )
+    if conf.get("provider") == "openai_compatible":
+        return OpenAICompatLLM(
+            conf["endpoint"],
+            model,
+            response_format=conf.get("response_format", "json_schema"),
+            timeout_sec=conf.get("timeout_sec", 300),
+        )
+    raise ValueError(f"このLLMの provider には対応していません：{conf.get('provider')}")

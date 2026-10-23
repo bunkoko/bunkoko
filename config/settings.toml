@@ -39,6 +39,22 @@ model = "claude-sonnet-5-5"
 provider = "anthropic"
 model = "claude-haiku-5-5"
 
+[llm.worries]                 # 悩みの正規化（件数が少ないので augment と同じローカルLLMを使う）
+provider = "ollama"
+endpoint = "http://127.0.0.1:11434"
+model = "gemma4:26b"
+think = false
+num_ctx = 4096                # augment と同じにする（違うと Ollama がモデルを読み込み直して遅くなる）
+num_predict = 512
+keep_alive = "10m"
+timeout_sec = 300
+
+[worries]                     # 悩みマスター（SPEC §9）
+prompt = "worries_v1"         # prompts/<prompt>.md
+text_max = 40                 # 一般化した悩み文の上限
+cluster_threshold = 0.92      # 埋め込みのコサイン類似度がこれ以上なら同じクラスタ
+novelty_days = 90             # 前回使ってからこの日数で「新しさ」が満点に戻る
+
 [embed]
 model = "intfloat/multilingual-e5-large"
 dtype = "float16"

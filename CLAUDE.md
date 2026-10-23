@@ -26,3 +26,6 @@
 - uv run koten augment --limit 20 && uv run koten embed && uv run koten index build
 - uv run koten index query "同期の昇進を喜べない"
 - uv run koten serve（127.0.0.1 の API。SSD だけを読む）
+- uv run koten db init（SSD の SQLite を作り、stats.csv を読み込む）
+- uv run koten worries import --from config/worries_seed.csv && uv run koten worries normalize
+- uv run koten worries list（優先度順）／ --status blocked など
