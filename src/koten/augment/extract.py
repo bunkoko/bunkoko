@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -249,6 +250,23 @@ def iter_candidates(out_dir: Path) -> Iterator[dict[str, Any]]:
             yield from read_rows(p)
 
 
+def count_chunks(hdd_root: Path) -> int:
+    """チャンクの総数（Parquet のメタデータだけを読む）。"""
+    return sum(
+        pq.ParquetFile(p).metadata.num_rows for p in data_files(hdd_root / "chunks", "*.parquet")
+    )
+
+
+def progress_line(processed: int, todo: int, candidates: int, elapsed_sec: float) -> str:
+    """「何件中何件・何%・残り約何時間」の1行。"""
+    pct = processed / todo * 100 if todo else 100.0
+    line = f"  {processed}/{todo} チャンク（{pct:.1f}%）、候補 {candidates} 件"
+    if processed and todo > processed:
+        rest = (todo - processed) * elapsed_sec / processed
+        line += f"、1チャンク {elapsed_sec / processed:.1f}秒、残り約{rest / 3600:.1f}時間"
+    return line
+
+
 def _chunks(hdd_root: Path) -> Iterator[dict[str, Any]]:
     for p in data_files(hdd_root / "chunks", "*.parquet"):
         yield from read_rows(p)
@@ -340,7 +358,11 @@ def run_augment(
     done = done_chunk_ids(out_dir)
     works, texts = _works_and_texts(hdd_root)
     result = AugmentResult(skipped=len(done), out_dir=out_dir)
-    log(f"出力先：{out_dir}（処理済み {len(done)} チャンクは飛ばします）")
+    todo = max(count_chunks(hdd_root) - len(done), 0)
+    if limit is not None:
+        todo = min(todo, limit)
+    log(f"出力先：{out_dir}（処理済み {len(done)} チャンクは飛ばします。今回 {todo} チャンク）")
+    started = time.monotonic()
 
     writer = _Writer(out_dir, cfg.batch_size)
     try:
@@ -367,7 +389,8 @@ def run_augment(
             if done_row["status"] == "failed":
                 result.failed += 1
             if result.processed % 10 == 0:
-                log(f"  {result.processed} チャンク処理、候補 {result.candidates} 件")
+                elapsed = time.monotonic() - started
+                log(progress_line(result.processed, todo, result.candidates, elapsed))
     except LLMError:
         log("LLM の呼び出しに失敗したので止めます。ここまでの結果は保存します")
         raise

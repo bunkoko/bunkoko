@@ -209,3 +209,18 @@ def test_macos_appledouble_files_are_ignored(hdd_with_chunks):
     (out / "._part-00001.parquet").write_bytes(garbage)
     assert len(done_chunk_ids(out)) == 3
     assert run_augment(hdd, PROMPTS, VOCAB, FakeLLM(), AugmentConfig(), limit=1).processed == 1
+
+
+def test_progress_line():
+    from koten.augment.extract import progress_line
+
+    line = progress_line(10, 100, 9, 50.0)
+    assert line == "  10/100 チャンク（10.0%）、候補 9 件、1チャンク 5.0秒、残り約0.1時間"
+    assert progress_line(100, 100, 90, 500.0).endswith("（100.0%）、候補 90 件")
+
+
+def test_run_augment_logs_total(hdd_with_chunks):
+    _, hdd = hdd_with_chunks
+    logs = []
+    run_augment(hdd, PROMPTS, VOCAB, FakeLLM(), AugmentConfig(), limit=3, log=logs.append)
+    assert "今回 3 チャンク" in logs[0]
