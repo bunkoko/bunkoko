@@ -224,3 +224,71 @@ def test_run_augment_logs_total(hdd_with_chunks):
     logs = []
     run_augment(hdd, PROMPTS, VOCAB, FakeLLM(), AugmentConfig(), limit=3, log=logs.append)
     assert "今回 3 チャンク" in logs[0]
+
+
+def test_forget_works_and_changed_list(hdd_with_chunks, settings_file):
+    """正規化で本文が変わった作品の付加情報を取り除き、作り直せるようにする。"""
+    import json as _json
+
+    from typer.testing import CliRunner
+
+    from koten.augment.forget import episodes_using, forget_works, read_changed
+    from koten.cli import app
+    from koten.db import connect
+    from koten.embed.encoder import HashEncoder
+    from koten.embed.run import load_embeddings, run_embed
+    from koten.normalize.aozora import changed_works_path, normalize
+
+    s, hdd = hdd_with_chunks
+    run_augment(hdd, PROMPTS, VOCAB, FakeLLM(), AugmentConfig(batch_size=2))
+    out = hdd / "augment/fake-llm/augment_v1"
+    run_embed(hdd, out, HashEncoder(name="hash-bigram"))
+    before = len(list(iter_candidates(out)))
+
+    # 本文が変わったことにして正規化し直す（texts.parquet の本文を書き換えておく）
+    import pyarrow.parquet as pq
+
+    from koten.normalize.aozora import TEXTS_SCHEMA
+    from koten.parquet import write_rows
+
+    texts = pq.read_table(hdd / "clean/aozora/texts.parquet").to_pylist()
+    texts[0]["text_orig"] = "古い本文"
+    write_rows(hdd / "clean/aozora/texts.parquet", texts, TEXTS_SCHEMA)
+    normalize(hdd)
+    changed = read_changed(changed_works_path(hdd))
+    assert changed == {texts[0]["work_id"]}
+
+    dry = forget_works(hdd, out, changed)
+    assert dry.candidates > 0 and dry.done_chunks > 0 and dry.embeddings > 0
+    assert len(list(iter_candidates(out))) == before  # 数えるだけでは消えない
+
+    conn = connect(s.ssd_root)
+    with conn:
+        conn.execute(
+            "INSERT INTO episodes(episode_id, format, worry_ids, state) "
+            "VALUES ('E20261101-01', 'A', '[]', 'planned')"
+        )
+        conn.execute(
+            "INSERT INTO usage VALUES ('E20261101-01', 'x', ?, NULL, 'main')",
+            (next(iter(changed)),),
+        )
+    assert episodes_using(conn, changed) == ["E20261101-01"]
+    st = ["--settings", str(settings_file)]
+    settings_file.write_text(
+        settings_file.read_text().replace('model = "local"', 'model = "fake-llm"'), "utf-8"
+    )
+    r = CliRunner().invoke(app, ["forget-works", "--changed", "--apply", *st])
+    assert r.exit_code == 2 and "E20261101-01" in r.output  # 使っている回があれば止める
+    with conn:
+        conn.execute("UPDATE episodes SET state = 'discarded'")
+    r = CliRunner().invoke(app, ["forget-works", "--changed", "--apply", *st])
+    assert r.exit_code == 0, r.output
+    assert not changed_works_path(hdd).exists()
+    left = list(iter_candidates(out))
+    assert len(left) == before - dry.candidates
+    assert not any(c["work_id"] in changed for c in left)
+    ids, vecs = load_embeddings(hdd / "emb/hash-bigram")
+    assert len(ids) == vecs.shape[0] and not any(i.split("#")[0] in changed for i in ids)
+    again = run_augment(hdd, PROMPTS, VOCAB, FakeLLM(), AugmentConfig())
+    assert again.processed == dry.done_chunks  # その作品のチャンクだけを作り直す
+    _ = _json

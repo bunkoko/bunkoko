@@ -84,7 +84,8 @@ class ScriptConfig:
     chars_per_min: int = 300
     min_sec: int = 600
     max_sec: int = 900
-    retries: int = 2  # G1・G3 で章を書き直す回数
+    retries: int = 2  # G1・G3・長さで章を書き直す回数
+    length_tolerance: float = 0.3  # 章の文字数が目安から ±30% を超えたら書き直させる
 
     @classmethod
     def from_settings(cls, script: dict[str, Any], episode: dict[str, Any]) -> ScriptConfig:

@@ -116,6 +116,15 @@ def normalize(source: str, settings: SettingsOpt = None) -> None:
     from koten.normalize import aozora
 
     typer.echo(f"正規化 {aozora.normalize(hdd)} 作品")
+    from koten.augment.forget import read_changed
+
+    changed = read_changed(aozora.changed_works_path(hdd))
+    if changed:
+        typer.secho(
+            f"本文か章が変わった作品が {len(changed)} 件あります。チャンク化のあと、"
+            "uv run koten forget-works --changed で付加情報を作り直せます",
+            fg="yellow",
+        )
 
 
 @app.command()
@@ -199,6 +208,49 @@ def augment(
     typer.echo(f"時間 {elapsed:.0f}秒（1チャンクあたり {per_chunk:.1f}秒）・モデル {model}")
     if stats := describe_stats(getattr(llm, "stats", {})):
         typer.echo(stats)
+
+
+@app.command("forget-works")
+def forget_works_cmd(
+    changed: Annotated[
+        bool, typer.Option(help="正規化で本文が変わった作品（changed_works.json）を対象にする")
+    ] = False,
+    work: Annotated[list[str] | None, typer.Option(help="作品ID（くり返し指定できる）")] = None,
+    apply: Annotated[bool, typer.Option(help="実際に取り除く（付けなければ数えるだけ）")] = False,
+    settings: SettingsOpt = None,
+) -> None:
+    """作品の付加情報（候補・処理済み・埋め込み）を取り除き、作り直せるようにする。"""
+    from koten.augment.forget import episodes_using, forget_works, read_changed
+    from koten.db import connect
+    from koten.normalize.aozora import changed_works_path
+
+    s = _settings(settings)
+    hdd = _hdd(s)
+    targets = set(work or [])
+    if changed:
+        targets |= read_changed(changed_works_path(hdd))
+    if not targets:
+        typer.echo("対象の作品がありません（本文が変わった作品はありません）")
+        return
+    users = episodes_using(connect(s.ssd_root), targets)
+    if users:
+        typer.secho(
+            "この作品の一節を使っている回があります。先に取り消してください"
+            f"（koten episode discard --episode …）：{'、'.join(users)}",
+            fg="red",
+            err=True,
+        )
+        raise typer.Exit(2)
+    r = forget_works(hdd, _augment_dir(s, hdd), targets, apply=apply)
+    verb = "取り除きました" if apply else "取り除く対象（--apply で実行）"
+    typer.echo(
+        f"作品 {len(targets)} 件：候補 {r.candidates} 件・処理済みチャンク {r.done_chunks} 件・"
+        f"埋め込み {r.embeddings} 件を{verb}"
+    )
+    if apply:
+        if changed:
+            changed_works_path(hdd).unlink(missing_ok=True)
+        typer.echo("続けて：uv run koten augment → uv run koten embed → uv run koten index build")
 
 
 @app.command()

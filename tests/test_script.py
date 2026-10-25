@@ -347,3 +347,53 @@ def test_episode_list_and_discard(env, settings_file):
         .fetchone()[0]
     )
     assert {s["work_id"] for s in again["selection"]} & {s["work_id"] for s in first["selection"]}
+
+
+def test_source_section_is_capped():
+    from koten.script.placeholders import format_source
+
+    c = {
+        "author_names": ["高神覚昇"],
+        "title": "般若心経講義",
+        "section": "第十一講 / " + "本文" * 50,
+    }
+    out = format_source(c)
+    assert out.startswith("高神覚昇『般若心経講義』「第十一講") and out.endswith("…」")
+    assert len(out) < 50
+
+
+def test_chapter_length_issue():
+    from koten.script.run import chapter_length_issue
+
+    cfg = ScriptConfig()  # 1分300字・±30%
+    r = Resolver(
+        {"c": {"quote_text": "一" * 20, "author_names": [], "title": "t", "section": ""}}, {}, {}
+    )
+
+    def ch(chars, quote=False):
+        segs = [{"seg_id": "ch1-s1", "kind": "narration", "text": "あ" * chars}]
+        if quote:
+            segs.append({"seg_id": "ch1-s2", "kind": "quote", "text": "{{quote:c}}"})
+        return {"chapter_id": "ch1", "target_sec": 60, "segments": segs}  # 目安300字
+
+    assert chapter_length_issue(ch(300), r, cfg) is None
+    # 一節を含めて380字なら上限（390字）の内側、400字なら外側
+    assert chapter_length_issue(ch(360, quote=True), r, cfg) is None
+    assert chapter_length_issue(ch(380, quote=True), r, cfg).startswith("長すぎる：約400字")
+    assert chapter_length_issue(ch(500), r, cfg).startswith("長すぎる：約500字")
+    assert chapter_length_issue(ch(100), r, cfg).startswith("短すぎる")
+
+
+def test_long_chapter_is_rewritten(env):
+    class Wordy(FakeScriptLLM):
+        def complete(self, system, user, schema=None):
+            out = json.loads(super().complete(system, user, schema))
+            if self.calls == 1:
+                out["segments"].append({"kind": "narration", "text": "長い語り。" * 400})
+            return json.dumps(out, ensure_ascii=False)
+
+    eid = planned(env, "A", worry_id="W0001")
+    llm = Wordy()
+    r, logs = run(env, eid, writer_llm=llm)
+    assert r.state == "script_done"
+    assert "長すぎる" in llm.users[1]  # 2回目の指示に、長さの直し方が入る

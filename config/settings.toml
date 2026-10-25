@@ -50,7 +50,8 @@ timeout_sec = 1200
 [script]                      # 台本と検証ゲート（SPEC §8.7・§8.8）
 prompt = "script_v1"          # prompts/<prompt>.md
 judge_prompt = "judge_v1"
-retries = 2                   # G1・G3 で章を書き直す回数
+retries = 2                   # G1・G3・長さで章を書き直す回数
+length_tolerance = 0.3        # 章の文字数が目安から ±30% を超えたら書き直させる
 
 [llm.worries]                 # 悩みの正規化（件数が少ないので augment と同じローカルLLMを使う）
 provider = "ollama"

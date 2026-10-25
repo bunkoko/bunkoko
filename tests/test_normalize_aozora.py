@@ -58,3 +58,31 @@ def test_nested_headings_are_joined():
     )
     titles = [s["title"] for s in parse(text).sections]
     assert titles == ["第一部 / 朝", "第一部 / 夜"]
+
+
+def test_same_line_heading_keeps_body():
+    """同行見出し：見出しのすぐ後ろの本文を、見出しに混ぜずにチャンクの範囲に残す。"""
+    text = (
+        "題\n著者\n\n"
+        "第十一講［＃「第十一講」は大見出し］\n"
+        "東海道のこと［＃「東海道のこと」は同行小見出し］　旅の話をします。人生は旅である。\n"
+        "　次の段落。\n"
+        "［＃同行中見出し］窓の話［＃同行中見出し終わり］ここも本文。\n"
+    )
+    t = parse(text)
+    titles = [s["title"] for s in t.sections]
+    assert titles == ["第十一講 / 東海道のこと", "第十一講 / 窓の話"]
+    first = t.text_orig[t.sections[0]["start"] : t.sections[0]["end"]]
+    assert "旅の話をします。人生は旅である。" in first and "次の段落。" in first
+    second = t.text_orig[t.sections[1]["start"] : t.sections[1]["end"]]
+    assert second.strip() == "ここも本文。"
+    assert all(len(s["title"]) < 20 for s in t.sections)
+
+
+def test_plain_heading_text_unchanged():
+    """普通の見出し（後ろに本文が無い）は、直す前と同じ text_orig になる。"""
+    t = parse(SAMPLE_TEXT)
+    assert "嫉妬について\n" in t.text_orig and [s["title"] for s in t.sections] == [
+        "嫉妬について",
+        "孤独について",
+    ]

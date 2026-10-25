@@ -33,9 +33,15 @@ def format_stat(s: dict[str, Any]) -> str:
     return f"{s['label']}は{value}{where}"
 
 
+SECTION_MAX = 30  # 出典に入れる章の名前の上限（本文が混ざった長い章名を語らせない）
+
+
 def format_source(c: dict[str, Any]) -> str:
     author = "・".join(c.get("author_names") or [])
-    section = f"「{c['section']}」" if c.get("section") else ""
+    section = (c.get("section") or "").strip()
+    if len(section) > SECTION_MAX:
+        section = section[:SECTION_MAX].rstrip() + "…"
+    section = f"「{section}」" if section else ""
     return f"{author}『{c['title']}』{section}"
 
 

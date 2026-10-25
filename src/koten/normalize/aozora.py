@@ -99,9 +99,16 @@ def clean_line(line: str, gaiji_log: list[dict[str, str]]) -> str:
     return line.replace("／″＼", "〴〵").replace("／＼", "〳〵")
 
 
-def _heading_level(line: str) -> int | None:
+def split_heading(line: str) -> tuple[int, str, str] | None:
+    """見出しの行を（階層, 見出しの部分, 後ろに続く本文）に分ける。見出しでなければ None。
+
+    同行見出し・窓見出しは、見出しのすぐ後ろに同じ行で本文が続く。注記の終わりで分けて、
+    本文を見出しに混ぜない（混ぜると章の名前が長くなり、本文がチャンクから抜ける）。
+    """
     m = _HEADING_QUOTED.search(line) or _HEADING_WRAPPED.search(line)
-    return _LEVELS[m.group(1)] if m else None
+    if not m:
+        return None
+    return _LEVELS[m.group(1)], line[: m.end()], line[m.end() :]
 
 
 def split_header_footer(text: str) -> tuple[list[str], str]:
@@ -127,8 +134,17 @@ def parse(text: str) -> AozoraText:
     pos = 0
     levels: list[str | None] = [None, None, None]
     sections: list[dict[str, Any]] = [{"title": "", "start": 0, "end": None}]
+    lines: list[tuple[int | None, str]] = []
     for raw_line in body:
-        level = _heading_level(raw_line)
+        heading = split_heading(raw_line)
+        if heading is None:
+            lines.append((None, raw_line))
+            continue
+        level, head, rest = heading
+        lines.append((level, head))
+        if clean_line(rest, []).strip():
+            lines.append((None, rest))  # 同行見出しの後ろの本文は、次の行の本文にする
+    for level, raw_line in lines:
         line = clean_line(raw_line, gaiji).rstrip()
         if not line.strip() and (not out or not out[-1].strip()):
             continue  # 空行は1行にまとめる
@@ -156,10 +172,24 @@ def parse(text: str) -> AozoraText:
     return AozoraText(text_orig=text_orig, sections=sections, colophon=colophon, gaiji=gaiji)
 
 
+def changed_works_path(hdd_root: Path) -> Path:
+    return hdd_root / "clean" / SOURCE / "changed_works.json"
+
+
 def normalize(hdd_root: Path) -> int:
-    """clean/aozora/works.parquet の使用可の作品を正規化して texts.parquet に書く。"""
+    """clean/aozora/works.parquet の使用可の作品を正規化して texts.parquet に書く。
+
+    前の texts.parquet から本文か章が変わった作品は changed_works.json に足しておく
+    （正規化を直したあとに、その作品だけ付加情報づけをやり直すため：koten augment forget）。
+    """
     clean_dir = hdd_root / "clean" / SOURCE
     raw_dir = hdd_root / "raw" / SOURCE
+    before: dict[str, tuple[str, str]] = {}
+    if (clean_dir / "texts.parquet").exists():
+        before = {
+            t["work_id"]: (t["text_orig"], t["sections"])
+            for t in read_rows(clean_dir / "texts.parquet")
+        }
     rows = []
     for w in read_rows(clean_dir / "works.parquet"):
         if not w["raw_path"] or not is_usable(w["license"]):
@@ -173,6 +203,17 @@ def normalize(hdd_root: Path) -> int:
                 "colophon": parsed.colophon,
                 "gaiji": json.dumps(parsed.gaiji, ensure_ascii=False),
             }
+        )
+    changed = sorted(
+        r["work_id"]
+        for r in rows
+        if r["work_id"] in before and before[r["work_id"]] != (r["text_orig"], r["sections"])
+    )
+    path = changed_works_path(hdd_root)
+    pending = set(json.loads(path.read_text("utf-8"))["work_ids"]) if path.exists() else set()
+    if changed or pending:
+        path.write_text(
+            json.dumps({"work_ids": sorted(pending | set(changed))}, ensure_ascii=False), "utf-8"
         )
     write_rows(clean_dir / "texts.parquet", rows, TEXTS_SCHEMA)
     return len(rows)

@@ -48,6 +48,36 @@ def schema_errors(script: dict[str, Any]) -> list[str]:
     ]
 
 
+def chapter_length_issue(
+    chapter: dict[str, Any], resolver: Resolver, cfg: ScriptConfig
+) -> str | None:
+    """章の文字数が目安（target_sec × 1分あたりの字数）から大きく外れていれば、直し方を返す。
+
+    一節の長さは書き手が変えられないので、一節だけで上限を超える章は問わない。
+    """
+    target = chapter["target_sec"] * cfg.chars_per_min / 60
+    total = quotes = 0
+    for seg in chapter["segments"]:
+        try:
+            n = len(resolver.resolve(seg["text"]))
+        except KeyError:
+            n = len(seg["text"])
+        total += n
+        if seg["kind"] == "quote":
+            quotes += n
+    upper, lower = target * (1 + cfg.length_tolerance), target * (1 - cfg.length_tolerance)
+    if total > upper and quotes < upper:
+        return (
+            f"長すぎる：約{total}字（目安は一節を含めて{int(target)}字）。"
+            f"語りを約{int(total - target)}字削って、{int(target)}字前後にする"
+        )
+    if total < lower:
+        return (
+            f"短すぎる：約{total}字（目安{int(target)}字）。語りを足して{int(target)}字前後にする"
+        )
+    return None
+
+
 def length_estimate(
     script: dict[str, Any], resolver: Resolver, chars_per_min: int
 ) -> dict[str, Any]:
@@ -122,6 +152,8 @@ def run_script(
     drafts: list[ChapterDraft] = []
     g1_issues: list[str] = []
     g3_issues: list[str] = []
+    resolver = gates.resolver_for(data)
+    length_notes: list[str] = []
     for chapter in data.plan["chapters"]:
         feedback: list[str] | None = None
         for attempt in range(cfg.retries + 1):
@@ -130,9 +162,13 @@ def run_script(
             issues3: list[str] = []
             if not issues1 and judge.needs_judge(draft.chapter):
                 issues3 = judge.judge(draft.chapter, data)
+            # 長さは G1・G3 が通ってから見る（尺の本当の確かめは音声のあとの G7）
+            length = None
             if not issues1 and not issues3:
+                length = chapter_length_issue(draft.chapter, resolver, cfg)
+            if not issues1 and not issues3 and length is None:
                 break
-            feedback = issues1 + issues3
+            feedback = issues1 + issues3 + ([length] if length else [])
             log(
                 f"  {chapter['chapter_id']}：書き直し（{attempt + 1}回目）"
                 f"{'、'.join(feedback)[:120]}"
@@ -140,6 +176,8 @@ def run_script(
         drafts.append(draft)
         g1_issues += issues1
         g3_issues += [f"{chapter['chapter_id']}：{p}" for p in issues3]
+        if length:
+            length_notes.append(f"{chapter['chapter_id']}：{length}")
         if issues1:
             # 直らない G1 があれば回は error になるので、残りの章は書かせない（利用枠を使わない）
             log(f"  {chapter['chapter_id']}：G1 が直らないので止めます")
@@ -152,11 +190,11 @@ def run_script(
         verification["G1"] = gates._gate(g1_issues)
         return _save(conn, episode_id, "error", msg, False, None, verification, log)
     script = writer.assemble(data, drafts)
-    resolver = gates.resolver_for(data)
     verification["G1"] = gates._gate(g1_issues)
     verification["G3"] = gates._gate(g3_issues, needs_human=bool(g3_issues))
     verification["G6"] = gates.g6_review(data, script)
     verification["length_estimate"] = length_estimate(script, resolver, cfg.chars_per_min)
+    verification["length_estimate"]["notes"] = length_notes  # 書き直しても目安に収まらなかった章
     review = bool(script["review_required"] or verification["G6"]["review_required"] or g3_issues)
     script["review_required"] = review
     script["verification"] = {

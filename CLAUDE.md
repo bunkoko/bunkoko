@@ -36,3 +36,4 @@
 - uv run koten eval retrieval（--by llm で LLM の点を使う）
 - uv run koten plan --worry W0001 --format A（保存）→ uv run koten script --episode E20261101-01 → --show で読む
 - uv run koten episode list ／ uv run koten episode discard --episode <ID>（試しの回を取り消す）
+- uv run koten forget-works --changed（正規化で本文が変わった作品。--apply で付加情報を取り除き、augment で作り直す）
