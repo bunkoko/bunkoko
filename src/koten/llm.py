@@ -215,6 +215,9 @@ def fill(template: str, **values: Any) -> str:
     )
 
 
+CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")  # claude --effort の値
+
+
 class ClaudeCLILLM:
     """Claude Code の `claude -p` を1回ずつ呼ぶ。
 
@@ -234,9 +237,13 @@ class ClaudeCLILLM:
         extra_args: list[str] | None = None,
         timeout_sec: float = 300.0,
         keep_api_key: bool = False,
+        effort: str | None = None,
     ):
+        if effort is not None and effort not in CLAUDE_EFFORTS:
+            raise ValueError(f"effort は {'・'.join(CLAUDE_EFFORTS)} のどれか：{effort}")
         self.model = model
-        self.name = f"claude-cli:{model}"
+        self.effort = effort
+        self.name = f"claude-cli:{model}" + (f"@{effort}" if effort else "")
         self.command = command
         self.extra_args = ["--safe-mode"] if extra_args is None else list(extra_args)
         self.timeout_sec = timeout_sec
@@ -256,6 +263,7 @@ class ClaudeCLILLM:
             "--tools",
             "",
             "--no-session-persistence",
+            *(["--effort", self.effort] if self.effort else []),
             *self.extra_args,
         ]
         if schema is not None:
@@ -327,5 +335,6 @@ def make_llm(conf: dict[str, Any], model: str | None = None) -> ChatLLM:
             extra_args=conf.get("extra_args"),
             timeout_sec=conf.get("timeout_sec", 300),
             keep_api_key=conf.get("keep_api_key", False),
+            effort=conf.get("effort"),
         )
     raise ValueError(f"このLLMの provider には対応していません：{conf.get('provider')}")

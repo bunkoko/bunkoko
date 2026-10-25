@@ -34,16 +34,18 @@ context_chars = 200
 [llm.script]                  # 台本を書く（SPEC §8.7）。Mac の Claude Code をサブスクリプションで呼ぶ
 provider = "claude_cli"
 command = "claude"
-model = "sonnet"
+model = "opus"                # 利用者の判断（docs/decisions.md 2026-10-25）
+effort = "xhigh"              # claude --effort（low・medium・high・xhigh・max）
 extra_args = ["--safe-mode"]
-timeout_sec = 600
+timeout_sec = 1800            # xhigh は考える時間が長いので長めにする
 
 [llm.judge]                   # G3 忠実さの判定（台本を書いたのとは別の呼び出し）
 provider = "claude_cli"
 command = "claude"
-model = "haiku"
+model = "opus"
+effort = "xhigh"
 extra_args = ["--safe-mode"]
-timeout_sec = 300
+timeout_sec = 1200
 
 [script]                      # 台本と検証ゲート（SPEC §8.7・§8.8）
 prompt = "script_v1"          # prompts/<prompt>.md

@@ -212,3 +212,26 @@ def test_doctor_checks_claude_cli(settings_file, monkeypatch):
     monkeypatch.setattr("koten.doctor.shutil.which", lambda c: "/usr/local/bin/claude")
     c = doctor.check_llm(s, "grader", None)
     assert c.status == doctor.OK and "haiku" in c.detail
+
+
+def test_claude_cli_effort(monkeypatch):
+    calls = []
+    out = json.dumps({"is_error": False, "result": "{}"})
+    monkeypatch.setattr("koten.llm.subprocess.run", fake_run(out, record=calls))
+    llm = make_llm({"provider": "claude_cli", "model": "opus", "effort": "xhigh"})
+    assert llm.name == "claude-cli:opus@xhigh"
+    llm.complete("s", "u")
+    argv = calls[0][0]
+    assert argv[argv.index("--effort") + 1] == "xhigh"
+    assert "--effort" not in ClaudeCLILLM().args("s", "u", None)  # 指定しなければ付けない
+    with pytest.raises(ValueError, match="effort"):
+        ClaudeCLILLM(effort="超高")
+
+
+def test_settings_use_opus_xhigh_for_script_and_judge():
+    from koten.config import load_settings
+
+    s = load_settings()
+    for role in ("script", "judge"):
+        conf = s.section(f"llm.{role}")
+        assert (conf["provider"], conf["model"], conf["effort"]) == ("claude_cli", "opus", "xhigh")
