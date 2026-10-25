@@ -35,6 +35,9 @@ WORK_FIELDS = [
     ("review_required", pa.bool_()),
     ("kana_type", pa.string()),
     ("lang", pa.string()),
+    # 出典の表示（SPEC R7：底本・URL）。台本と説明欄で HDD を読まずに済むよう SSD に写す
+    ("base_book", pa.string()),
+    ("url", pa.string()),
 ]
 CACHE_SCHEMA = pa.schema(list(CANDIDATES_SCHEMA) + [pa.field(n, t) for n, t in WORK_FIELDS])
 

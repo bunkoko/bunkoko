@@ -824,6 +824,76 @@ def eval_agreement(
 
 
 @app.command()
+def script(
+    episode: Annotated[str, typer.Option(help="回の ID（例：E20261101-01）")],
+    show: Annotated[
+        bool, typer.Option(help="作らずに、保存済みの台本を差し込んだ形で出す")
+    ] = False,
+    force: Annotated[bool, typer.Option(help="script_done などの回も作り直す")] = False,
+    settings: SettingsOpt = None,
+) -> None:
+    """台本JSONを作り、検証ゲート G1〜G6 を通す（planned → script_done、不合格なら error）。"""
+    import json
+
+    from koten.db import connect
+    from koten.llm import LLMError, make_llm
+    from koten.script import gates
+    from koten.script.data import EpisodeData
+    from koten.script.run import ScriptStateError, render, run_script
+    from koten.script.writer import ScriptConfig, ScriptWriter
+    from koten.worries.master import load_blocked_keywords
+
+    s = _settings(settings)
+    conn = connect(s.ssd_root)
+    if show:
+        row = conn.execute(
+            "SELECT state, state_msg, script_json FROM episodes WHERE episode_id = ?", (episode,)
+        ).fetchone()
+        if row is None or not row["script_json"]:
+            typer.secho(f"{episode} の台本はまだありません", fg="red", err=True)
+            raise typer.Exit(2)
+        data = EpisodeData.load(conn, s.ssd_root, episode)
+        typer.echo(f"状態：{row['state']}（{row['state_msg']}）")
+        for line in render(json.loads(row["script_json"]), gates.resolver_for(data)):
+            typer.echo(line)
+        return
+    cfg = ScriptConfig.from_settings(s.section("script"), s.section("episode"))
+    prompts = s.config_dir.parent / "prompts"
+    writer = ScriptWriter(make_llm(s.section("llm.script")), prompts, cfg)
+    judge = gates.FaithfulnessJudge(make_llm(s.section("llm.judge")), prompts, cfg.judge_prompt)
+    rec = s.section("recency")
+    try:
+        r = run_script(
+            conn,
+            s.ssd_root,
+            episode,
+            writer,
+            judge,
+            load_blocked_keywords(s.config_dir),
+            cfg,
+            work_episodes=rec.get("work_episodes", 10),
+            author_episodes=rec.get("author_episodes", 5),
+            force=force,
+            log=typer.echo,
+        )
+    except ScriptStateError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
+    except LLMError as e:
+        typer.secho(f"{e}（回の状態は変えていません）", fg="red", err=True)
+        raise typer.Exit(1) from e
+    est = r.verification.get("length_estimate")
+    if est:
+        m, sec = divmod(est["est_sec"], 60)
+        typer.echo(f"文字数 {est['chars']}（読み上げの見積もり 約{m}分{sec}秒）")
+    if r.review_required:
+        typer.secho("人の確認が要ります（確認画面で見る）", fg="yellow")
+    if r.state != "script_done":
+        raise typer.Exit(1)
+    typer.echo(f"台本を見る：uv run koten script --episode {episode} --show")
+
+
+@app.command()
 def serve(
     port: Annotated[int | None, typer.Option(help="ポート（既定は settings の api.port）")] = None,
     settings: SettingsOpt = None,

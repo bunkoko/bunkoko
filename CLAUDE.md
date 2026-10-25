@@ -34,3 +34,4 @@
 - uv run koten eval export → tests/eval/retrieval.csv の grade 列に 1/0（人）
 - uv run koten eval grade（Claude Code の Haiku が llm_grade 列を埋める）→ uv run koten eval agreement
 - uv run koten eval retrieval（--by llm で LLM の点を使う）
+- uv run koten plan --worry W0001 --format A（保存）→ uv run koten script --episode E20261101-01 → --show で読む

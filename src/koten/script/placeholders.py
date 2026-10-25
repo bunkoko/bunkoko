@@ -1,0 +1,98 @@
+"""プレースホルダの差し込み（SPEC §8.7・R6）。
+
+台本を書く LLM には、引用・出典・著者名・作品名・統計の数字を書かせず、次の記号で指定させる。
+音声化・画面づくりの前に、DB の値で機械的に置き換える。これで引用文は必ず原文と一致する。
+
+- {{quote:<candidate_id>}}   一節の原文
+- {{source:<candidate_id>}}  著者『作品名』章（画面・語りで出典を言うとき）
+- {{author:<candidate_id>}}  著者名
+- {{title:<candidate_id>}}   『作品名』
+- {{stat:<stat_id>}}         統計の内容と値（例：……は32.9%（労働安全衛生調査、2025年））
+- {{worry:<worry_id>}}       一般化した悩み文
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Any
+
+PLACEHOLDER = re.compile(r"\{\{(quote|quote_ja|source|author|title|stat|worry):([^{}]+?)\}\}")
+ANY_BRACES = re.compile(r"\{\{[^{}]*\}\}")
+
+
+class UnresolvedPlaceholder(KeyError):
+    pass
+
+
+def format_stat(s: dict[str, Any]) -> str:
+    unit = s.get("unit") or ""
+    value = f"{s['value']}{unit}"
+    survey = s.get("survey") or ""
+    year = f"、{s['year']}年" if s.get("year") else ""
+    where = f"（{survey}{year}）" if survey else ""
+    return f"{s['label']}は{value}{where}"
+
+
+def format_source(c: dict[str, Any]) -> str:
+    author = "・".join(c.get("author_names") or [])
+    section = f"「{c['section']}」" if c.get("section") else ""
+    return f"{author}『{c['title']}』{section}"
+
+
+class Resolver:
+    def __init__(
+        self,
+        candidates: dict[str, dict[str, Any]],
+        stats: dict[str, dict[str, Any]],
+        worries: dict[str, str],
+    ):
+        self.candidates = candidates
+        self.stats = stats
+        self.worries = worries
+
+    def value(self, kind: str, key: str) -> str:
+        key = key.strip()
+        if kind in ("quote", "quote_ja", "source", "author", "title"):
+            c = self.candidates.get(key)
+            if c is None:
+                raise UnresolvedPlaceholder(f"{{{{{kind}:{key}}}}}：この回の一節にない候補")
+            if kind == "quote":
+                return c["quote_text"]
+            if kind == "quote_ja":
+                # 外国語の一節の自前訳（M8 で候補表に持たせる）。まだ無いので解決できない
+                raise UnresolvedPlaceholder(f"{{{{quote_ja:{key}}}}}：自前訳がまだありません")
+            if kind == "source":
+                return format_source(c)
+            if kind == "author":
+                return "・".join(c.get("author_names") or [])
+            return f"『{c['title']}』"
+        if kind == "stat":
+            s = self.stats.get(key)
+            if s is None:
+                raise UnresolvedPlaceholder(f"{{{{stat:{key}}}}}：この回の統計にない")
+            return format_stat(s)
+        if kind == "worry":
+            w = self.worries.get(key)
+            if w is None:
+                raise UnresolvedPlaceholder(f"{{{{worry:{key}}}}}：この回の悩みにない")
+            return w
+        raise UnresolvedPlaceholder(f"{{{{{kind}:{key}}}}}")
+
+    def resolve(self, text: str) -> str:
+        out = PLACEHOLDER.sub(lambda m: self.value(m.group(1), m.group(2)), text)
+        stray = ANY_BRACES.search(out)
+        if stray:
+            raise UnresolvedPlaceholder(f"{stray.group(0)}：使えない記号")
+        return out
+
+    def problems(self, text: str) -> list[str]:
+        """解決できないプレースホルダの一覧（空なら全部解決できる）。"""
+        found = []
+        for m in PLACEHOLDER.finditer(text):
+            try:
+                self.value(m.group(1), m.group(2))
+            except UnresolvedPlaceholder as e:
+                found.append(str(e))
+        rest = PLACEHOLDER.sub("", text)
+        found += [f"{m.group(0)}：使えない記号" for m in ANY_BRACES.finditer(rest)]
+        return found

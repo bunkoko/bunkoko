@@ -133,9 +133,44 @@ WORRIES = [
 ]
 
 
-def build(hdd: Path, ssd: Path, config_dir: Path) -> None:
+EXTRA_WORKS = [
+    (
+        "012",
+        "ひとりの夜",
+        "p10",
+        "癸",
+        [("夜のひとりは心を澄ます", "孤独", "一人暮らしで話さない")],
+    ),
+    ("013", "友を待つ", "p11", "子", [("待つ時間も友情のうち", "孤独", "友達が少ない")]),
+    ("014", "群れの外", "p12", "丑", [("群れを離れて見えるもの", "孤独", "休日が孤独だ")]),
+    (
+        "015",
+        "隣の芝",
+        "p13",
+        "寅",
+        [("隣の芝は青く見えるだけ", "嫉妬・比較", "人と比べて落ち込む")],
+    ),
+    (
+        "016",
+        "嫉みの効用",
+        "p14",
+        "卯",
+        [("嫉みは向上心の裏返し", "嫉妬・比較", "同期の昇進を喜べない")],
+    ),
+    (
+        "017",
+        "己を知る",
+        "p15",
+        "辰",
+        [("己を知れば比べずにすむ", "嫉妬・比較", "SNSで比べてしまう")],
+    ),
+    ("018", "勝ち負け", "p16", "巳", [("勝ち負けより歩み", "嫉妬・比較", "同期と比べてしまう")]),
+]
+
+
+def build(hdd: Path, ssd: Path, config_dir: Path, works_def: list | None = None) -> None:
     works, cands, done = [], [], []
-    for wid, title, pid, author, items in WORKS:
+    for wid, title, pid, author, items in works_def or WORKS:
         work_id = f"aozora:{wid}"
         works.append(
             {

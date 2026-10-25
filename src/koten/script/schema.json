@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "台本JSON（SPEC §10）",
+  "type": "object",
+  "required": ["schema_version", "episode_id", "format", "title", "theme", "worries", "chapters",
+               "human_take", "comment_prompt", "featured_books", "ad_break_candidates_sec",
+               "review_required", "verification", "timings"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "episode_id": {"type": "string", "pattern": "^E\\d{8}-\\d{2}$"},
+    "format": {"enum": ["A", "B", "C", "D"]},
+    "title": {"type": "string", "minLength": 1},
+    "theme": {"type": "array", "items": {"type": "string"}},
+    "worries": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "required": ["worry_id", "text"], "additionalProperties": false,
+        "properties": {"worry_id": {"type": "string"}, "text": {"type": "string"}}
+      }
+    },
+    "chapters": {
+      "type": "array", "minItems": 3,
+      "items": {
+        "type": "object",
+        "required": ["chapter_id", "role", "title", "target_sec", "segments"],
+        "additionalProperties": false,
+        "properties": {
+          "chapter_id": {"type": "string", "pattern": "^ch\\d+$"},
+          "role": {"type": "string"},
+          "title": {"type": "string", "minLength": 1},
+          "target_sec": {"type": "integer", "minimum": 1},
+          "segments": {
+            "type": "array", "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["seg_id", "kind", "text", "visual"],
+              "additionalProperties": false,
+              "properties": {
+                "seg_id": {"type": "string", "pattern": "^ch\\d+-s\\d+$"},
+                "kind": {"enum": ["narration", "quote", "stat", "transition"]},
+                "text": {"type": "string", "minLength": 1},
+                "read_as": {"enum": ["original", "modern"]},
+                "visual": {
+                  "type": "object", "required": ["type", "ref"], "additionalProperties": false,
+                  "properties": {
+                    "type": {"enum": ["photo", "quote_card", "title_card", "chart", "author_card", "page_image"]},
+                    "ref": {"type": ["string", "null"]}
+                  }
+                }
+              },
+              "allOf": [
+                {"if": {"properties": {"kind": {"const": "quote"}}},
+                 "then": {"required": ["read_as"],
+                          "properties": {"text": {"pattern": "^\\{\\{quote(_ja)?:[^{}]+\\}\\}$"}}}},
+                {"if": {"properties": {"kind": {"const": "stat"}}},
+                 "then": {"properties": {"text": {"pattern": "^\\{\\{stat:[^{}]+\\}\\}$"}}}}
+              ]
+            }
+          },
+          "sources": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "human_take": {
+      "type": "object", "required": ["chapter_id", "text", "audio_path"], "additionalProperties": false,
+      "properties": {
+        "chapter_id": {"type": "string"},
+        "text": {"type": ["string", "null"]},
+        "audio_path": {"type": ["string", "null"]}
+      }
+    },
+    "comment_prompt": {"type": "string"},
+    "featured_books": {
+      "type": "array",
+      "items": {
+        "type": "object", "required": ["work_id", "query"], "additionalProperties": false,
+        "properties": {"work_id": {"type": "string"}, "query": {"type": "string"}}
+      }
+    },
+    "ad_break_candidates_sec": {"type": ["array", "null"]},
+    "review_required": {"type": "boolean"},
+    "verification": {"type": ["object", "null"]},
+    "timings": {"type": ["object", "null"]}
+  }
+}

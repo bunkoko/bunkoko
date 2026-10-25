@@ -31,13 +31,24 @@ retries = 2
 batch_size = 200              # この件数ごとに HDD へまとめて書く
 context_chars = 200
 
-[llm.script]
-provider = "anthropic"
-model = "claude-sonnet-5-5"
+[llm.script]                  # 台本を書く（SPEC §8.7）。Mac の Claude Code をサブスクリプションで呼ぶ
+provider = "claude_cli"
+command = "claude"
+model = "sonnet"
+extra_args = ["--safe-mode"]
+timeout_sec = 600
 
-[llm.judge]                   # G3 忠実さの判定
-provider = "anthropic"
-model = "claude-haiku-5-5"
+[llm.judge]                   # G3 忠実さの判定（台本を書いたのとは別の呼び出し）
+provider = "claude_cli"
+command = "claude"
+model = "haiku"
+extra_args = ["--safe-mode"]
+timeout_sec = 300
+
+[script]                      # 台本と検証ゲート（SPEC §8.7・§8.8）
+prompt = "script_v1"          # prompts/<prompt>.md
+judge_prompt = "judge_v1"
+retries = 2                   # G1・G3 で章を書き直す回数
 
 [llm.worries]                 # 悩みの正規化（件数が少ないので augment と同じローカルLLMを使う）
 provider = "ollama"
