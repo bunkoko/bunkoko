@@ -68,9 +68,9 @@ def check_llm(s: Settings, role: str, client: httpx.Client) -> Check:
         command = conf.get("command", "claude")
         path = shutil.which(command)
         if path:
-            return Check(
-                name, OK, f"Claude Code {path}（モデル {model or 'haiku'}・サブスクリプション）"
-            )
+            effort = f"・エフォート {conf['effort']}" if conf.get("effort") else ""
+            detail = f"Claude Code {path}（モデル {model or 'haiku'}{effort}・サブスクリプション）"
+            return Check(name, OK, detail)
         return Check(name, NG, f"{command} が見つかりません（Claude Code を入れてログインする）")
     endpoint = conf.get("endpoint", "")
     try:

@@ -196,3 +196,11 @@ uv run koten chunk aozora
 - **保存**：episodes の script_json・verification_json・review_required・state（script_done か error）・state_msg。`koten script --show` で差し込んだ台本を読める。script_done 以降の回を作り直すときは --force。
 - **SSD の候補表**に底本（base_book）と URL を足した（出典の表示用。次の `koten index build` から入る）。
 - `koten episode discard` で回を discarded にすると、再使用間隔・30日のクラスタ間隔・形式の連続の数え方から外れる（試しに作った回のため）。悩みの last_used_at は戻さない（優先度の「新しさ」が下がったままになる）。
+
+### 2026-10-25 台本と G3 の判定を Opus・エフォート xhigh にする
+
+- 利用者の判断で、台本を書く役（llm.script）と G3 の判定役（llm.judge）を、どちらも Claude Code の Opus・`--effort xhigh`（超高）にする。文語体・旧仮名の一節の読み取りと、解説の正確さを優先するため。
+- 待ち時間の上限を、台本1800秒・判定1200秒に延ばした。サブスクリプションの利用枠は Sonnet・Haiku より多く使う（1回分で台本7〜9回＋書き直し、判定5〜7回）。
+- 書く役と判定役が同じモデルになるので、自分の書き方に甘くなる偏りが出るおそれがある。判定は別の呼び出しで、書き手の指示や下書きの経緯を渡さず、一節・前後の文脈・章の本文だけを見せる形にしている。偏りが気になる場合は、判定役だけ別のモデル（例：sonnet）にして結果を比べる。
+- 設定の effort は low・medium・high・xhigh・max のどれか（`claude --help` で確認）。それ以外は起動時に止める。
+

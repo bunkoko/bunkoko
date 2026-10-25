@@ -212,6 +212,7 @@ def test_doctor_checks_claude_cli(settings_file, monkeypatch):
     monkeypatch.setattr("koten.doctor.shutil.which", lambda c: "/usr/local/bin/claude")
     c = doctor.check_llm(s, "grader", None)
     assert c.status == doctor.OK and "haiku" in c.detail
+    assert "エフォート xhigh" in doctor.check_llm(load_settings(), "judge", None).detail
 
 
 def test_claude_cli_effort(monkeypatch):
