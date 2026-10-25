@@ -16,6 +16,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from koten.authors import author_label
+
 PLACEHOLDER = re.compile(r"\{\{(quote|quote_ja|source|author|title|stat|worry):([^{}]+?)\}\}")
 ANY_BRACES = re.compile(r"\{\{[^{}]*\}\}")
 
@@ -49,7 +51,7 @@ def short_section(section: str) -> str:
 
 
 def format_source(c: dict[str, Any]) -> str:
-    author = "・".join(c.get("author_names") or [])
+    author = author_label(c)
     section = short_section(c.get("section") or "")
     section = f"「{section}」" if section else ""
     return f"{author}『{c['title']}』{section}"
@@ -80,7 +82,7 @@ class Resolver:
             if kind == "source":
                 return format_source(c)
             if kind == "author":
-                return "・".join(c.get("author_names") or [])
+                return author_label(c)
             return f"『{c['title']}』"
         if kind == "stat":
             s = self.stats.get(key)

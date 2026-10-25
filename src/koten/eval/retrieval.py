@@ -22,6 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from koten.authors import author_label
 from koten.index.search import Filter
 
 EVAL_COLUMNS = [
@@ -152,7 +153,7 @@ def export_pool(
                     "worry_text": w["text_general"],
                     "candidate_id": cid,
                     "title": r["title"],
-                    "authors": "・".join(r["author_names"]),
+                    "authors": author_label(r),
                     "section": r["section"] or "",
                     "quote_text": r["quote_text"],
                     "summary_ja": r["summary_ja"],

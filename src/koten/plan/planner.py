@@ -20,6 +20,7 @@ from typing import Any
 
 import yaml
 
+from koten.authors import author_label
 from koten.embed.encoder import Encoder
 from koten.index.search import Filter, HotIndex
 from koten.llm import ChatLLM, fill, load_prompt, parse_json_object
@@ -211,7 +212,7 @@ class Planner:
         system = fill(system_tpl, rules=rules)
         worry_lines = "\n".join(f"- {w['worry_id']}：{w['text_general']}" for w in worries)
         cand_lines = "\n".join(
-            f"- {s.candidate_id}｜{s.row['title']}（{'・'.join(s.row['author_names'])}）"
+            f"- {s.candidate_id}｜{s.row['title']}（{author_label(s.row)}）"
             f"{s.row['section'] or ''}｜「{s.row['quote_text']}」｜要旨：{s.row['summary_ja']}"
             for s in shortlist
         )

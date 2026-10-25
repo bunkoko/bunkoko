@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import csv
+import re
 import sqlite3
 from pathlib import Path
 
@@ -132,6 +133,9 @@ def load_stats(conn: sqlite3.Connection, csv_path: Path) -> int:
                 problems.append(f"{i}行目：{col} が空")
         if not (r.get("url") or "").startswith(("http://", "https://")):
             problems.append(f"{i}行目：url が URL ではない")
+        if (r.get("value") or "").strip() and not re.search(r"\d", r["value"]):
+            # 「報告書から転記」のような書きかけを、数字として語らせない
+            problems.append(f"{i}行目：value に数字が無い（{r['value'].strip()}）")
         if r.get("stat_id") in seen:
             problems.append(f"{i}行目：stat_id {r['stat_id']} が重複")
         seen.add(r.get("stat_id"))

@@ -45,6 +45,7 @@ WORKS_SCHEMA = pa.schema(
         ("subtitle", pa.string()),
         ("author_ids", pa.list_(pa.string())),
         ("author_names", pa.list_(pa.string())),
+        ("author_display", pa.list_(pa.string())),  # 同じ人の別名をまとめた表示名（authors.py）
         ("translator_ids", pa.list_(pa.string())),
         ("ndc", pa.string()),
         ("kana_type", pa.string()),
@@ -123,6 +124,7 @@ def read_work_list(zip_bytes: bytes) -> dict[str, AozoraWork]:
             {
                 "person_id": row["人物ID"].strip(),
                 "name": row.get("姓", "").strip() + row.get("名", "").strip(),
+                "surname": row.get("姓", "").strip(),
                 "name_yomi": row.get("姓読み", "").strip() + row.get("名読み", "").strip(),
                 "role": ROLE_MAP.get(row.get("役割フラグ", "").strip(), "other"),
                 "birth_date": row.get("生年月日", "").strip(),
@@ -216,16 +218,63 @@ def mirror_url(text_url: str, base_url: str) -> str:
     return base_url.rstrip("/") + "/" + text_url[len(AOZORA_SITE) :]
 
 
-def work_row(w: AozoraWork, lic: License, reason: str, raw_path: str | None) -> dict[str, Any]:
+def person_aliases(works: dict[str, AozoraWork]) -> dict[str, str]:
+    """同じ人の別名の人物IDを、作品の多いほうの人物IDにまとめる対応表（人物ID→代表の人物ID）。
+
+    姓・生年月日・没年月日がすべて同じ人物を同じ人とみなす（どれかが空なら、まとめない）。
+    """
+    count: dict[str, int] = defaultdict(int)
+    groups: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+    for w in works.values():
+        for p in w.persons:
+            count[p["person_id"]] += 1
+            key = (p.get("surname", ""), p.get("birth_date", ""), p.get("death_date", ""))
+            if all(key):
+                groups[key].add(p["person_id"])
+    aliases = {}
+    for members in groups.values():
+        if len(members) > 1:
+            head = min(members, key=lambda m: (-count[m], m))
+            aliases.update({m: head for m in members})
+    return aliases
+
+
+def _authors(w: AozoraWork, aliases: dict[str, str]) -> tuple[list[str], list[str]]:
+    """作品の著者を同じ人ごとにまとめ、(人物IDの並び, 表示名の並び) を返す。
+
+    表示名は、この作品に載っている名前のうち、作品の多い名前を先にして「主な名前（別名）」にする。
+    """
+    groups: dict[str, list[dict[str, str]]] = {}
+    for p in w.persons:
+        if p["role"] == "author":
+            groups.setdefault(aliases.get(p["person_id"], p["person_id"]), []).append(p)
+    ids_, names = [], []
+    for head, members in groups.items():
+        members = sorted(members, key=lambda p: p["person_id"] != head)  # 代表の名前を先に
+        ids_.append(f"{SOURCE}:person:{head}")
+        rest = [p["name"] for p in members[1:] if p["name"] != members[0]["name"]]
+        names.append(members[0]["name"] + (f"（{'・'.join(rest)}）" if rest else ""))
+    return ids_, names
+
+
+def work_row(
+    w: AozoraWork,
+    lic: License,
+    reason: str,
+    raw_path: str | None,
+    aliases: dict[str, str] | None = None,
+) -> dict[str, Any]:
     pid = lambda p: f"{SOURCE}:person:{p['person_id']}"  # noqa: E731
+    author_ids, author_display = _authors(w, aliases or {})
     return {
         "work_id": ids.work_id(SOURCE, w.work_id),
         "source": SOURCE,
         "source_work_id": w.work_id,
         "title": w.title,
         "subtitle": w.subtitle,
-        "author_ids": [pid(p) for p in w.persons if p["role"] == "author"],
-        "author_names": w.names("author"),
+        "author_ids": author_ids,  # 同じ人の別名は代表の人物IDにまとめる（再使用間隔のため）
+        "author_names": w.names("author"),  # 載っている名前すべて（G1 で直書きを見つけるため）
+        "author_display": author_display,
         "translator_ids": [pid(p) for p in w.persons if p["role"] == "translator"],
         "ndc": w.ndc,
         "kana_type": w.kana_type,
@@ -288,7 +337,9 @@ def ingest(
     log(f"作品CSVを確認中：{conf['list_url']}")
     list_path, got = fetcher.fetch(conf["list_url"], LIST_FILE, refresh=refresh_list)
     log("作品CSVを取得しました" if got else "作品CSVは取得済みのものを使います")
-    works = select_works(read_work_list(list_path.read_bytes()), conf)
+    listed = read_work_list(list_path.read_bytes())
+    aliases = person_aliases(listed)
+    works = select_works(listed, conf)
     storable = [
         rel
         for w in works
@@ -333,7 +384,7 @@ def ingest(
                 else:
                     raw_path = rel
                     fetched += 1
-        rows.append(work_row(w, lic, reason, raw_path))
+        rows.append(work_row(w, lic, reason, raw_path, aliases))
 
     clean_dir = hdd_root / "clean" / SOURCE
     log(f"書誌と判定結果を書き込み中：{clean_dir}")

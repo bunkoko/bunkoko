@@ -403,7 +403,7 @@ yet → planned → script_done → voice_done → image_done → composed → r
 | funso_r7_harassment | いじめ・嫌がらせ | 民事上の個別労働紛争の相談件数（令和7年度、14年連続最多） | 55,614件 | [厚生労働省](https://www.mhlw.go.jp/stf/houdou/newpage_00235.html) |
 | nf_2026_future | 将来への不安 | 17〜19歳で「自国の将来は良くなる」と答えた割合 | 16% | [日本財団](https://webtan.impress.co.jp/r/prtimes/items/000000511.000025872) |
 | gakujo_2025_jobchange | 転職の迷い | 20代の転職希望者で「転職すべきか迷った」割合 | 7割超 | [学情](https://service.gakujo.ne.jp/wp-content/uploads/2025/08/250901-rekatsuenq.pdf) |
-| cao_loneliness | 孤独 | 孤独感は若年・中年層で高く、20代は男女とも高い | 報告書から転記 | [内閣府](https://www.cao.go.jp/kodoku_koritsu/torikumi/yushikisha_arikata/dai5/pdf/siryou1-1.pdf) |
+| cao_loneliness | 孤独 | 孤独感は若年・中年層で高く、20代は男女とも高い | 報告書から転記（転記するまで stats.csv に入れない。2026-10-25） | [内閣府](https://www.cao.go.jp/kodoku_koritsu/torikumi/yushikisha_arikata/dai5/pdf/siryou1-1.pdf) |
 
 ## 10. 台本JSONスキーマ
 台本JSONが、このパイプラインとn8n・レンダラーの間の唯一の受け渡し形式です。スキーマ（src/koten/script/schema.json）に合わないものは、その時点で state を error にします。

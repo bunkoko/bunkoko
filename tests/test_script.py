@@ -230,10 +230,12 @@ def test_g1_unfixable_makes_error(env):
 
 def test_g1_detects_names_and_stat_numbers(env):
     eid = planned(env, "C", theme="孤独")
-    data = EpisodeData.load(connect(env.ssd_root), env.ssd_root, eid)
+    conn = connect(env.ssd_root)
+    data = EpisodeData.load(conn, env.ssd_root, eid)
     cid = data.plan["selection"][0]["candidate_id"]
     title = data.candidates[cid]["title"]
-    stat = next(iter(data.stats.values()))
+    row = conn.execute("SELECT * FROM stats WHERE stat_id = 'rodo_r7_amount'").fetchone()
+    stat = data.stats["rodo_r7_amount"] = dict(row)
     chapter = {
         "chapter_id": "ch9",
         "segments": [
@@ -250,11 +252,10 @@ def test_g1_detects_names_and_stat_numbers(env):
     issues = gates.g1_chapter(chapter, data, [])
     assert any("作品名" in i for i in issues)
     assert not any("ch9-s2" in i or "ch9-s3" in i for i in issues)  # 短い強調と一節の一部は許す
-    if any(ch.isdigit() for ch in str(stat["value"])):
-        chapter["segments"].append(
-            {"seg_id": "ch9-s5", "kind": "narration", "text": f"{stat['value']}だそうです。"}
-        )
-        assert any("統計の数字" in i for i in gates.g1_chapter(chapter, data, []))
+    chapter["segments"].append(
+        {"seg_id": "ch9-s5", "kind": "narration", "text": f"{stat['value']}%だそうです。"}
+    )
+    assert any("統計の数字" in i for i in gates.g1_chapter(chapter, data, []))
 
 
 def test_g3_rewrite_then_human_review(env):
@@ -466,3 +467,19 @@ def test_total_length_estimate_is_flagged(env):
     v = r.verification["viewing"]
     assert not v["ok"] and any(x.startswith("尺の見積もり") for x in v["issues"])
     assert "視聴の注意" in r.state_msg
+
+
+def test_source_uses_author_display():
+    from koten.script.placeholders import format_source
+
+    c = {
+        "author_names": ["岡倉覚三", "岡倉天心"],
+        "author_display": ["岡倉天心（岡倉覚三）"],
+        "title": "茶の本",
+        "section": "第一章　人情の碗",
+    }
+    assert format_source(c) == "岡倉天心（岡倉覚三）『茶の本』「第一章　人情の碗」"
+    r = Resolver({"c": {**c, "quote_text": "x"}}, {}, {})
+    assert r.resolve("{{author:c}}") == "岡倉天心（岡倉覚三）"
+    del c["author_display"]  # 作り直す前の候補表
+    assert format_source(c).startswith("岡倉覚三・岡倉天心『茶の本』")

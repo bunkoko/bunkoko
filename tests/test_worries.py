@@ -209,14 +209,20 @@ def test_priority_score():
 
 def test_load_stats(conn, tmp_path):
     # 受け入れ条件：stats.csv が読み込まれる
-    assert load_stats(conn, DEFAULT_CONFIG_DIR / "stats.csv") == 7
+    assert load_stats(conn, DEFAULT_CONFIG_DIR / "stats.csv") == 6
     row = conn.execute("SELECT * FROM stats WHERE stat_id = 'rodo_r7_relations'").fetchone()
     assert row["value"] == "32.9" and row["url"].startswith("https://")
     bad = tmp_path / "stats.csv"
     bad.write_text("stat_id,theme,label,value,unit,survey,year,url\nx,孤独,ラベル,1,%,調査,2025,\n")
     with pytest.raises(StatsError, match="url"):
         load_stats(conn, bad)
-    assert conn.execute("SELECT COUNT(*) FROM stats").fetchone()[0] == 7  # 壊れたら入れ替えない
+    bad.write_text(
+        "stat_id,theme,label,value,unit,survey,year,url\n"
+        "x,孤独,ラベル,報告書から転記,,調査,,https://example.jp/\n"
+    )
+    with pytest.raises(StatsError, match="数字が無い"):
+        load_stats(conn, bad)
+    assert conn.execute("SELECT COUNT(*) FROM stats").fetchone()[0] == 6  # 壊れたら入れ替えない
 
 
 def test_cli_flow(settings_file, monkeypatch):
@@ -225,7 +231,7 @@ def test_cli_flow(settings_file, monkeypatch):
     st = ["--settings", str(settings_file)]
     run = CliRunner().invoke
     r = run(app, ["db", "init", *st])
-    assert r.exit_code == 0 and "統計 7 件" in r.output
+    assert r.exit_code == 0 and "統計 6 件" in r.output
     r = run(app, ["worries", "import", "--from", str(SEED), *st])
     assert r.exit_code == 0 and "取り込み 30 件" in r.output
     r = run(app, ["worries", "normalize", *st])

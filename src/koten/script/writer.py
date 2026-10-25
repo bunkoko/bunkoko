@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from koten.authors import author_label
 from koten.llm import ChatLLM, fill, load_prompt, parse_json_object
 from koten.script.data import EpisodeData
 
@@ -152,7 +153,7 @@ class ScriptWriter:
                 continue
             seen.add(c["work_id"])
             cid = s["candidate_id"]
-            authors = "・".join(c.get("author_names") or [])
+            authors = author_label(c)
             lines.append(
                 f"- {{{{author:{cid}}}}}＝{authors}、{{{{title:{cid}}}}}＝『{c['title']}』"
             )
@@ -309,7 +310,7 @@ class ScriptWriter:
                 continue
             seen.add(s["work_id"])
             c = data.candidates.get(s["candidate_id"], {})
-            authors = "・".join(c.get("author_names") or s.get("authors") or [])
+            authors = author_label(c) or "・".join(s.get("authors") or [])
             books.append(
                 {
                     "work_id": s["work_id"],

@@ -172,3 +172,70 @@ def test_fetch_error_does_not_stop_batch(settings_file):
     works = {w["source_work_id"]: w for w in read_rows(hdd / "clean/aozora/works.parquet")}
     assert works["100"]["raw_path"] is None
     assert works["500"]["raw_path"] is not None
+
+
+def test_person_aliases_merge_same_person():
+    """青空文庫で別名が別の人物として並ぶとき、1人の著者にまとめて表示する。"""
+    rows = [
+        # 同じ人（姓・生年月日・没年月日が同じ）が2つの人物IDで1つの作品に並ぶ
+        row(
+            "700",
+            "茶の書",
+            "NDC 791",
+            "新字新仮名",
+            "000010",
+            "岡倉",
+            "覚三",
+            "著者",
+            "1913-09-02",
+            birth="1863-02-14",
+        ),
+        row(
+            "700",
+            "茶の書",
+            "NDC 791",
+            "新字新仮名",
+            "000011",
+            "岡倉",
+            "天心",
+            "著者",
+            "1913-09-02",
+            birth="1863-02-14",
+        ),
+        # 天心の名でだけ載る作品が多い → 天心を主な名前にする
+        row(
+            "701",
+            "東の理想",
+            "NDC 702",
+            "新字新仮名",
+            "000011",
+            "岡倉",
+            "天心",
+            "著者",
+            "1913-09-02",
+            birth="1863-02-14",
+        ),
+        row(
+            "702",
+            "日本の目覚め",
+            "NDC 702",
+            "新字新仮名",
+            "000011",
+            "岡倉",
+            "天心",
+            "著者",
+            "1913-09-02",
+            birth="1863-02-14",
+        ),
+        # 生年月日の無い人物はまとめない
+        row("703", "随想", "NDC 914", "新字新仮名", "000012", "岡倉", "一", "著者", "1913-09-02"),
+    ]
+    works = aozora.read_work_list(list_zip(rows))
+    aliases = aozora.person_aliases(works)
+    assert aliases == {"000010": "000011", "000011": "000011"}
+    r = aozora.work_row(works["700"], License.PD_JP, "", None, aliases)
+    assert r["author_ids"] == ["aozora:person:000011"]
+    assert r["author_display"] == ["岡倉天心（岡倉覚三）"]
+    assert r["author_names"] == ["岡倉覚三", "岡倉天心"]  # G1 の直書きの検出には両方を使う
+    only = aozora.work_row(works["703"], License.PD_JP, "", None, aliases)
+    assert only["author_display"] == ["岡倉一"] and only["author_ids"] == ["aozora:person:000012"]

@@ -60,6 +60,7 @@ def row(
     work_flag="なし",
     person_flag="なし",
     subtitle="",
+    birth="",
 ):
     return {
         "作品ID": work_id,
@@ -73,6 +74,7 @@ def row(
         "姓": sei,
         "名": mei,
         "役割フラグ": role,
+        "生年月日": birth,
         "没年月日": death,
         "人物著作権フラグ": person_flag,
         "底本名1": "架空の底本",

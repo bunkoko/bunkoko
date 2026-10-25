@@ -125,7 +125,8 @@ def test_plan_c(env):
     assert 4 <= len(plan["selection"]) <= 6
     assert len(set(_works(plan))) == len(plan["selection"])
     context = next(c for c in plan["chapters"] if c["role"] == "context")
-    assert context["stat_ids"] == ["cao_loneliness"]  # 孤独の統計を差し込む ID
+    assert context["stat_ids"] == []  # 孤独の統計は、値を転記するまで stats.csv に無い
+    assert make_planner(env)._stats_for(["仕事の量"]) == ["rodo_r7_amount"]
 
 
 def test_plan_d(env):
