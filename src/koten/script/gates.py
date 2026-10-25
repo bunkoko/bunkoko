@@ -8,6 +8,9 @@
 - G4 再使用間隔：主役の作品・著者が直近の回と重ならない
 - G5 安全：悩みが blocked でなく除外キーワードに当たらず、一節に caution がない
 - G6 要確認ソース：要確認の一節・自前訳を含めば review_required
+
+ゲートとは別に、視聴の確かめ（冒頭30秒・タイトル・尺の見積もり）をする。不合格でも回は止めず、
+章を書き直させ、直らなければ確認画面に出す（docs/decisions.md D-011）。
 """
 
 from __future__ import annotations
@@ -50,16 +53,22 @@ def _gate(issues: list[str], **extra: Any) -> dict[str, Any]:
 # --- G1 ---------------------------------------------------------------------
 
 
-def g1_chapter(chapter: dict[str, Any], data: EpisodeData, shape_issues: list[str]) -> list[str]:
-    resolver = resolver_for(data)
-    issues = [f"{chapter['chapter_id']}：{x}" for x in shape_issues]
-    quotes = [normalize_for_match(c["quote_text"]) for c in data.candidates.values()]
-    worries = [normalize_for_match(w["text_general"]) for w in data.worries.values()]
+def _names(data: EpisodeData) -> set[str]:
+    """記号で書かせる著者名と『作品名』（1字の名前は普通の語と区別できないので除く）。"""
     names: set[str] = set()
     for c in data.candidates.values():
         names.update(n for n in c.get("author_names") or [] if len(n) >= 2)
         if len(c["title"]) >= 2:
             names.add(f"『{c['title']}』")
+    return names
+
+
+def g1_chapter(chapter: dict[str, Any], data: EpisodeData, shape_issues: list[str]) -> list[str]:
+    resolver = resolver_for(data)
+    issues = [f"{chapter['chapter_id']}：{x}" for x in shape_issues]
+    quotes = [normalize_for_match(c["quote_text"]) for c in data.candidates.values()]
+    worries = [normalize_for_match(w["text_general"]) for w in data.worries.values()]
+    names = _names(data)
     stat_values = [
         str(s["value"]) for s in data.stats.values() if re.search(r"\d", str(s["value"]))
     ]
@@ -182,6 +191,75 @@ def g6_review(data: EpisodeData, script: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "issues": [], "review_required": bool(reasons), "reasons": reasons}
 
 
+# --- 視聴の確かめ（冒頭30秒・タイトル） ---------------------------------------
+
+HOOK_SEC = 30  # 冒頭のこの秒数のうちに悩みを言う（YouTube Studio の「イントロ」も30秒時点の割合）
+# 冒頭を挨拶やチャンネルの話に使わない
+OPENING_NG = ("こんにちは", "こんばんは", "ようこそ", "チャンネル", "高評価")
+TITLE_MAX = 40
+TITLE_KINDS = {"author", "title", "worry"}  # タイトルで使える記号
+# 中身で約束できない言い方（クリックは増えても、見て満足されなければおすすめに載らない）
+TITLE_NG = ("絶対", "必ず", "衝撃", "激変", "人生が変わる", "最強", "知らないと損")
+
+
+def _length(resolver: Resolver, text: str) -> int:
+    try:
+        return len(resolver.resolve(text))
+    except KeyError:
+        return len(text)
+
+
+def opening_issues(chapter: dict[str, Any], resolver: Resolver, chars_per_min: int) -> list[str]:
+    """オープニングが、冒頭30秒のうちに悩みを言い、挨拶やチャンネルの話をしていないか。"""
+    hook_chars = HOOK_SEC * chars_per_min // 60
+    issues = []
+    pos, worry_at = 0, None
+    for seg in chapter["segments"]:
+        if seg["kind"] == "transition":
+            continue
+        i = seg["text"].find("{{worry:")
+        if i >= 0 and worry_at is None:
+            worry_at = pos + _length(resolver, seg["text"][:i])
+        pos += _length(resolver, seg["text"])
+    if worry_at is None or worry_at >= hook_chars:
+        where = "言っていない" if worry_at is None else f"{worry_at}字目まで出てこない"
+        issues.append(
+            f"冒頭の約{hook_chars}字（{HOOK_SEC}秒）のうちに、今日の悩みを {{{{worry:悩みID}}}} で"
+            f"言う（今は{where}）"
+        )
+    narration = [seg["text"] for seg in chapter["segments"] if seg["kind"] == "narration"]
+    bare = PLACEHOLDER.sub("", "".join(narration))
+    if found := [w for w in OPENING_NG if w in bare]:
+        issues.append(
+            f"オープニングで挨拶やチャンネルの話（「{'」「'.join(found)}」）をしない。"
+            "すぐ悩みから入る（登録のお願いはエンディングで）"
+        )
+    return issues
+
+
+def title_issues(title: str, data: EpisodeData) -> list[str]:
+    """動画のタイトル案が、記号の決まりと長さを守り、中身で約束できない言い方をしていないか。"""
+    if not title:
+        return ["動画のタイトル案（episode_title）が無い"]
+    resolver = resolver_for(data)
+    issues = [f"タイトルの記号を解決できない：{p}" for p in resolver.problems(title)]
+    for m in PLACEHOLDER.finditer(title):
+        if m.group(1) not in TITLE_KINDS:
+            issues.append(f"タイトルで使える記号は author・title・worry だけ（{m.group(0)}）")
+    bare = PLACEHOLDER.sub("", title)
+    issues += [
+        f"タイトルに著者名・作品名「{n}」を直接書いている（記号を使う）"
+        for n in sorted(_names(data))
+        if n in bare
+    ]
+    if not issues and (n := _length(resolver, title)) > TITLE_MAX:
+        issues.append(f"タイトルが長い（{n}字。差し込んだあとで{TITLE_MAX}字以内）")
+    issues += [
+        f"タイトルに「{w}」のような約束できない言い方を使わない" for w in TITLE_NG if w in bare
+    ]
+    return issues
+
+
 # --- G3 ---------------------------------------------------------------------
 
 
@@ -243,6 +321,9 @@ def summarize(verification: dict[str, Any]) -> str:
         if g == "G3" and v.get("needs_human"):
             mark = "人の確認へ"
         parts.append(f"{g} {mark}")
+    viewing = verification.get("viewing")
+    if viewing and viewing["issues"]:
+        parts.append(f"視聴の注意{len(viewing['issues'])}件")
     return "、".join(parts)
 
 

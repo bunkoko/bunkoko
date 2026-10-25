@@ -32,8 +32,8 @@ ROLE_NAMES = {
 }
 
 ROLE_GUIDE = {
-    "opening": "冒頭の30秒（約150字）で、今日の悩み（{{worry:…}}）と、この回で分かることを言う。"
-    "一節はまだ出さない。",
+    "opening": "最初の段落で今日の悩みを {{worry:…}} で言い、冒頭の30秒（約150字）のうちに、"
+    "この回で分かることを言う。挨拶・チャンネルの紹介・登録のお願いは入れない。一節はまだ出さない。",
     "context": "その悩みがどんな場面で起きるかを、よくある場面で具体的に描く。"
     "統計があれば stat の段落で示す（語りの中では数字を書かない）。",
     "classic": "割り当てた一節ごとに、①出典を {{source:候補ID}} で紹介 ②一節（kind=quote）"
@@ -47,7 +47,8 @@ ROLE_GUIDE = {
     "compare": "AとBを比べ、どちらが正しいとは決めずに、視聴者に問いかける。",
     "summary": "この回で見た一節をふり返り、今日からできる小さな一歩を1つ示す。"
     "このあと制作者の一言が入るので、締めくくりすぎない。",
-    "ending": "コメントで悩みや考えを募集し、次の回も古典の一節で悩みを考えることを予告する。",
+    "ending": "コメントで悩みや考えを募集し、次の回も古典の一節で悩みを考えることを予告する。"
+    "チャンネル登録のお願いは入れるなら1文だけ。長いあいさつで締めない。",
 }
 
 CHAPTER_SCHEMA = {
@@ -79,7 +80,7 @@ STAT_ONLY = re.compile(r"^\{\{stat:([^{}]+)\}\}$")
 
 @dataclass
 class ScriptConfig:
-    prompt: str = "script_v1"
+    prompt: str = "script_v2"
     judge_prompt: str = "judge_v1"
     chars_per_min: int = 300
     min_sec: int = 600
@@ -142,6 +143,21 @@ class ScriptWriter:
             )
         return "\n".join(blocks)
 
+    def _works(self, data: EpisodeData) -> str:
+        """オープニング用：この回で読む作品と、タイトル案で名前を入れるときの記号。"""
+        lines, seen = [], set()
+        for s in data.plan["selection"]:
+            c = data.candidates.get(s["candidate_id"])
+            if c is None or c["work_id"] in seen:
+                continue
+            seen.add(c["work_id"])
+            cid = s["candidate_id"]
+            authors = "・".join(c.get("author_names") or [])
+            lines.append(
+                f"- {{{{author:{cid}}}}}＝{authors}、{{{{title:{cid}}}}}＝『{c['title']}』"
+            )
+        return "この回で読む作品（名前を出すときは記号で書く）：\n" + "\n".join(lines)
+
     def _stats(self, data: EpisodeData, ids: list[str]) -> str:
         if not ids:
             return "（なし）"
@@ -158,6 +174,8 @@ class ScriptWriter:
         guide = ROLE_GUIDE.get(chapter["role"], "")
         if chapter["role"] == "compare" and plan.get("question"):
             guide += f"問いかけの例：{plan['question']}"
+        if chapter["role"] == "opening":
+            guide += "\n" + self._works(data)
         worries = "\n".join(f"- {w['worry_id']}：{w['text']}" for w in plan["worries"])
         fb = ""
         if feedback:
@@ -302,7 +320,7 @@ class ScriptWriter:
             "schema_version": SCRIPT_SCHEMA_VERSION,
             "episode_id": data.episode_id,
             "format": plan["format"],
-            "title": title[:60],
+            "title": title,
             "theme": plan["theme"],
             "worries": [{"worry_id": w["worry_id"], "text": w["text"]} for w in plan["worries"]],
             "chapters": [d.chapter for d in drafts],

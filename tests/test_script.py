@@ -397,3 +397,68 @@ def test_long_chapter_is_rewritten(env):
     r, logs = run(env, eid, writer_llm=llm)
     assert r.state == "script_done"
     assert "長すぎる" in llm.users[1]  # 2回目の指示に、長さの直し方が入る
+
+
+def test_opening_and_title_checks(env):
+    """視聴の確かめ：冒頭30秒で悩みを言う・挨拶しない・タイトル案の決まり。"""
+    eid = planned(env, "A", worry_id="W0001")
+    data = EpisodeData.load(connect(env.ssd_root), env.ssd_root, eid)
+    r = gates.resolver_for(data)
+    cid = data.plan["selection"][0]["candidate_id"]
+
+    def opening(*texts):
+        segs = [
+            {"seg_id": f"ch0-s{i}", "kind": "narration", "text": t} for i, t in enumerate(texts)
+        ]
+        return {"chapter_id": "ch0", "segments": segs}
+
+    assert gates.opening_issues(opening("{{worry:W0001}}。今日はこれを考えます。"), r, 300) == []
+    late = gates.opening_issues(opening("前置き。" * 40, "{{worry:W0001}}"), r, 300)
+    assert len(late) == 1 and "160字目まで出てこない" in late[0]
+    assert "言っていない" in gates.opening_issues(opening("今日は悩みの話です。"), r, 300)[0]
+    hello = gates.opening_issues(
+        opening("こんにちは。{{worry:W0001}}をチャンネルで考えます。"), r, 300
+    )
+    assert len(hello) == 1 and "「こんにちは」「チャンネル」" in hello[0]
+
+    assert gates.title_issues(f"同期の昇進を喜べない｜{{{{author:{cid}}}}}の言葉", data) == []
+    assert "無い" in gates.title_issues("", data)[0]
+    assert "直接書いている" in gates.title_issues("『比べる心』で考える", data)[0]
+    assert "author・title・worry だけ" in gates.title_issues(f"{{{{quote:{cid}}}}}", data)[0]
+    assert "長い" in gates.title_issues("あ" * 41, data)[0]
+    assert "約束できない" in gates.title_issues("これで人生が変わる", data)[0]
+
+
+def test_bad_title_is_rewritten_then_replaced(env):
+    class BadTitle(FakeScriptLLM):
+        def __init__(self, bad_titles):
+            super().__init__()
+            self.bad_titles = bad_titles
+
+        def complete(self, system, user, schema=None):
+            out = json.loads(super().complete(system, user, schema))
+            if out["episode_title"] and self.bad_titles > 0:
+                self.bad_titles -= 1
+                out["episode_title"] = "『比べる心』で絶対に楽になる"
+            return json.dumps(out, ensure_ascii=False)
+
+    eid = planned(env, "A", worry_id="W0001")
+    llm = BadTitle(1)
+    r, _ = run(env, eid, writer_llm=llm)
+    assert r.script["title"] == "同期の昇進を喜べないとき、古典は"
+    assert "直接書いている" in llm.users[1] and "約束できない" in llm.users[1]
+    assert "この回で読む作品" in llm.users[0] and "{{author:" in llm.users[0]
+
+    eid2 = planned(env, "A", NOW + timedelta(days=40), worry_id="W0004")
+    r2, _ = run(env, eid2, writer_llm=BadTitle(99))
+    assert r2.state == "script_done"  # タイトルでは止めない
+    assert r2.script["title"].endswith("――古典の一節で考える")  # 悩みから作る仮のタイトル
+    assert any("仮のタイトル" in x for x in r2.verification["viewing"]["issues"])
+
+
+def test_total_length_estimate_is_flagged(env):
+    eid = planned(env, "A", worry_id="W0001")
+    r, _ = run(env, eid)  # 偽の台本作家は短い章しか書かない
+    v = r.verification["viewing"]
+    assert not v["ok"] and any(x.startswith("尺の見積もり") for x in v["issues"])
+    assert "視聴の注意" in r.state_msg

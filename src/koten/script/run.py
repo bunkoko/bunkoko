@@ -2,8 +2,10 @@
 
 1. G5（安全）・G2（ライセンス）・G4（再使用間隔）を先に確かめる。不合格なら LLM を呼ばずに止める
 2. 章ごとに台本を書かせ、G1（差し込み）と G3（忠実さ）に通す。不合格の章は問題を伝えて
-   書き直させる（2回まで）。G1 が直らなければ回を error、G3 が直らなければ人の確認へ
-3. 台本JSONをスキーマで検証し、G6（要確認ソース）を付け、verification_json と一緒に保存する
+   書き直させる（2回まで）。G1 が直らなければ回を error、G3 が直らなければ人の確認へ。
+   G1・G3 が通った章は、視聴の確かめ（章の長さ、オープニングなら冒頭30秒とタイトル案）にも通す
+3. 台本JSONをスキーマで検証し、G6（要確認ソース）と尺の見積もりを付け、verification_json と
+   一緒に保存する
 """
 
 from __future__ import annotations
@@ -105,6 +107,10 @@ def length_estimate(
     }
 
 
+def _mmss(sec: int) -> str:
+    return f"{sec // 60}分{sec % 60:02d}秒"
+
+
 def run_script(
     conn: sqlite3.Connection,
     ssd_root: Path,
@@ -154,6 +160,7 @@ def run_script(
     g3_issues: list[str] = []
     resolver = gates.resolver_for(data)
     length_notes: list[str] = []
+    viewing: list[str] = []
     for chapter in data.plan["chapters"]:
         feedback: list[str] | None = None
         for attempt in range(cfg.retries + 1):
@@ -162,22 +169,32 @@ def run_script(
             issues3: list[str] = []
             if not issues1 and judge.needs_judge(draft.chapter):
                 issues3 = judge.judge(draft.chapter, data)
-            # 長さは G1・G3 が通ってから見る（尺の本当の確かめは音声のあとの G7）
+            # 長さと視聴の確かめは G1・G3 が通ってから見る（尺の本当の確かめは音声のあとの G7）
             length = None
+            hook: list[str] = []
+            title: list[str] = []
             if not issues1 and not issues3:
                 length = chapter_length_issue(draft.chapter, resolver, cfg)
-            if not issues1 and not issues3 and length is None:
+                if chapter["role"] == "opening":
+                    hook = gates.opening_issues(draft.chapter, resolver, cfg.chars_per_min)
+                    title = gates.title_issues(draft.episode_title, data)
+            if not issues1 and not issues3 and length is None and not hook and not title:
                 break
-            feedback = issues1 + issues3 + ([length] if length else [])
+            feedback = issues1 + issues3 + ([length] if length else []) + hook + title
             log(
                 f"  {chapter['chapter_id']}：書き直し（{attempt + 1}回目）"
                 f"{'、'.join(feedback)[:120]}"
             )
+        if title:
+            # 直らないタイトル案は使わず、悩みから作る仮のタイトルにする（確認のときに人が直す）
+            viewing.append(f"仮のタイトルにした（{'、'.join(title)}）")
+            draft.episode_title = ""
         drafts.append(draft)
         g1_issues += issues1
         g3_issues += [f"{chapter['chapter_id']}：{p}" for p in issues3]
         if length:
             length_notes.append(f"{chapter['chapter_id']}：{length}")
+        viewing += [f"{chapter['chapter_id']}：{p}" for p in hook]
         if issues1:
             # 直らない G1 があれば回は error になるので、残りの章は書かせない（利用枠を使わない）
             log(f"  {chapter['chapter_id']}：G1 が直らないので止めます")
@@ -193,8 +210,13 @@ def run_script(
     verification["G1"] = gates._gate(g1_issues)
     verification["G3"] = gates._gate(g3_issues, needs_human=bool(g3_issues))
     verification["G6"] = gates.g6_review(data, script)
-    verification["length_estimate"] = length_estimate(script, resolver, cfg.chars_per_min)
-    verification["length_estimate"]["notes"] = length_notes  # 書き直しても目安に収まらなかった章
+    est = length_estimate(script, resolver, cfg.chars_per_min)
+    est["notes"] = length_notes  # 書き直しても目安に収まらなかった章
+    verification["length_estimate"] = est
+    if not cfg.min_sec <= est["est_sec"] <= cfg.max_sec:
+        span = f"{_mmss(cfg.min_sec)}〜{_mmss(cfg.max_sec)}"
+        viewing.append(f"尺の見積もり {_mmss(est['est_sec'])} が {span} の外")
+    verification["viewing"] = gates._gate(viewing)
     review = bool(script["review_required"] or verification["G6"]["review_required"] or g3_issues)
     script["review_required"] = review
     script["verification"] = {
@@ -242,7 +264,11 @@ def _save(
 
 def render(script: dict[str, Any], resolver: Resolver) -> list[str]:
     """確認用に、プレースホルダを差し込んだ台本を行の並びにする。"""
-    lines = [f"# {script['title']}（{script['episode_id']}・形式{script['format']}）"]
+    try:
+        title = resolver.resolve(script["title"])
+    except KeyError:
+        title = script["title"]
+    lines = [f"# {title}（{script['episode_id']}・形式{script['format']}）"]
     for ch in script["chapters"]:
         lines.append(f"\n## {ch['chapter_id']} {ch['title']}（目安 {ch['target_sec']}秒）")
         for seg in ch["segments"]:

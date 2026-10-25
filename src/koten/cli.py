@@ -938,6 +938,8 @@ def script(
     if est:
         m, sec = divmod(est["est_sec"], 60)
         typer.echo(f"文字数 {est['chars']}（読み上げの見積もり 約{m}分{sec}秒）")
+    for issue in (r.verification.get("viewing") or {}).get("issues", []):
+        typer.secho(f"視聴の注意：{issue}", fg="yellow")
     if r.review_required:
         typer.secho("人の確認が要ります（確認画面で見る）", fg="yellow")
     if r.state != "script_done":
