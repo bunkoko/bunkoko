@@ -355,11 +355,15 @@ def test_source_section_is_capped():
     c = {
         "author_names": ["高神覚昇"],
         "title": "般若心経講義",
-        "section": "第十一講 / " + "本文" * 50,
+        "section": "第十一講　真実にして虚からず / 東海道中膝栗毛のこと　十遍" + "本文" * 50,
     }
+    # 長い小見出しは外し、大見出しだけを言う
+    assert format_source(c) == "高神覚昇『般若心経講義』「第十一講　真実にして虚からず」"
+    c["section"] = "上 / 一"
+    assert format_source(c) == "高神覚昇『般若心経講義』「上 / 一」"
+    c["section"] = "本文" * 50  # 見出しが1つでも長ければ切る
     out = format_source(c)
-    assert out.startswith("高神覚昇『般若心経講義』「第十一講") and out.endswith("…」")
-    assert len(out) < 50
+    assert out.endswith("…」") and len(out) < 50
 
 
 def test_chapter_length_issue():

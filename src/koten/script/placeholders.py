@@ -36,11 +36,21 @@ def format_stat(s: dict[str, Any]) -> str:
 SECTION_MAX = 30  # 出典に入れる章の名前の上限（本文が混ざった長い章名を語らせない）
 
 
+def short_section(section: str) -> str:
+    """章の名前（「大見出し / 中見出し / 小見出し」）が長ければ深い見出しから外し、
+    1つにしてもまだ長ければ切る。"""
+    parts = [p.strip() for p in (section or "").split(" / ") if p.strip()]
+    while len(parts) > 1 and len(" / ".join(parts)) > SECTION_MAX:
+        parts.pop()
+    out = " / ".join(parts)
+    if len(out) > SECTION_MAX:
+        out = out[:SECTION_MAX].rstrip() + "…"
+    return out
+
+
 def format_source(c: dict[str, Any]) -> str:
     author = "・".join(c.get("author_names") or [])
-    section = (c.get("section") or "").strip()
-    if len(section) > SECTION_MAX:
-        section = section[:SECTION_MAX].rstrip() + "…"
+    section = short_section(c.get("section") or "")
     section = f"「{section}」" if section else ""
     return f"{author}『{c['title']}』{section}"
 
