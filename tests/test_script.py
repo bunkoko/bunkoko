@@ -329,3 +329,21 @@ def test_state_guard_and_cli(env, settings_file, monkeypatch):
     assert r.exit_code == 2 and "--force" in r.output
     r = CliRunner().invoke(app, ["script", "--episode", eid, "--force", *st])
     assert r.exit_code == 0
+
+
+def test_episode_list_and_discard(env, settings_file):
+    eid = planned(env, "A", worry_id="W0001")
+    st = ["--settings", str(settings_file)]
+    r = CliRunner().invoke(app, ["episode", "list", *st])
+    assert r.exit_code == 0 and eid in r.output and "planned" in r.output
+    r = CliRunner().invoke(app, ["episode", "discard", "--episode", eid, *st])
+    assert r.exit_code == 0 and "取り消しました" in r.output
+    # 取り消した回は再使用間隔に数えないので、同じ作品でもう一度企画できる
+    p = make_planner(env, llm=FakePlanLLM())
+    again = p.plan("A", worry_id="W0003", now=NOW)
+    first = json.loads(
+        connect(env.ssd_root)
+        .execute("SELECT plan_json FROM episodes WHERE episode_id = ?", (eid,))
+        .fetchone()[0]
+    )
+    assert {s["work_id"] for s in again["selection"]} & {s["work_id"] for s in first["selection"]}

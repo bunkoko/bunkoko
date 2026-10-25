@@ -195,4 +195,4 @@ uv run koten chunk aozora
 - **尺**：G7 は音声のあと（M6）。台本の段階では、差し込んだ文字数から1分300字で見積もり、verification の length_estimate に残す。
 - **保存**：episodes の script_json・verification_json・review_required・state（script_done か error）・state_msg。`koten script --show` で差し込んだ台本を読める。script_done 以降の回を作り直すときは --force。
 - **SSD の候補表**に底本（base_book）と URL を足した（出典の表示用。次の `koten index build` から入る）。
-
+- `koten episode discard` で回を discarded にすると、再使用間隔・30日のクラスタ間隔・形式の連続の数え方から外れる（試しに作った回のため）。悩みの last_used_at は戻さない（優先度の「新しさ」が下がったままになる）。

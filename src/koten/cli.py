@@ -893,6 +893,56 @@ def script(
     typer.echo(f"台本を見る：uv run koten script --episode {episode} --show")
 
 
+episode_app = typer.Typer(no_args_is_help=True, help="回（episodes）")
+app.add_typer(episode_app, name="episode")
+
+
+@episode_app.command("list")
+def episode_list(
+    top: Annotated[int, typer.Option(help="表示する件数（新しい順）")] = 20,
+    settings: SettingsOpt = None,
+) -> None:
+    """回を新しい順に、状態と悩みと一緒に出す。"""
+    import json
+
+    from koten.db import connect
+
+    conn = connect(_settings(settings).ssd_root)
+    rows = conn.execute(
+        "SELECT * FROM episodes ORDER BY created_at DESC, episode_id DESC LIMIT ?", (top,)
+    ).fetchall()
+    for r in rows:
+        review = "　※要確認" if r["review_required"] else ""
+        worries = "、".join(json.loads(r["worry_ids"]))
+        typer.echo(f"{r['episode_id']} 形式{r['format']} {r['state']:11} {worries}{review}")
+        if r["state_msg"]:
+            typer.echo(f"    {r['state_msg'][:120]}")
+
+
+@episode_app.command("discard")
+def episode_discard(
+    episode: Annotated[str, typer.Option(help="取り消す回の ID")],
+    settings: SettingsOpt = None,
+) -> None:
+    """試しに作った回などを取り消す（discarded）。再使用間隔と形式の連続の数え方から外れる。"""
+    from koten.db import connect
+
+    conn = connect(_settings(settings).ssd_root)
+    row = conn.execute("SELECT state FROM episodes WHERE episode_id = ?", (episode,)).fetchone()
+    if row is None:
+        typer.secho(f"{episode} という回はありません", fg="red", err=True)
+        raise typer.Exit(2)
+    if row["state"] == "published":
+        typer.secho("公開済みの回は取り消せません", fg="red", err=True)
+        raise typer.Exit(2)
+    with conn:
+        conn.execute(
+            "UPDATE episodes SET state = 'discarded', state_msg = ? WHERE episode_id = ?",
+            (f"取り消し（元の状態：{row['state']}）", episode),
+        )
+    typer.echo(f"{episode} を取り消しました（元の状態：{row['state']}）")
+
+
 @app.command()
 def serve(
     port: Annotated[int | None, typer.Option(help="ポート（既定は settings の api.port）")] = None,
