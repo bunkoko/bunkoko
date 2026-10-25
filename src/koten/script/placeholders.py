@@ -4,7 +4,7 @@
 音声化・画面づくりの前に、DB の値で機械的に置き換える。これで引用文は必ず原文と一致する。
 
 - {{quote:<candidate_id>}}   一節の原文
-- {{source:<candidate_id>}}  著者『作品名』章（画面・語りで出典を言うとき）
+- {{source:<candidate_id>}}  著者『作品名』（訳者訳）章（画面・語りで出典を言うとき）
 - {{author:<candidate_id>}}  著者名
 - {{title:<candidate_id>}}   『作品名』
 - {{stat:<stat_id>}}         統計の内容と値（例：……は32.9%（労働安全衛生調査、2025年））
@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from koten.authors import author_label
+from koten.authors import author_label, translator_label
 
 PLACEHOLDER = re.compile(r"\{\{(quote|quote_ja|source|author|title|stat|worry):([^{}]+?)\}\}")
 ANY_BRACES = re.compile(r"\{\{[^{}]*\}\}")
@@ -52,9 +52,11 @@ def short_section(section: str) -> str:
 
 def format_source(c: dict[str, Any]) -> str:
     author = author_label(c)
+    translator = translator_label(c)
+    translator = f"（{translator}訳）" if translator else ""
     section = short_section(c.get("section") or "")
     section = f"「{section}」" if section else ""
-    return f"{author}『{c['title']}』{section}"
+    return f"{author}『{c['title']}』{translator}{section}"
 
 
 class Resolver:

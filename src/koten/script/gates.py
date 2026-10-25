@@ -54,10 +54,11 @@ def _gate(issues: list[str], **extra: Any) -> dict[str, Any]:
 
 
 def _names(data: EpisodeData) -> set[str]:
-    """記号で書かせる著者名と『作品名』（1字の名前は普通の語と区別できないので除く）。"""
+    """記号で書かせる著者名・訳者名と『作品名』（1字の名前は普通の語と区別できないので除く）。"""
     names: set[str] = set()
     for c in data.candidates.values():
-        names.update(n for n in c.get("author_names") or [] if len(n) >= 2)
+        people = (c.get("author_names") or []) + (c.get("translator_names") or [])
+        names.update(n for n in people if len(n) >= 2)
         if len(c["title"]) >= 2:
             names.add(f"『{c['title']}』")
     return names

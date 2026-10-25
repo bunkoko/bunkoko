@@ -202,6 +202,9 @@ def test_person_aliases_merge_same_person():
             "1913-09-02",
             birth="1863-02-14",
         ),
+        row(
+            "700", "茶の書", "NDC 791", "新字新仮名", "000013", "村岡", "博", "翻訳者", "1946-01-01"
+        ),
         # 天心の名でだけ載る作品が多い → 天心を主な名前にする
         row(
             "701",
@@ -237,5 +240,6 @@ def test_person_aliases_merge_same_person():
     assert r["author_ids"] == ["aozora:person:000011"]
     assert r["author_display"] == ["岡倉天心（岡倉覚三）"]
     assert r["author_names"] == ["岡倉覚三", "岡倉天心"]  # G1 の直書きの検出には両方を使う
+    assert r["translator_names"] == ["村岡博"]
     only = aozora.work_row(works["703"], License.PD_JP, "", None, aliases)
     assert only["author_display"] == ["岡倉一"] and only["author_ids"] == ["aozora:person:000012"]

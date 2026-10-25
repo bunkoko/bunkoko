@@ -475,11 +475,16 @@ def test_source_uses_author_display():
     c = {
         "author_names": ["岡倉覚三", "岡倉天心"],
         "author_display": ["岡倉天心（岡倉覚三）"],
+        "translator_names": ["村岡博"],
         "title": "茶の本",
         "section": "第一章　人情の碗",
     }
-    assert format_source(c) == "岡倉天心（岡倉覚三）『茶の本』「第一章　人情の碗」"
+    # 語り・タイトルでは主な名前だけ。訳書は訳者を添える
+    assert format_source(c) == "岡倉天心『茶の本』（村岡博訳）「第一章　人情の碗」"
     r = Resolver({"c": {**c, "quote_text": "x"}}, {}, {})
-    assert r.resolve("{{author:c}}") == "岡倉天心（岡倉覚三）"
-    del c["author_display"]  # 作り直す前の候補表
-    assert format_source(c).startswith("岡倉覚三・岡倉天心『茶の本』")
+    assert r.resolve("{{author:c}}") == "岡倉天心"
+    from koten.authors import author_label
+
+    assert author_label(c, aliases=True) == "岡倉天心（岡倉覚三）"
+    del c["author_display"], c["translator_names"]  # 作り直す前の候補表
+    assert format_source(c) == "岡倉覚三・岡倉天心『茶の本』「第一章　人情の碗」"

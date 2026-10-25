@@ -47,6 +47,7 @@ WORKS_SCHEMA = pa.schema(
         ("author_names", pa.list_(pa.string())),
         ("author_display", pa.list_(pa.string())),  # 同じ人の別名をまとめた表示名（authors.py）
         ("translator_ids", pa.list_(pa.string())),
+        ("translator_names", pa.list_(pa.string())),
         ("ndc", pa.string()),
         ("kana_type", pa.string()),
         ("lang", pa.string()),
@@ -276,6 +277,7 @@ def work_row(
         "author_names": w.names("author"),  # 載っている名前すべて（G1 で直書きを見つけるため）
         "author_display": author_display,
         "translator_ids": [pid(p) for p in w.persons if p["role"] == "translator"],
+        "translator_names": w.names("translator"),
         "ndc": w.ndc,
         "kana_type": w.kana_type,
         "lang": "ja",

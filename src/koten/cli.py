@@ -394,7 +394,9 @@ def index_query(
         typer.echo(f"■ {label}")
         for h in hits:
             r = h.row
-            typer.echo(f"  {h.score:.3f} {r['title']}（{author_label(r)}）{r['section']}")
+            typer.echo(
+                f"  {h.score:.3f} {r['title']}（{author_label(r, aliases=True)}）{r['section']}"
+            )
             typer.echo(f"      「{r['quote_text']}」")
             typer.echo(f"      要旨：{r['summary_ja']}")
 
@@ -621,7 +623,7 @@ def retrieve(
     for i, h in enumerate(p.search(q, flt)[:top], start=1):
         r = h.row
         score = f"リランク {h.rerank:.3f}" if h.rerank is not None else f"RRF {h.rrf:.4f}"
-        typer.echo(f"\n{i:2}. {r['title']}（{author_label(r)}）{r['section'] or ''}")
+        typer.echo(f"\n{i:2}. {r['title']}（{author_label(r, aliases=True)}）{r['section'] or ''}")
         typer.echo(f"    「{r['quote_text']}」")
         typer.echo(f"    要旨：{r['summary_ja']}")
         typer.echo(f"    理由：{score}／{h.provenance()}")

@@ -153,7 +153,7 @@ def export_pool(
                     "worry_text": w["text_general"],
                     "candidate_id": cid,
                     "title": r["title"],
-                    "authors": author_label(r),
+                    "authors": author_label(r, aliases=True),
                     "section": r["section"] or "",
                     "quote_text": r["quote_text"],
                     "summary_ja": r["summary_ja"],
