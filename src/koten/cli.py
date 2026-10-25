@@ -540,6 +540,9 @@ def worries_list(
         )
 
 
+AUTO_PLAN_WORRIES = 5  # 悩みを省いた企画で試す、優先度の上位の件数
+
+
 def _planner(s: Settings, *, log=None):
     """検索・企画に使う部品（SSD の索引と DB、埋め込み、LLM、リランク）をそろえる。"""
     from koten.augment.extract import load_themes
@@ -640,23 +643,39 @@ def plan(
     show_json: Annotated[bool, typer.Option("--json", help="plan_json をそのまま出す")] = False,
     settings: SettingsOpt = None,
 ) -> None:
-    """回の企画（plan_json）を作り、回を planned で保存する。"""
+    """回の企画（plan_json）を作り、回を planned で保存する。
+
+    悩みもテーマも省くと、優先度の高い悩みから順に（上位5件まで）企画を試す。
+    """
     import json
 
     from koten.plan.planner import PlanError
+    from koten.worries.master import WorriesConfig, load_theme_weights, ranked_worries
 
-    p = _planner(_settings(settings))
+    s = _settings(settings)
+    p = _planner(s)
     formats = [format.upper()] if format else p.allowed_formats()
-    result, errors = None, []
-    for fmt in formats:
-        try:
-            result = p.plan(fmt, worry_id=worry, theme=theme, work_id=work, force=force)
+    auto = worry is None and theme is None
+    worry_ids: list[str | None] = [worry]
+    if auto:
+        wcfg = WorriesConfig.from_settings(s.section("worries"))
+        ranked = ranked_worries(p.conn, load_theme_weights(s.config_dir), wcfg.novelty_days)
+        worry_ids = [w["worry_id"] for w in ranked[:AUTO_PLAN_WORRIES]]
+    result = None
+    for wid in worry_ids:
+        for fmt in formats:
+            try:
+                result = p.plan(fmt, worry_id=wid, theme=theme, work_id=work, force=force)
+                break
+            except PlanError as e:
+                typer.echo(f"  {wid + '：' if auto else ''}形式{fmt} は作れません：{e}")
+        if result is not None:
             break
-        except PlanError as e:
-            errors.append(f"形式{fmt}：{e}")
-            typer.echo(f"  形式{fmt} は作れません：{e}")
     if result is None:
-        typer.secho("企画を作れませんでした。この悩みは後回しにします", fg="red", err=True)
+        msg = "企画を作れませんでした。この悩みは後回しにします"
+        if auto:
+            msg = f"優先度の上位{len(worry_ids)}件の悩みで、企画を作れませんでした"
+        typer.secho(msg, fg="red", err=True)
         raise typer.Exit(2)
     if not dry_run:
         result["episode_id"] = p.save(result)

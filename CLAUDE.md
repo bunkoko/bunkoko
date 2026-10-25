@@ -30,7 +30,7 @@
 - uv run koten worries import --from config/worries_seed.csv && uv run koten worries normalize
 - uv run koten worries list（優先度順）／ --status blocked など
 - uv run koten retrieve --worry W0001 --explain
-- uv run koten plan --worry W0001 --format A --dry-run（--format を省くと形式を自動で選ぶ。形式C は --theme 孤独）
+- uv run koten plan --worry W0001 --format A --dry-run（--format を省くと形式を、--worry を省くと優先度の高い悩みを自動で選ぶ。形式C は --theme 孤独）
 - uv run koten eval export → tests/eval/retrieval.csv の grade 列に 1/0（人）
 - uv run koten eval grade（Claude Code の Haiku が llm_grade 列を埋める）→ uv run koten eval agreement
 - uv run koten eval retrieval（--by llm で LLM の点を使う）

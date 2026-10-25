@@ -1,5 +1,6 @@
 """検索と企画（M4）：RRF・クエリの控え・リランク・形式A〜Dの plan_json・再使用間隔・評価。"""
 
+import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -265,3 +266,8 @@ def test_cli_retrieve_and_plan(env, settings_file, monkeypatch):
         assert f"形式{fmt}" in r.output and "（保存していません）" in r.output
     r = CliRunner().invoke(app, ["plan", "--worry", "W0001", *st])
     assert r.exit_code == 0 and r.output.startswith("E")
+    # 悩みを省くと優先度の順に試す（使ったばかりの W0001 は優先度が下がる）
+    r = CliRunner().invoke(app, ["plan", "--format", "D", *st])
+    assert r.exit_code == 0, r.output
+    assert re.match(r"E\d{8}-\d{2} 形式D", r.output)
+    assert "悩み W0001：" not in r.output
