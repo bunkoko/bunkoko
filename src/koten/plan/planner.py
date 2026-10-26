@@ -589,7 +589,7 @@ class Planner:
         people = [a for r in rows for a in (r.get("author_ids") or [])]
         people += [t for r in rows for t in (r.get("translator_ids") or [])]
         ids = select_facts(
-            self.conn, work_ids=works, person_ids=people, limit=limit, exclude=used | taken
+            self.conn, work_ids=works, person_ids=people, limit=limit, exclude=used, taken=taken
         )
         if not ids:
             return

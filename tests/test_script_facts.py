@@ -1,5 +1,7 @@
 """台本の背景の事実（D-012）：記号での差し込み・G1 の直書き・1文ずつの判定・背景を外す流れ。"""
 
+# ruff: noqa: E501
+
 import json
 import re
 from datetime import date
@@ -14,6 +16,7 @@ from koten.script.data import EpisodeData
 from koten.script.run import render, schema_errors
 from tests.facts_fixture import write_curated, write_persons
 from tests.m4_corpus import build
+from tests.test_script import PROMPTS as PROMPTS_DIR
 from tests.test_script import FakeScriptLLM, planned, run
 
 FACT_LINE = re.compile(r"事実ID：(\S+?)(?:（|\n|$)", re.M)
@@ -182,9 +185,12 @@ def test_sentence_verdict_rules():
     assert gates.sentence_verdict(sents, got(), {"F-1"}, []) == []
     assert "根拠の事実が無い" in gates.sentence_verdict(sents, got(supported_by=[]), {"F-1"}, [])[0]
     assert (
-        "根拠と合わない"
+        "根拠に無い"
         in gates.sentence_verdict(sents, got(supported_by=["F-2"]), {"F-1", "F-2"}, [])[0]
     )
+    # 判定役が種類を「解釈」にしても、事実の印のある文は根拠と合わなければ落とす
+    out = gates.sentence_verdict(sents, got(type="interpretation", supported_by=[]), {"F-1"}, [])
+    assert out and out[0].startswith("背景：") and "根拠に無い" in out[0]
     assert (
         "見せていない事実"
         in gates.sentence_verdict(sents, got(supported_by=["F-1", "F-9"]), {"F-1"}, [])[0]
@@ -213,3 +219,86 @@ def test_changed_fact_needs_review(env):
     r, _ = run(env, eid, writer_llm=FactWriter(), judge_llm=SentenceJudge())
     assert r.verification["G6"]["review_required"] and r.review_required
     assert any("文が変わった" in x for x in r.verification["G6"]["reasons"])
+
+
+def test_g1_catches_kanji_years_numbers_and_doubled_units(env):
+    eid = planned(env, "A", worry_id="W0001")
+    data = EpisodeData.load(connect(env.ssd_root), env.ssd_root, eid)
+    fid = next(iter(data.facts))
+    cid = data.plan["selection"][0]["candidate_id"]
+
+    def issues(text, kind="narration"):
+        ch = {
+            "chapter_id": "ch9",
+            "fact_ids": [fid],
+            "segments": [{"seg_id": "ch9-s1", "kind": kind, "text": text}],
+        }
+        return gates.g1_chapter(ch, data, [], allowed_facts={fid}, offered_facts={fid})
+
+    for raw in ("一九〇六年のことです。", "千九百六年のことです。", "1906（明治39）年のことです。"):
+        assert any(i.startswith("ch9-s1：背景：") for i in issues(raw)), raw
+    # 背景の段落（事実の記号がある段落）では、年齢や月の数も直接書かない
+    assert any("数「38歳」" in i for i in issues(f"{{{{fact:{fid}}}}}そのころ作者は38歳でした。"))
+    assert issues("今は38歳の人も、20代の人もいます。") == []  # 背景でない段落の年齢は許す
+    assert issues("人生100年時代と言われます。2020年代の今も変わりません。") == []
+    assert any(
+        "単位や括弧を重ねている" in i for i in issues(f"{{{{fact:{fid}.year}}}}年のことです。")
+    )
+    assert any(
+        "単位や括弧を重ねている" in i for i in issues(f"『{{{{title:{cid}}}}}』を読みます。")
+    )
+    assert any("章タイトルに事実の記号" in i for i in issues(f"{{{{fact:{fid}}}}}", "transition"))
+    assert any("閉じていない記号" in i for i in issues("{{fact:" + fid))
+
+
+def test_marker_stays_on_fact_sentence(env):
+    eid = planned(env, "A", worry_id="W0001")
+    data = EpisodeData.load(connect(env.ssd_root), env.ssd_root, eid)
+    fid = next(iter(data.facts))
+    judge = SentenceJudge()
+    fj = gates.FaithfulnessJudge(judge, PROMPTS_DIR)
+    ch = {
+        "chapter_id": "ch9",
+        "role": "classic",
+        "title": "t",
+        "facts": [fid],
+        "segments": [
+            {
+                "seg_id": "ch9-s1",
+                "kind": "narration",
+                "text": f"前置きです。{{{{fact:{fid}}}}}そして続きです。",
+            }
+        ],
+    }
+    assert fj.judge(ch, data) == []
+    lines = [x for x in judge.users[-1].splitlines() if x.startswith("S")]
+    assert lines[0].endswith("前置きです。")
+    assert lines[1].endswith(f"〔{fid}〕。") and "〔" not in lines[2]
+    assert len(lines) == 3  # 印だけの文はできない
+
+
+def test_opening_context_ending_and_title_are_judged(env):
+    eid = planned(env, "A", worry_id="W0001")
+    judge = SentenceJudge()
+    r, _ = run(env, eid, writer_llm=FactWriter(), judge_llm=judge)
+    assert r.state == "script_done"
+    roles = {ch["chapter_id"]: ch["role"] for ch in r.script["chapters"]}
+    judged = [u for u in judge.users if "番号つきの文" in u]
+    titles = [re.search(r"台本の章（「(.+?)」）", u).group(1) for u in judged]
+    chapters = {ch["title"]: ch["role"] for ch in r.script["chapters"]}
+    assert {"opening", "context", "ending"} <= {chapters.get(t) for t in titles}, roles
+    assert any("（動画のタイトル案）" in u for u in judged)
+
+
+def test_passage_problem_does_not_drop_background(env):
+    class PassageJudge(SentenceJudge):
+        def complete(self, system, user, schema=None):
+            out = json.loads(super().complete(system, user, schema))
+            if "番号つきの文" in user and "〔" in user:
+                out["passage_problems"] = ["一節の意味を取り違えている"]
+            return json.dumps(out, ensure_ascii=False)
+
+    eid = planned(env, "A", worry_id="W0001")
+    r, logs = run(env, eid, writer_llm=FactWriter(), judge_llm=PassageJudge())
+    assert not any("背景の事実を外して" in x for x in logs)  # 一節の問題では背景を外さない
+    assert r.review_required and r.verification["G3"]["needs_human"]

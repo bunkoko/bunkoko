@@ -318,12 +318,21 @@ def work_row(
 
 
 def person_rows(
-    works: list[AozoraWork], aliases: dict[str, str] | None = None
+    works: list[AozoraWork],
+    aliases: dict[str, str] | None = None,
+    listed: dict[str, AozoraWork] | None = None,
 ) -> list[dict[str, Any]]:
+    """作品に載る人物。別名の代表の人物が対象の作品に載っていなくても、作品CSV全体（listed）
+    から代表の人物を足す（代表の人物に事実を付けるため）。"""
+    aliases = aliases or {}
     seen: dict[str, dict[str, Any]] = {}
-    for w in works:
+    heads = {aliases[p["person_id"]] for w in works for p in w.persons if p["person_id"] in aliases}
+    extra = [w for w in (listed or {}).values() if any(p["person_id"] in heads for p in w.persons)]
+    for w in list(works) + extra:
         translated = any(p["role"] == "translator" for p in w.persons)
         for p in w.persons:
+            if w in extra and p["person_id"] not in heads:
+                continue
             key = f"{SOURCE}:person:{p['person_id']}"
             foreign = translated and p["role"] == "author"
             seen.setdefault(
@@ -337,7 +346,7 @@ def person_rows(
                     "nationality": None if foreign else "JP",
                     "allied": None if foreign else False,
                     "canonical_id": f"{SOURCE}:person:"
-                    + (aliases or {}).get(p["person_id"], p["person_id"]),
+                    + aliases.get(p["person_id"], p["person_id"]),
                 },
             )
     return list(seen.values())
@@ -421,5 +430,5 @@ def ingest(
     clean_dir = hdd_root / "clean" / SOURCE
     log(f"書誌と判定結果を書き込み中：{clean_dir}")
     write_rows(clean_dir / "works.parquet", rows, WORKS_SCHEMA)
-    write_rows(clean_dir / "persons.parquet", person_rows(works, aliases), PERSONS_SCHEMA)
+    write_rows(clean_dir / "persons.parquet", person_rows(works, aliases, listed), PERSONS_SCHEMA)
     return IngestResult(len(works), usable, fetched, skipped, dict(blocked), errors)

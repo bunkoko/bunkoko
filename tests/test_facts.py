@@ -1,5 +1,7 @@
 """背景の事実：和暦・事実の決まり・自動の事実・読み込み・選び方・企画への付け方。"""
 
+# ruff: noqa: E501
+
 from datetime import date
 
 import pytest
@@ -27,6 +29,8 @@ def test_era_year_rules():
     assert era_year(1989, 1, 7) == "昭和64年" and era_year(1989, 1, 8) == "平成元年"
     assert era_year(2020) == "令和2年"
     assert years_since(1913, TODAY) == 110 and years_since(2020, TODAY) is None
+    assert years_since(1906, TODAY, 12) == 110  # 1906年12月から2026年10月は119年あまり
+    assert years_since(1906, TODAY, 9) == 120
 
 
 def test_fact_problems():
@@ -50,7 +54,19 @@ def test_fact_problems():
         "「」の引用" in p
         for p in bad(text_ja="『比べる心』は、1906年に架空の町で「書く」と言いました。")
     )
-    assert any("死因" in p for p in bad(kind="death_cause"))
+    assert any("kind death_cause は使えない" in p for p in bad(kind="death_cause"))
+    died = "甲野一郎は、1906年に架空の町で自ら命を絶ちました。"
+    assert any(
+        "死因" in p
+        for p in bad(
+            text_ja=died, slots={"person": "甲野一郎", "year": "1906", "place": "架空の町"}
+        )
+    )
+    # 年の項目の数字の一部でも、別の数（年齢など）は項目にする
+    age = "『比べる心』は、1906年に架空の町で19歳のときに書かれました。"
+    assert any("数字「19」が項目に無い" in p for p in bad(text_ja=age))
+    assert any("実在する" in p for p in bad(date="1906-02-30"))
+    assert any("interest" in p for p in bad(interest="多い"))
     assert any("合わない" in p for p in bad(date="1907"))
     assert any("数字だけ" in p for p in bad(slots={**FACTS[0]["slots"], "year": "千九百六年"}))
 
@@ -121,6 +137,29 @@ def test_read_curated_rejects_all_on_any_problem(tmp_path):
         read_curated(tmp_path, known)
     assert "確かめた出典に wikipedia は使えない" in str(e.value)
     assert "確かめた出典（role=confirm、ウィキペディア以外）が無い" in str(e.value)
+
+    # 種類を web にしても、ウィキペディアの URL は確かめた出典にならない
+    src = {"fact_id": "F-w001-001", "seq": 1, "kind": "web", "role": "confirm", "title": "記事",
+           "url": "https://ja.wikipedia.org/w/index.php?oldid=1", "locator": "", "excerpt": "",
+           "license": "CC BY-SA 4.0", "credit": "x"}  # fmt: skip
+    write_curated(tmp_path, FACTS[:1], [src])
+    with pytest.raises(FactsError, match="ウィキペディアは確かめた出典"):
+        read_curated(tmp_path, known)
+    # seq の重複・空
+    book = {"fact_id": "F-w001-001", "seq": 1, "kind": "book", "role": "confirm", "title": "本",
+            "url": "", "locator": "p.1", "excerpt": "", "license": "事実のみ", "credit": ""}  # fmt: skip
+    write_curated(tmp_path, FACTS[:1], [book, {**book, "role": "lead"}])
+    with pytest.raises(FactsError, match="重複"):
+        read_curated(tmp_path, known)
+    write_curated(tmp_path, FACTS[:1], [{**book, "seq": ""}])
+    with pytest.raises(FactsError, match="seq が数字ではない"):
+        read_curated(tmp_path, known)
+    # Excel で保存した BOM 付きの CSV も読める
+    write_curated(tmp_path, FACTS[:1], [book])
+    for name in ("facts.csv", "fact_sources.csv"):
+        path = tmp_path / name
+        path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+    assert [f.fact_id for f in read_curated(tmp_path, known)[0]] == ["F-w001-001"]
 
     write_curated(tmp_path, [{**FACTS[0], "checked_by": ""}])
     with pytest.raises(FactsError, match="checked_by"):
@@ -206,3 +245,22 @@ def test_cli_facts_commands(settings_file, tmp_path):
     r = run(app, ["facts", "todo", "--episode", eid, *st])
     assert r.exit_code == 0 and "甲野一郎（aozora:person:p1）：確かめた事実 0・自動 1" in r.output
     assert f"koten facts draft --episode {eid}" in r.output
+
+
+def test_translation_fact_first_and_once_per_episode(env):
+    from koten.facts.store import text_sha
+
+    conn = connect(env.ssd_root)
+    with conn:
+        conn.execute(
+            "INSERT INTO facts(fact_id, subject_type, subject_id, scope, kind, text_ja, slots, "
+            "origin, status, interest, text_sha) VALUES ('A-w002-translation', 'work', "
+            "'aozora:002', 'translation', 'translation', 'ここで読む『妬みの話』は、乙野の訳です。', "
+            "'{}', 'auto', 'auto', 2, ?)",
+            (text_sha("x"),),
+        )
+    kw = {"work_ids": ["aozora:002"], "person_ids": [], "limit": 3}
+    assert select_facts(conn, **kw) == ["A-w002-translation"]
+    # 最近の回で使っていても、訳の事実は付ける。この回でもう付けたなら付けない
+    assert select_facts(conn, **kw, exclude={"A-w002-translation"}) == ["A-w002-translation"]
+    assert select_facts(conn, **kw, taken={"A-w002-translation"}) == []

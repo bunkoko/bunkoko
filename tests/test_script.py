@@ -87,7 +87,20 @@ class FakeJudge:
 
     def complete(self, system, user, schema=None):
         self.calls += 1
-        if self.fail > 0:
+        if "番号つきの文" in user:
+            # 1文ずつの判定（オープニング・悩みの場面・エンディング、背景を使った章）は全部合格
+            sentences = [
+                {
+                    "n": int(n),
+                    "type": "background" if re.findall(r"〔([^〔〕]+)〕", t) else "connective",
+                    "supported_by": re.findall(r"〔([^〔〕]+)〕", t),
+                    "ok": True,
+                    "problem": "",
+                }
+                for n, t in re.findall(r"^S(\d+)（[^）]+）：(.*)$", user, flags=re.M)
+            ]
+            return json.dumps({"sentences": sentences, "passage_problems": []})
+        if self.fail > 0:  # 一節の章（judge_v1）だけを落とす
             self.fail -= 1
             return json.dumps(
                 {"faithful": False, "problems": ["一節が言っていないことを書いている"]},

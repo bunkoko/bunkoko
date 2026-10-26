@@ -41,9 +41,14 @@ def era_year(year: int, month: int | None = None, day: int | None = None) -> str
     return None
 
 
-def years_since(year: int, today: date, step: int = 10) -> int | None:
-    """「出てから○年あまり」の○（step 年単位で切り下げる。年がたっても言い直さずに済む）。"""
+def years_since(year: int, today: date, month: int | None = None, step: int = 10) -> int | None:
+    """「出てから○年あまり」の○（step 年単位で切り下げる。年がたっても言い直さずに済む）。
+
+    月が分かれば、その月をまだ過ぎていない年は数えない（日は分からないので、同じ月も数えない）。
+    """
     n = today.year - year
+    if month is not None and today.month <= month:
+        n -= 1
     if n < step:
         return None
     return n // step * step

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 
 from koten.net import Fetcher
 
@@ -21,6 +21,8 @@ WIKIPEDIA_API = "https://ja.wikipedia.org/w/api.php"
 AOZORA_AUTHOR = "P7311"  # 青空文庫著作家識別子（例：879。0埋めなし）
 AOZORA_WORK = "P7312"  # 青空文庫作品識別子（例：000879/card127）
 WEAK_REF = {"P143", "P4656", "P813"}  # 取り込み元・取り込みURL・参照日だけの出典は弱い
+UNSURE = {"P1480", "P1319", "P1326"}  # 「頃」などの限定・これより後・これより前（年が確かでない）
+WIKI_HOSTS = ("wikipedia.org", "wikimedia.org", "wikiwand.com")
 
 # 読む項目（死因 P509・死に方 P1196・肖像 P18 は取らない）
 PERSON_PROPS = {
@@ -126,14 +128,22 @@ def claims(e: dict[str, Any], props: dict[str, str]) -> list[Claim]:
             refs = []
             strong = False
             for ref in st.get("references") or []:
-                keys = set((ref.get("snaks") or {}).keys())
-                if keys - WEAK_REF:
-                    strong = True
+                snaks = ref.get("snaks") or {}
+                urls = [
+                    _value((x or {}).get("datavalue") or {}) or "" for x in snaks.get("P854", [])
+                ]
+                wiki_only = urls and all(
+                    (urlparse(u).hostname or "").endswith(WIKI_HOSTS) for u in urls
+                )
+                if set(snaks) - WEAK_REF - ({"P854"} if wiki_only else set()):
+                    strong = True  # ウィキペディアを指すだけの出典は弱い
                 for p in ("P248", "P854"):
-                    for snak in (ref.get("snaks") or {}).get(p, []):
+                    for snak in snaks.get(p, []):
                         v = _value((snak or {}).get("datavalue") or {})
                         if v:
                             refs.append(f"{p}:{v}")
+            if set((st.get("qualifiers") or {}).keys()) & UNSURE:
+                strong = False  # 「頃」などの限定つきの年は、確かめる手がかりにしない
             out.append(Claim(prop, label, value, strong, refs))
     return out
 
@@ -142,6 +152,8 @@ def _value(dv: dict[str, Any]) -> str | None:
     t, v = dv.get("type"), dv.get("value")
     if t == "time":
         time, precision = v["time"], int(v.get("precision", 9))
+        if precision < 9 or time.startswith("-"):
+            return None  # 10年・100年単位の日付や紀元前は、年として使わない
         ymd = time.lstrip("+").split("T")[0]
         y, m, d = (ymd.split("-") + ["00", "00"])[:3]
         if precision >= 11 and m != "00" and d != "00":

@@ -165,14 +165,17 @@ def run_script(
     used_facts: list[str] = []  # これまでの章で使った背景の事実（あとの章で指してよい）
 
     def attempt_chapter(chapter: dict[str, Any], use_facts: bool) -> tuple:
-        allowed = set(used_facts) | (set(chapter.get("fact_ids") or []) if use_facts else set())
+        offered = set(chapter.get("fact_ids") or []) if use_facts else set()
+        allowed = set(used_facts) | offered
         feedback: list[str] | None = None
         for attempt in range(cfg.retries + 1):
             draft = writer.write_chapter(data, chapter, feedback, use_facts=use_facts)
-            issues1 = gates.g1_chapter(draft.chapter, data, draft.issues, allowed)
+            issues1 = gates.g1_chapter(draft.chapter, data, draft.issues, allowed, offered)
             issues3: list[str] = []
             if not issues1 and judge.needs_judge(draft.chapter):
-                issues3 = judge.judge(draft.chapter, data, used_facts)
+                # オープニングは動画のタイトル案も一緒に判定する
+                title_text = draft.episode_title if chapter["role"] == "opening" else ""
+                issues3 = judge.judge(draft.chapter, data, used_facts, title_text)
             # 長さと視聴の確かめは G1・G3 が通ってから見る（尺の本当の確かめは音声のあとの G7）
             length = None
             hook: list[str] = []
@@ -194,13 +197,16 @@ def run_script(
 
     for chapter in data.plan["chapters"]:
         offered = [f for f in chapter.get("fact_ids") or [] if f in data.facts]
-        draft, issues1, issues3, length, hook, title = attempt_chapter(chapter, True)
-        if offered and (issues1 or issues3):
-            # 背景のせいで通らない章は、背景を外して書き直す（回を止めない。D-012）
+        result = attempt_chapter(chapter, True)
+        draft, issues1, issues3, length, hook, title = result
+        if offered and any(gates.BG in x for x in issues1 + issues3):
+            # 背景のせいで通らない章は、背景を外して書き直す（回を止めない。D-012）。
+            # 外した版が全部通ったときだけ使い、通らなければ最初の結果のまま（悪くしない）
             log(f"  {chapter['chapter_id']}：背景の事実を外して書き直します")
-            reason = "、".join(issues1 + issues3)[:80]
-            draft, issues1, issues3, length, hook, title = attempt_chapter(chapter, False)
-            if not issues1 and not issues3:
+            reason = "、".join(x for x in issues1 + issues3 if gates.BG in x)[:80]
+            plain = attempt_chapter(chapter, False)
+            if not plain[1] and not plain[2]:
+                draft, issues1, issues3, length, hook, title = plain
                 viewing.append(f"{chapter['chapter_id']}：背景を外した（{reason}）")
         elif offered and not draft.chapter.get("facts"):
             viewing.append(f"{chapter['chapter_id']}：背景の事実を渡したが使っていない")

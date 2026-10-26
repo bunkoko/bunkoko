@@ -62,11 +62,17 @@ def select_facts(
     person_ids: list[str],
     limit: int,
     exclude: set[str] | None = None,
+    taken: set[str] | None = None,
 ) -> list[str]:
-    """作品と人物に付いた事実から、limit 件まで選ぶ（並びは KIND_RANK と面白さ）。"""
+    """作品と人物に付いた事実から、limit 件まで選ぶ（並びは KIND_RANK と面白さ）。
+
+    exclude：最近の回で使った事実（訳の事実は除外しない）。taken：この回でもう付けた事実
+    （訳の事実も含め、同じ回で2度は付けない）。
+    """
     if limit <= 0 or not (work_ids or person_ids):
         return []
     exclude = exclude or set()
+    taken = taken or set()
     subjects = list(dict.fromkeys(work_ids + canonical(conn, person_ids)))
     marks = ",".join("?" for _ in subjects)
     rows = conn.execute(
@@ -83,7 +89,11 @@ def select_facts(
     for r in linked:
         if set(json.loads(r["links"] or "[]")) & set(subjects):
             pool.setdefault(r["fact_id"], dict(r))
-    picked = [f for f in pool.values() if f["fact_id"] not in exclude or f["kind"] in ALWAYS]
+    picked = [
+        f
+        for f in pool.values()
+        if f["fact_id"] not in taken and (f["fact_id"] not in exclude or f["kind"] in ALWAYS)
+    ]
     picked.sort(
         key=lambda f: (
             f["kind"] not in ALWAYS,

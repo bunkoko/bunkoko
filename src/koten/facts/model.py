@@ -27,6 +27,23 @@ SLOT_NAME = re.compile(r"^(year|month|age|number|person|place|org|title|periodic
 STATUSES_USABLE = ("auto", "verified")
 SCOPES = ("person", "work", "original_work", "translation", "era")
 SENSITIVE = ("none", "health", "religion", "politics")
+# 使える種類（自動の事実と、下書きで作る事実）。死因などは種類でも文でも断る
+KINDS = (
+    "lifespan",
+    "translation",
+    "original_title",
+    "first_pub",
+    "years_since",
+    "work_origin",
+    "life_event",
+    "residence",
+    "relation",
+    "era_event",
+)
+DEATH_CAUSE = re.compile(
+    r"命を絶|自ら命|入水|心中|服毒|縊死|自殺|自死|死因|病死|戦死|"
+    r"(?:で|により|のため|が原因で)(?:亡くな|死去|死ん|逝去)"
+)
 DIGITS = re.compile(r"[0-9０-９]+")
 
 
@@ -101,9 +118,11 @@ class Fact:
             out.append(f"scope {self.scope} は使えない（{'・'.join(SCOPES)}）")
         if self.sensitive not in SENSITIVE:
             out.append(f"sensitive {self.sensitive} は使えない（{'・'.join(SENSITIVE)}）")
-        if self.kind in ("death_cause", "cause_of_death", "suicide"):
-            out.append("死因の事実は使わない")
+        if self.kind not in KINDS:
+            out.append(f"kind {self.kind} は使えない（{'・'.join(KINDS)}）")
         text = self.text_ja.strip()
+        if DEATH_CAUSE.search(text):
+            out.append("死因・亡くなり方の事実は使わない")
         if not text.endswith("。"):
             out.append("text_ja は「。」で終える")
         if len(text) > 100:
@@ -113,7 +132,9 @@ class Fact:
             if m.group(1) not in periodicals:
                 out.append("text_ja に「」の引用を入れない（雑誌・新聞名は periodical の項目に）")
                 break
-        covered = ""
+        if not isinstance(self.slots, dict):
+            return out + ["slots は項目名と値の組（JSON のオブジェクト）にする"]
+        tokens: set[str] = set()
         for name, value in self.slots.items():
             try:
                 kind = slot_type(name)
@@ -130,17 +151,17 @@ class Fact:
                 out.append(f"項目 {name} に数字が無い（{v}）")
             if v not in text:
                 out.append(f"項目 {name} の値「{v}」が text_ja に無い")
-            covered += v + "\n"
+            tokens.update(DIGITS.findall(v))
         for m in DIGITS.finditer(text):
-            if m.group(0) not in covered:
+            if m.group(0) not in tokens:
                 out.append(f"text_ja の数字「{m.group(0)}」が項目に無い（年や数は項目にする）")
-        if self.date and not re.fullmatch(r"\d{4}(-\d{2}(-\d{2})?)?", self.date):
-            out.append(f"date は YYYY・YYYY-MM・YYYY-MM-DD（{self.date}）")
+        if self.date and not _valid_date(self.date):
+            out.append(f"date は実在する YYYY・YYYY-MM・YYYY-MM-DD にする（{self.date}）")
         if self.date and "year" in self.slots and not self.date.startswith(str(self.slots["year"])):
             out.append(f"date（{self.date}）と項目 year（{self.slots['year']}）が合わない")
         if self.origin == "curated" and self.status == "verified" and not self.checked_by:
             out.append("確認した人（checked_by）が無い")
-        if not 1 <= int(self.interest or 0) <= 3:
+        if not str(self.interest).isdigit() or not 1 <= int(self.interest) <= 3:
             out.append("interest は1〜3")
         return out
 
@@ -184,6 +205,19 @@ class Fact:
             checked_at=r.get("checked_at") or "",
             links=json.loads(links) if isinstance(links, str) else list(links),
         )
+
+
+def _valid_date(d: str) -> bool:
+    from datetime import date as _date
+
+    if not re.fullmatch(r"\d{4}(-\d{2}(-\d{2})?)?", d):
+        return False
+    parts = [int(x) for x in d.split("-")]
+    try:
+        _date(parts[0], parts[1] if len(parts) > 1 else 1, parts[2] if len(parts) > 2 else 1)
+    except ValueError:
+        return False
+    return True
 
 
 def _date_parts(d: str) -> tuple[int | None, int | None, int | None]:

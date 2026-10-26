@@ -1174,12 +1174,18 @@ def facts_draft(
     cfg = DraftConfig(**{k: v for k, v in conf.items() if k in DraftConfig.__dataclass_fields__})
     wikidata = _make_fetcher(s, hdd / "raw" / "wikidata")
     wikipedia = _make_fetcher(s, hdd / "raw" / "wikipedia")
+    import httpx
+
+    from koten.net import ApiError
+
     llm = make_llm(s.section("llm.facts"))
-    taken = config_fact_ids(s.config_dir)
-    rows = []
-    try:
-        for subj in subjects:
-            typer.echo(f"{subj.name}（{subj.subject_id}）を調べています")
+    review_dir = hdd / "exports" / "facts"
+    taken = config_fact_ids(s.config_dir, review_dir)
+    rows: list = []
+    failed: list[str] = []
+    for subj in subjects:
+        typer.echo(f"{subj.name}（{subj.subject_id}）を調べています")
+        try:
             rows += draft_subject(
                 subj,
                 wikidata=wikidata,
@@ -1190,18 +1196,27 @@ def facts_draft(
                 taken_ids=taken,
                 log=typer.echo,
             )
-    except LLMError as e:
-        typer.secho(str(e), fg="red", err=True)
-        raise typer.Exit(1) from e
-    out = hdd / "exports" / "facts" / f"review_{name}_{datetime.now():%Y%m%d-%H%M}.csv"
-    write_review(out, rows)
-    typer.echo(f"下書き {len(rows)} 件：{out}")
+        except (LLMError, httpx.HTTPError, ApiError, KeyError, ValueError) as e:
+            # 1人の失敗で、ほかの下書き（使った利用枠）を捨てない
+            failed.append(subj.name)
+            typer.secho(f"  {subj.name}：下書きできませんでした（{e}）", fg="red", err=True)
+    if rows:
+        out = review_dir / f"review_{name}_{datetime.now():%Y%m%d-%H%M}.csv"
+        write_review(out, rows)
+        typer.echo(f"下書き {len(rows)} 件：{out}")
+    else:
+        typer.echo("下書きはありません")
     typer.echo(
         "確かめ方：各行を、ウィキペディア以外の資料（本・国会図書館の書誌・青空文庫の本文など）で"
         "確かめ、confirm_kind・confirm_title・confirm_url か confirm_locator・confirm_license・"
         "checked_by を書き、使う行の accept に 1 を書く。"
         "そのあと koten facts accept --from で取り込む"
     )
+    if failed:
+        typer.secho(
+            f"下書きできなかった対象：{'、'.join(failed)}（もう一度実行できます）", fg="red"
+        )
+        raise typer.Exit(1)
 
 
 @facts_app.command("accept")

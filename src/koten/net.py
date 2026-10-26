@@ -135,7 +135,16 @@ class Fetcher:
         """API の応答（JSON）を取り、raw_dir/subdir/ に URL のハッシュの名前で控える。"""
         name = hashlib.sha256(url.encode("utf-8")).hexdigest()[:24]
         path, _ = self.fetch(url, f"{subdir}/{name}.json")
-        return json.loads(path.read_text("utf-8"))
+        data = json.loads(path.read_text("utf-8"))
+        if isinstance(data, dict) and "error" in data:
+            # MediaWiki は 200 でエラーを返すことがある。控えを消し、次の実行で取り直す
+            path.unlink(missing_ok=True)
+            raise ApiError(f"{url}：{data['error']}")
+        return data
+
+
+class ApiError(RuntimeError):
+    """API がエラーの JSON を返した（控えは残さない）。"""
 
 
 def retry_after(resp: httpx.Response, default: float = 5.0, cap: float = 120.0) -> float:

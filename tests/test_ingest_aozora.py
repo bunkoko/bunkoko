@@ -1,5 +1,7 @@
 """青空文庫の取得〜チャンク化を、フィクスチャと偽のHTTPで通す（M1）。"""
 
+# ruff: noqa: E501
+
 import json
 
 import httpx
@@ -243,3 +245,19 @@ def test_person_aliases_merge_same_person():
     assert r["translator_names"] == ["村岡博"]
     only = aozora.work_row(works["703"], License.PD_JP, "", None, aliases)
     assert only["author_display"] == ["岡倉一"] and only["author_ids"] == ["aozora:person:000012"]
+
+
+def test_alias_head_outside_selection_gets_a_person_row():
+    """代表の人物（作品の多い別名）が対象外の作品にしか載っていなくても、persons に入る。"""
+    rows = [
+        row("800", "随想集", "NDC 914", "新字新仮名", "000020", "徳冨", "健次郎", "著者", "1927-09-18", birth="1868-12-08"),
+        row("801", "小説一", "NDC 913", "新字新仮名", "000021", "徳冨", "蘆花", "著者", "1927-09-18", birth="1868-12-08"),
+        row("802", "小説二", "NDC 913", "新字新仮名", "000021", "徳冨", "蘆花", "著者", "1927-09-18", birth="1868-12-08"),
+    ]  # fmt: skip
+    listed = aozora.read_work_list(list_zip(rows))
+    aliases = aozora.person_aliases(listed)
+    selected = aozora.select_works(listed, CONF)
+    assert [w.work_id for w in selected] == ["800"]
+    persons = {p["person_id"]: p for p in aozora.person_rows(selected, aliases, listed)}
+    assert set(persons) == {"aozora:person:000020", "aozora:person:000021"}
+    assert persons["aozora:person:000020"]["canonical_id"] == "aozora:person:000021"

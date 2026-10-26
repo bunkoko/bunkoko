@@ -299,9 +299,10 @@ def draft_subject(
 
 
 def _prefill_wikidata(row: dict[str, Any], f: Fact, found: list[wm.Claim], qid: str) -> None:
-    """年が、出典つきの Wikidata の日付（生没年・刊行日）と合えば、確かめる候補に書いておく。
+    """年が、出典つきの Wikidata の日付（生没年・刊行日）と合えば、確かめる手がかりに書き足す。
 
-    書いておくだけで、確認者（checked_by）は人が書く。
+    確かめた出典（confirm_*）には書かない。年が合っても、文の主張まで確かめたことにはならない
+    ため。確かめた出典は人が書く。
     """
     year = str(f.slots.get("year") or "")
     if not year:
@@ -309,15 +310,11 @@ def _prefill_wikidata(row: dict[str, Any], f: Fact, found: list[wm.Claim], qid: 
     for c in found:
         if c.prop in ("P569", "P570", "P577") and c.referenced and c.value.startswith(year):
             refs = "、".join(c.refs) or "あり"
-            row.update(
-                {
-                    "confirm_kind": "wikidata_ref",
-                    "confirm_title": f"Wikidata {qid}（{c.label}・出典：{refs}）",
-                    "confirm_url": f"https://www.wikidata.org/wiki/{qid}#{c.prop}",
-                    "confirm_excerpt": f"{c.prop}={c.value}",
-                    "confirm_license": "CC0",
-                }
+            hint = (
+                f"Wikidata {qid}#{c.prop}（{c.label}）={c.value}（出典：{refs}）："
+                "年だけ合う。文の主張は別の資料で確かめる"
             )
+            row["confirm_hint"] = "；".join(x for x in (row.get("confirm_hint"), hint) if x)
             return
 
 
@@ -329,12 +326,17 @@ def write_review(path: Path, rows: list[dict[str, Any]]) -> None:
         w.writerows(rows)
 
 
-def config_fact_ids(config_dir: Path) -> set[str]:
-    path = config_dir / "facts.csv"
-    if not path.exists():
-        return set()
-    with path.open(encoding="utf-8") as f:
-        return {r["fact_id"] for r in csv.DictReader(f)}
+def config_fact_ids(config_dir: Path, review_dir: Path | None = None) -> set[str]:
+    """使い済みの事実ID（config/facts.csv と、まだ取り込んでいない下書きの CSV）。"""
+    paths = [config_dir / "facts.csv"]
+    if review_dir is not None and review_dir.exists():
+        paths += sorted(review_dir.glob("review_*.csv"))
+    ids: set[str] = set()
+    for path in paths:
+        if path.exists():
+            with path.open(encoding="utf-8-sig") as f:
+                ids |= {r["fact_id"] for r in csv.DictReader(f) if r.get("fact_id")}
+    return ids
 
 
 # --- 取り込み ---------------------------------------------------------------
@@ -412,7 +414,7 @@ def accept_review(
 def _read(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         return []
-    with path.open(encoding="utf-8") as f:
+    with path.open(encoding="utf-8-sig") as f:
         return list(csv.DictReader(f))
 
 

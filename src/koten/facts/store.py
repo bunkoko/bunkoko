@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from koten.facts.dates import years_since
 from koten.facts.model import Fact
@@ -210,7 +211,7 @@ def derive_auto(
                 ),
                 url,
             )
-            n = years_since(int(year), today)
+            n = years_since(int(year), today, int(month))
             if n:
                 add(
                     Fact(
@@ -258,6 +259,13 @@ def read_curated(
         except json.JSONDecodeError as e:
             problems.append(f"{where}：slots・links が JSON ではない（{e}）")
             continue
+        if not isinstance(slots, dict) or not isinstance(links, list):
+            problems.append(f"{where}：slots は {{…}}、links は […] の JSON にする")
+            continue
+        interest = (r.get("interest") or "2").strip()
+        if not interest.isdigit():
+            problems.append(f"{where}：interest は1〜3の数字")
+            continue
         f = Fact(
             fact_id=(r.get("fact_id") or "").strip(),
             subject_type=(r.get("subject_type") or "").strip(),
@@ -270,7 +278,7 @@ def read_curated(
             origin="curated",
             status="verified",
             sensitive=(r.get("sensitive") or "none").strip(),
-            interest=int(r.get("interest") or 2),
+            interest=int(interest),
             checked_by=(r.get("checked_by") or "").strip(),
             checked_at=(r.get("checked_at") or "").strip(),
             links=links,
@@ -291,12 +299,13 @@ def read_curated(
             problems.append(f"{where}：除外カテゴリ「{hit[0]}」の語（{hit[1]}）")
         facts.append(f)
     sources: list[Source] = []
+    seen_src: set[tuple[str, int]] = set()
     for i, r in enumerate(srows, start=2):
         where = f"fact_sources.csv {i}行目（{r.get('fact_id', '')}）"
         try:
             s = Source(
                 fact_id=(r.get("fact_id") or "").strip(),
-                seq=int(r.get("seq") or 0),
+                seq=int((r.get("seq") or "").strip()),
                 kind=(r.get("kind") or "").strip(),
                 role=(r.get("role") or "").strip(),
                 title=(r.get("title") or "").strip(),
@@ -307,12 +316,19 @@ def read_curated(
                 credit=(r.get("credit") or "").strip(),
             )
         except ValueError:
-            problems.append(f"{where}：seq が数字ではない")
+            problems.append(f"{where}：seq が数字ではない（空も不可）")
             continue
+        if (s.fact_id, s.seq) in seen_src:
+            problems.append(f"{where}：fact_id と seq の組が重複")
+        seen_src.add((s.fact_id, s.seq))
         if s.fact_id not in seen:
             problems.append(f"{where}：facts.csv に無い事実")
         if s.role not in ("confirm", "lead"):
             problems.append(f"{where}：role は confirm か lead")
+        if s.role == "confirm" and _is_wikipedia(s):
+            problems.append(
+                f"{where}：ウィキペディアは確かめた出典（confirm）にできない（手がかり lead）"
+            )
         if s.role == "confirm" and s.kind not in CONFIRM_KINDS:
             problems.append(
                 f"{where}：確かめた出典に {s.kind} は使えない（{'・'.join(CONFIRM_KINDS)}）"
@@ -326,7 +342,11 @@ def read_curated(
         if "CC BY" in s.license.upper() and not s.credit:
             problems.append(f"{where}：CC BY には出典表記（credit）が要る")
         sources.append(s)
-    confirmed = {s.fact_id for s in sources if s.role == "confirm" and s.kind in CONFIRM_KINDS}
+    confirmed = {
+        s.fact_id
+        for s in sources
+        if s.role == "confirm" and s.kind in CONFIRM_KINDS and not _is_wikipedia(s)
+    }
     for f in facts:
         if f.fact_id not in confirmed:
             problems.append(
@@ -337,10 +357,20 @@ def read_curated(
     return facts, sources
 
 
+def _is_wikipedia(s: Source) -> bool:
+    host = (urlparse(s.url).hostname or "") if s.url else ""
+    names = f"{s.title} {s.credit}"
+    return (
+        host.endswith(("wikipedia.org", "wikimedia.org", "wikiwand.com"))
+        or "ウィキペディア" in names
+        or "wikipedia" in names.lower()
+    )
+
+
 def _read_csv(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         return []
-    with path.open(encoding="utf-8") as f:
+    with path.open(encoding="utf-8-sig") as f:  # Excel で保存した BOM 付きでも読む
         return list(csv.DictReader(f))
 
 

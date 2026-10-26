@@ -102,6 +102,7 @@ class Resolver:
             return w
         if kind == "fact":
             fid, _, slot = key.partition(".")
+            fid, slot = fid.strip(), slot.strip()
             f = self.facts.get(fid)
             if f is None:
                 raise UnresolvedPlaceholder(f"{{{{fact:{key}}}}}：この回の企画に無い事実")
@@ -130,4 +131,7 @@ class Resolver:
                 found.append(str(e))
         rest = PLACEHOLDER.sub("", text)
         found += [f"{m.group(0)}：使えない記号" for m in ANY_BRACES.finditer(rest)]
+        rest = ANY_BRACES.sub("", rest)
+        if "{{" in rest or "}}" in rest:
+            found.append("閉じていない記号（{{ か }} だけが残っている）")
         return found

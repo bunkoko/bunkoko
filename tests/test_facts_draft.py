@@ -166,6 +166,62 @@ def test_fetch_waits_on_429(tmp_path):
     assert len(server.calls) == 3
 
 
+def test_weak_and_unsure_wikidata_statements():
+    def st(time, precision=11, refs=None, qualifiers=None):
+        return {
+            "mainsnak": {
+                "datavalue": {"type": "time", "value": {"time": time, "precision": precision}}
+            },
+            "references": refs or [],
+            "qualifiers": qualifiers or {},
+        }
+
+    wiki_ref = [
+        {
+            "snaks": {
+                "P854": [
+                    {"datavalue": {"type": "string", "value": "https://ja.wikipedia.org/wiki/x"}}
+                ],
+                "P813": [{}],
+            }
+        }
+    ]
+    book_ref = [
+        {"snaks": {"P248": [{"datavalue": {"type": "wikibase-entityid", "value": {"id": "Q9"}}}]}}
+    ]
+    e = {
+        "claims": {
+            "P569": [st("+1880-02-03T00:00:00Z", refs=wiki_ref)],
+            "P570": [
+                st("+1940-00-00T00:00:00Z", precision=9, refs=book_ref, qualifiers={"P1480": [{}]})
+            ],
+            "P19": [],
+        }
+    }
+    by = {c.prop: c for c in wm.claims(e, wm.PERSON_PROPS)}
+    assert not by["P569"].referenced  # ウィキペディアを指すだけの出典は弱い
+    assert by["P570"].value == "1940" and not by["P570"].referenced  # 「頃」の限定つき
+    e["claims"]["P570"] = [st("+1900-00-00T00:00:00Z", precision=7, refs=book_ref)]
+    assert "P570" not in {c.prop for c in wm.claims(e, wm.PERSON_PROPS)}  # 世紀の精度は使わない
+
+
+def test_api_error_is_not_cached(tmp_path):
+    calls = []
+
+    def server(request):
+        calls.append(str(request.url))
+        if len(calls) == 1:
+            return httpx.Response(200, json={"error": {"code": "maxlag"}})
+        return httpx.Response(200, json={"query": {"search": [{"title": "Q1"}]}})
+
+    f = fetcher(tmp_path, server, "wikidata")
+    from koten.net import ApiError
+
+    with pytest.raises(ApiError):
+        wm.find_qid(f, "P7311", "1")
+    assert wm.find_qid(f, "P7311", "1") == "Q1" and len(calls) == 2
+
+
 def test_claims_skip_death_cause_and_mark_references():
     found = wm.claims(ENTITY["entities"]["Q100"], wm.PERSON_PROPS)
     by = {c.prop: c for c in found}
@@ -200,7 +256,8 @@ def test_draft_and_accept(env, tmp_path):
         and good["lead_url"] == "https://ja.wikipedia.org/w/index.php?oldid=42"
     )
     assert "数字「12」が項目に無い" in bad["problems"]
-    assert bad["confirm_kind"] == "wikidata_ref"  # 1880 が出典つきの生年月日と合う
+    # 1880 は出典つきの生年月日と合うが、確かめた出典には書かず、手がかりにだけ書く
+    assert bad["confirm_kind"] == "" and "P569" in bad["confirm_hint"]
     assert (
         "死因" not in llm.users[0] and "架空の町" in llm.users[0] and "（出典あり）" in llm.users[0]
     )

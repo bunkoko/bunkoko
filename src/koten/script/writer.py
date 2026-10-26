@@ -83,7 +83,7 @@ CHAPTER_SCHEMA = {
 }
 
 QUOTE_ONLY = re.compile(r"^\{\{quote:([^{}]+)\}\}$")
-FACT_REF = re.compile(r"\{\{fact:([^{}.]+)(?:\.[^{}]+)?\}\}")
+FACT_REF = re.compile(r"\{\{fact:\s*([^{}.\s]+)\s*(?:\.[^{}]+)?\}\}")
 STAT_ONLY = re.compile(r"^\{\{stat:([^{}]+)\}\}$")
 
 
@@ -183,7 +183,7 @@ class ScriptWriter:
                         items.append(
                             f"{{{{fact:{fid}.{name}_wareki}}}}＝{f.slot_text(name + '_wareki')}"
                         )
-                    except KeyError:
+                    except (KeyError, ValueError):
                         pass
             scope = {"original_work": "原著について", "translation": "この訳について"}.get(
                 f.scope, ""
@@ -261,7 +261,8 @@ class ScriptWriter:
     ) -> dict[str, Any]:
         """LLM の段落の並びに、ID・画面の種類・読み方を付けて章にする。"""
         cid = chapter["chapter_id"]
-        title = str(raw.get("title") or ROLE_NAMES.get(chapter["role"], "")).strip()[:40] or "章"
+        title = _cut(str(raw.get("title") or ROLE_NAMES.get(chapter["role"], "")).strip(), 40)
+        title = title or "章"
         segments: list[dict[str, Any]] = []
         if cid != "ch0":
             segments.append(
@@ -351,7 +352,8 @@ class ScriptWriter:
     ) -> dict[str, Any]:
         plan = data.plan
         human = next((c for c in plan["chapters"] if c.get("human_take")), plan["chapters"][-1])
-        title = next((d.episode_title for d in drafts if d.episode_title), "")
+        # 動画のタイトル案はオープニングの章のものだけ（判定役が一緒に確かめている）
+        title = next((d.episode_title for d in drafts if d.chapter["role"] == "opening"), "")
         if not title:
             title = f"{plan['worries'][0]['text']}――古典の一節で考える"
         comment = plan.get("question") or next(
@@ -386,6 +388,17 @@ class ScriptWriter:
             "verification": None,
             "timings": None,
         }
+
+
+def _cut(text: str, n: int) -> str:
+    """n 字で切る。記号（{{…}}）の途中では切らない。"""
+    if len(text) <= n:
+        return text
+    cut = text[:n]
+    start = cut.rfind("{{")
+    if start >= 0 and "}}" not in cut[start:]:
+        cut = cut[:start]
+    return cut.rstrip()
 
 
 def load_schema() -> dict[str, Any]:
