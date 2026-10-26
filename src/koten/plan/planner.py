@@ -699,9 +699,15 @@ def chapter_facts(
         return []
     works = list(dict.fromkeys(r["work_id"] for r in rows))
     people = [a for r in rows for a in (r.get("author_ids") or [])]
-    people += [t for r in rows for t in (r.get("translator_ids") or [])]
+    translators = [t for r in rows for t in (r.get("translator_ids") or [])]
     ids = select_facts(
-        conn, work_ids=works, person_ids=people, limit=limit, exclude=used, taken=taken
+        conn,
+        work_ids=works,
+        person_ids=people,
+        translator_ids=translators,
+        limit=limit,
+        exclude=used,
+        taken=taken,
     )
     taken.update(ids)
     return ids

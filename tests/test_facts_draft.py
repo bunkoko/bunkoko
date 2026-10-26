@@ -291,3 +291,54 @@ def test_draft_and_accept(env, tmp_path):
     assert (cfg / "facts.csv").read_text("utf-8") == before
     with (cfg / "fact_sources.csv").open(encoding="utf-8") as f:
         assert len(list(csv.DictReader(f))) == 2
+
+
+def test_work_found_by_author_and_title(tmp_path):
+    """作品の青空文庫ID（P7312）が Wikidata に無いとき、著者と題名で探す。"""
+
+    def server(request):
+        url = str(request.url)
+        if "list=search" in url and "P7312" in url:
+            return httpx.Response(200, json={"query": {"search": []}})
+        if "list=search" in url and "P7311" in url:
+            return httpx.Response(200, json={"query": {"search": [{"title": "Q100"}]}})
+        if "list=search" in url and "P50" in url:
+            return httpx.Response(
+                200, json={"query": {"search": [{"title": "Q201"}, {"title": "Q202"}]}}
+            )
+        if "wbgetentities" in url:
+            return httpx.Response(200, json={"entities": {
+                "Q201": {"labels": {"ja": {"value": "比べる心"}}},
+                "Q202": {"labels": {"ja": {"value": "比べる心について"}}},
+            }})  # fmt: skip
+        return httpx.Response(404)
+
+    f = fetcher(tmp_path, server, "wikidata")
+    assert wm.find_qid(f, "P7312", "000001/card1") is None
+    assert wm.find_work_by_author(f, "Q100", "比べる心") == "Q201"  # 題名がちょうど同じ1件だけ
+
+
+def test_cli_review_and_accept_use_newest_draft(env, tmp_path):
+    from typer.testing import CliRunner
+
+    from koten.cli import app
+
+    s, _ = env
+    review_dir = s.require_hdd() / "exports" / "facts"
+    rows = [{c: "" for c in __import__("koten.facts.draft", fromlist=["x"]).REVIEW_COLUMNS}]
+    rows[0].update({"fact_id": "F-pp1-001", "kind": "life_event", "scope": "person",
+                    "text_ja": "甲野一郎は、1905年に旅に出ました。", "confirm_hint": "架空の伝記"})  # fmt: skip
+    write_review(review_dir / "review_x.csv", rows)
+    st = ["--settings", str(s.path)]
+    r = CliRunner().invoke(app, ["facts", "review", *st])
+    assert (
+        r.exit_code == 0
+        and "甲野一郎は、1905年に旅に出ました。" in r.output
+        and "［まだ］" in r.output
+    )
+    r = CliRunner().invoke(app, ["facts", "accept", *st])
+    assert r.exit_code == 0 and "accept に 1 の行がありません" in r.output
+    r = CliRunner().invoke(app, ["facts", "accept", "--from", "/no/such/review_….csv", *st])
+    assert (
+        r.exit_code == 2 and "ファイルが見つかりません" in r.output and "review_x.csv" in r.output
+    )

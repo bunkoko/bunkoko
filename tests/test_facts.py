@@ -306,3 +306,22 @@ def test_attach_facts_to_existing_plan(settings_file, tmp_path):
         app, ["facts", "attach", "--episode", eid, "--settings", str(settings_file)]
     )
     assert r.exit_code == 2 and "--force" in r.output
+
+
+def test_translator_lifespan_is_not_attached(env):
+    conn = connect(env.ssd_root)
+    with conn:
+        conn.execute(
+            "INSERT INTO persons(person_id, canonical_id, name, birth_date, death_date) "
+            "VALUES ('aozora:person:t1', 'aozora:person:t1', '訳野訳子', '1890', '1950')"
+        )
+        conn.execute(
+            "INSERT INTO facts(fact_id, subject_type, subject_id, scope, kind, text_ja, slots, "
+            "origin, status, interest, text_sha) VALUES ('A-pt1-lifespan', 'person', "
+            "'aozora:person:t1', 'person', 'lifespan', '訳野訳子は1890年に生まれ、1950年に亡くなりました。', "
+            "'{}', 'auto', 'auto', 1, 'x')"
+        )
+    kw = {"work_ids": ["aozora:002"], "person_ids": [], "limit": 3}
+    assert "A-pt1-lifespan" not in select_facts(conn, **kw, translator_ids=["aozora:person:t1"])
+    # 作者としてなら付く
+    assert "A-pt1-lifespan" in select_facts(conn, **{**kw, "person_ids": ["aozora:person:t1"]})

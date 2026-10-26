@@ -63,6 +63,7 @@ def select_facts(
     limit: int,
     exclude: set[str] | None = None,
     taken: set[str] | None = None,
+    translator_ids: list[str] | None = None,
 ) -> list[str]:
     """作品と人物に付いた事実から、limit 件まで選ぶ（並びは KIND_RANK と面白さ）。
 
@@ -73,7 +74,8 @@ def select_facts(
         return []
     exclude = exclude or set()
     taken = taken or set()
-    subjects = list(dict.fromkeys(work_ids + canonical(conn, person_ids)))
+    translators = set(canonical(conn, translator_ids or [])) - set(canonical(conn, person_ids))
+    subjects = list(dict.fromkeys(work_ids + canonical(conn, person_ids) + sorted(translators)))
     marks = ",".join("?" for _ in subjects)
     rows = conn.execute(
         f"SELECT * FROM facts WHERE status IN ('auto', 'verified') AND sensitive = 'none' "
@@ -92,7 +94,10 @@ def select_facts(
     picked = [
         f
         for f in pool.values()
-        if f["fact_id"] not in taken and (f["fact_id"] not in exclude or f["kind"] in ALWAYS)
+        if f["fact_id"] not in taken
+        and (f["fact_id"] not in exclude or f["kind"] in ALWAYS)
+        # 訳者については、生没年は付けない（話の中心は作者と作品。訳の事実は作品に付く）
+        and not (f["subject_id"] in translators and f["kind"] == "lifespan")
     ]
     picked.sort(
         key=lambda f: (

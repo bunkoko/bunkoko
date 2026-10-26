@@ -74,18 +74,35 @@ def aozora_work_value(card_url: str) -> str | None:
     return card_url.split(marker, 1)[1][: -len(".html")]
 
 
-def find_qid(fetcher: Fetcher, prop: str, value: str) -> str | None:
-    """haswbstatement で項目を探す。ちょうど1件のときだけ返す（取り違えを避ける）。"""
+def search(fetcher: Fetcher, query: str, limit: int = 5) -> list[str]:
     params = {
         "action": "query",
         "list": "search",
-        "srsearch": f'haswbstatement:"{prop}={value}"',
-        "srlimit": "5",
+        "srsearch": query,
+        "srlimit": str(limit),
         "format": "json",
     }
     data = fetcher.fetch_json(f"{WIKIDATA_API}?{urlencode(params)}", "search")
-    hits = [h["title"] for h in (data.get("query") or {}).get("search", [])]  # type: ignore[union-attr]
+    return [h["title"] for h in (data.get("query") or {}).get("search", [])]  # type: ignore[union-attr]
+
+
+def find_qid(fetcher: Fetcher, prop: str, value: str) -> str | None:
+    """haswbstatement で項目を探す。ちょうど1件のときだけ返す（取り違えを避ける）。"""
+    hits = search(fetcher, f'haswbstatement:"{prop}={value}"')
     return hits[0] if len(hits) == 1 else None
+
+
+def find_work_by_author(fetcher: Fetcher, author_qid: str, title: str) -> str | None:
+    """青空文庫の作品IDが Wikidata に無いとき、著者（P50）と題名で作品の項目を探す。
+
+    日本語の名前が題名と同じ項目が、ちょうど1件のときだけ返す。
+    """
+    hits = search(fetcher, f"haswbstatement:P50={author_qid} {title}", limit=10)
+    if not hits:
+        return None
+    names = labels(fetcher, hits)
+    same = [q for q in hits if names.get(q, "").strip() == title.strip()]
+    return same[0] if len(same) == 1 else None
 
 
 def entity(fetcher: Fetcher, qid: str) -> dict[str, Any]:

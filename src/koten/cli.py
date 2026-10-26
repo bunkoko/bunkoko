@@ -1262,20 +1262,78 @@ def facts_draft(
         raise typer.Exit(1)
 
 
+def _review_file(s: Settings, given: str | None):
+    """確かめる下書きの CSV。指定が無ければ、いちばん新しい下書き。"""
+    from pathlib import Path
+
+    review_dir = _hdd(s) / "exports" / "facts"
+    if given:
+        path = Path(given)
+        if not path.exists():
+            typer.secho(f"ファイルが見つかりません：{path}", fg="red", err=True)
+            files = sorted(review_dir.glob("review_*.csv"))
+            if files:
+                typer.echo("下書きの一覧：")
+                for f in files[-5:]:
+                    typer.echo(f"  {f}")
+            raise typer.Exit(2)
+        return path
+    files = sorted(review_dir.glob("review_*.csv"), key=lambda f: f.stat().st_mtime)
+    if not files:
+        typer.secho(
+            f"下書きがありません（{review_dir}）。koten facts draft が先", fg="red", err=True
+        )
+        raise typer.Exit(2)
+    typer.echo(f"下書き：{files[-1]}")
+    return files[-1]
+
+
+@facts_app.command("review")
+def facts_review(
+    from_: Annotated[
+        str | None, typer.Option("--from", help="下書きの CSV（省くと、いちばん新しいもの）")
+    ] = None,
+    settings: SettingsOpt = None,
+) -> None:
+    """下書きを1件ずつ見やすく出す（確かめるときに、手がかりと一緒に読む）。"""
+    import csv
+
+    s = _settings(settings)
+    path = _review_file(s, from_)
+    with path.open(encoding="utf-8-sig") as f:
+        rows = list(csv.DictReader(f))
+    for i, r in enumerate(rows, start=1):
+        mark = "取り込む" if (r.get("accept") or "").strip() else "まだ"
+        typer.echo(f"\n[{i}] {r['fact_id']}（{r['kind']}・{r['scope']}）［{mark}］")
+        typer.echo(f"  {r['text_ja']}")
+        if r.get("problems"):
+            typer.secho(f"  形の問題：{r['problems']}（このままでは取り込めない）", fg="yellow")
+        if r.get("lead_ref"):
+            typer.echo(f"  記事が挙げる出典：{r['lead_ref']}")
+        if r.get("confirm_hint"):
+            typer.echo(f"  確かめる手がかり：{r['confirm_hint']}")
+        if r.get("confirm_kind"):
+            where = r.get("confirm_url") or r.get("confirm_locator")
+            typer.echo(f"  確かめた出典：{r['confirm_kind']} {r.get('confirm_title', '')} {where}")
+    typer.echo(f"\n{len(rows)} 件。確かめた行の accept に 1 を書き、koten facts accept で取り込む")
+
+
 @facts_app.command("accept")
 def facts_accept(
-    from_: Annotated[str, typer.Option("--from", help="確かめた下書きの CSV")],
+    from_: Annotated[
+        str | None,
+        typer.Option("--from", help="確かめた下書きの CSV（省くと、いちばん新しいもの）"),
+    ] = None,
     settings: SettingsOpt = None,
 ) -> None:
     """確かめた下書き（accept に印のある行）を config/facts.csv・fact_sources.csv に足す。"""
-    from pathlib import Path
-
     from koten.db import connect
     from koten.facts.draft import accept_review
     from koten.facts.store import FactsError
     from koten.worries.master import keyword_block, load_blocked_keywords
 
     s = _settings(settings)
+    path = _review_file(s, from_)
     conn = connect(s.ssd_root)
     known = {r[0] for r in conn.execute("SELECT person_id FROM persons")}
     known |= {r[0] for r in conn.execute("SELECT canonical_id FROM persons")}
@@ -1283,7 +1341,7 @@ def facts_accept(
     categories = load_blocked_keywords(s.config_dir)
     try:
         n = accept_review(
-            Path(from_),
+            path,
             s.config_dir,
             known,
             blocked=lambda text: keyword_block(text, categories),
@@ -1291,6 +1349,12 @@ def facts_accept(
     except FactsError as e:
         typer.secho(f"{e}\n（config の CSV は変えていません）", fg="red", err=True)
         raise typer.Exit(2) from e
+    if n == 0:
+        typer.secho(
+            "accept に 1 の行がありません。下書きを確かめて、使う行の accept に 1 を書いてください",
+            fg="yellow",
+        )
+        return
     typer.echo(
         f"{n} 件を config/facts.csv に足しました。uv run koten facts build で SSD に入れます"
     )

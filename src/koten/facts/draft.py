@@ -15,7 +15,7 @@ import json
 import re
 import sqlite3
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -107,6 +107,7 @@ class Subject:
     aozora: str  # 青空文庫の書誌（LLM に渡す要約）
     wikidata_prop: str
     wikidata_value: str | None
+    authors: list[str] = field(default_factory=list)  # 作品のとき：著者（代表の人物ID）
 
 
 def subjects_for_episode(conn: sqlite3.Connection, plan: dict[str, Any]) -> list[Subject]:
@@ -148,6 +149,7 @@ def work_subject(conn: sqlite3.Connection, work_id: str) -> Subject:
         "\n".join(lines),
         wm.AOZORA_WORK,
         wm.aozora_work_value(w["url"] or ""),
+        authors=json.loads(w["author_ids"] or "[]"),
     )
 
 
@@ -213,8 +215,16 @@ def draft_subject(
     log: Callable[[str], None] = lambda _: None,
 ) -> list[dict[str, Any]]:
     """1人（1作品）の下書きの行（REVIEW_COLUMNS）。手がかりが無ければ空。"""
-    qid = wm.find_qid(wikidata, subject.wikidata_prop, subject.wikidata_value or "")
-    if subject.wikidata_value is None or qid is None:
+    qid = None
+    if subject.wikidata_value is not None:
+        qid = wm.find_qid(wikidata, subject.wikidata_prop, subject.wikidata_value)
+    if qid is None and subject.subject_type == "work":
+        # 青空文庫の作品IDが Wikidata に無ければ、著者（P7311 で探す）と題名で探す
+        for author in subject.authors:
+            aq = wm.find_qid(wikidata, wm.AOZORA_AUTHOR, wm.aozora_author_value(author))
+            if aq and (qid := wm.find_work_by_author(wikidata, aq, subject.name)):
+                break
+    if qid is None:
         log(f"  {subject.name}：Wikidata の項目が見つからない（{subject.wikidata_prop}）")
         return []
     e = wm.entity(wikidata, qid)
