@@ -63,6 +63,30 @@ def doctor(settings: SettingsOpt = None) -> None:
         typer.echo(f"  {typer.style(f'[{c.status}]', fg=colors[c.status])} {c.name}: {c.detail}")
 
 
+def _make_fetcher(s: Settings, raw_dir):
+    """外部サイトへの取得（net.py）。User-Agent に連絡先が無ければ取りに行かない（SPEC §8.1）。"""
+    http = s.section("http")
+    user_agent = http.get("user_agent", "koten-videos/0.1 (+contact: {contact})")
+    contact = os.environ.get("KOTEN_CONTACT", "").strip()
+    if "{contact}" in user_agent:
+        user_agent = user_agent.replace("{contact}", contact)
+    looks_valid = "@" in contact or "://" in contact
+    if ("contact:" in user_agent and not looks_valid) or "example.com" in user_agent:
+        typer.secho(
+            f"連絡先（KOTEN_CONTACT）が正しく設定されていません（今の値：{contact or 'なし'}）。"
+            "リポジトリ直下の .env に、メールアドレスか URL を書いてから実行してください",
+            fg="red",
+            err=True,
+        )
+        raise typer.Exit(2)
+    return Fetcher(
+        raw_dir,
+        user_agent=user_agent,
+        per_host_per_sec=s.section("rate_limit").get("per_host_per_sec", 1),
+        timeout_sec=http.get("timeout_sec", 30),
+    )
+
+
 @app.command()
 def ingest(
     source: str,
@@ -76,27 +100,7 @@ def ingest(
     hdd = _hdd(s)
     from koten.ingest import aozora
 
-    http = s.section("http")
-    user_agent = http.get("user_agent", "koten-videos/0.1 (+contact: {contact})")
-    contact = os.environ.get("KOTEN_CONTACT", "").strip()
-    if "{contact}" in user_agent:
-        user_agent = user_agent.replace("{contact}", contact)
-    looks_valid = "@" in contact or "://" in contact
-    if ("contact:" in user_agent and not looks_valid) or "example.com" in user_agent:
-        # SPEC §8.1：User-Agent に連絡先を入れる。連絡先が無いまま外部サイトへ取りに行かない
-        typer.secho(
-            f"連絡先（KOTEN_CONTACT）が正しく設定されていません（今の値：{contact or 'なし'}）。"
-            "リポジトリ直下の .env に、メールアドレスか URL を書いてから実行してください",
-            fg="red",
-            err=True,
-        )
-        raise typer.Exit(2)
-    fetcher = Fetcher(
-        hdd / "raw" / source,
-        user_agent=user_agent,
-        per_host_per_sec=s.section("rate_limit").get("per_host_per_sec", 1),
-        timeout_sec=http.get("timeout_sec", 30),
-    )
+    fetcher = _make_fetcher(s, hdd / "raw" / source)
     r = aozora.ingest(
         hdd, s.sources["aozora"], fetcher, limit=limit, refresh_list=refresh_list, log=typer.echo
     )
@@ -932,7 +936,9 @@ def script(
     cfg = ScriptConfig.from_settings(s.section("script"), s.section("episode"))
     prompts = s.config_dir.parent / "prompts"
     writer = ScriptWriter(make_llm(s.section("llm.script")), prompts, cfg)
-    judge = gates.FaithfulnessJudge(make_llm(s.section("llm.judge")), prompts, cfg.judge_prompt)
+    judge = gates.FaithfulnessJudge(
+        make_llm(s.section("llm.judge")), prompts, cfg.judge_prompt, cfg.judge_facts_prompt
+    )
     rec = s.section("recency")
     try:
         r = run_script(
@@ -965,6 +971,271 @@ def script(
     if r.state != "script_done":
         raise typer.Exit(1)
     typer.echo(f"台本を見る：uv run koten script --episode {episode} --show")
+
+
+facts_app = typer.Typer(no_args_is_help=True, help="背景の事実（作者の歩み・作品の成り立ち・時代）")
+app.add_typer(facts_app, name="facts")
+
+
+@facts_app.command("build")
+def facts_build(settings: SettingsOpt = None) -> None:
+    """HDD の書誌と config/facts.csv・fact_sources.csv から、SSD の事実の表を作り直す。"""
+    from koten.db import connect
+    from koten.facts.store import FactsError, build_facts
+    from koten.worries.master import keyword_block, load_blocked_keywords
+
+    s = _settings(settings)
+    hdd = _hdd(s)
+    categories = load_blocked_keywords(s.config_dir)
+    try:
+        r = build_facts(
+            connect(s.ssd_root),
+            hdd,
+            s.config_dir,
+            blocked=lambda text: keyword_block(text, categories),
+        )
+    except FactsError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
+    typer.echo(
+        f"人物 {r.persons}・作品 {r.works}・自動の事実 {r.auto}・人が確かめた事実 {r.curated}"
+    )
+
+
+@facts_app.command("list")
+def facts_list(
+    subject: Annotated[
+        str | None, typer.Option(help="作品ID か人物ID（例：aozora:001704、aozora:person:000280）")
+    ] = None,
+    episode: Annotated[str | None, typer.Option(help="回の企画に付いた事実")] = None,
+    settings: SettingsOpt = None,
+) -> None:
+    """事実を一覧にする（状態・出典つき）。"""
+    import json
+
+    from koten.db import connect
+    from koten.facts.select import canonical
+    from koten.facts.store import load_facts, load_sources
+
+    conn = connect(_settings(settings).ssd_root)
+    if episode:
+        row = conn.execute(
+            "SELECT plan_json FROM episodes WHERE episode_id = ?", (episode,)
+        ).fetchone()
+        if row is None:
+            typer.secho(f"{episode} という回はありません", fg="red", err=True)
+            raise typer.Exit(2)
+        plan = json.loads(row["plan_json"])
+        ids = [f for c in plan["chapters"] for f in c.get("fact_ids", [])]
+    elif subject:
+        subjects = [subject, *canonical(conn, [subject])]
+        marks = ",".join("?" for _ in subjects)
+        ids = [
+            r[0]
+            for r in conn.execute(
+                f"SELECT fact_id FROM facts WHERE subject_id IN ({marks}) ORDER BY fact_id",
+                subjects,
+            )
+        ]
+    else:
+        typer.secho("--subject か --episode を指定してください", fg="red", err=True)
+        raise typer.Exit(2)
+    facts, sources = load_facts(conn, ids), load_sources(conn, ids)
+    for fid in ids:
+        f = facts.get(fid)
+        if f is None:
+            typer.echo(f"{fid}（表にありません。koten facts build を実行）")
+            continue
+        typer.echo(f"{fid}［{f.status}・{f.kind}］{f.text_ja}")
+        for src in sources.get(fid, []):
+            typer.echo(
+                f"    {src['role']}：{src['title'] or src['kind']} {src['url'] or src['locator']}"
+            )
+
+
+@facts_app.command("coverage")
+def facts_coverage(settings: SettingsOpt = None) -> None:
+    """どれだけの作品・人物に事実があるか（人が確かめた事実と自動の事実）。"""
+    from koten.db import connect
+
+    conn = connect(_settings(settings).ssd_root)
+    for label, origin in (("人が確かめた事実", "curated"), ("自動の事実", "auto")):
+        rows = conn.execute(
+            "SELECT kind, COUNT(*) AS n FROM facts WHERE origin = ? GROUP BY kind ORDER BY n DESC",
+            (origin,),
+        ).fetchall()
+        total = sum(r["n"] for r in rows)
+        kinds = "、".join(f"{r['kind']} {r['n']}" for r in rows) or "なし"
+        typer.echo(f"{label} {total} 件（{kinds}）")
+    works = conn.execute("SELECT COUNT(*) FROM works_meta").fetchone()[0]
+    with_curated = conn.execute(
+        "SELECT COUNT(DISTINCT subject_id) FROM facts "
+        "WHERE origin = 'curated' AND subject_type = 'work'"
+    ).fetchone()[0]
+    typer.echo(f"作品 {works} のうち、人が確かめた事実のある作品 {with_curated}")
+
+
+@facts_app.command("todo")
+def facts_todo(
+    episode: Annotated[str, typer.Option(help="回の ID")],
+    settings: SettingsOpt = None,
+) -> None:
+    """回で読む作品・作者について、事実の数と、調べるときの手がかり（URL）を出す。"""
+    import json
+    from urllib.parse import quote
+
+    from koten.db import connect
+    from koten.facts.select import canonical
+
+    conn = connect(_settings(settings).ssd_root)
+    row = conn.execute("SELECT plan_json FROM episodes WHERE episode_id = ?", (episode,)).fetchone()
+    if row is None:
+        typer.secho(f"{episode} という回はありません", fg="red", err=True)
+        raise typer.Exit(2)
+    plan = json.loads(row["plan_json"])
+
+    def count(subject: str) -> str:
+        r = conn.execute(
+            "SELECT SUM(origin = 'curated'), SUM(origin = 'auto') FROM facts WHERE subject_id = ?",
+            (subject,),
+        ).fetchone()
+        return f"確かめた事実 {r[0] or 0}・自動 {r[1] or 0}"
+
+    seen: set[str] = set()
+    for sel in plan["selection"]:
+        if sel["work_id"] in seen:
+            continue
+        seen.add(sel["work_id"])
+        meta = conn.execute(
+            "SELECT * FROM works_meta WHERE work_id = ?", (sel["work_id"],)
+        ).fetchone()
+        typer.echo(f"『{sel['title']}』（{sel['work_id']}）：{count(sel['work_id'])}")
+        if meta and meta["url"]:
+            typer.echo(f"    図書カード：{meta['url']}")
+        for pid in canonical(conn, sel.get("author_ids") or []):
+            person = conn.execute("SELECT name FROM persons WHERE person_id = ?", (pid,)).fetchone()
+            name = person["name"] if person else pid
+            typer.echo(f"    {name}（{pid}）：{count(pid)}")
+            typer.echo(
+                f"      手がかり：https://ja.wikipedia.org/wiki/Special:Search?search={quote(name)}"
+            )
+    typer.echo(f"下書きを作る：uv run koten facts draft --episode {episode}")
+
+
+@facts_app.command("draft")
+def facts_draft(
+    episode: Annotated[str | None, typer.Option(help="回で読む作品と作者の下書きを作る")] = None,
+    subject: Annotated[
+        str | None, typer.Option(help="作品ID か人物ID（例：aozora:001704、aozora:person:000280）")
+    ] = None,
+    settings: SettingsOpt = None,
+) -> None:
+    """Wikidata とウィキペディアを手がかりに、AI が事実を下書きし、確かめ待ちの CSV に出す。"""
+    import json
+    from datetime import datetime
+
+    from koten.db import connect
+    from koten.facts.draft import (
+        DraftConfig,
+        config_fact_ids,
+        draft_subject,
+        person_subject,
+        subjects_for_episode,
+        work_subject,
+        write_review,
+    )
+    from koten.llm import LLMError, make_llm
+
+    s = _settings(settings)
+    hdd = _hdd(s)
+    conn = connect(s.ssd_root)
+    if episode:
+        row = conn.execute(
+            "SELECT plan_json FROM episodes WHERE episode_id = ?", (episode,)
+        ).fetchone()
+        if row is None:
+            typer.secho(f"{episode} という回はありません", fg="red", err=True)
+            raise typer.Exit(2)
+        subjects = subjects_for_episode(conn, json.loads(row["plan_json"]))
+        name = episode
+    elif subject:
+        subjects = [
+            person_subject(conn, subject) if ":person:" in subject else work_subject(conn, subject)
+        ]
+        subjects = [x for x in subjects if x.name]
+        name = subject.replace(":", "_")
+    else:
+        typer.secho("--episode か --subject を指定してください", fg="red", err=True)
+        raise typer.Exit(2)
+    if not subjects:
+        typer.secho("対象が書誌に見つかりません（koten facts build が先）", fg="red", err=True)
+        raise typer.Exit(2)
+    conf = s.section("facts")
+    cfg = DraftConfig(**{k: v for k, v in conf.items() if k in DraftConfig.__dataclass_fields__})
+    wikidata = _make_fetcher(s, hdd / "raw" / "wikidata")
+    wikipedia = _make_fetcher(s, hdd / "raw" / "wikipedia")
+    llm = make_llm(s.section("llm.facts"))
+    taken = config_fact_ids(s.config_dir)
+    rows = []
+    try:
+        for subj in subjects:
+            typer.echo(f"{subj.name}（{subj.subject_id}）を調べています")
+            rows += draft_subject(
+                subj,
+                wikidata=wikidata,
+                wikipedia=wikipedia,
+                llm=llm,
+                prompts_dir=s.config_dir.parent / "prompts",
+                cfg=cfg,
+                taken_ids=taken,
+                log=typer.echo,
+            )
+    except LLMError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(1) from e
+    out = hdd / "exports" / "facts" / f"review_{name}_{datetime.now():%Y%m%d-%H%M}.csv"
+    write_review(out, rows)
+    typer.echo(f"下書き {len(rows)} 件：{out}")
+    typer.echo(
+        "確かめ方：各行を、ウィキペディア以外の資料（本・国会図書館の書誌・青空文庫の本文など）で"
+        "確かめ、confirm_kind・confirm_title・confirm_url か confirm_locator・confirm_license・"
+        "checked_by を書き、使う行の accept に 1 を書く。"
+        "そのあと koten facts accept --from で取り込む"
+    )
+
+
+@facts_app.command("accept")
+def facts_accept(
+    from_: Annotated[str, typer.Option("--from", help="確かめた下書きの CSV")],
+    settings: SettingsOpt = None,
+) -> None:
+    """確かめた下書き（accept に印のある行）を config/facts.csv・fact_sources.csv に足す。"""
+    from pathlib import Path
+
+    from koten.db import connect
+    from koten.facts.draft import accept_review
+    from koten.facts.store import FactsError
+    from koten.worries.master import keyword_block, load_blocked_keywords
+
+    s = _settings(settings)
+    conn = connect(s.ssd_root)
+    known = {r[0] for r in conn.execute("SELECT person_id FROM persons")}
+    known |= {r[0] for r in conn.execute("SELECT canonical_id FROM persons")}
+    known |= {r[0] for r in conn.execute("SELECT work_id FROM works_meta")}
+    categories = load_blocked_keywords(s.config_dir)
+    try:
+        n = accept_review(
+            Path(from_),
+            s.config_dir,
+            known,
+            blocked=lambda text: keyword_block(text, categories),
+        )
+    except FactsError as e:
+        typer.secho(f"{e}\n（config の CSV は変えていません）", fg="red", err=True)
+        raise typer.Exit(2) from e
+    typer.echo(
+        f"{n} 件を config/facts.csv に足しました。uv run koten facts build で SSD に入れます"
+    )
 
 
 episode_app = typer.Typer(no_args_is_help=True, help="回（episodes）")

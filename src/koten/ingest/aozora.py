@@ -52,6 +52,11 @@ WORKS_SCHEMA = pa.schema(
         ("kana_type", pa.string()),
         ("lang", pa.string()),
         ("base_book", pa.string()),
+        # 背景の事実に使う書誌（作品CSVの列。無ければ空）
+        ("first_pub", pa.string()),  # 初出
+        ("original_title", pa.string()),  # 原題
+        ("title_yomi", pa.string()),  # 作品名読み
+        ("parent_book", pa.string()),  # 底本の親本
         ("url", pa.string()),
         ("text_url", pa.string()),
         ("license", pa.string()),
@@ -70,6 +75,7 @@ PERSONS_SCHEMA = pa.schema(
         ("death_date", pa.string()),
         ("nationality", pa.string()),
         ("allied", pa.bool_()),
+        ("canonical_id", pa.string()),  # 同じ人の別名をまとめた代表の人物ID
     ]
 )
 
@@ -85,6 +91,10 @@ class AozoraWork:
     card_url: str
     text_url: str
     base_book: str
+    first_pub: str = ""
+    original_title: str = ""
+    title_yomi: str = ""
+    parent_book: str = ""
     persons: list[dict[str, str]] = field(default_factory=list)
 
     def names(self, role: str) -> list[str]:
@@ -120,6 +130,18 @@ def read_work_list(zip_bytes: bytes) -> dict[str, AozoraWork]:
                 card_url=row.get("図書カードURL", "").strip(),
                 text_url=row.get("テキストファイルURL", "").strip(),
                 base_book=base,
+                first_pub=row.get("初出", "").strip(),
+                original_title=row.get("原題", "").strip(),
+                title_yomi=row.get("作品名読み", "").strip(),
+                parent_book="、".join(
+                    v
+                    for v in (
+                        row.get("底本の親本名1", ""),
+                        row.get("底本の親本出版社名1", ""),
+                        row.get("底本の親本初版発行年1", ""),
+                    )
+                    if v
+                ),
             )
         w.persons.append(
             {
@@ -282,6 +304,10 @@ def work_row(
         "kana_type": w.kana_type,
         "lang": "ja",
         "base_book": w.base_book,
+        "first_pub": w.first_pub,
+        "original_title": w.original_title,
+        "title_yomi": w.title_yomi,
+        "parent_book": w.parent_book,
         "url": w.card_url,
         "text_url": w.text_url,
         "license": str(lic),
@@ -291,7 +317,9 @@ def work_row(
     }
 
 
-def person_rows(works: list[AozoraWork]) -> list[dict[str, Any]]:
+def person_rows(
+    works: list[AozoraWork], aliases: dict[str, str] | None = None
+) -> list[dict[str, Any]]:
     seen: dict[str, dict[str, Any]] = {}
     for w in works:
         translated = any(p["role"] == "translator" for p in w.persons)
@@ -308,6 +336,8 @@ def person_rows(works: list[AozoraWork]) -> list[dict[str, Any]]:
                     "death_date": p["death_date"],
                     "nationality": None if foreign else "JP",
                     "allied": None if foreign else False,
+                    "canonical_id": f"{SOURCE}:person:"
+                    + (aliases or {}).get(p["person_id"], p["person_id"]),
                 },
             )
     return list(seen.values())
@@ -391,5 +421,5 @@ def ingest(
     clean_dir = hdd_root / "clean" / SOURCE
     log(f"書誌と判定結果を書き込み中：{clean_dir}")
     write_rows(clean_dir / "works.parquet", rows, WORKS_SCHEMA)
-    write_rows(clean_dir / "persons.parquet", person_rows(works), PERSONS_SCHEMA)
+    write_rows(clean_dir / "persons.parquet", person_rows(works, aliases), PERSONS_SCHEMA)
     return IngestResult(len(works), usable, fetched, skipped, dict(blocked), errors)

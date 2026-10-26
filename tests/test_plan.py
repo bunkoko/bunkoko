@@ -88,7 +88,7 @@ def _works(plan):
 
 
 def _check_common(plan, fmt):
-    assert plan["format"] == fmt and plan["schema_version"] == "1.0"
+    assert plan["format"] == fmt and plan["schema_version"] == "1.1"
     assert 600 <= plan["target_total_sec"] <= 900
     assert sum(1 for c in plan["chapters"] if c.get("human_take")) == 1
     ids = [c["chapter_id"] for c in plan["chapters"]]

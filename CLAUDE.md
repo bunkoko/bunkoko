@@ -10,7 +10,9 @@
 
 ## 絶対に守ること
 - 権利判定（src/koten/license.py、SPEC §3 の R1〜R7）を緩めない・迂回しない
-- 引用・出典・著者情報・統計の数字はDBから差し込む。LLMに書かせない
+- 引用・出典・統計の数字はDBから差し込む。LLMに書かせない
+- 背景（著者の経歴・作品の成り立ち・時代）は、DBの確認済みの事実だけを根拠に語らせる。人名・地名・作品名・年・数は事実の記号（{{fact:ID.項目}}）で差し込む（SPEC R6）
+- ウィキペディアは背景の事実を探す手がかりだけ。索引にせず、台本を書くLLMと判定役に渡さない。事実は別の資料で人が確かめてから使う（SPEC R2）
 - 除外カテゴリ（医療・自傷・お金の判断・法律相談など）の悩みで回を作らない
 - 大きなデータはGitに入れない。HDD/SSDのパスは config/settings.toml から読む
 - 検索・APIの処理中にHDDを読まない（索引とDBはSSD）
@@ -37,3 +39,5 @@
 - uv run koten plan --worry W0001 --format A（保存）→ uv run koten script --episode E20261101-01 → --show で読む
 - uv run koten episode list ／ uv run koten episode discard --episode <ID>（試しの回を取り消す）
 - uv run koten forget-works --changed（正規化で本文が変わった作品。--apply で付加情報を取り除き、augment で作り直す）
+- uv run koten facts build（HDD の書誌と config/facts.csv から、SSD の事実の表を作り直す）／ facts coverage ／ facts list --episode <ID>
+- uv run koten facts todo --episode <ID> → facts draft --episode <ID>（AI の下書き）→ 人が確かめて accept に 1 → facts accept --from <CSV> → facts build

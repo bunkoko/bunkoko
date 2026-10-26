@@ -20,6 +20,7 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
+from koten.facts.store import text_sha
 from koten.script import gates
 from koten.script.data import EpisodeData
 from koten.script.placeholders import Resolver
@@ -161,20 +162,24 @@ def run_script(
     resolver = gates.resolver_for(data)
     length_notes: list[str] = []
     viewing: list[str] = []
-    for chapter in data.plan["chapters"]:
+    used_facts: list[str] = []  # これまでの章で使った背景の事実（あとの章で指してよい）
+
+    def attempt_chapter(chapter: dict[str, Any], use_facts: bool) -> tuple:
+        allowed = set(used_facts) | (set(chapter.get("fact_ids") or []) if use_facts else set())
         feedback: list[str] | None = None
         for attempt in range(cfg.retries + 1):
-            draft = writer.write_chapter(data, chapter, feedback)
-            issues1 = gates.g1_chapter(draft.chapter, data, draft.issues)
+            draft = writer.write_chapter(data, chapter, feedback, use_facts=use_facts)
+            issues1 = gates.g1_chapter(draft.chapter, data, draft.issues, allowed)
             issues3: list[str] = []
             if not issues1 and judge.needs_judge(draft.chapter):
-                issues3 = judge.judge(draft.chapter, data)
+                issues3 = judge.judge(draft.chapter, data, used_facts)
             # 長さと視聴の確かめは G1・G3 が通ってから見る（尺の本当の確かめは音声のあとの G7）
             length = None
             hook: list[str] = []
             title: list[str] = []
             if not issues1 and not issues3:
-                length = chapter_length_issue(draft.chapter, resolver, cfg)
+                if use_facts or not chapter.get("fact_ids"):
+                    length = chapter_length_issue(draft.chapter, resolver, cfg)
                 if chapter["role"] == "opening":
                     hook = gates.opening_issues(draft.chapter, resolver, cfg.chars_per_min)
                     title = gates.title_issues(draft.episode_title, data)
@@ -185,6 +190,21 @@ def run_script(
                 f"  {chapter['chapter_id']}：書き直し（{attempt + 1}回目）"
                 f"{'、'.join(feedback)[:120]}"
             )
+        return draft, issues1, issues3, length, hook, title
+
+    for chapter in data.plan["chapters"]:
+        offered = [f for f in chapter.get("fact_ids") or [] if f in data.facts]
+        draft, issues1, issues3, length, hook, title = attempt_chapter(chapter, True)
+        if offered and (issues1 or issues3):
+            # 背景のせいで通らない章は、背景を外して書き直す（回を止めない。D-012）
+            log(f"  {chapter['chapter_id']}：背景の事実を外して書き直します")
+            reason = "、".join(issues1 + issues3)[:80]
+            draft, issues1, issues3, length, hook, title = attempt_chapter(chapter, False)
+            if not issues1 and not issues3:
+                viewing.append(f"{chapter['chapter_id']}：背景を外した（{reason}）")
+        elif offered and not draft.chapter.get("facts"):
+            viewing.append(f"{chapter['chapter_id']}：背景の事実を渡したが使っていない")
+        used_facts += [f for f in draft.chapter.get("facts", []) if f not in used_facts]
         if title:
             # 直らないタイトル案は使わず、悩みから作る仮のタイトルにする（確認のときに人が直す）
             viewing.append(f"仮のタイトルにした（{'、'.join(title)}）")
@@ -217,6 +237,7 @@ def run_script(
         span = f"{_mmss(cfg.min_sec)}〜{_mmss(cfg.max_sec)}"
         viewing.append(f"尺の見積もり {_mmss(est['est_sec'])} が {span} の外")
     verification["viewing"] = gates._gate(viewing)
+    verification["facts"] = facts_record(script, data)
     review = bool(script["review_required"] or verification["G6"]["review_required"] or g3_issues)
     script["review_required"] = review
     script["verification"] = {
@@ -235,6 +256,41 @@ def run_script(
     return _save(conn, episode_id, "script_done", msg, review, script, verification, log)
 
 
+def facts_record(script: dict[str, Any], data: EpisodeData) -> dict[str, Any]:
+    """使った背景の事実と、その出典（説明欄の「背景の出典」と、あとで確かめるため）。"""
+    used = []
+    for ch in script["chapters"]:
+        for fid in ch.get("facts", []):
+            f = data.facts.get(fid)
+            if f is None:
+                continue
+            used.append(
+                {
+                    "fact_id": fid,
+                    "chapter_id": ch["chapter_id"],
+                    "text_sha": text_sha(f.text_ja),
+                    "status": f.status,
+                    "checked_by": f.checked_by,
+                    "sources": [
+                        {
+                            k: s.get(k)
+                            for k in (
+                                "role",
+                                "kind",
+                                "title",
+                                "url",
+                                "locator",
+                                "license",
+                                "credit",
+                            )
+                        }
+                        for s in data.fact_sources.get(fid, [])
+                    ],
+                }
+            )
+    return {"used": used, "issues": list(data.fact_issues)}
+
+
 def _save(
     conn: sqlite3.Connection,
     episode_id: str,
@@ -246,6 +302,17 @@ def _save(
     log: Callable[[str], None],
 ) -> ScriptResult:
     with conn:
+        # 背景の事実の使用履歴（同じ事実を直近10回で繰り返さないため）は、台本ができた回だけ
+        conn.execute("DELETE FROM fact_usage WHERE episode_id = ?", (episode_id,))
+        if state == "script_done" and script:
+            conn.executemany(
+                "INSERT INTO fact_usage(episode_id, chapter_id, fact_id) VALUES (?, ?, ?)",
+                [
+                    (episode_id, ch["chapter_id"], fid)
+                    for ch in script["chapters"]
+                    for fid in ch.get("facts", [])
+                ],
+            )
         conn.execute(
             "UPDATE episodes SET state = ?, state_msg = ?, review_required = ?, "
             "script_json = COALESCE(?, script_json), verification_json = ? WHERE episode_id = ?",
@@ -285,10 +352,18 @@ def render(script: dict[str, Any], resolver: Resolver) -> list[str]:
                 lines.append(f"  【統計】{text}")
             elif seg["kind"] == "transition":
                 lines.append(f"  【章タイトル】{text}")
+            elif seg.get("facts"):
+                lines.append(f"  【背景｜{'・'.join(seg['facts'])}】{text}")
             else:
                 lines.append(f"  {text}")
         if ch["chapter_id"] == script["human_take"]["chapter_id"]:
             lines.append("  【人の一言】（確認のときに入れる。省略もできる）")
     if script.get("comment_prompt"):
         lines.append(f"\nコメントへの問いかけ：{script['comment_prompt']}")
+    used = list(dict.fromkeys(f for ch in script["chapters"] for f in ch.get("facts", [])))
+    if used:
+        lines.append("\n背景の事実（確認済みの文。語りがこれから外れていないか見る）：")
+        for fid in used:
+            f = resolver.facts.get(fid)
+            lines.append(f"  {fid}：{f.text_ja if f else '（使えなくなった事実）'}")
     return lines

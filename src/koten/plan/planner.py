@@ -22,6 +22,8 @@ import yaml
 
 from koten.authors import author_label
 from koten.embed.encoder import Encoder
+from koten.facts.select import recently_used, select_facts
+from koten.facts.store import fact_shas
 from koten.index.search import Filter, HotIndex
 from koten.llm import ChatLLM, fill, load_prompt, parse_json_object
 from koten.retrieve.search import (
@@ -33,7 +35,7 @@ from koten.retrieve.search import (
     transform_query,
 )
 
-PLAN_SCHEMA_VERSION = "1.0"
+PLAN_SCHEMA_VERSION = "1.1"  # 1.1：章の fact_ids と、回の facts（事実の指紋の写し）
 EPISODE_TOTAL_SEC = 720  # 12分の回を基準にする（SPEC §2）
 ACTIVE_STATES = "state NOT IN ('discarded')"
 
@@ -53,6 +55,7 @@ class PlanConfig:
     author_episodes: int = 5
     worry_cluster_days: int = 30
     same_format_in_row_max: int = 2
+    fact_episodes: int = 10  # 同じ背景の事実を、直近この回数のうちに使わない
     min_sec: int = 600
     max_sec: int = 900
     query_prefix: str = "query: "
@@ -526,6 +529,8 @@ class Planner:
         chapters: list[dict[str, Any]] = []
         groups = list(groups)
         all_worry_ids = [w["worry_id"] for w in worries]
+        used_facts = recently_used(self.conn, self.cfg.fact_episodes)
+        taken: set[str] = set()  # この回でもう付けた事実（同じ事実を2つの章に付けない）
         for spec in self.formats[fmt]["chapters"]:
             role = spec["role"]
             lo, hi = spec["target_sec"]
@@ -535,15 +540,15 @@ class Planner:
                 r_lo, r_hi = spec["repeat"]
                 merged = _fit_groups(groups, r_lo, r_hi)
                 for g in merged:
-                    chapters.append(
-                        {
-                            "role": role,
-                            "target_sec": [lo, hi],
-                            "candidate_ids": [p["candidate_id"] for p in g],
-                            "worry_ids": sorted({p["worry_id"] for p in g}),
-                            "stat_ids": [],
-                        }
-                    )
+                    ch = {
+                        "role": role,
+                        "target_sec": [lo, hi],
+                        "candidate_ids": [p["candidate_id"] for p in g],
+                        "worry_ids": sorted({p["worry_id"] for p in g}),
+                        "stat_ids": [],
+                    }
+                    self._attach_facts(ch, spec, g, used_facts, taken)
+                    chapters.append(ch)
                 continue
             ch: dict[str, Any] = {
                 "role": role,
@@ -555,6 +560,9 @@ class Planner:
             if role in ("view_a", "view_b"):
                 g = groups[0 if role == "view_a" else 1] if len(groups) > 1 else []
                 ch["candidate_ids"] = [p["candidate_id"] for p in g]
+                self._attach_facts(ch, spec, g, used_facts, taken)
+            elif role == "work_intro" and groups and groups[0]:
+                self._attach_facts(ch, spec, groups[0][:1], used_facts, taken)  # 形式B の1冊
             chapters.append(ch)
         _assign_seconds(chapters, EPISODE_TOTAL_SEC)
         human = next((c for c in chapters if c["role"] in ("summary", "compare")), chapters[-1])
@@ -562,6 +570,33 @@ class Planner:
         for i, c in enumerate(chapters):
             c["chapter_id"] = f"ch{i}"
         return chapters
+
+    def _attach_facts(
+        self,
+        ch: dict[str, Any],
+        spec: dict[str, Any],
+        picks: list[dict[str, Any]],
+        used: set[str],
+        taken: set[str],
+    ) -> None:
+        """章に背景の事実を付け、付いたら目安の秒数を足す（事実が無ければ M5 と同じ章）。"""
+        ch["fact_ids"] = []
+        limit = int(spec.get("facts") or 0)
+        if not limit or not picks:
+            return
+        rows = [self._row(p) for p in picks]
+        works = list(dict.fromkeys(r["work_id"] for r in rows))
+        people = [a for r in rows for a in (r.get("author_ids") or [])]
+        people += [t for r in rows for t in (r.get("translator_ids") or [])]
+        ids = select_facts(
+            self.conn, work_ids=works, person_ids=people, limit=limit, exclude=used | taken
+        )
+        if not ids:
+            return
+        ch["fact_ids"] = ids
+        taken.update(ids)
+        f_lo, f_hi = spec.get("fact_sec") or [0, 0]
+        ch["target_sec"] = [ch["target_sec"][0] + f_lo, ch["target_sec"][1] + f_hi]
 
     def _plan_json(
         self,
@@ -605,6 +640,8 @@ class Planner:
                 for q in queries
             ],
             "target_total_sec": total,
+            # 企画のときの事実の文の指紋。台本のときに変わっていれば人の確認を立てる
+            "facts": fact_shas(self.conn, [f for c in chapters for f in c.get("fact_ids", [])]),
             # 章の切れ目（オープニングの後から）を広告位置の候補にする。秒は音声のあとで決まる
             "ad_break_after_chapters": [c["chapter_id"] for c in chapters[1:-1]],
             "review_required": any(x["review_required"] for x in selection),

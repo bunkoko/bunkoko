@@ -1,6 +1,7 @@
 """運用データの SQLite（SPEC §5・§7）。<SSD_ROOT>/db/koten.sqlite に置き、HDD には置かない。
 
 悩み（worries）・統計（stats）・回（episodes）・使用履歴（usage）・検索文の控え（query_cache）。
+背景の事実（facts・fact_sources・fact_usage）と、その元になる人物・作品の書誌（persons・works_meta）。
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ import re
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -90,6 +91,70 @@ CREATE TABLE IF NOT EXISTS stats (
     year TEXT,
     url TEXT NOT NULL
 );
+
+-- 背景の事実（koten facts build が HDD の書誌と config の CSV から作り直す）
+CREATE TABLE IF NOT EXISTS persons (
+    person_id TEXT PRIMARY KEY,          -- aozora:person:000280
+    canonical_id TEXT NOT NULL,          -- 同じ人の別名をまとめた代表の人物ID
+    name TEXT NOT NULL,
+    name_yomi TEXT,
+    birth_date TEXT,
+    death_date TEXT
+);
+
+CREATE TABLE IF NOT EXISTS works_meta (
+    work_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    title_yomi TEXT,
+    original_title TEXT,
+    first_pub TEXT,                      -- 初出（作品CSVのまま）
+    base_book TEXT,
+    parent_book TEXT,
+    url TEXT,                            -- 図書カード
+    author_ids TEXT,                     -- JSON 配列（代表の人物ID）
+    translator_ids TEXT                  -- JSON 配列
+);
+
+CREATE TABLE IF NOT EXISTS facts (
+    fact_id TEXT PRIMARY KEY,            -- F-…（人が確かめた）／A-…（青空文庫のデータから自動）
+    subject_type TEXT NOT NULL,          -- person / work / era
+    subject_id TEXT,
+    scope TEXT NOT NULL,                 -- person / work / original_work / translation / era
+    kind TEXT NOT NULL,
+    text_ja TEXT NOT NULL,               -- 確認済みの1文
+    slots TEXT NOT NULL,                 -- JSON（台本で記号にする名前・年・数）
+    date TEXT,
+    origin TEXT NOT NULL,                -- auto / curated
+    status TEXT NOT NULL,                -- auto / verified（使えるのはこの2つ）
+    sensitive TEXT NOT NULL DEFAULT 'none',
+    interest INTEGER NOT NULL DEFAULT 2,
+    checked_by TEXT,
+    checked_at TEXT,
+    links TEXT,                          -- JSON 配列（ほかに結び付ける作品・人物の ID）
+    text_sha TEXT NOT NULL               -- 文の指紋（企画のあとで文が変わったら気づくため）
+);
+CREATE INDEX IF NOT EXISTS facts_subject ON facts(subject_id);
+
+CREATE TABLE IF NOT EXISTS fact_sources (
+    fact_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    kind TEXT NOT NULL,                  -- aozora_csv・ndl・wikidata_ref・book・wikipedia など
+    role TEXT NOT NULL,                  -- confirm（確かめた出典）/ lead（見つけた手がかり）
+    title TEXT,
+    url TEXT,
+    locator TEXT,                        -- 章・ページ・記録の番号など
+    excerpt TEXT,                        -- どこに何とあったか（100字以内のメモ）
+    license TEXT NOT NULL,
+    credit TEXT,                         -- 説明欄に出す出典表記
+    PRIMARY KEY (fact_id, seq)
+);
+
+CREATE TABLE IF NOT EXISTS fact_usage (
+    episode_id TEXT NOT NULL,
+    chapter_id TEXT NOT NULL,
+    fact_id TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS fact_usage_episode ON fact_usage(episode_id);
 """
 
 

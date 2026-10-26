@@ -9,6 +9,8 @@
 - {{title:<candidate_id>}}   『作品名』
 - {{stat:<stat_id>}}         統計の内容と値（例：……は32.9%（労働安全衛生調査、2025年））
 - {{worry:<worry_id>}}       一般化した悩み文
+- {{fact:<fact_id>}}         背景の事実の確認済みの1文
+- {{fact:<fact_id>.<項目>}}  その事実の項目（人名・地名・作品名・年・年齢・数。year_wareki で和暦）
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from typing import Any
 
 from koten.authors import author_label, translator_label
 
-PLACEHOLDER = re.compile(r"\{\{(quote|quote_ja|source|author|title|stat|worry):([^{}]+?)\}\}")
+PLACEHOLDER = re.compile(r"\{\{(quote|quote_ja|source|author|title|stat|worry|fact):([^{}]+?)\}\}")
 ANY_BRACES = re.compile(r"\{\{[^{}]*\}\}")
 
 
@@ -65,10 +67,12 @@ class Resolver:
         candidates: dict[str, dict[str, Any]],
         stats: dict[str, dict[str, Any]],
         worries: dict[str, str],
+        facts: dict[str, Any] | None = None,
     ):
         self.candidates = candidates
         self.stats = stats
         self.worries = worries
+        self.facts = facts or {}  # この回の企画に付いた、使える事実だけ（koten.facts.model.Fact）
 
     def value(self, kind: str, key: str) -> str:
         key = key.strip()
@@ -96,6 +100,17 @@ class Resolver:
             if w is None:
                 raise UnresolvedPlaceholder(f"{{{{worry:{key}}}}}：この回の悩みにない")
             return w
+        if kind == "fact":
+            fid, _, slot = key.partition(".")
+            f = self.facts.get(fid)
+            if f is None:
+                raise UnresolvedPlaceholder(f"{{{{fact:{key}}}}}：この回の企画に無い事実")
+            if not slot:
+                return f.text_ja
+            try:
+                return f.slot_text(slot)
+            except (KeyError, ValueError) as e:
+                raise UnresolvedPlaceholder(f"{{{{fact:{key}}}}}：{e}") from e
         raise UnresolvedPlaceholder(f"{{{{{kind}:{key}}}}}")
 
     def resolve(self, text: str) -> str:

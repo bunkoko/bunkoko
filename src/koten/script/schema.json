@@ -7,7 +7,7 @@
                "review_required", "verification", "timings"],
   "additionalProperties": false,
   "properties": {
-    "schema_version": {"const": "1.0"},
+    "schema_version": {"enum": ["1.0", "1.1"]},
     "episode_id": {"type": "string", "pattern": "^E\\d{8}-\\d{2}$"},
     "format": {"enum": ["A", "B", "C", "D"]},
     "title": {"type": "string", "minLength": 1},
@@ -41,10 +41,11 @@
                 "kind": {"enum": ["narration", "quote", "stat", "transition"]},
                 "text": {"type": "string", "minLength": 1},
                 "read_as": {"enum": ["original", "modern"]},
+                "facts": {"type": "array", "items": {"type": "string"}},
                 "visual": {
                   "type": "object", "required": ["type", "ref"], "additionalProperties": false,
                   "properties": {
-                    "type": {"enum": ["photo", "quote_card", "title_card", "chart", "author_card", "page_image"]},
+                    "type": {"enum": ["photo", "quote_card", "title_card", "chart", "author_card", "page_image", "fact_card"]},
                     "ref": {"type": ["string", "null"]}
                   }
                 }
@@ -58,7 +59,8 @@
               ]
             }
           },
-          "sources": {"type": "array", "items": {"type": "string"}}
+          "sources": {"type": "array", "items": {"type": "string"}},
+          "facts": {"type": "array", "items": {"type": "string"}}
         }
       }
     },

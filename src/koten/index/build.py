@@ -32,6 +32,7 @@ WORK_FIELDS = [
     ("author_ids", pa.list_(pa.string())),
     ("author_names", pa.list_(pa.string())),
     ("author_display", pa.list_(pa.string())),
+    ("translator_ids", pa.list_(pa.string())),
     ("translator_names", pa.list_(pa.string())),
     ("license", pa.string()),
     ("review_required", pa.bool_()),

@@ -7,7 +7,13 @@
 - G3 忠実さ：一節の解説が一節と前後の文脈から言える範囲（別の LLM が判定）
 - G4 再使用間隔：主役の作品・著者が直近の回と重ならない
 - G5 安全：悩みが blocked でなく除外キーワードに当たらず、一節に caution がない
-- G6 要確認ソース：要確認の一節・自前訳を含めば review_required
+- G6 要確認ソース：要確認の一節・自前訳を含めば review_required。企画のあとで事実が変わった・
+  使えなくなったときも人の確認へ
+
+背景の事実（SPEC R6・D-012）：G1 は、事実の記号が章に渡した事実を指しているか、語りに年・元号・
+世紀・「百年前」や、事実の項目（人名・地名・作品名など）・書誌の人名を直接書いていないかを見る。
+G3 は、背景の事実を使った章を、1文ずつ「一節・前後の文脈・使った事実」と照らし合わせる（判定役は
+文ごとの種類と根拠の事実IDを返し、合否はコードが決める）。
 
 ゲートとは別に、視聴の確かめ（冒頭30秒・タイトル・尺の見積もり）をする。不合格でも回は止めず、
 章を書き直させ、直らなければ確認画面に出す（docs/decisions.md D-011）。
@@ -27,6 +33,27 @@ from koten.script.placeholders import PLACEHOLDER, Resolver
 from koten.textnorm import normalize_for_match
 
 QUOTED = re.compile(r"「([^「」]*)」")
+FACT_REF = re.compile(r"\{\{fact:([^{}.]+)(?:\.([^{}]+))?\}\}")
+NUM = "0-9０-９"
+KANJI_NUM = "一二三四五六七八九十百千"
+# 背景の主張に当たる年の言い方（語りに直接書かず、事実の項目の記号で書く）
+HISTORICAL = [
+    (re.compile(rf"(?<![{NUM}])[{NUM}]{{3,4}}\s*年"), "年"),
+    (
+        re.compile(
+            rf"(明治|大正|昭和|平成|令和|慶応|元治|文久|万延|安政|嘉永|弘化|天保)"
+            rf"\s*[{NUM}{KANJI_NUM}元]+\s*年"
+        ),
+        "元号の年",
+    ),
+    (re.compile(rf"[{NUM}{KANJI_NUM}]+\s*世紀"), "世紀"),
+    (
+        re.compile(
+            rf"(?:[{NUM}]{{3,}}|[一二三四五六七八九]?[百千][{KANJI_NUM}]*)\s*年(前|あまり|余り|以上|近く)"
+        ),
+        "「○百年前」のような年数",
+    ),
+]
 SHORT_QUOTE_MAX = 10  # 「」で語を強調するだけなら許す長さ
 JUDGED_ROLES = {"work_intro", "summary", "compare"}  # 一節を持たないが、一節に触れる章
 
@@ -43,7 +70,7 @@ JUDGE_SCHEMA = {
 
 def resolver_for(data: EpisodeData) -> Resolver:
     worries = {wid: w["text_general"] for wid, w in data.worries.items()}
-    return Resolver(data.candidates, data.stats, worries)
+    return Resolver(data.candidates, data.stats, worries, data.facts)
 
 
 def _gate(issues: list[str], **extra: Any) -> dict[str, Any]:
@@ -64,8 +91,55 @@ def _names(data: EpisodeData) -> set[str]:
     return names
 
 
-def g1_chapter(chapter: dict[str, Any], data: EpisodeData, shape_issues: list[str]) -> list[str]:
+def _passage_text(chapter: dict[str, Any], data: EpisodeData) -> str:
+    """その章の一節と前後の文脈（ここに出てくる語は、語りで使っても直書きとみなさない）。"""
+    ids = chapter.get("sources") or []
+    return "\n".join(
+        f"{data.candidates[c]['quote_text']}\n{data.candidates[c].get('context_text') or ''}"
+        for c in ids
+        if c in data.candidates
+    )
+
+
+def fact_leaks(text: str, data: EpisodeData, passage: str, facts: set[str]) -> list[str]:
+    """記号を取り除いた語りに、背景の年・事実の項目・書誌の人名が直接書かれていないか。
+
+    事実の項目は、この章で使ってよい事実（facts）のものだけを見る。作品名は『』つき、
+    雑誌・新聞名は「」つきで探す（『こころ』のような題が、普通の言葉と重なるため）。
+    """
+    bare = PLACEHOLDER.sub("", text)
+    out = []
+    for pattern, label in HISTORICAL:
+        for m in pattern.finditer(bare):
+            if m.group(0) not in passage:
+                out.append(f"{label}「{m.group(0)}」を直接書いている（背景の年は事実の記号で書く）")
+    for fid in sorted(facts & set(data.facts)):
+        for name, value in data.facts[fid].slots.items():
+            v = str(value)
+            if name.startswith(("year", "month", "age", "number")) or len(v) < 2:
+                continue
+            if name.startswith("title"):
+                v = f"『{v}』"
+            elif name.startswith("periodical"):
+                v = f"「{v}」"
+            if v in bare and v not in passage:
+                out.append(f"「{v}」を直接書いている（{{{{fact:{fid}.{name}}}}} で書く）")
+    for name in data.person_names:
+        if name in bare and name not in passage:
+            out.append(f"人名「{name}」を直接書いている（記号で書く）")
+    return list(dict.fromkeys(out))
+
+
+def g1_chapter(
+    chapter: dict[str, Any],
+    data: EpisodeData,
+    shape_issues: list[str],
+    allowed_facts: set[str] | None = None,
+) -> list[str]:
+    """allowed_facts：この章で使ってよい事実（章に渡した事実と、前の章で使った事実）。"""
     resolver = resolver_for(data)
+    allowed = set(chapter.get("fact_ids") or []) if allowed_facts is None else allowed_facts
+    passage = _passage_text(chapter, data)
     issues = [f"{chapter['chapter_id']}：{x}" for x in shape_issues]
     quotes = [normalize_for_match(c["quote_text"]) for c in data.candidates.values()]
     worries = [normalize_for_match(w["text_general"]) for w in data.worries.values()]
@@ -77,6 +151,11 @@ def g1_chapter(chapter: dict[str, Any], data: EpisodeData, shape_issues: list[st
         sid, text = seg["seg_id"], seg["text"]
         for p in resolver.problems(text):
             issues.append(f"{sid}：解決できない記号 {p}")
+        for fid, _ in FACT_REF.findall(text):
+            if fid in data.facts and fid not in allowed:
+                issues.append(f"{sid}：この章に渡していない事実 {fid} を使っている")
+        if seg["kind"] in ("narration", "transition"):
+            issues += [f"{sid}：{x}" for x in fact_leaks(text, data, passage, allowed)]
         if seg["kind"] == "transition":
             bare_title = PLACEHOLDER.sub("", text)
             issues += [
@@ -188,6 +267,7 @@ def g6_review(data: EpisodeData, script: dict[str, Any]) -> dict[str, Any]:
         for seg in ch["segments"]:
             if seg["text"].startswith("{{quote_ja:"):
                 reasons.append(f"{seg['seg_id']}：自前訳（試訳）を含む")
+    reasons += [f"背景の事実 {x}" for x in data.fact_issues]
     # G6 は不合格ではなく「人の確認待ち」にする
     return {"ok": True, "issues": [], "review_required": bool(reasons), "reasons": reasons}
 
@@ -264,23 +344,81 @@ def title_issues(title: str, data: EpisodeData) -> list[str]:
 # --- G3 ---------------------------------------------------------------------
 
 
+JUDGE_SENTENCES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "sentences": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "n": {"type": "integer"},
+                    "type": {
+                        "type": "string",
+                        "enum": [
+                            "passage",
+                            "background",
+                            "connective",
+                            "interpretation",
+                            "application",
+                            "question",
+                        ],
+                    },
+                    "supported_by": {"type": "array", "items": {"type": "string"}},
+                    "ok": {"type": "boolean"},
+                    "problem": {"type": "string"},
+                },
+                "required": ["n", "type", "supported_by", "ok", "problem"],
+                "additionalProperties": False,
+            },
+        },
+        "passage_problems": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["sentences", "passage_problems"],
+    "additionalProperties": False,
+}
+SENTENCE = re.compile(r"[^。！？!?]*[。！？!?]|[^。！？!?]+$")
+MARKER = re.compile(r"〔([^〔〕]+)〕")
+
+
 class FaithfulnessJudge:
-    def __init__(self, llm: ChatLLM, prompts_dir, prompt: str = "judge_v1"):
+    def __init__(
+        self, llm: ChatLLM, prompts_dir, prompt: str = "judge_v1", facts_prompt: str = "judge_v2"
+    ):
         self.llm = llm
         self.system, self.user_tpl = load_prompt(prompts_dir, prompt)
+        self.f_system, self.f_user_tpl = load_prompt(prompts_dir, facts_prompt)
 
     def needs_judge(self, chapter: dict[str, Any]) -> bool:
-        return bool(chapter.get("sources")) or chapter["role"] in JUDGED_ROLES
+        return (
+            bool(chapter.get("sources"))
+            or chapter["role"] in JUDGED_ROLES
+            or bool(chapter.get("facts"))
+        )
 
-    def judge(self, chapter: dict[str, Any], data: EpisodeData) -> list[str]:
-        """問題の一覧（空なら合格）。判定できなかったときも問題として返す。"""
+    def _passages(self, chapter: dict[str, Any], data: EpisodeData) -> str:
         ids = chapter.get("sources") or [s["candidate_id"] for s in data.plan["selection"]]
-        passages = "\n".join(
+        return "\n".join(
             f"- 一節：{data.candidates[c]['quote_text']}\n"
             f"  前後の文脈：{data.candidates[c]['context_text']}"
             for c in ids
             if c in data.candidates
         )
+
+    def judge(
+        self, chapter: dict[str, Any], data: EpisodeData, prior_facts: list[str] | None = None
+    ) -> list[str]:
+        """問題の一覧（空なら合格）。判定できなかったときも問題として返す。
+
+        この章か前の章で背景の事実を使っていれば、1文ずつの判定（judge_v2）にする。
+        """
+        shown = [
+            f
+            for f in dict.fromkeys((prior_facts or []) + (chapter.get("facts") or []))
+            if f in data.facts
+        ]
+        if shown:
+            return self._judge_sentences(chapter, data, shown)
         resolver = resolver_for(data)
         lines = []
         for seg in chapter["segments"]:
@@ -293,7 +431,7 @@ class FaithfulnessJudge:
             lines.append(f"（一節）「{text}」" if seg["kind"] == "quote" else text)
         user = fill(
             self.user_tpl,
-            passages=passages,
+            passages=self._passages(chapter, data),
             chapter_title=chapter["title"],
             narration="\n".join(lines),
         )
@@ -308,6 +446,102 @@ class FaithfulnessJudge:
                     return []
                 return problems or ["忠実さに問題がある（理由なし）"]
         return ["忠実さを判定できなかった"]
+
+    def _judge_sentences(
+        self, chapter: dict[str, Any], data: EpisodeData, shown: list[str]
+    ) -> list[str]:
+        resolver = resolver_for(data)
+
+        def marked(text: str) -> str:
+            # 事実から差し込んだ値に〔事実ID〕の印を付けて見せる
+            def one(m: re.Match) -> str:
+                fid, slot = m.group(1), m.group(2)
+                f = data.facts.get(fid)
+                if f is None:
+                    return m.group(0)
+                try:
+                    value = f.slot_text(slot) if slot else f.text_ja
+                except (KeyError, ValueError):
+                    return m.group(0)
+                return f"{value}〔{fid}〕"
+
+            text = FACT_REF.sub(one, text)
+            try:
+                return resolver.resolve(text)
+            except KeyError:
+                return text
+
+        sentences: list[tuple[str, str, set[str]]] = []
+        lines = []
+        for seg in chapter["segments"]:
+            if seg["kind"] == "stat":
+                continue
+            text = marked(seg["text"])
+            if seg["kind"] == "quote":
+                lines.append(f"（一節）「{text}」")
+                continue
+            for m in SENTENCE.finditer(text):
+                sent = m.group(0).strip()
+                if not sent:
+                    continue
+                sentences.append((seg["seg_id"], sent, set(MARKER.findall(sent))))
+                lines.append(f"S{len(sentences)}（{seg['seg_id']}）：{sent}")
+        facts = "\n".join(
+            f"- {fid}"
+            + {"original_work": "（原著について）", "translation": "（この訳について）"}.get(
+                data.facts[fid].scope, ""
+            )
+            + f"：{data.facts[fid].text_ja}"
+            for fid in shown
+        )
+        user = fill(
+            self.f_user_tpl,
+            passages=self._passages(chapter, data) or "（なし）",
+            facts=facts,
+            chapter_title=chapter["title"],
+            sentences="\n".join(lines),
+        )
+        for _ in range(3):
+            try:
+                d = parse_json_object(
+                    self.llm.complete(self.f_system, user, JUDGE_SENTENCES_SCHEMA)
+                )
+            except ValueError:
+                continue
+            got = {
+                x["n"]: x
+                for x in d.get("sentences") or []
+                if isinstance(x, dict) and isinstance(x.get("n"), int)
+            }
+            if set(got) != set(range(1, len(sentences) + 1)):
+                continue  # 文の番号がそろわない判定は使わない
+            return sentence_verdict(sentences, got, set(shown), d.get("passage_problems") or [])
+        return ["忠実さを判定できなかった（1文ずつの判定がそろわない）"]
+
+
+def sentence_verdict(
+    sentences: list[tuple[str, str, set[str]]],
+    got: dict[int, dict[str, Any]],
+    shown: set[str],
+    passage_problems: list[Any],
+) -> list[str]:
+    """判定役の文ごとの答えから、合否をコードで決める（問題の一覧。空なら合格）。"""
+    problems = [str(p) for p in passage_problems if str(p).strip()]
+    for n, (sid, sent, markers) in enumerate(sentences, start=1):
+        x = got[n]
+        sup = {str(f) for f in x.get("supported_by") or []}
+        head = f"S{n}（{sid}）「{sent[:30]}」"
+        if not x.get("ok"):
+            problems.append(f"{head}：{x.get('problem') or '根拠が無い'}")
+            continue
+        if x.get("type") == "background":
+            if not sup:
+                problems.append(f"{head}：背景の主張なのに、根拠の事実が無い")
+            elif markers - sup:
+                problems.append(f"{head}：差し込んだ事実 {sorted(markers - sup)} が根拠と合わない")
+        if sup - shown:
+            problems.append(f"{head}：見せていない事実 {sorted(sup - shown)} を根拠にしている")
+    return problems
 
 
 def summarize(verification: dict[str, Any]) -> str:

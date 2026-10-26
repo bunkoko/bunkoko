@@ -3,6 +3,7 @@
 - 1ホストあたりの間隔を空ける（settings の rate_limit.per_host_per_sec 以下）
 - 同じURLは再取得しない（manifest にあれば読み飛ばす。refresh 時は ETag で条件付き取得）
 - 原本はそのまま raw/<source>/ に保存し、manifest に URL・取得日時・ハッシュ・ライセンスを書く
+- 429・503 のときは Retry-After の秒数（上限120秒）だけ待って、3回まで取り直す（Wikimedia の決まり）
 """
 
 from __future__ import annotations
@@ -77,8 +78,12 @@ class Fetcher:
         timeout_sec: float = 30.0,
         client: httpx.Client | None = None,
         limiter: RateLimiter | None = None,
+        max_retries: int = 3,
+        sleep=time.sleep,
     ):
         self.raw_dir = raw_dir
+        self.max_retries = max_retries
+        self._sleep = sleep
         self.manifest = Manifest(raw_dir / "manifest.jsonl")
         self.limiter = limiter or RateLimiter(per_host_per_sec)
         self.client = client or httpx.Client(
@@ -96,8 +101,13 @@ class Fetcher:
         headers = {}
         if refresh and known and known.etag and dest.exists():
             headers["If-None-Match"] = known.etag
-        self.limiter.wait(url)
-        resp = self.client.get(url, headers=headers)
+        for attempt in range(self.max_retries + 1):
+            self.limiter.wait(url)
+            resp = self.client.get(url, headers=headers)
+            if resp.status_code in (429, 503) and attempt < self.max_retries:
+                self._sleep(retry_after(resp))
+                continue
+            break
         if resp.status_code == 304:
             return dest, False
         resp.raise_for_status()
@@ -120,3 +130,16 @@ class Fetcher:
             )
         )
         return dest, True
+
+    def fetch_json(self, url: str, subdir: str) -> object:
+        """API の応答（JSON）を取り、raw_dir/subdir/ に URL のハッシュの名前で控える。"""
+        name = hashlib.sha256(url.encode("utf-8")).hexdigest()[:24]
+        path, _ = self.fetch(url, f"{subdir}/{name}.json")
+        return json.loads(path.read_text("utf-8"))
+
+
+def retry_after(resp: httpx.Response, default: float = 5.0, cap: float = 120.0) -> float:
+    try:
+        return min(float(resp.headers.get("Retry-After", default)), cap)
+    except ValueError:
+        return default
