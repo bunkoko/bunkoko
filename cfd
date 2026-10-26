@@ -57,6 +57,7 @@ case "$cmd" in
   spread) need_venv; exec "$PY" scripts/spread_study.py "$@" ;;
   diversify) need_venv; exec "$PY" scripts/diversified_study.py "$@" ;;
   carry)  need_venv; exec "$PY" scripts/carry_study.py "$@" ;;
+  costnow) need_venv; exec "$PY" scripts/costnow_study.py "$@" ;;
   partner) need_venv; exec "$PY" scripts/partner_study.py "$@" ;;
   jquants) need_venv; exec "$PY" scripts/jquants.py "$@" ;;
   edinet) need_venv; exec "$PY" scripts/edinet.py "$@" ;;
@@ -115,6 +116,7 @@ case "$cmd" in
   spread   2 つの差の戻り（WTI−ブレント・金÷銀）を確かめる（docs/spread.md。数分）
   diversify 市場を分散した論文どおりのトレンドフォローを確かめる（docs/diversified.md。数分）
   carry    キャリー（原油の期間構造）を確かめる（docs/carry.md。--fetch で EIA から取る。Mac で。--paper で記録だけの売買）
+  costnow  今のスプレッドで計算し直す（既定は銀。docs/costnow.md。./cfd context の先物の日足も使う。数分）
   partner  相方の行き過ぎフィルタを、使っていない商品の 5 組で確かめる（docs/cross_asset.md 7 章。Yahoo から取る。Mac で数十分）
   jquants  J-Quants の無料プランで、過去の上場銘柄一覧に後で消えた会社が入るかなどを確かめる（key でキーを保存 → check。docs/survivorship.md）
   edinet   EDINET の有報の本文で文章の信号を確かめる（key → check → fetch → momentum・lazy。docs/text_signals.md）

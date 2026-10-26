@@ -56,7 +56,8 @@ def run_frames(period: Period, picks, gates, start) -> dict:
     cfg = replace(period.bt, trade_start=start, trade_end=period.end,
                   risk=replace(period.bt.risk, max_drawdown_halt=1.0))
     res = run_backtest({s.symbol: period.frames[s.symbol] for s in sleeves}, period.instruments, sleeves, cfg)
-    return {"equity": res.equity, "trades": res.trades, "signals": res.signals}
+    return {"equity": res.equity, "trades": res.trades, "signals": res.signals, "rejections": res.rejections,
+            "leverage": res.leverage}
 
 
 def summarize(res: dict, equity0: float, symbols) -> dict:

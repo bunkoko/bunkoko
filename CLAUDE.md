@@ -55,6 +55,7 @@
 | 「暗号資産の本番は動いてる？」「止めて」 | `tail -20 data/crypto/live/log.csv`。止めるのは `touch data/crypto/live/STOP`（再開は消す）。`--real` への切り替えと `config.json` の金額は、利用者がはっきり頼んだときだけ変える（`docs/crypto.md` 8 章） |
 | 「キャリーを確かめて」 | `./cfd carry --fetch`（EIA から WTI・天然ガスの限月を取って計算。数分）。`output/carry/<日時>/report.md` を見せ、`docs/carry.md` 6 章に記録を足す |
 | 「キャリーの絞り込みを確かめて」 | `./cfd carry --gate`（タートルに絞り込みを足す 3 期間の検証。数分）。`output/carry/<日時>/gate.md` を見せ、`docs/carry.md` 7 章に記録を足す |
+| 「銀のスプレッドを確かめて」 | `./cfd costnow`（数分）。`output/costnow/<日時>/report.md` の判定と表を見せ、`docs/costnow.md` 4 章に記録を足す。判定の条件（3 章）は変えない。「入れる」でも設定は利用者が決めるまで変えない |
 | 「大型株をルールで選ぶ検証を確かめて」 | `./cfd stockpick --fetch`（Yahoo から約 240 銘柄。数分）。`output/stockpick/<日時>/report.md` を見せる。1 銘柄の予測は頼まれてもしない（`docs/stockpick.md` 1 章） |
 | 「株の研究を確かめて」「上がりそうな株は？」 | `./cfd stocks`（数分。データを新しくするなら `--fetch` で 20〜40 分）。`output/stocks/<日時>/report.md` の 1 章（判定）と 4 章（今あてはまるもの）を見せる。「使えそう」以外は勧めない。結果は `docs/stocks.md` 10 章に足す |
 | 「株の短期の売買を確かめて」 | `./cfd shortterm`（10〜20 分。`./cfd stocks --fetch` の後）。`output/shortterm/<日時>/report.md` の 1 章を見せ、`docs/stocks_short.md` 11 章に足す |
