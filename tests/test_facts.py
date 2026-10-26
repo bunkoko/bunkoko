@@ -264,3 +264,45 @@ def test_translation_fact_first_and_once_per_episode(env):
     # 最近の回で使っていても、訳の事実は付ける。この回でもう付けたなら付けない
     assert select_facts(conn, **kw, exclude={"A-w002-translation"}) == ["A-w002-translation"]
     assert select_facts(conn, **kw, taken={"A-w002-translation"}) == []
+
+
+def test_attach_facts_to_existing_plan(settings_file, tmp_path):
+    """企画を作ったあとで確かめた事実を足し、koten facts attach で付け直す。"""
+    import json
+
+    from typer.testing import CliRunner
+
+    from koten.cli import app
+    from koten.config import load_settings
+    from tests.test_plan import make_planner
+
+    s = load_settings(settings_file)
+    build(s.require_hdd(), s.ssd_root, DEFAULT_CONFIG_DIR)
+    write_persons(s.require_hdd())
+    cfg = tmp_path / "facts_config"
+    cfg.mkdir()
+    write_curated(cfg, facts=[], sources=[])
+    conn = connect(s.ssd_root)
+    build_facts(conn, s.require_hdd(), cfg, today=TODAY)
+    p = make_planner(s)
+    eid = p.save(p.plan("A", worry_id="W0001"))
+    before = json.loads(conn.execute("SELECT plan_json FROM episodes").fetchone()[0])
+    assert "F-w001-001" not in [f for c in before["chapters"] for f in c.get("fact_ids", [])]
+
+    write_curated(cfg)
+    build_facts(conn, s.require_hdd(), cfg, today=TODAY)
+    r = CliRunner().invoke(
+        app, ["facts", "attach", "--episode", eid, "--settings", str(settings_file)]
+    )
+    assert r.exit_code == 0, r.output
+    after = json.loads(conn.execute("SELECT plan_json FROM episodes").fetchone()[0])
+    assert after["selection"] == before["selection"]  # 一節は変えない
+    ids = [f for c in after["chapters"] for f in c["fact_ids"]]
+    assert "F-w001-001" in ids and set(after["facts"]) == set(ids)
+    assert abs(after["target_total_sec"] - 720) <= 30 and after["schema_version"] == "1.1"
+    with conn:
+        conn.execute("UPDATE episodes SET state = 'script_done'")
+    r = CliRunner().invoke(
+        app, ["facts", "attach", "--episode", eid, "--settings", str(settings_file)]
+    )
+    assert r.exit_code == 2 and "--force" in r.output

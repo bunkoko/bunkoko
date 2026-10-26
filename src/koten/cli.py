@@ -1122,6 +1122,49 @@ def facts_todo(
     typer.echo(f"下書きを作る：uv run koten facts draft --episode {episode}")
 
 
+@facts_app.command("attach")
+def facts_attach(
+    episode: Annotated[str, typer.Option(help="回の ID")],
+    force: Annotated[bool, typer.Option(help="script_done などの回にも付け直す")] = False,
+    settings: SettingsOpt = None,
+) -> None:
+    """作った企画に、今の事実の表から背景の事実を付け直す（一節の選び方は変えない）。"""
+    import json
+
+    import yaml
+
+    from koten.db import connect
+    from koten.plan.planner import refresh_facts
+
+    s = _settings(settings)
+    conn = connect(s.ssd_root)
+    row = conn.execute(
+        "SELECT state, plan_json FROM episodes WHERE episode_id = ?", (episode,)
+    ).fetchone()
+    if row is None:
+        typer.secho(f"{episode} という回はありません", fg="red", err=True)
+        raise typer.Exit(2)
+    if row["state"] not in ("planned", "error") and not force:
+        typer.secho(
+            f"{episode} は {row['state']} です（付け直すと台本と合わなくなるので、"
+            "--force を付けて、あとで koten script --force で作り直す）",
+            fg="red",
+            err=True,
+        )
+        raise typer.Exit(2)
+    formats = yaml.safe_load((s.config_dir / "formats.yaml").read_text("utf-8"))["formats"]
+    plan = refresh_facts(conn, json.loads(row["plan_json"]), formats)
+    with conn:
+        conn.execute(
+            "UPDATE episodes SET plan_json = ? WHERE episode_id = ?",
+            (json.dumps(plan, ensure_ascii=False), episode),
+        )
+    for c in plan["chapters"]:
+        facts = "、".join(c["fact_ids"]) or "なし"
+        typer.echo(f"  {c['chapter_id']} {c['role']}（{c['target_sec']}秒）背景の事実：{facts}")
+    typer.echo(f"台本を作る：uv run koten script --episode {episode}{' --force' if force else ''}")
+
+
 @facts_app.command("draft")
 def facts_draft(
     episode: Annotated[str | None, typer.Option(help="回で読む作品と作者の下書きを作る")] = None,

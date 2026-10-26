@@ -580,23 +580,11 @@ class Planner:
         taken: set[str],
     ) -> None:
         """章に背景の事実を付け、付いたら目安の秒数を足す（事実が無ければ M5 と同じ章）。"""
-        ch["fact_ids"] = []
-        limit = int(spec.get("facts") or 0)
-        if not limit or not picks:
-            return
         rows = [self._row(p) for p in picks]
-        works = list(dict.fromkeys(r["work_id"] for r in rows))
-        people = [a for r in rows for a in (r.get("author_ids") or [])]
-        people += [t for r in rows for t in (r.get("translator_ids") or [])]
-        ids = select_facts(
-            self.conn, work_ids=works, person_ids=people, limit=limit, exclude=used, taken=taken
-        )
-        if not ids:
-            return
-        ch["fact_ids"] = ids
-        taken.update(ids)
-        f_lo, f_hi = spec.get("fact_sec") or [0, 0]
-        ch["target_sec"] = [ch["target_sec"][0] + f_lo, ch["target_sec"][1] + f_hi]
+        ch["fact_ids"] = chapter_facts(self.conn, spec, rows, used, taken)
+        if ch["fact_ids"]:
+            f_lo, f_hi = spec.get("fact_sec") or [0, 0]
+            ch["target_sec"] = [ch["target_sec"][0] + f_lo, ch["target_sec"][1] + f_hi]
 
     def _plan_json(
         self,
@@ -696,6 +684,85 @@ def _group_by(picks: list[dict[str, Any]], key: str) -> list[list[dict[str, Any]
     for p in picks:
         groups.setdefault(p[key], []).append(p)
     return list(groups.values())
+
+
+def chapter_facts(
+    conn: sqlite3.Connection,
+    spec: dict[str, Any],
+    rows: list[dict[str, Any]],
+    used: set[str],
+    taken: set[str],
+) -> list[str]:
+    """章の一節（rows：work_id・author_ids・translator_ids）に付ける事実の ID。"""
+    limit = int(spec.get("facts") or 0)
+    if not limit or not rows:
+        return []
+    works = list(dict.fromkeys(r["work_id"] for r in rows))
+    people = [a for r in rows for a in (r.get("author_ids") or [])]
+    people += [t for r in rows for t in (r.get("translator_ids") or [])]
+    ids = select_facts(
+        conn, work_ids=works, person_ids=people, limit=limit, exclude=used, taken=taken
+    )
+    taken.update(ids)
+    return ids
+
+
+def refresh_facts(
+    conn: sqlite3.Connection,
+    plan: dict[str, Any],
+    formats: dict[str, Any],
+    *,
+    fact_episodes: int = 10,
+) -> dict[str, Any]:
+    """作った企画に、今の事実の表から背景の事実を付け直し、尺の目安を割り直す。
+
+    一節の選び方は変えない（koten facts accept のあとで、企画を作り直さずに事実を足すため）。
+    """
+    specs = {c["role"]: c for c in formats[plan["format"]]["chapters"]}
+    picks = {s["candidate_id"]: s for s in plan["selection"]}
+    episode_id = plan.get("episode_id")
+    own = {
+        r[0]
+        for r in conn.execute("SELECT fact_id FROM fact_usage WHERE episode_id = ?", (episode_id,))
+    }
+    used = recently_used(conn, fact_episodes) - own
+    taken: set[str] = set()
+
+    def rows_for(sel: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        out = []
+        for s in sel:
+            meta = conn.execute(
+                "SELECT translator_ids FROM works_meta WHERE work_id = ?", (s["work_id"],)
+            ).fetchone()
+            translators = json.loads(meta[0] or "[]") if meta else []
+            out.append(
+                {
+                    "work_id": s["work_id"],
+                    "author_ids": s.get("author_ids") or [],
+                    "translator_ids": translators,
+                }
+            )
+        return out
+
+    for ch in plan["chapters"]:
+        spec = specs.get(ch["role"], {})
+        rng = spec.get("target_sec")
+        lo, hi = rng if rng else (ch["target_sec"], ch["target_sec"])
+        if ch["role"] == "work_intro":
+            sel = plan["selection"][:1]
+        else:
+            sel = [picks[c] for c in ch.get("candidate_ids", []) if c in picks]
+        ids = chapter_facts(conn, spec, rows_for(sel), used, taken) if sel else []
+        ch["fact_ids"] = ids
+        if ids:
+            f_lo, f_hi = spec.get("fact_sec") or [0, 0]
+            lo, hi = lo + f_lo, hi + f_hi
+        ch["target_sec"] = [lo, hi]
+    _assign_seconds(plan["chapters"], EPISODE_TOTAL_SEC)
+    plan["target_total_sec"] = sum(c["target_sec"] for c in plan["chapters"])
+    plan["facts"] = fact_shas(conn, [f for c in plan["chapters"] for f in c["fact_ids"]])
+    plan["schema_version"] = PLAN_SCHEMA_VERSION
+    return plan
 
 
 def _fit_groups(groups: list[list[Any]], lo: int, hi: int) -> list[list[Any]]:
