@@ -11,9 +11,10 @@ Excel・グラフ・代表意見・精度報告として納品するための仕
 
 ## いまの状態
 
-設計と安全対策の土台までです。使う Mac は MacBook Pro（M5、32GB、macOS 27.0.1）に決まりました。
-2026年11月の初めに架空データの生成（`tools/samplegen/`）、続けてパイプライン本体（`src/survey_coder/`）を
-構築係（`.claude/agents/builder.md`）が実装します。
+設計と安全対策の土台、架空データの仕様表（`tools/samplegen/`、出力は `samples/fictional/es_survey_v1/`）までです。
+使う Mac は MacBook Pro（M5、32GB、macOS 27.0.1）に決まりました。
+次は、人手の見本（Q1 を中心に30〜50件）を用意し、仕様表のバッチに沿って本文書き係（`.claude/agents/sample-writer.md`）が回答本文を書き、
+続けてパイプライン本体（`src/survey_coder/`）を構築係（`.claude/agents/builder.md`）が実装します。
 
 ## 最初にやること（Mac で）
 

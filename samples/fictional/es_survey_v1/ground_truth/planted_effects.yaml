@@ -1,0 +1,205 @@
+# 仕込んだ属性効果（design.md 6.1）と、この種で実現した値。
+# when は 属性名: [値...]（属性どうしは AND、値どうしは OR）。属性名は dept=部署, age=年代, tenure=勤続年数,
+# emp=雇用形態, pos=役職, sat=総合満足度。乗数は Q1 の主ラベルの割り付け（IPF）と、2つ目以降のラベルの重みに掛ける。
+# リフト = （対象の内でそのラベルが付いた割合）÷（対象の外での割合）。内と外は Q1 で中身のある回答者で数える。
+#   ipf_expected_lift      : IPF が目標にした期待リフト（主ラベル）
+#   realized_lift_primary  : 実現したリフト（主ラベル）
+#   realized_lift_any      : 実現したリフト（付いたラベル全部。2つ目・3つ目を含む）
+version: 1
+question: Q1
+effects:
+- id: E01
+  label: 職場環境・設備
+  code: c09
+  when:
+    dept: [製造]
+  multiplier: 3.0
+  ipf_expected_lift: 3.0003
+  realized_lift_primary: 2.8685
+  realized_lift_any: 2.1514
+  n_in: 294
+  n_out: 506
+  primary_hits_in: 25
+  primary_hits_out: 15
+  any_hits_in: 35
+  any_hits_out: 28
+- id: E02
+  label: 残業・労働時間
+  code: c06
+  when:
+    dept: [営業]
+  multiplier: 2.0
+  ipf_expected_lift: 1.8298
+  realized_lift_primary: 1.8947
+  realized_lift_any: 2.0
+  n_in: 160
+  n_out: 640
+  primary_hits_in: 18
+  primary_hits_out: 38
+  any_hits_in: 28
+  any_hits_out: 56
+- id: E03
+  label: 人員不足・業務量
+  code: c01
+  when:
+    dept: [営業]
+  multiplier: 1.5
+  ipf_expected_lift: 1.3723
+  realized_lift_primary: 1.3933
+  realized_lift_any: 1.4775
+  n_in: 160
+  n_out: 640
+  primary_hits_in: 31
+  primary_hits_out: 89
+  any_hits_in: 41
+  any_hits_out: 111
+- id: E04
+  label: 教育・研修・キャリア
+  code: c08
+  when:
+    age: [20代以下]
+  multiplier: 2.5
+  ipf_expected_lift: 2.6189
+  realized_lift_primary: 2.5853
+  realized_lift_any: 2.0831
+  n_in: 140
+  n_out: 660
+  primary_hits_in: 17
+  primary_hits_out: 31
+  any_hits_in: 19
+  any_hits_out: 43
+- id: E05
+  label: 給与・賞与
+  code: c02
+  when:
+    age: [20代以下]
+  multiplier: 1.5
+  ipf_expected_lift: 1.3564
+  realized_lift_primary: 1.3386
+  realized_lift_any: 1.2603
+  n_in: 140
+  n_out: 660
+  primary_hits_in: 23
+  primary_hits_out: 81
+  any_hits_in: 27
+  any_hits_out: 101
+- id: E06
+  label: 評価制度・昇進
+  code: c03
+  when:
+    age: [40代, 50代]
+  multiplier: 1.8
+  ipf_expected_lift: 1.8075
+  realized_lift_primary: 1.7666
+  realized_lift_any: 1.5882
+  n_in: 408
+  n_out: 392
+  primary_hits_in: 57
+  primary_hits_out: 31
+  any_hits_in: 81
+  any_hits_out: 49
+- id: E07
+  label: 福利厚生・手当
+  code: c11
+  when:
+    emp: [契約社員, パート・アルバイト, 派遣社員]
+  multiplier: 2.5
+  ipf_expected_lift: 2.3634
+  realized_lift_primary: 2.241
+  realized_lift_any: 1.9842
+  n_in: 226
+  n_out: 574
+  primary_hits_in: 15
+  primary_hits_out: 17
+  any_hits_in: 25
+  any_hits_out: 32
+- id: E08
+  label: 経営方針・情報共有
+  code: c13
+  when:
+    emp: [契約社員, パート・アルバイト, 派遣社員]
+  multiplier: 2.0
+  ipf_expected_lift: 1.8907
+  realized_lift_primary: 2.078
+  realized_lift_any: 1.9877
+  n_in: 226
+  n_out: 574
+  primary_hits_in: 9
+  primary_hits_out: 11
+  any_hits_in: 18
+  any_hits_out: 23
+- id: E09
+  label: 柔軟な働き方
+  code: c12
+  when:
+    age: [30代]
+  multiplier: 2.0
+  ipf_expected_lift: 2.0913
+  realized_lift_primary: 2.2619
+  realized_lift_any: 2.0152
+  n_in: 192
+  n_out: 608
+  primary_hits_in: 10
+  primary_hits_out: 14
+  any_hits_in: 14
+  any_hits_out: 22
+- id: E10
+  label: ITツール・業務効率化
+  code: c10
+  when:
+    dept: [管理部門]
+  multiplier: 2.5
+  ipf_expected_lift: 2.4472
+  realized_lift_primary: 2.4158
+  realized_lift_any: 2.0707
+  n_in: 97
+  n_out: 703
+  primary_hits_in: 10
+  primary_hits_out: 30
+  any_hits_in: 16
+  any_hits_out: 56
+- id: E11
+  label: 上司・マネジメント
+  code: c04
+  when:
+    sat: [1, 2]
+  multiplier: 2.0
+  ipf_expected_lift: 1.7957
+  realized_lift_primary: 1.7777
+  realized_lift_any: 1.9077
+  n_in: 193
+  n_out: 607
+  primary_hits_in: 26
+  primary_hits_out: 46
+  any_hits_in: 37
+  any_hits_out: 61
+- id: E12
+  label: ハラスメント・人間関係
+  code: c14
+  when:
+    sat: [1, 2]
+  multiplier: 3.0
+  ipf_expected_lift: 2.6936
+  realized_lift_primary: 2.5732
+  realized_lift_any: 3.5944
+  n_in: 193
+  n_out: 607
+  primary_hits_in: 9
+  primary_hits_out: 11
+  any_hits_in: 16
+  any_hits_out: 14
+- id: E13
+  label: 教育・研修・キャリア
+  code: c08
+  when:
+    tenure: [1年未満]
+  multiplier: 2.0
+  ipf_expected_lift: 2.6527
+  realized_lift_primary: 2.763
+  realized_lift_any: 2.9797
+  n_in: 54
+  n_out: 746
+  primary_hits_in: 8
+  primary_hits_out: 40
+  any_hits_in: 11
+  any_hits_out: 51

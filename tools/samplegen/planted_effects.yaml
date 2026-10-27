@@ -1,0 +1,58 @@
+# 仕込んだ属性効果（design.md 6.1）。Q1 の主ラベルの割り付けに掛ける重みの乗数。
+# when は属性名: [値...]。属性どうしは AND、値どうしは OR。同じ回答者に複数の効果が当たれば掛け合わせる。
+# 属性名: dept=部署, age=年代, tenure=勤続年数, emp=雇用形態, pos=役職, sat=総合満足度
+version: 1
+question: Q1
+effects:
+  - id: E01
+    when: {dept: [製造]}
+    label: 職場環境・設備
+    multiplier: 3.0
+  - id: E02
+    when: {dept: [営業]}
+    label: 残業・労働時間
+    multiplier: 2.0
+  - id: E03
+    when: {dept: [営業]}
+    label: 人員不足・業務量
+    multiplier: 1.5
+  - id: E04
+    when: {age: [20代以下]}
+    label: 教育・研修・キャリア
+    multiplier: 2.5
+  - id: E05
+    when: {age: [20代以下]}
+    label: 給与・賞与
+    multiplier: 1.5
+  - id: E06
+    when: {age: [40代, 50代]}
+    label: 評価制度・昇進
+    multiplier: 1.8
+  - id: E07
+    when: {emp: [契約社員, パート・アルバイト, 派遣社員]}
+    label: 福利厚生・手当
+    multiplier: 2.5
+  - id: E08
+    when: {emp: [契約社員, パート・アルバイト, 派遣社員]}
+    label: 経営方針・情報共有
+    multiplier: 2.0
+  - id: E09
+    when: {age: [30代]}
+    label: 柔軟な働き方
+    multiplier: 2.0
+  - id: E10
+    when: {dept: [管理部門]}
+    label: ITツール・業務効率化
+    multiplier: 2.5
+  - id: E11
+    when: {sat: [1, 2]}
+    label: 上司・マネジメント
+    multiplier: 2.0
+  - id: E12
+    when: {sat: [1, 2]}
+    label: ハラスメント・人間関係
+    multiplier: 3.0
+  - id: E13
+    when: {tenure: [1年未満]}
+    label: 教育・研修・キャリア
+    multiplier: 2.0
