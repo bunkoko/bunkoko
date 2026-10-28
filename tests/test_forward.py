@@ -165,6 +165,13 @@ def test_decide_writes_new_books_to_a_separate_file_and_check_reads_both(tmp_pat
     text = next((tmp_path / "out" / "check").glob("*.md")).read_text(encoding="utf-8")
     assert "## 2. 台帳" in text and "先の判断として数える日" in text and "抜けた営業日: 無し" in text
     assert "| selector |" in text and "| random |" in text and "| e1 |" in text and "まだ判定しない" in text
+    assert "最後の自動実行は" not in text                                                  # run.log が無いときは何も言わない
+    (root / "run.log").write_text("[2026-10-15 13:05:05] 自動実行: 始め\n[2026-10-15 13:06:10] 自動実行: 値段\n"
+                                  "[2026-10-15 13:06:27] 自動実行: E1 の一覧と注文の一覧\n埋め込みの部品が無い。先に ./cfd news setup を実行する\n",
+                                  encoding="utf-8")
+    mod.cmd_check(Namespace(root=str(root), data=str(data), out=str(tmp_path / "out"), now=f"{idx[-1]:%Y-%m-%d} 16:01"))
+    text = (tmp_path / "out" / "check" / f"{idx[-1]:%Y%m%d}-1601.md").read_text(encoding="utf-8")
+    assert "**⚠ 最後の自動実行は「E1 の一覧と注文の一覧」の後で止まった（「終わり」が無い）" in text and "埋め込みの部品が無い" in text
 
 
 def test_decide_still_writes_ledger_when_the_new_books_fail(tmp_path, capsys, monkeypatch):

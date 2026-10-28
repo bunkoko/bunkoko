@@ -951,8 +951,9 @@ def notify_stopped(args, step: str, e: BaseException) -> None:
     """台帳を書く前に自動実行が止まったら、iPhone に知らせる（設定 ~/.bunkoko/notify.json が無ければ送らない）。"""
     from cfdbot.agents import live as L
 
-    text = (f"「{step}」で止まった（{type(e).__name__}: {str(e)[:200]}）。今日の判断はまだ台帳に無い。"
-            "Mac の回線と空き容量を確かめて、15:25 までに ./cfd agents run --prices を動かせば今日の分になる")
+    why = str(e.code) if isinstance(e, SystemExit) else f"{type(e).__name__}: {e}"
+    text = (f"「{step}」で止まった（{why[:200]}）。今日の判断はまだ台帳に無い。"
+            "理由を直して（部品が無いなら ./cfd update、回線・空き容量なら直るのを待つ・空ける）、15:25 までに ./cfd agents run --prices を動かせば今日の分になる")
     try:
         for kind, ok, detail in notify_send(L.LiveFiles(paths(args.root)["root"] / "live"), "株の自動実行が止まった", text):
             print(f"知らせ（{kind}）: {detail}", flush=True)
@@ -998,8 +999,9 @@ def cmd_run(args) -> None:
             step = name
             f(args)
             run_stamp(name)
-    except Exception as e:
-        notify_stopped(args, step, e)
+    except (Exception, SystemExit) as e:                     # sys.exit で止まる道（部品が無い など）も知らせる
+        if not (isinstance(e, SystemExit) and e.code in (None, 0)):
+            notify_stopped(args, step, e)
         raise
     try:
         live_after_decide(args)
@@ -1405,7 +1407,11 @@ def cmd_check(args) -> None:
             say(f"  - {t[:160]}")
     else:
         say(f"- 記録（{log}）が無い。自動実行がまだ一度も動いていないか、登録の前")
-    say(f"- 最後の自動実行の時刻: {timeline_text(run_timeline(log))}")
+    steps = run_timeline(log)
+    say(f"- 最後の自動実行の時刻: {timeline_text(steps)}")
+    if steps and steps[-1][0] != "終わり":
+        say(f"- **⚠ 最後の自動実行は「{steps[-1][0]}」の後で止まった（「終わり」が無い）。その日の台帳は書かれていない。"
+            "理由は上の記録の最後の行**（部品が無いなら `./cfd update`）")
 
     ledger = read_ledgers(p)
     try:

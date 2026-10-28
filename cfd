@@ -22,7 +22,11 @@ case "$cmd" in
           exec ./cfd _after_update ;;
   _after_update)
           need_venv
-          UV_PYTHON_INSTALL_DIR="$PWD/.python" uv pip install --python "$PY" -e ".[dev,research]" -q
+          # news（埋め込みの部品 sentence-transformers・PyTorch）も入れる。平日 13:05 の自動実行の「情報収集」が使う
+          # （2026-10-21 に別の作業で部品が消え、update では戻らず、10-22〜10-28 の自動実行が止まった）
+          UV_PYTHON_INSTALL_DIR="$PWD/.python" uv pip install --python "$PY" -e ".[dev,research,news]" -q
+          "$PY" -c "import sentence_transformers, torch, sklearn, yfinance, shap" 2>/dev/null \
+            || echo "⚠ 毎日の自動実行に要る部品が入っていない（上のエラーを Claude に貼る）"
           "$PY" scripts/mt5_files.py install
           echo "更新した。MT5 の MetaEditor で CfdCommodityEA と CfdExportBars をコンパイルし直す（F7）" ;;
   where)  need_venv; exec "$PY" scripts/mt5_files.py where "$@" ;;

@@ -548,6 +548,22 @@ def test_price_fetch_is_retried_until_14_45_and_a_stop_before_the_ledger_is_noti
     assert sent[0][0] == "株の自動実行が止まった" and "「決算の数字の表」で止まった（OSError: No space left on device）" in sent[0][1]
     assert "15:25 までに ./cfd agents run --prices" in sent[0][1]
 
+    def no_parts(a):                                                                       # 2026-10-22〜28 はこの形で止まり、知らせも出なかった
+        raise SystemExit("埋め込みの部品が無い。先に ./cfd news setup を実行する")
+
+    sent.clear()
+    monkeypatch.setattr(mod, "cmd_numbers", lambda a: None)
+    monkeypatch.setattr(mod, "live_early", lambda a: False)
+    monkeypatch.setattr(mod, "cmd_collect", no_parts)
+    with pytest.raises(SystemExit):
+        mod.cmd_run(_ns(tmp_path, prices=False))
+    assert "「情報収集」で止まった（埋め込みの部品が無い。先に ./cfd news setup を実行する）" in sent[0][1] and "./cfd update" in sent[0][1]
+    sent.clear()
+    monkeypatch.setattr(mod, "cmd_collect", lambda a: (_ for _ in ()).throw(SystemExit(0)))
+    with pytest.raises(SystemExit):
+        mod.cmd_run(_ns(tmp_path, prices=False))
+    assert sent == []                                                                     # ふつうの終わり方（0）では知らせない
+
 
 def test_fetch_daily_says_why_when_yahoo_returns_nothing(monkeypatch):
     import sys

@@ -15,6 +15,8 @@
   （koten など。`master` から分かれた別物で `cfd` が無い）は `git worktree add ~/<名前> <枝>` で別のフォルダに出す。2026-10-21 に `~/bunkoko` で
   koten の枝に切り替えて `uv run` したため、「`./cfd` が無い」になり、`.venv` から 52 個の部品が消えた。「`./cfd` が無い」と言われたら
   `git -C ~/bunkoko branch --show-current` を見て、別の枝なら `git switch claude/gracious-gates-f8a38x` → `./cfd update` で戻す
+  （update は埋め込みの部品（news）も入れる。2026-10-28 までは入れず、10-22〜10-28 の平日 13:05 の自動実行が「情報収集」で
+  「埋め込みの部品が無い」と止まり、台帳が 5 営業日抜けた。自動実行の後は `./cfd agents check` の 1 章に「⚠ 最後の自動実行は…止まった」が無いかを見る）
 
 ## ニュースの取得・判定（`./cfd news`）が止まったとき
 
