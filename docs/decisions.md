@@ -338,3 +338,14 @@ uv run koten chunk aozora
   - 前の章で使った事実の名前を、あとの章で直接書くのは G1 では止めない（判定役が見る）。
   - 短い名前（蘆花・天心）の直書きは、まだ見つけられない。
 
+### 2026-10-28 augment が「token repeat limit」で止まった
+
+- Mac の全件の augment が、gemma4:26b の 500 エラー「prediction aborted, token repeat limit reached」で止まった。
+  - 原因：モデルが同じ言葉を繰り返し始め、Ollama が生成を打ち切った。
+  - これまでは、この 500 も「LLM が動かない」エラーと同じに扱い、augment 全体を止めていた。
+  - 止まるまでの結果は保存されていた（finally で書き出す）。
+- 直し方：
+  - 打ち切りのエラーのときは、繰り返しを抑える設定（repeat_penalty 1.3・temperature 0.7 以上）で1度だけ送り直す。
+  - それでもだめなら LLMOutputError（入力ごとの失敗）にする。augment は、そのチャンクを failed として記録し、先へ進む。
+  - ほかの 500（モデルが落ちたなど）は、今までどおり止める。
+

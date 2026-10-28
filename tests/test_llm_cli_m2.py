@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 import json
 
 import httpx
@@ -182,3 +183,57 @@ def test_doctor_ollama_lists_models(settings_file):
         httpx.Client(transport=httpx.MockTransport(handler)),
     )
     assert c.status == doctor.OK
+
+
+ABORT = '{"error":"prediction aborted, token repeat limit reached"}'
+
+
+def test_ollama_repeat_abort_retries_gently_then_reports_output_error():
+    from koten.llm import LLMOutputError, OllamaLLM
+
+    bodies = []
+
+    def handler(req):
+        bodies.append(json.loads(req.content))
+        if len(bodies) == 1:
+            return httpx.Response(500, text=ABORT)
+        return httpx.Response(200, json={"message": {"content": '{"quotes": []}'}})
+
+    llm = OllamaLLM(
+        "http://o:11434", "m", client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    assert llm.complete("s", "u") == '{"quotes": []}'
+    assert (
+        bodies[1]["options"]["repeat_penalty"] == 1.3 and bodies[1]["options"]["temperature"] >= 0.7
+    )
+    assert "repeat_penalty" not in llm.options  # 次の呼び出しには持ち越さない
+
+    always = OllamaLLM(
+        "http://o:11434", "m",
+        client=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500, text=ABORT))),
+    )  # fmt: skip
+    with pytest.raises(LLMOutputError):
+        always.complete("s", "u")
+    # ほかの 500（モデルが落ちたなど）は、今までどおり augment を止める LLMError
+    broken = OllamaLLM(
+        "http://o:11434", "m",
+        client=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500, text="runner stopped"))),
+    )  # fmt: skip
+    with pytest.raises(LLMError) as e:
+        broken.complete("s", "u")
+    assert not isinstance(e.value, LLMOutputError)
+
+
+def test_augment_chunk_marks_repeat_abort_as_failed():
+    from koten.augment.extract import AugmentConfig, augment_chunk
+    from koten.llm import LLMOutputError
+
+    class Aborting:
+        name = "m"
+
+        def complete(self, system, user, schema=None):
+            raise LLMOutputError("m が生成を打ち切りました（500）")
+
+    chunk = {"chunk_id": "aozora:1#1", "work_id": "aozora:1", "section": "", "text_orig": "本文"}
+    rows, done = augment_chunk(Aborting(), "s", "u", chunk, "本文", set(), AugmentConfig(), {})
+    assert rows == [] and done["status"] == "failed" and "LLMOutputError" in done["error"]

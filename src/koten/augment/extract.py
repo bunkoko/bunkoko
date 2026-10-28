@@ -24,7 +24,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import yaml
 
-from koten.llm import ChatLLM, LLMError, fill, load_prompt, parse_json_object
+from koten.llm import ChatLLM, LLMError, LLMOutputError, fill, load_prompt, parse_json_object
 from koten.parquet import data_files, read_rows, write_rows
 from koten.textnorm import locate, normalize_for_match
 
@@ -300,7 +300,8 @@ def augment_chunk(
         try:
             data = parse_json_object(llm.complete(system, user, schema))
             rows, dropped = validate_quotes(data, chunk, work_text, vocab, cfg)
-        except (ValueError, OutputBroken) as e:  # JSONDecodeError は ValueError
+        except (ValueError, OutputBroken, LLMOutputError) as e:  # JSONDecodeError は ValueError
+            # 壊れた出力や、繰り返しで打ち切られた生成は、このチャンクだけの失敗にする
             error = f"{type(e).__name__}: {e}"
             continue
         for i, r in enumerate(rows, start=1):

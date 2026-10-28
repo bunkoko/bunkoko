@@ -25,6 +25,17 @@ class LLMError(RuntimeError):
     pass
 
 
+class LLMOutputError(LLMError):
+    """その入力に対して出力を作れなかった（同じ言葉の繰り返しで生成が打ち切られた など）。
+
+    LLM が動いていないわけではないので、呼ぶ側は入力ごとの失敗として扱い、先へ進んでよい。
+    """
+
+
+# Ollama が生成を打ち切ったときのエラー（入力ごとの失敗。モデルや Ollama は動いている）
+OUTPUT_ABORTS = ("token repeat limit", "prediction aborted")
+
+
 class ChatLLM(Protocol):
     name: str
 
@@ -97,6 +108,15 @@ class OllamaLLM:
             self.think = None
             del body["think"]
             r = self._post(body)
+        if r.status_code >= 400 and any(m in r.text for m in OUTPUT_ABORTS):
+            # 同じ言葉の繰り返しで打ち切られたら、繰り返しを抑えて1度だけ送り直す
+            temperature = max(float(self.options.get("temperature", 0.2)), 0.7)
+            body["options"] = {**self.options, "repeat_penalty": 1.3, "temperature": temperature}
+            r = self._post(body)
+            if r.status_code >= 400 and any(m in r.text for m in OUTPUT_ABORTS):
+                raise LLMOutputError(
+                    f"{self.model} が生成を打ち切りました（{r.status_code}）：{r.text[:200]}"
+                )
         if r.status_code >= 400:
             raise LLMError(f"{self.model} がエラーを返しました（{r.status_code}）：{r.text[:300]}")
         try:
