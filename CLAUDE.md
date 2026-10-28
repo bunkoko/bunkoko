@@ -80,6 +80,7 @@
 | 「お金の置き場所は？」「NISA はどうする？」 | `docs/portfolio.md` の 1・5・6 章を短く伝える。決めるのは利用者。チームの勧めは案 A。売買の設定は変えない |
 | 「開示の収集は動いてる？」 | `./cfd agents status`（本文・決算の数字の件数）と `tail -20 data/agents/collect.log`。登録は `launchctl print gui/$(id -u)/com.bunkoko.agents.collect`。過去の数字の取得の様子は `tail -3 data/agents/xbrl_history.log`（止まっていたら `nohup ./cfd agents collect --xbrl-history --max-docs 40000 --no-embed > data/agents/xbrl_history.log 2>&1 &` で続きから） |
 | 「決算の数字の検証をして」 | 過去の数字の取得が終わっていれば `./cfd agents earnings`（数分〜十数分）。`output/agents/<日時>/earnings.md` の 1 章を見せ、`docs/agents.md` 10.4 に記録を足す。条件（10.2）は変えない |
+| 「SHAP を見せて」「bee swarm は？」「何が効いている？」 | `./cfd agents shap`（Mac。数分。初回は `./cfd update` で shap・matplotlib が入る）。`output/agents/<日時>/shap.md` の 1 章（M2）・2 章（決算の数字の IR 評価 AI、E2）の表と、図 `shap_m2.png`・`shap_numbers.png` を見せる。見る前の見当（`docs/agents.md` 14 章）と比べて 14.1 に記録する。見るためだけで、入力・学び方は変えない（試した数に入れない） |
 | 「足した項目の検証をして」 | `./cfd agents extra`（20〜30 分。出来高を取り直すなら `--fetch`、学び直さないなら `--reuse`）。`output/agents/<日時>/extra.md` の 1 章を見せ、`docs/agents.md` 11.7 に記録を足す。条件（11.5）は変えない |
 | 「調査部を動かして」「調査部の成績は？」 | AI の調査部（証券会社・運用会社の手順にならった分業）は、株用のフォルダ `/Users/bunkoko/dev/kabu` に移した（2026-10-14）。そこの `CLAUDE.md` と `docs/desk.md` に従う。このリポジトリの値段・開示・点数は、そこから読まれている（消さない・場所を変えない） |
 | 「毎週の確認をして」 | 書き出し済みなら `./cfd data` → `./cfd replay --start … --equity …`（`--count-from` は付けない）→ `./cfd demo-check`（`docs/operations.md` 12 章の「今の照らし合わせの指定」をすべて付ける。今は `--start 2026-10-07 --equity 10000000`）。`output/demo_check/<日時>/report.md` の「一致／差あり／まだ比べられない」と本番に進む条件の数を伝える。書き出しがまだなら、Mac の前でしてもらう |

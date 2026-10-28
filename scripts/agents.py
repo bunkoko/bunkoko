@@ -20,6 +20,7 @@
     python scripts/agents.py manual               # 今週の手で買う候補（M2 を週 1 回・10 銘柄・1 日遅れにした形。docs/agents.md 13 章）
     python scripts/agents.py manual --test        # その形の過去の検証（M2a・M2b。数分）
     python scripts/agents.py premium [--test]     # 決算発表をまたいで持つ（J7）の先の記録の途中経過（--test は使っていない決算での過去の検証）
+    python scripts/agents.py shap [--years 5] [--sample 3000]   # M2 と決算の数字の IR 評価 AI（E2）の SHAP 値・bee swarm の図（見るためだけ。14 章）
     python scripts/agents.py schedule --job collect [--off]   # 毎日 8:00 に collect --docs を動かすよう登録する／外す（Mac の launchd）
     python scripts/agents.py schedule --job run [--off]       # 平日 13:05 に run --prices を動かすよう登録する／外す
 
@@ -198,6 +199,158 @@ def cmd_select(args) -> None:
     p["selector"].parent.mkdir(parents=True, exist_ok=True)
     sc.to_csv(p["selector"], float_format="%.5f")
     print(f"銘柄選定: 点数を書いた（{sc.index[0]:%Y-%m-%d}〜{sc.index[-1]:%Y-%m-%d}、{sc.shape[1]} 銘柄）", flush=True)
+
+
+# --------------------------------------------------------------------------- 学習の部品の中身（SHAP 値）
+def shap_section(say, title: str, per_year: dict, latest: dict | None, labels: dict, pairs, png: str, stored_note: str) -> None:
+    """shap.md の 1 つの部品の章（図・入力ごとの表・年ごとの順位・よく似た入力の組）。"""
+    from cfdbot.agents import explain as XP
+
+    say(f"## {title}\n")
+    if latest is None:
+        say("- 学べる年が無かった（データが足りない）\n")
+        return
+    s = per_year[latest["year"]]
+    say(f"- 部品: {latest['year']} 年の点数を付けた部品（{latest['train_end']:%Y-%m-%d} までの {latest['n_train']:,} 行で学んだ。台帳に書く点数と同じ作り方）。"
+        f"その年に点数を付けた {latest['rows']:,} 行から {latest['n']:,} 行をくじで選んだ")
+    say(f"- 確かめ: SHAP 値を足すと点数に戻る（最大のずれ {latest['err']:.1e}）。{stored_note}")
+    say(f"\n![bee swarm]({png})\n")
+    say("図の読み方: 点 1 つが 1 行（ある日のある株）。横が SHAP 値（その入力で点数がどれだけ上下したか。右ほど「上がりそう」の側）、"
+        "色が入力の値（赤が大きい・青が小さい・灰色は欠け）。上の入力ほど影響が大きい\n")
+    say("| 順 | 入力 | 中身 | 影響の大きさ | 割合 | 向き | 欠け |")
+    say("|---|---|---|---|---|---|---|")
+    for k, r in s.iterrows():
+        d = r["direction"]
+        arrow = "–" if not np.isfinite(d) else (f"+{d:.2f}（大きいほど上）" if d >= 0.3 else f"{d:.2f}（小さいほど上）" if d <= -0.3 else f"{d:+.2f}（混ざる）")
+        say(f"| {k + 1} | `{r['name']}` | {labels.get(r['name'], '')} | {r['mean_abs']:.4f} | {r['share']:.1%} | {arrow} | {r['missing']:.0%} |")
+    say("\n- 影響の大きさ = SHAP 値の絶対値の平均（点数は順位で −0.5〜+0.5）。向き = 入力の値と SHAP 値の順位相関"
+        "（±0.3 より 0 に近いものは、値の大小だけでは向きが決まらない＝ほかの入力との組み合わせで効く）")
+    yt = XP.year_table(per_year)
+    if len(yt.columns) > 1:
+        say("\n### 年ごとの影響の大きさの順位（1 が一番大きい。毎年同じものを使っているか）\n")
+        say("| 入力 | " + " | ".join(str(c) for c in yt.columns) + " |")
+        say("|---|" + "---|" * len(yt.columns))
+        for name, r in yt.iterrows():
+            say(f"| `{name}` | " + " | ".join(str(int(v)) if np.isfinite(v) else "–" for v in r) + " |")
+    say("\n### よく似た入力の組（入力どうしの順位相関の絶対値 0.7 以上。影響を分け合うので、組で読む）\n")
+    if pairs:
+        for a, b, c in pairs[:15]:
+            say(f"- `{a}` と `{b}`: {c:+.2f}")
+    else:
+        say("- 無し")
+    say("")
+
+
+def cmd_shap(args) -> Path:
+    """M2（銘柄選定）と決算の数字の IR 評価 AI（E2）の SHAP 値・bee swarm の図（docs/agents.md 14 章。見るためだけ。入力・学び方は変えない）。"""
+    try:
+        import matplotlib  # noqa: F401
+        import shap  # noqa: F401
+    except ImportError:
+        sys.exit("SHAP の部品が無い。先に ./cfd update（shap と matplotlib を入れる）")
+    from cfdbot import stocks_short as H
+    from cfdbot.agents import earnings as N
+    from cfdbot.agents import explain as XP
+    from cfdbot.agents import ir_scorer as I
+
+    p = paths(args.root)
+    open_, close = prices(Path(args.data))
+    now = pd.Timestamp.now(tz=JST).tz_localize(None)
+    out = Path(args.out) / f"{now:%Y%m%d-%H%M}"
+    out.mkdir(parents=True, exist_ok=True)
+    last = int(close.index[-1].year)
+    years = list(range(last - args.years + 1, last + 1))
+
+    # ---- M2（値動きの 24 個）
+    print("M2 の部品を年ごとに作り直して SHAP 値を計算する…", flush=True)
+    names, x = H.features(open_, close)
+    _, y5 = H.targets(open_, close)
+    tradable = (close.notna() & H.parts(open_, close)["night"].notna()).to_numpy()          # selector.scores と同じ
+    stored = pd.read_csv(p["selector"], index_col=0, parse_dates=True) if p["selector"].exists() else None
+    m2_years, m2_latest, m2_pairs = {}, None, []
+    for year in years:
+        r = XP.m2_year(x, y5, tradable, year)
+        if r is None:
+            continue
+        used = [n for n, u in zip(names, r["use"]) if u]
+        d, s = r["rows"]
+        k = XP.pick(len(d), args.sample, seed=year)
+        xs = x[d[k], s[k]][:, r["use"]].astype(float)
+        sv, pred, err = XP.explain(r["model"], xs)
+        m2_years[year] = XP.summary(sv, xs, used)
+        note = "13:05 の点数（selector_scores.csv）が無いので比べていない"
+        if stored is not None:
+            st = stored.reindex(index=close.index[d[k]], columns=close.columns).to_numpy()[np.arange(len(k)), s[k]]
+            diff, n = XP.stored_diff(pred, st)
+            note = (f"13:05 の点数（selector_scores.csv）との差は最大 {diff:.1e}（{n:,} 行で比べた。"
+                    "1e-5 ほどなら同じ部品。大きいのは、値段を取り直して過去の値が配当・分割で調整し直されたとき）" if n else note)
+        m2_latest = dict(year=year, train_end=r["train_end"], n_train=r["n_train"], rows=len(d), n=len(k), err=err, note=note,
+                         sv=sv, xs=xs, used=used)
+        m2_pairs = XP.similar_pairs(xs, used)
+        print(f"  M2 {year}: 学習 {r['n_train']:,} 行 → SHAP {len(k):,} 行", flush=True)
+    if m2_latest is not None:
+        XP.beeswarm(m2_latest["sv"], m2_latest["xs"], m2_latest["used"], out / "shap_m2.png",
+                    f"M2 (stock selector), {m2_latest['year']} model: SHAP values of {m2_latest['n']:,} rows")
+
+    # ---- 決算の数字の IR 評価 AI（E2。6 個）
+    nb_years, nb_latest, nb_pairs, nb_missing = {}, None, [], None
+    if p["ir_numbers"].exists():
+        print("決算の数字の部品を年ごとに作り直して SHAP 値を計算する…", flush=True)
+        num = pd.read_csv(p["ir_numbers"], parse_dates=["date"])
+        pos, j = close.index.get_indexer(num["date"]), close.columns.get_indexer(num["ticker"])
+        keep = (pos >= 0) & (j >= 0)
+        table = num[keep].assign(pos=pos[keep], j=j[keep]).reset_index(drop=True)
+        y = I.target_rank(close)
+        for year in years:
+            r = XP.numbers_year(table, y, close.index, year)
+            if r is None:
+                continue
+            used = [n for n, u in zip(N.FEATURES, r["use"]) if u]
+            rows = r["rows"]
+            k = XP.pick(len(rows), args.sample, seed=year)
+            xs = table.loc[rows[k], N.FEATURES].to_numpy(dtype=float)[:, r["use"]]
+            sv2, pred, err = XP.explain(r["model"], xs)
+            nb_years[year] = XP.summary(sv2, xs, used)
+            diff, n = XP.stored_diff(pred, table.loc[rows[k], "score"].to_numpy(dtype=float))
+            note = f"`./cfd agents earnings` が書いた点数（ir_numbers.csv）との差は最大 {diff:.1e}（{n:,} 行で比べた。1e-5 ほどなら同じ部品）"
+            nb_latest = dict(year=year, train_end=r["train_end"], n_train=r["n_train"], rows=len(rows), n=len(k), err=err, note=note,
+                             sv=sv2, xs=xs, used=used)
+            nb_pairs = XP.similar_pairs(xs, used)
+            print(f"  決算の数字 {year}: 学習 {r['n_train']:,} 行 → SHAP {len(k):,} 行", flush=True)
+        if nb_latest is not None:
+            XP.beeswarm(nb_latest["sv"], nb_latest["xs"], nb_latest["used"], out / "shap_numbers.png",
+                        f"Earnings numbers score, {nb_latest['year']} model: SHAP values of {nb_latest['n']:,} rows")
+    else:
+        nb_missing = f"`{p['ir_numbers']}` が無い（`./cfd agents earnings` が書く。過去の決算の数字の取得の後に動かす）"
+
+    lines: list[str] = []
+    say = lines.append
+    say("# 学習の部品の中身（SHAP 値）\n")
+    say(f"作成: {now:%Y-%m-%d %H:%M}　決まり: docs/agents.md 14 章（見るためだけ。入力・学び方は変えない。試した数に入れない）。"
+        f"値段は {close.index[-1]:%Y-%m-%d} まで、{close.shape[1]:,} 銘柄。1 年あたり {args.sample:,} 行をくじで選んだ\n")
+    shap_section(say, "1. M2（銘柄選定。値動きの 24 個。これから 5 日の順位を当てる）", m2_years, m2_latest, XP.M2_LABELS, m2_pairs,
+                 "shap_m2.png", m2_latest["note"] if m2_latest else "")
+    if nb_missing:
+        say("## 2. 決算の数字の IR 評価 AI（E2。6 個）\n")
+        say(f"- {nb_missing}\n")
+    else:
+        shap_section(say, "2. 決算の数字の IR 評価 AI（E2。6 個。開示の後、引けから 5 日の順位を当てる）", nb_years, nb_latest, XP.NUMBER_LABELS,
+                     nb_pairs, "shap_numbers.png", nb_latest["note"] if nb_latest else "")
+    say("## 3. 読み方・限界\n")
+    say("- SHAP 値は「部品が何を使っているか」で、「それで儲かるか」ではない（儲かるかは台帳と docs/agents.md 12 章の判定で見る）")
+    say("- 今の一覧の会社だけのデータ（生存者バイアス）で学んだ部品の中身でもある")
+    say("- ここを見て入力を足す・外す・学び方を変えることはしない（見てから選ぶと、試した数が増えたのと同じになる）。"
+        "気づきは、新しい仮説として事前登録し、時点ごとのデータ（J-Quants）で確かめる")
+    say("- 見る前の見当（docs/agents.md 14 章）と比べて、合った・外れたを 14.1 に書く（外れても何も変えない）")
+    for year, s in m2_years.items():
+        s.assign(year=year).to_csv(out / "shap_m2_summary.csv", mode="a", header=not (out / "shap_m2_summary.csv").exists(), index=False)
+    for year, s in nb_years.items():
+        s.assign(year=year).to_csv(out / "shap_numbers_summary.csv", mode="a", header=not (out / "shap_numbers_summary.csv").exists(), index=False)
+    path = out / "shap.md"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("\n".join(lines))
+    print(f"\n保存先: {path}（図は同じフォルダの shap_m2.png・shap_numbers.png）")
+    return path
 
 
 # --------------------------------------------------------------------------- 判断
@@ -1725,7 +1878,7 @@ def cmd_schedule(args) -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("command", choices=["collect", "ir", "select", "decide", "evaluate", "run", "status", "schedule", "earnings", "extra",
-                                        "check", "orders", "manual", "premium"])
+                                        "check", "orders", "manual", "premium", "shap"])
     p.add_argument("--fetch", action="store_true", help="extra: 先に出来高・終値・株式分割を Yahoo から取る（1 秒に 1 社。取得済みは飛ばす）")
     p.add_argument("--reuse", action="store_true", help="extra: 入力を足した銘柄選定の点数が書いてあれば、学び直さずに使う")
     p.add_argument("--off", action="store_true", help="schedule: 自動実行を外す")
@@ -1762,12 +1915,14 @@ def main() -> None:
     p.add_argument("--sells-only", action="store_true", help="orders: 今日の判断が無いとき、売りだけの一覧を書く")
     p.add_argument("--notify", action="store_true", help="orders: 今日の一覧を iPhone にもう一度知らせる（設定 ~/.bunkoko/notify.json）")
     p.add_argument("--notify-test", action="store_true", help="orders: 知らせの試し（設定ができているか）")
+    p.add_argument("--years", type=int, default=5, help="shap: 直近の何年分の部品を見るか（docs/agents.md 14 章）")
+    p.add_argument("--sample", type=int, default=3000, help="shap: 1 年あたり何行をくじで選ぶか")
     p.add_argument("--test", action="store_true", help="manual・premium: 過去の検証（docs/agents.md 13.2・docs/earnings_premium.md 3 章。数分）")
     p.add_argument("--exclude", help="orders --setup: 予行演習の外ですでに持っている株（例 7203,6758。空にするなら \"\"）")
     args = p.parse_args()
     {"collect": cmd_collect, "ir": cmd_ir, "select": cmd_select, "decide": cmd_decide, "evaluate": cmd_evaluate,
      "run": cmd_run, "status": cmd_status, "schedule": cmd_schedule, "earnings": cmd_earnings, "extra": cmd_extra,
-     "check": cmd_check, "orders": cmd_orders, "manual": cmd_manual, "premium": cmd_premium}[args.command](args)
+     "check": cmd_check, "orders": cmd_orders, "manual": cmd_manual, "premium": cmd_premium, "shap": cmd_shap}[args.command](args)
 
 
 if __name__ == "__main__":
