@@ -282,8 +282,12 @@ def cmd_shap(args) -> Path:
         if stored is not None:
             st = stored.reindex(index=close.index[d[k]], columns=close.columns).to_numpy()[np.arange(len(k)), s[k]]
             diff, n = XP.stored_diff(pred, st)
-            note = (f"13:05 の点数（selector_scores.csv）との差は最大 {diff:.1e}（{n:,} 行で比べた。"
-                    "1e-5 ほどなら同じ部品。大きいのは、値段を取り直して過去の値が配当・分割で調整し直されたとき）" if n else note)
+            s_last = stored.index[stored.notna().any(axis=1).to_numpy()].max()
+            why = ("。**点数のファイルが値段より古い**: その後の 13:05 の自動実行が銘柄選定まで進んでいない日がある（`./cfd agents check` で確かめる）。"
+                   "差は、その間の値段の取り直しで学ぶ答えが少し変わったため" if s_last < close.index[-1] else
+                   "" if diff < 1e-4 else "。値段と点数が同じ日なのに差が大きい: 学習の部品（scikit-learn など）の版が 13:05 の後に変わったかもしれない")
+            note = (f"13:05 の点数（selector_scores.csv。最後の日 {s_last:%Y-%m-%d}、値段は {close.index[-1]:%Y-%m-%d} まで）との差は最大 {diff:.1e}"
+                    f"（{n:,} 行で比べた。点数の無い行 {len(k) - n:,}）。1e-5 ほどなら同じ部品{why}" if n else note)
         m2_latest = dict(year=year, train_end=r["train_end"], n_train=r["n_train"], rows=len(d), n=len(k), err=err, note=note,
                          sv=sv, xs=xs, used=used)
         m2_pairs = XP.similar_pairs(xs, used)
@@ -312,7 +316,9 @@ def cmd_shap(args) -> Path:
             sv2, pred, err = XP.explain(r["model"], xs)
             nb_years[year] = XP.summary(sv2, xs, used)
             diff, n = XP.stored_diff(pred, table.loc[rows[k], "score"].to_numpy(dtype=float))
-            note = f"`./cfd agents earnings` が書いた点数（ir_numbers.csv）との差は最大 {diff:.1e}（{n:,} 行で比べた。1e-5 ほどなら同じ部品）"
+            note = (f"`./cfd agents earnings` が書いた点数（ir_numbers.csv。最後の開示の日 {num['date'].max():%Y-%m-%d}）との差は最大 {diff:.1e}"
+                    f"（{n:,} 行で比べた）。1e-5 ほどなら同じ部品。大きいのは、earnings を動かした後に値段を取り直して、学ぶ答えが少し変わったとき"
+                    "（`./cfd agents earnings` を動かし直すと消える）")
             nb_latest = dict(year=year, train_end=r["train_end"], n_train=r["n_train"], rows=len(rows), n=len(k), err=err, note=note,
                              sv=sv2, xs=xs, used=used)
             nb_pairs = XP.similar_pairs(xs, used)
@@ -342,10 +348,9 @@ def cmd_shap(args) -> Path:
     say("- ここを見て入力を足す・外す・学び方を変えることはしない（見てから選ぶと、試した数が増えたのと同じになる）。"
         "気づきは、新しい仮説として事前登録し、時点ごとのデータ（J-Quants）で確かめる")
     say("- 見る前の見当（docs/agents.md 14 章）と比べて、合った・外れたを 14.1 に書く（外れても何も変えない）")
-    for year, s in m2_years.items():
-        s.assign(year=year).to_csv(out / "shap_m2_summary.csv", mode="a", header=not (out / "shap_m2_summary.csv").exists(), index=False)
-    for year, s in nb_years.items():
-        s.assign(year=year).to_csv(out / "shap_numbers_summary.csv", mode="a", header=not (out / "shap_numbers_summary.csv").exists(), index=False)
+    for name, per in (("shap_m2_summary.csv", m2_years), ("shap_numbers_summary.csv", nb_years)):
+        if per:
+            pd.concat([t.assign(year=y) for y, t in per.items()], ignore_index=True).to_csv(out / name, index=False)
     path = out / "shap.md"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))

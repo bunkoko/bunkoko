@@ -119,11 +119,21 @@ def test_shap_command_writes_the_report_and_both_pictures(tmp_path, monkeypatch,
     assert "## 1. M2" in text and "## 2. 決算の数字" in text and "![bee swarm](shap_m2.png)" in text
     assert (path.parent / "shap_m2.png").stat().st_size > 5000 and (path.parent / "shap_numbers.png").exists()
     assert "年ごとの影響の大きさの順位" in text and "| `night_20` |" in text and "夜の平均・20 日" in text
-    m2_note = text.split("selector_scores.csv）との差は最大 ")[1].split("（")[0]
-    nb_note = text.split("ir_numbers.csv）との差は最大 ")[1].split("（")[0]
-    assert float(m2_note) < 1e-4 and float(nb_note) < 1e-4                                 # 見た部品は、台帳の点数を出した部品と同じ
+    import re
+
+    m2_note = re.search(r"selector_scores\.csv。最後の日 2019-12-27、値段は 2019-12-27 まで）との差は最大 ([0-9.e+-]+)（[0-9,]+ 行で比べた。点数の無い行 0）", text)
+    nb_note = re.search(r"ir_numbers\.csv。最後の開示の日 [0-9-]+）との差は最大 ([0-9.e+-]+)", text)
+    assert float(m2_note.group(1)) < 1e-4 and float(nb_note.group(1)) < 1e-4               # 見た部品は、台帳の点数を出した部品と同じ
+    assert "点数のファイルが値段より古い" not in text
     summ = pd.read_csv(path.parent / "shap_m2_summary.csv")
-    assert set(summ["year"]) == {2018, 2019} and summ.groupby("year")["share"].sum().round(6).eq(1).all()
+    assert set(summ["year"]) == {2018, 2019} and summ.groupby("year")["share"].sum().round(6).eq(1).all() and len(summ) == 48
+
+    sc = pd.read_csv(root / "selector_scores.csv", index_col=0)
+    sc.iloc[:-4].to_csv(root / "selector_scores.csv")                                     # 13:05 の点数が 4 日前のまま
+    mod.main()
+    text = capsys.readouterr().out
+    assert f"最後の日 {sc.index[-5]}、値段は 2019-12-27 まで" in text and "**点数のファイルが値段より古い**" in text
+    assert len(pd.read_csv(path.parent / "shap_m2_summary.csv")) == 48                     # 同じフォルダに書き直しても重ならない
 
 
 def test_shap_command_without_the_numbers_file_still_writes_m2(tmp_path, monkeypatch, capsys):
