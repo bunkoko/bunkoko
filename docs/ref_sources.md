@@ -147,6 +147,7 @@ uv run koten ref ndl-snapshot --ref R-genkai-v4 --koma all
    | R-long-meditations | S2 | translation | Meditations | （下の注） | en | standardebooks | （確かめて） | George Long 訳『自省録』（Standard Ebooks 版） |
    | R-legge-analects | S2 | translation | The Analects | （下の注） | en | standardebooks | （確かめて） | James Legge 訳『論語』（Standard Ebooks 版） |
 
+   - 使う前に、版の巻末の記録（colophon。リポジトリの src/epub/text/colophon.xhtml）で、元の本文が Project Gutenberg か影印（スキャン）であることを確かめます。Wikisource や Perseus が元の版は使いません（D-020）。確かめたことは review_note に書きます。
    - pub_year は「使う版」の年です。Standard Ebooks の版（colophon の年）を書くと、1968年以降の版なので NEEDS_REVIEW になります。Standard Ebooks の手入れが CC0 であることを確かめたら、reviewed_license に PD_JP、reviewed_hash に確認の印、review_note に理由を書きます。first_pub_year には訳が最初に出た年を書きます。
    - 人：原著者（マルクス・アウレリウス、孔子）と訳者（Long、Legge）。外国の人なので allied に yes か no を書きます。
 2. 取って分けます。
@@ -202,29 +203,38 @@ uv run koten ref ndl-snapshot --ref R-genkai-v4 --koma all
 
 ## 青空文庫で没年が空の人（D-029）
 
-青空文庫の作品CSVで、著者・訳者の没年が空の作品は、判定不能になり本文を保存しません。紫式部（晶子訳『源氏物語』）・菅原孝標女（更級日記）・作者不詳（尾崎士郎訳『平家物語』）などが当たります。人が根拠を確かめて config/aozora_review.csv に書くと、判定できるようになります。
+青空文庫の作品CSVで、著者・訳者の没年が空の人は、次のどれかに当たれば満了とします（利用者の決まり）。どれにも当たらなければ判定不能で、本文を保存しません。
+
+| 当たるとき | 例 | 台帳に書くか |
+|---|---|---|
+| 作品CSVの生年が1845年まで（1967年より後まで生きていない） | 菅原孝標女（1008年生まれ） | 要らない（自動） |
+| その人の作品の初出・底本・親本の年が1900年より前（1900年より前に名前が出ている） | 明治の本が底本の作品 | 要らない（自動） |
+| 1900年より前に名前が出ている（作品CSVに年が無い） | 紫式部（1008年。紫式部日記） | early の行を書く（紫式部は書いてある） |
+| 没年が分かる | — | death の行を書く |
+| 作者不詳で、作品（訳・版を含む）の初出・底本・親本の年が1967年まで | 尾崎士郎訳『平家物語』（親本1960）、実語教（底本1820） | 要らない（自動） |
+| 作者不詳で、作品CSVに年が無い | — | anonymous の行を書く |
+
+台帳（config/aozora_review.csv）の列：
 
 | 列 | 書くこと |
 |---|---|
-| kind | death（名前のある人の没年）か anonymous（作者不詳の作品の公表の年） |
+| kind | death（没年）・early（1900年より前に名前が出ている）・anonymous（作者不詳の作品の公表の年） |
 | name | 作品CSVの名前（姓名を空白なしで）。anonymous は 作者不詳 など |
-| title | anonymous のときだけ。作品CSVの作品名（同じ作品名の巻・章すべてに効く）。death では空 |
-| year | 西暦の年。はっきりしないときは遅いほうの年（例：紫式部は諸説あるので遅いほうの説） |
-| basis | 根拠（辞典・研究書の名前と項目・ページ） |
+| title | anonymous のときだけ。作品CSVの作品名（同じ作品名の巻・章すべてに効く）。death・early では空 |
+| year | death は没年（はっきりしないときは遅いほうの年）、early は名前が出ている年（1900年より前）、anonymous は公表の年 |
+| basis | 根拠（辞典・研究書の名前と項目・ページなど） |
 | checked_by・checked_at | 確かめた人と日（2026-11-01 のように） |
 | note | メモ（任意） |
 
-例（年と根拠は、自分で確かめた値にしてください）：
+例：
 
 ```csv
 kind,name,title,year,basis,checked_by,checked_at,note
-death,紫式部,,1031,国史大辞典「紫式部」の項（没年は諸説。遅いほう）,オーナー,2026-11-01,
-anonymous,作者不詳,現代語訳　平家物語,1300,日本古典文学大辞典「平家物語」の項（鎌倉時代に成立）,オーナー,2026-11-01,
+early,紫式部,,1008,『紫式部日記』（寛弘5年〔1008〕の記事）と『源氏物語』の作者,Claude（利用者の決まり D-029 で追加）,2026-10-29,
 ```
 
-- 作者不詳の作品は、公表から数えます（著作権法52条）。1967年までの公表は満了、1968年からの公表は公表後70年まで保護中です。
-- 訳者・編者の没年は、今までどおり作品CSVの年で判定します。
-- 作品CSVに年がある人は、台帳に書いても上書きしません。
-- 行を消すと、元の判定不能に戻ります（次の `koten ingest aozora` で本文も消します）。
-- 書いたら `uv run koten ingest aozora --dry-run` で、判定不能の人が減ったかを見ます。そのあと `uv run koten update` で取り直します。
-
+- 作者不詳の作品は、公表から数えます（著作権法52条）。1967年までの公表は満了、1968年からの公表は公表後70年まで保護中です。訳が公表されれば、元の作品も公表されたとみなします（4条4項）。
+- 台帳は、没年が空か読めない人だけに効きます。作品CSVに年がある人は、台帳に書いても上書きしません。
+- 訳者も同じ決まりで判定します（訳者の没年が空なら、上の表で決めます）。
+- 行を消すと、元の判定に戻ります（次の `koten ingest aozora` で、使えなくなった作品の本文も消します）。
+- 書いたら `uv run koten ingest aozora --dry-run` で「没年が空で判定不能」の人が減ったかを見ます。そのあと `uv run koten update --index` で取り直します。
