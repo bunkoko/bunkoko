@@ -709,7 +709,8 @@ def plan(
     for c in result["chapters"]:
         extra = "　※人の一言" if c.get("human_take") else ""
         stats = f"　統計 {', '.join(c['stat_ids'])}" if c["stat_ids"] else ""
-        typer.echo(f"  {c['chapter_id']} {c['role']}（{c['target_sec']}秒）{stats}{extra}")
+        refs = f"　語釈・解釈 {', '.join(c['ref_ids'])}" if c.get("ref_ids") else ""
+        typer.echo(f"  {c['chapter_id']} {c['role']}（{c['target_sec']}秒）{stats}{refs}{extra}")
         for cid in c["candidate_ids"]:
             x = rows[cid]
             side = f"[{x['side']}] " if x["side"] else ""
@@ -1503,6 +1504,88 @@ def ref_fetch(
     if failed:
         raise typer.Exit(1)
     typer.echo("uv run koten ref build で SSD に入れます")
+
+
+@ref_app.command("attach")
+def ref_attach(
+    episode: Annotated[str, typer.Option(help="回の ID")],
+    chapter: Annotated[str, typer.Option(help="章の ID（例：ch2。koten plan の出力にある）")],
+    ref_id: Annotated[
+        list[str], typer.Option("--id", help="語釈（J-…）か解釈（I-…）の ID。くり返し指定できる")
+    ],
+    remove: Annotated[bool, typer.Option(help="付けるのではなく外す")] = False,
+    force: Annotated[bool, typer.Option(help="script_done などの回にも付ける")] = False,
+    settings: SettingsOpt = None,
+) -> None:
+    """企画の章に、昔の辞書の語釈・時代の解釈（確かめ済み）を付ける・外す。"""
+    import json
+
+    import yaml
+
+    from koten.db import connect
+    from koten.plan.planner import ref_sec
+    from koten.ref.store import load_refs, ref_shas
+    from koten.ref.texts import USABLE_STATUS
+
+    s = _settings(settings)
+    conn = connect(s.ssd_root)
+    row = conn.execute(
+        "SELECT state, plan_json FROM episodes WHERE episode_id = ?", (episode,)
+    ).fetchone()
+    if row is None:
+        typer.secho(f"{episode} という回はありません", fg="red", err=True)
+        raise typer.Exit(2)
+    if row["state"] not in ("planned", "error") and not force:
+        typer.secho(
+            f"{episode} は {row['state']} です（付けると台本と合わなくなるので、"
+            "--force を付けて、あとで koten script --force で作り直す）",
+            fg="red",
+            err=True,
+        )
+        raise typer.Exit(2)
+    plan = json.loads(row["plan_json"])
+    ch = next((c for c in plan["chapters"] if c["chapter_id"] == chapter), None)
+    if ch is None:
+        ids = "、".join(c["chapter_id"] for c in plan["chapters"])
+        typer.secho(f"{chapter} という章はありません（{ids}）", fg="red", err=True)
+        raise typer.Exit(2)
+    if not remove:
+        found = load_refs(conn, ref_id)
+        bad = [
+            f"{rid}（{'無いか、使えない資料' if rid not in found else found[rid]['status']}）"
+            for rid in ref_id
+            if rid not in found or found[rid]["status"] != USABLE_STATUS
+        ]
+        if bad:
+            typer.secho(
+                f"付けられるのは、確かめ済み（verified）で使える資料の語釈・解釈だけです："
+                f"{'、'.join(bad)}（koten ref build のあとか、ref show --all で状態を見る）",
+                fg="red",
+                err=True,
+            )
+            raise typer.Exit(2)
+    formats = yaml.safe_load((s.config_dir / "formats.yaml").read_text("utf-8"))["formats"]
+    spec = next((c for c in formats[plan["format"]]["chapters"] if c["role"] == ch["role"]), {})
+    before = ref_sec(spec, ch)
+    current = list(ch.get("ref_ids") or [])
+    if remove:
+        ch["ref_ids"] = [r for r in current if r not in ref_id]
+    else:
+        ch["ref_ids"] = current + [r for r in ref_id if r not in current]
+    after = ref_sec(spec, ch)
+    # 語釈・解釈が付いた分だけ、章の目安を伸ばす（外したら戻す）
+    ch["target_sec"] = int(ch["target_sec"] + (sum(after) - sum(before)) / 2)
+    plan["target_total_sec"] = sum(c["target_sec"] for c in plan["chapters"])
+    plan["refs"] = ref_shas(conn, [r for c in plan["chapters"] for r in c.get("ref_ids", [])])
+    plan["schema_version"] = "1.2"
+    with conn:
+        conn.execute(
+            "UPDATE episodes SET plan_json = ? WHERE episode_id = ?",
+            (json.dumps(plan, ensure_ascii=False), episode),
+        )
+    refs = "、".join(ch["ref_ids"]) or "なし"
+    typer.echo(f"  {chapter} {ch['role']}（{ch['target_sec']}秒）語釈・解釈：{refs}")
+    typer.echo(f"台本を作る：uv run koten script --episode {episode}{' --force' if force else ''}")
 
 
 @ref_app.command("show")

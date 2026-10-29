@@ -163,19 +163,26 @@ def run_script(
     length_notes: list[str] = []
     viewing: list[str] = []
     used_facts: list[str] = []  # これまでの章で使った背景の事実（あとの章で指してよい）
+    used_refs: list[str] = []  # これまでの章で使った語釈・解釈
 
-    def attempt_chapter(chapter: dict[str, Any], use_facts: bool) -> tuple:
+    def attempt_chapter(chapter: dict[str, Any], use_facts: bool, use_refs: bool = True) -> tuple:
         offered = set(chapter.get("fact_ids") or []) if use_facts else set()
         allowed = set(used_facts) | offered
+        offered_r = set(chapter.get("ref_ids") or []) if use_refs else set()
+        allowed_r = set(used_refs) | offered_r
         feedback: list[str] | None = None
         for attempt in range(cfg.retries + 1):
-            draft = writer.write_chapter(data, chapter, feedback, use_facts=use_facts)
-            issues1 = gates.g1_chapter(draft.chapter, data, draft.issues, allowed, offered)
+            draft = writer.write_chapter(
+                data, chapter, feedback, use_facts=use_facts, use_refs=use_refs
+            )
+            issues1 = gates.g1_chapter(
+                draft.chapter, data, draft.issues, allowed, offered, allowed_r, offered_r
+            )
             issues3: list[str] = []
             if not issues1 and judge.needs_judge(draft.chapter):
                 # オープニングは動画のタイトル案も一緒に判定する
                 title_text = draft.episode_title if chapter["role"] == "opening" else ""
-                issues3 = judge.judge(draft.chapter, data, used_facts, title_text)
+                issues3 = judge.judge(draft.chapter, data, used_facts, title_text, used_refs)
             # 長さと視聴の確かめは G1・G3 が通ってから見る（尺の本当の確かめは音声のあとの G7）
             length = None
             hook: list[str] = []
@@ -197,20 +204,31 @@ def run_script(
 
     for chapter in data.plan["chapters"]:
         offered = [f for f in chapter.get("fact_ids") or [] if f in data.facts]
+        offered_r = [r for r in chapter.get("ref_ids") or [] if r in data.refs]
         result = attempt_chapter(chapter, True)
         draft, issues1, issues3, length, hook, title = result
-        if offered and any(gates.BG in x for x in issues1 + issues3):
-            # 背景のせいで通らない章は、背景を外して書き直す（回を止めない。D-012）。
+        found = issues1 + issues3
+        drop_facts = bool(offered) and any(gates.BG in x for x in found)
+        drop_refs = bool(offered_r) and any(gates.REF in x for x in found)
+        if drop_facts or drop_refs:
+            # 背景・語釈のせいで通らない章は、それを外して書き直す（回を止めない。D-012）。
             # 外した版が全部通ったときだけ使い、通らなければ最初の結果のまま（悪くしない）
-            log(f"  {chapter['chapter_id']}：背景の事実を外して書き直します")
-            reason = "、".join(x for x in issues1 + issues3 if gates.BG in x)[:80]
-            plain = attempt_chapter(chapter, False)
+            what = "・".join(["背景"] * drop_facts + ["語釈・解釈"] * drop_refs)
+            told = "・".join(["背景の事実"] * drop_facts + ["語釈・解釈"] * drop_refs)
+            log(f"  {chapter['chapter_id']}：{told}を外して書き直します")
+            marks = [gates.BG] * drop_facts + [gates.REF] * drop_refs
+            reason = "、".join(x for x in found if any(m in x for m in marks))[:80]
+            plain = attempt_chapter(chapter, not drop_facts, not drop_refs)
             if not plain[1] and not plain[2]:
                 draft, issues1, issues3, length, hook, title = plain
-                viewing.append(f"{chapter['chapter_id']}：背景を外した（{reason}）")
-        elif offered and not draft.chapter.get("facts"):
-            viewing.append(f"{chapter['chapter_id']}：背景の事実を渡したが使っていない")
+                viewing.append(f"{chapter['chapter_id']}：{what}を外した（{reason}）")
+        else:
+            if offered and not draft.chapter.get("facts"):
+                viewing.append(f"{chapter['chapter_id']}：背景の事実を渡したが使っていない")
+            if offered_r and not draft.chapter.get("refs"):
+                viewing.append(f"{chapter['chapter_id']}：語釈・解釈を渡したが使っていない")
         used_facts += [f for f in draft.chapter.get("facts", []) if f not in used_facts]
+        used_refs += [r for r in draft.chapter.get("refs", []) if r not in used_refs]
         if title:
             # 直らないタイトル案は使わず、悩みから作る仮のタイトルにする（確認のときに人が直す）
             viewing.append(f"仮のタイトルにした（{'、'.join(title)}）")
@@ -244,6 +262,7 @@ def run_script(
         viewing.append(f"尺の見積もり {_mmss(est['est_sec'])} が {span} の外")
     verification["viewing"] = gates._gate(viewing)
     verification["facts"] = facts_record(script, data)
+    verification["refs"] = refs_record(script, data)
     review = bool(script["review_required"] or verification["G6"]["review_required"] or g3_issues)
     script["review_required"] = review
     script["verification"] = {
@@ -295,6 +314,31 @@ def facts_record(script: dict[str, Any], data: EpisodeData) -> dict[str, Any]:
                 }
             )
     return {"used": used, "issues": list(data.fact_issues)}
+
+
+def refs_record(script: dict[str, Any], data: EpisodeData) -> dict[str, Any]:
+    """使った昔の辞書の語釈・時代の解釈と、その資料（説明欄の出典と、あとで確かめるため）。"""
+    used = []
+    for ch in script["chapters"]:
+        for rid in ch.get("refs", []):
+            r = data.refs.get(rid)
+            if r is None:
+                continue
+            used.append(
+                {
+                    "ref": rid,
+                    "chapter_id": ch["chapter_id"],
+                    "ref_id": r["ref_id"],
+                    "text_sha": r["text_sha"],
+                    "credit": r["ref_credit"],
+                    "locator": r["locator"],
+                    "pid": r.get("ref_pid"),
+                    "license": r["license"],
+                    "checked_by": r.get("checked_by"),
+                    "notation_changed": bool(r.get("display_text")),
+                }
+            )
+    return {"used": used, "issues": list(data.ref_issues)}
 
 
 def _save(
@@ -358,8 +402,13 @@ def render(script: dict[str, Any], resolver: Resolver) -> list[str]:
                 lines.append(f"  【統計】{text}")
             elif seg["kind"] == "transition":
                 lines.append(f"  【章タイトル】{text}")
-            elif seg.get("facts"):
-                lines.append(f"  【背景｜{'・'.join(seg['facts'])}】{text}")
+            elif seg.get("facts") or seg.get("refs"):
+                tags = []
+                if seg.get("facts"):
+                    tags.append(f"背景｜{'・'.join(seg['facts'])}")
+                if seg.get("refs"):
+                    tags.append(f"資料｜{'・'.join(seg['refs'])}")
+                lines.append(f"  【{'】【'.join(tags)}】{text}")
             else:
                 lines.append(f"  {text}")
         if ch["chapter_id"] == script["human_take"]["chapter_id"]:
@@ -372,4 +421,17 @@ def render(script: dict[str, Any], resolver: Resolver) -> list[str]:
         for fid in used:
             f = resolver.facts.get(fid)
             lines.append(f"  {fid}：{f.text_ja if f else '（使えなくなった事実）'}")
+    refs = list(dict.fromkeys(r for ch in script["chapters"] for r in ch.get("refs", [])))
+    if refs:
+        lines.append("\n昔の辞書の語釈・時代の解釈（資料のまま。画面では出典とページを出す）：")
+        for rid in refs:
+            r = resolver.refs.get(rid)
+            if r is None:
+                lines.append(f"  {rid}：（使えなくなった資料）")
+                continue
+            lines.append(f"  {rid}：「{r['text']}」（{r['ref_credit']}　{r['locator']}）")
+            if r.get("display_text"):
+                lines.append(f"      画面の表記：「{r['display_text']}」（表記を改めた）")
+            if r.get("reading"):
+                lines.append(f"      読み上げ：{r['reading']}")
     return lines

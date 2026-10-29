@@ -26,6 +26,7 @@ from koten.facts.select import recently_used, select_facts
 from koten.facts.store import fact_shas
 from koten.index.search import Filter, HotIndex
 from koten.llm import ChatLLM, fill, load_prompt, parse_json_object
+from koten.ref.store import entries_for_words, ref_shas
 from koten.retrieve.search import (
     Queries,
     Reranker,
@@ -35,7 +36,9 @@ from koten.retrieve.search import (
     transform_query,
 )
 
-PLAN_SCHEMA_VERSION = "1.1"  # 1.1：章の fact_ids と、回の facts（事実の指紋の写し）
+# 1.2：章の ref_ids（昔の辞書の語釈・時代の解釈）と、回の refs（本文の指紋の写し）
+# 1.1：章の fact_ids と、回の facts（事実の指紋の写し）
+PLAN_SCHEMA_VERSION = "1.2"
 EPISODE_TOTAL_SEC = 720  # 12分の回を基準にする（SPEC §2）
 ACTIVE_STATES = "state NOT IN ('discarded')"
 
@@ -546,6 +549,7 @@ class Planner:
                         "candidate_ids": [p["candidate_id"] for p in g],
                         "worry_ids": sorted({p["worry_id"] for p in g}),
                         "stat_ids": [],
+                        "ref_ids": [],
                     }
                     self._attach_facts(ch, spec, g, used_facts, taken)
                     chapters.append(ch)
@@ -557,6 +561,10 @@ class Planner:
                 "worry_ids": all_worry_ids,
                 "stat_ids": self._stats_for(themes) if role == "context" else [],
             }
+            ch["ref_ids"] = chapter_defs(self.conn, spec, worries)
+            if ch["ref_ids"]:
+                d_lo, d_hi = spec.get("def_sec") or [0, 0]
+                ch["target_sec"] = [lo + d_lo, hi + d_hi]
             if role in ("view_a", "view_b"):
                 g = groups[0 if role == "view_a" else 1] if len(groups) > 1 else []
                 ch["candidate_ids"] = [p["candidate_id"] for p in g]
@@ -630,6 +638,8 @@ class Planner:
             "target_total_sec": total,
             # 企画のときの事実の文の指紋。台本のときに変わっていれば人の確認を立てる
             "facts": fact_shas(self.conn, [f for c in chapters for f in c.get("fact_ids", [])]),
+            # 語釈・解釈の本文の指紋（同じく、台本のときに変わっていれば人の確認を立てる）
+            "refs": ref_shas(self.conn, [r for c in chapters for r in c.get("ref_ids", [])]),
             # 章の切れ目（オープニングの後から）を広告位置の候補にする。秒は音声のあとで決まる
             "ad_break_after_chapters": [c["chapter_id"] for c in chapters[1:-1]],
             "review_required": any(x["review_required"] for x in selection),
@@ -713,6 +723,37 @@ def chapter_facts(
     return ids
 
 
+DEF_MIN_HEADWORD = 2  # 1字の見出し語（心・人など）は、悩みの文にいつも当たってしまうので使わない
+
+
+def chapter_defs(
+    conn: sqlite3.Connection, spec: dict[str, Any], worries: list[dict[str, Any]]
+) -> list[str]:
+    """悩みの文に出てくる語の、昔の辞書の語釈（確かめ済み）の ID。1つの語に1つ（古い辞書から）。"""
+    limit = int(spec.get("defs") or 0)
+    if not limit:
+        return []
+    text = "\n".join(w.get("text_general") or "" for w in worries)
+    ids: list[str] = []
+    words: set[str] = set()
+    for r in entries_for_words(conn, text):
+        if len(r["headword"]) < DEF_MIN_HEADWORD or r["headword"] in words:
+            continue
+        words.add(r["headword"])
+        ids.append(r["entry_id"])
+        if len(ids) >= limit:
+            break
+    return ids
+
+
+def ref_sec(spec: dict[str, Any], ch: dict[str, Any]) -> tuple[int, int]:
+    """語釈・解釈が付いた章に足す秒数（formats.yaml の def_sec。無ければ20〜30秒）。"""
+    if not ch.get("ref_ids"):
+        return 0, 0
+    lo, hi = spec.get("def_sec") or [20, 30]
+    return lo, hi
+
+
 def refresh_facts(
     conn: sqlite3.Connection,
     plan: dict[str, Any],
@@ -763,7 +804,8 @@ def refresh_facts(
         if ids:
             f_lo, f_hi = spec.get("fact_sec") or [0, 0]
             lo, hi = lo + f_lo, hi + f_hi
-        ch["target_sec"] = [lo, hi]
+        r_lo, r_hi = ref_sec(spec, ch)  # 語釈・解釈は付け直さない（付けた分の秒は残す）
+        ch["target_sec"] = [lo + r_lo, hi + r_hi]
     _assign_seconds(plan["chapters"], EPISODE_TOTAL_SEC)
     plan["target_total_sec"] = sum(c["target_sec"] for c in plan["chapters"])
     plan["facts"] = fact_shas(conn, [f for c in plan["chapters"] for f in c["fact_ids"]])

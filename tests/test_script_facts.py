@@ -96,7 +96,7 @@ def test_script_tells_background_with_facts(env):
     judge = SentenceJudge()
     r, _ = run(env, eid, writer_llm=FactWriter(), judge_llm=judge)
     assert r.state == "script_done", r.state_msg
-    assert not schema_errors(r.script) and r.script["schema_version"] == "1.1"
+    assert not schema_errors(r.script) and r.script["schema_version"] == "1.2"
     used = [f for ch in r.script["chapters"] for f in ch.get("facts", [])]
     assert "F-w001-001" in used and judge.calls["v2"] >= 1
     seg = next(

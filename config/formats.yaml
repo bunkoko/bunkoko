@@ -1,6 +1,8 @@
 # 回の形式と章の配分（SPEC §8.5）。target_sec は12分の回を基準にした目安
 # facts：その章に付ける背景の事実の数（上限）。fact_sec：事実が付いたときに目安に足す秒数
 # （合計は12分のままなので、ほかの章が少し短くなる。docs/background_facts_plan.md）
+# defs：悩みの言葉の、昔の辞書の語釈を付ける数（上限。確かめ済みのものがあるときだけ）。
+# def_sec：語釈が付いたときに目安に足す秒数（docs/ref_sources.md）
 formats:
   A:
     name: 悩みを古典で考える
@@ -9,7 +11,7 @@ formats:
     distinct_works: true
     chapters:
       - {role: opening, target_sec: [30, 60]}
-      - {role: context, target_sec: [60, 120]}
+      - {role: context, target_sec: [60, 120], defs: 1, def_sec: [20, 30]}
       - {role: classic, repeat: [3, 5], target_sec: [90, 160], facts: 2, fact_sec: [20, 30]}
       - {role: research, optional: true, target_sec: [45, 90]}
       - {role: summary, target_sec: [60, 120]}
@@ -32,7 +34,7 @@ formats:
     worries: 3
     chapters:
       - {role: opening, target_sec: [30, 60]}
-      - {role: context, target_sec: [60, 120]}
+      - {role: context, target_sec: [60, 120], defs: 1, def_sec: [20, 30]}
       - {role: worry_block, repeat: [3, 3], target_sec: [150, 220], facts: 1, fact_sec: [15, 25]}
       - {role: summary, target_sec: [60, 120]}
       - {role: ending, target_sec: [20, 45]}
@@ -43,7 +45,7 @@ formats:
     distinct_authors: 2
     chapters:
       - {role: opening, target_sec: [30, 60]}
-      - {role: context, target_sec: [60, 120]}
+      - {role: context, target_sec: [60, 120], defs: 1, def_sec: [20, 30]}
       - {role: view_a, target_sec: [150, 210], facts: 3, fact_sec: [40, 60]}
       - {role: view_b, target_sec: [150, 210], facts: 3, fact_sec: [40, 60]}
       - {role: compare, target_sec: [90, 120]}

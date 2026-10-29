@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from koten.facts.dates import era_year
 from koten.ref.registry import RefWork, read_registry
 from koten.ref.texts import (
     ENTRY_COLUMNS,
@@ -132,7 +133,8 @@ def _usable_join(table: str) -> str:
     return (
         f"SELECT t.*, w.title AS ref_title, w.volume AS ref_volume, w.edition AS ref_edition, "
         f"w.pub_year AS ref_pub_year, w.credit AS ref_credit, w.license AS license, "
-        f"w.kind AS ref_kind, w.pid AS ref_pid, w.url AS ref_url, w.tradition AS ref_tradition "
+        f"w.kind AS ref_kind, w.pid AS ref_pid, w.url AS ref_url, w.tradition AS ref_tradition, "
+        f"w.source AS ref_source, w.first_pub_year AS ref_first_pub_year "
         f"FROM {table} t JOIN ref_works w ON w.ref_id = t.ref_id "
         f"WHERE w.license IN ('PD_JP', 'CC0', 'CC_BY')"
     )
@@ -202,3 +204,39 @@ def _in_range(num: str, start: str, end: str) -> bool:
         return _num_key(start) <= _num_key(num) <= _num_key(end)
     except TypeError:
         return False
+
+
+# --- 台本で使う（{{def:}}・{{def_src:}}・{{interp:}}・{{interp_src:}}） -------------
+
+# 打ち直した電子版。年は、取り込んだ版ではなく、訳・著作が最初に出た年で言う
+DIGITAL_SOURCES = ("standardebooks", "gutenberg", "aozora")
+
+
+def load_refs(conn: sqlite3.Connection, ids: list[str]) -> dict[str, dict[str, Any]]:
+    """辞書の語釈（J-）と時代の解釈（I-）をまとめて引く。使える資料のものだけ。"""
+    out = load_entries(conn, [i for i in ids if i.startswith("J-")])
+    out.update(load_renderings(conn, [i for i in ids if i.startswith("I-")]))
+    return out
+
+
+def ref_year(r: dict[str, Any]) -> int:
+    if r.get("ref_source") in DIGITAL_SOURCES and r.get("ref_first_pub_year"):
+        return int(r["ref_first_pub_year"])
+    return int(r["ref_pub_year"])
+
+
+def ref_source_label(r: dict[str, Any]) -> str:
+    """語りで出典を言うときの形（例：1891年（明治24年）の『言海』）。"""
+    year = ref_year(r)
+    era = era_year(year)
+    when = f"{year}年（{era}）" if era else f"{year}年"
+    return f"{when}の『{r['ref_title']}』"
+
+
+def ref_text(r: dict[str, Any]) -> str:
+    """画面と語りに出す本文（表記を改めたものがあればそれ）。"""
+    return r.get("display_text") or r["text"]
+
+
+def ref_shas(conn: sqlite3.Connection, ids: list[str]) -> dict[str, str]:
+    return {i: r["text_sha"] for i, r in load_refs(conn, ids).items()}

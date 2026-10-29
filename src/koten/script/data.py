@@ -1,4 +1,4 @@
-"""台本づくりで使うデータ（一節・統計・悩み・背景の事実）。
+"""台本づくりで使うデータ（一節・統計・悩み・背景の事実・昔の辞書の語釈・時代の解釈）。
 
 SSD の候補表と SQLite だけを読む（HDD は読まない）。
 """
@@ -16,6 +16,8 @@ import pyarrow.parquet as pq
 from koten.facts.model import Fact
 from koten.facts.store import load_facts, load_sources, text_sha
 from koten.index.build import cache_path
+from koten.ref.store import load_refs
+from koten.ref.texts import USABLE_STATUS
 
 
 def load_candidates(ssd_root: Path, candidate_ids: list[str]) -> dict[str, dict[str, Any]]:
@@ -37,6 +39,9 @@ class EpisodeData:
     fact_sources: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     fact_issues: list[str] = field(default_factory=list)  # 使えなくなった・文が変わった事実
     person_names: list[str] = field(default_factory=list)  # 書誌にある人名（語りでの直書きを見る）
+    # 企画に付いた昔の辞書の語釈（J-）・時代の解釈（I-）のうち、今も使えて確かめ済みのもの
+    refs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    ref_issues: list[str] = field(default_factory=list)
 
     @classmethod
     def load(cls, conn: sqlite3.Connection, ssd_root: Path, episode_id: str) -> EpisodeData:
@@ -75,6 +80,21 @@ class EpisodeData:
         names = [
             r[0] for r in conn.execute("SELECT DISTINCT name FROM persons WHERE length(name) >= 3")
         ]
+        ref_ids = list(dict.fromkeys(i for c in plan["chapters"] for i in c.get("ref_ids", [])))
+        found = load_refs(conn, ref_ids)
+        refs, ref_issues = {}, []
+        for rid in ref_ids:
+            r = found.get(rid)
+            if r is None:
+                ref_issues.append(
+                    f"{rid}：資料の表に無いか、使えない資料になった（koten ref build）"
+                )
+            elif r["status"] != USABLE_STATUS:
+                ref_issues.append(f"{rid}：まだ画像と照らし合わせていない（{r['status']}）")
+            else:
+                if (plan.get("refs") or {}).get(rid) not in (None, r["text_sha"]):
+                    ref_issues.append(f"{rid}：企画のあとで本文が変わった（今の本文を使う）")
+                refs[rid] = r
         return cls(
             episode_id,
             plan,
@@ -85,4 +105,6 @@ class EpisodeData:
             fact_sources=load_sources(conn, list(facts)),
             fact_issues=issues,
             person_names=names,
+            refs=refs,
+            ref_issues=ref_issues,
         )

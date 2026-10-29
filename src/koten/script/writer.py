@@ -5,6 +5,8 @@ LLM に書かせるのは、章のタイトルと段落の並び（語り・一�
 紹介する本の一覧は、企画（plan_json）と DB の値から機械的に決める。
 背景の事実（作者の歩み・作品の成り立ち・時代）は、企画で章に付けた確認済みの事実だけを渡し、
 名前・年・数はその事実の項目の記号（{{fact:ID.項目}}）で書かせる（SPEC R6・D-012）。
+昔の辞書の語釈・時代の解釈（訓読・古い訳・注釈）も、企画で章に付けた確かめ済みの本文だけを渡し、
+本文と出典は記号（{{def:ID}}・{{def_src:ID}}・{{interp:ID}}・{{interp_src:ID}}）で差し込ませる（D-015）。
 """
 
 from __future__ import annotations
@@ -17,9 +19,10 @@ from typing import Any
 
 from koten.authors import author_label
 from koten.llm import ChatLLM, fill, load_prompt, parse_json_object
+from koten.ref.store import ref_source_label, ref_text
 from koten.script.data import EpisodeData
 
-SCRIPT_SCHEMA_VERSION = "1.1"  # 1.1：段落と章の facts、画面 fact_card
+SCRIPT_SCHEMA_VERSION = "1.2"  # 1.2：段落と章の refs、画面 ref_card。1.1：facts・fact_card
 
 ROLE_NAMES = {
     "opening": "オープニング",
@@ -38,7 +41,9 @@ ROLE_GUIDE = {
     "opening": "最初の段落で今日の悩みを {{worry:…}} で言い、冒頭の30秒（約150字）のうちに、"
     "この回で分かることを言う。挨拶・チャンネルの紹介・登録のお願いは入れない。一節はまだ出さない。",
     "context": "その悩みがどんな場面で起きるかを、よくある場面で具体的に描く。"
-    "統計があれば stat の段落で示す（語りの中では数字を書かない）。",
+    "統計があれば stat の段落で示す（語りの中では数字を書かない）。"
+    "昔の辞書の語釈を渡したときは、「そもそもこの言葉は、昔どう説明されていたか」として"
+    "1つだけ短く紹介し、今の悩みに戻る。",
     "classic": "割り当てた一節ごとに、①出典を {{source:候補ID}} で紹介 ②一節（kind=quote）"
     "③一節の意味 ④今の悩みへの当てはめ、の順で書く。背景の事実を渡したときは、①の前後か"
     "③のあとに、その言葉が書かれたころの作者や作品の背景を短く（20〜30秒）語る。",
@@ -84,14 +89,15 @@ CHAPTER_SCHEMA = {
 
 QUOTE_ONLY = re.compile(r"^\{\{quote:([^{}]+)\}\}$")
 FACT_REF = re.compile(r"\{\{fact:\s*([^{}.\s]+)\s*(?:\.[^{}]+)?\}\}")
+REF_REF = re.compile(r"\{\{(?:def|def_src|interp|interp_src):\s*([^{}\s]+)\s*\}\}")
 STAT_ONLY = re.compile(r"^\{\{stat:([^{}]+)\}\}$")
 
 
 @dataclass
 class ScriptConfig:
-    prompt: str = "script_v3"
+    prompt: str = "script_v4"
     judge_prompt: str = "judge_v1"
-    judge_facts_prompt: str = "judge_v2"  # 背景の事実を使った章の判定（1文ずつ）
+    judge_facts_prompt: str = "judge_v3"  # 背景の事実・語釈・解釈を使った章の判定（1文ずつ）
     chars_per_min: int = 300
     min_sec: int = 600
     max_sec: int = 900
@@ -195,6 +201,28 @@ class ScriptWriter:
             )
         return "\n".join(blocks) or "（なし）"
 
+    def _refs(self, data: EpisodeData, ids: list[str]) -> str:
+        """章に渡す昔の辞書の語釈・時代の解釈。差し込んだあとの値と、記号の書き方を示す。"""
+        roles = {"original": "原文", "kundoku": "訓読", "translation": "訳", "commentary": "注釈"}
+        blocks = []
+        for rid in ids:
+            r = data.refs.get(rid)
+            if r is None:
+                continue
+            if rid.startswith("J-"):
+                sense = f"（第{r['sense']}義）" if r.get("sense") else ""
+                head = f"辞書の語釈：見出し「{r['headword']}」{sense}"
+                body, src = f"{{{{def:{rid}}}}}", f"{{{{def_src:{rid}}}}}"
+            else:
+                head = f"時代の解釈（{roles.get(r['role'], r['role'])}）：一節 {r['passage_key']}"
+                body, src = f"{{{{interp:{rid}}}}}", f"{{{{interp_src:{rid}}}}}"
+            blocks.append(
+                f"- ID：{rid}　{head}\n"
+                f"  本文の記号：{body}＝{ref_text(r)}\n"
+                f"  出典の記号：{src}＝{ref_source_label(r)}"
+            )
+        return "\n".join(blocks) or "（なし）"
+
     def _stats(self, data: EpisodeData, ids: list[str]) -> str:
         if not ids:
             return "（なし）"
@@ -211,6 +239,7 @@ class ScriptWriter:
         feedback: list[str] | None = None,
         *,
         use_facts: bool = True,
+        use_refs: bool = True,
     ) -> ChapterDraft:
         plan = data.plan
         guide = ROLE_GUIDE.get(chapter["role"], "")
@@ -235,6 +264,7 @@ class ScriptWriter:
             passages=self._passages(data, chapter["candidate_ids"]),
             stats=self._stats(data, chapter.get("stat_ids", [])),
             facts=self._facts(data, chapter.get("fact_ids", []) if use_facts else []),
+            refs=self._refs(data, chapter.get("ref_ids", []) if use_refs else []),
             feedback=fb,
         )
         raw: dict[str, Any] | None = None
@@ -286,6 +316,10 @@ class ScriptWriter:
                 seg["kind"] = "narration" if kind != "narration" else kind
                 seg["visual"] = {"type": "photo", "ref": None}
                 facts = list(dict.fromkeys(FACT_REF.findall(text)))
+                refs = list(dict.fromkeys(REF_REF.findall(text)))
+                if refs:
+                    seg["refs"] = refs  # 語釈・解釈の段落（画面は資料のまま・出典・ページ。M6）
+                    seg["visual"] = {"type": "ref_card", "ref": refs[0]}
                 if facts:
                     seg["facts"] = facts  # 背景の段落（画面は事実のカード。M6）
                     seg["visual"] = {"type": "fact_card", "ref": facts[0]}
@@ -300,7 +334,7 @@ class ScriptWriter:
             "segments": [
                 {
                     k: seg[k]
-                    for k in ("seg_id", "kind", "text", "read_as", "visual", "facts")
+                    for k in ("seg_id", "kind", "text", "read_as", "visual", "facts", "refs")
                     if k in seg
                 }
                 for seg in segments
@@ -311,6 +345,9 @@ class ScriptWriter:
         used = list(dict.fromkeys(f for seg in segments for f in seg.get("facts", [])))
         if used:
             out["facts"] = used
+        used_refs = list(dict.fromkeys(r for seg in segments for r in seg.get("refs", [])))
+        if used_refs:
+            out["refs"] = used_refs
         return out
 
     @staticmethod

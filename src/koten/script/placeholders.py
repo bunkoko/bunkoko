@@ -11,6 +11,10 @@
 - {{worry:<worry_id>}}       一般化した悩み文
 - {{fact:<fact_id>}}         背景の事実の確認済みの1文
 - {{fact:<fact_id>.<項目>}}  その事実の項目（人名・地名・作品名・年・年齢・数。year_wareki で和暦）
+- {{def:<J-…>}}               昔の辞書の語釈（資料のまま。「」の中に置く）
+- {{def_src:<J-…>}}           その辞書（例：1891年（明治24年）の『言海』）
+- {{interp:<I-…>}}            時代の解釈（訓読・古い訳・注釈。資料のまま。「」の中に置く）
+- {{interp_src:<I-…>}}        その資料
 """
 
 from __future__ import annotations
@@ -19,8 +23,13 @@ import re
 from typing import Any
 
 from koten.authors import author_label, translator_label
+from koten.ref.store import ref_source_label, ref_text
 
-PLACEHOLDER = re.compile(r"\{\{(quote|quote_ja|source|author|title|stat|worry|fact):([^{}]+?)\}\}")
+PLACEHOLDER = re.compile(
+    r"\{\{(quote|quote_ja|source|author|title|stat|worry|fact|def|def_src|interp|interp_src)"
+    r":([^{}]+?)\}\}"
+)
+REF_KINDS = {"def": "J-", "def_src": "J-", "interp": "I-", "interp_src": "I-"}
 ANY_BRACES = re.compile(r"\{\{[^{}]*\}\}")
 
 
@@ -68,11 +77,13 @@ class Resolver:
         stats: dict[str, dict[str, Any]],
         worries: dict[str, str],
         facts: dict[str, Any] | None = None,
+        refs: dict[str, dict[str, Any]] | None = None,
     ):
         self.candidates = candidates
         self.stats = stats
         self.worries = worries
         self.facts = facts or {}  # この回の企画に付いた、使える事実だけ（koten.facts.model.Fact）
+        self.refs = refs or {}  # この回の企画に付いた、確かめ済みの語釈・解釈だけ
 
     def value(self, kind: str, key: str) -> str:
         key = key.strip()
@@ -112,6 +123,11 @@ class Resolver:
                 return f.slot_text(slot)
             except (KeyError, ValueError) as e:
                 raise UnresolvedPlaceholder(f"{{{{fact:{key}}}}}：{e}") from e
+        if kind in REF_KINDS:
+            r = self.refs.get(key)
+            if r is None or not key.startswith(REF_KINDS[kind]):
+                raise UnresolvedPlaceholder(f"{{{{{kind}:{key}}}}}：この回の企画に無い語釈・解釈")
+            return ref_source_label(r) if kind.endswith("_src") else ref_text(r)
         raise UnresolvedPlaceholder(f"{{{{{kind}:{key}}}}}")
 
     def resolve(self, text: str) -> str:

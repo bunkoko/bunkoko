@@ -299,7 +299,7 @@ def test_attach_facts_to_existing_plan(settings_file, tmp_path):
     assert after["selection"] == before["selection"]  # 一節は変えない
     ids = [f for c in after["chapters"] for f in c["fact_ids"]]
     assert "F-w001-001" in ids and set(after["facts"]) == set(ids)
-    assert abs(after["target_total_sec"] - 720) <= 30 and after["schema_version"] == "1.1"
+    assert abs(after["target_total_sec"] - 720) <= 30 and after["schema_version"] == "1.2"
     with conn:
         conn.execute("UPDATE episodes SET state = 'script_done'")
     r = CliRunner().invoke(
