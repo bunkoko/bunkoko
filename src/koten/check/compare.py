@@ -90,6 +90,28 @@ def debug_env_problems(getenv: Callable[[str], str] | None = None) -> list[str]:
     return out
 
 
+def local_client(conf: dict[str, Any]) -> httpx.Client:
+    """手元の Ollama へ直に行く接続。プロキシの設定（HTTP_PROXY・Mac のシステムのプロキシ）を
+    使わない（本の文がプロキシのアプリを通って、画面や記録に残らないように）。"""
+    return httpx.Client(timeout=float(conf.get("timeout_sec", 300)), trust_env=False)
+
+
+def local_llm(conf: dict[str, Any]) -> ChatLLM:
+    """照合に使う手元の Ollama（プロキシを通さない）。"""
+    from koten.llm import OllamaLLM
+
+    return OllamaLLM(
+        conf["endpoint"],
+        conf.get("model", ""),
+        think=conf.get("think", False),
+        num_ctx=conf.get("num_ctx", 4096),
+        num_predict=conf.get("num_predict", 64),
+        keep_alive=conf.get("keep_alive", "5m"),
+        timeout_sec=conf.get("timeout_sec", 300),
+        client=local_client(conf),
+    )
+
+
 def model_problems(conf: dict[str, Any], client: httpx.Client | None = None) -> list[str]:
     """照合のモデルが、手元で動き、クラウドへ転送されないか（/api/show で確かめる）。"""
     model = str(conf.get("model") or "")
@@ -99,7 +121,9 @@ def model_problems(conf: dict[str, Any], client: httpx.Client | None = None) -> 
         return [f"モデル {model} はクラウドで動く（名前が :cloud・-cloud で終わる）"]
     endpoint = str(conf["endpoint"]).rstrip("/").removesuffix("/v1")
     try:
-        r = (client or httpx.Client(timeout=10)).post(f"{endpoint}/api/show", json={"model": model})
+        r = (client or local_client({"timeout_sec": 10})).post(
+            f"{endpoint}/api/show", json={"model": model}
+        )
     except httpx.HTTPError:
         return [f"Ollama（{endpoint}）に接続できない。Ollama を起動する"]
     if r.status_code != 200:
@@ -126,12 +150,18 @@ def longest_run(a: str, b: str) -> int:
 
 
 def wording(claim: str, book: str) -> tuple[int, float]:
-    """言い回しの近さ：（共通する最長の並びの字数, 主張の4字の並びのうち本にあるものの割合）。"""
-    a, b = normalize_for_match(claim), normalize_for_match(book)
-    grams = {a[i : i + GRAM] for i in range(max(len(a) - GRAM + 1, 0))}
+    """言い回しの近さ：（共通する最長の並びの字数, 主張の4字の並びのうち本にあるものの割合）。
+
+    claim は自分たちの言葉だけを数える（DB から差し込む一節・語釈・解釈などは \x00 で区切って
+    除く。保護期間の切れた訓読などが今の本と同じでも、自分たちの言い回しが近いことにはならない）。
+    """
+    b = normalize_for_match(book)
+    parts = [normalize_for_match(x) for x in claim.split("\x00") if x.strip()]
+    grams = {p[i : i + GRAM] for p in parts for i in range(max(len(p) - GRAM + 1, 0))}
     found = {g for g in grams if g in b}
     share = len(found) / len(grams) if grams else 0.0
-    return longest_run(a, b), round(share, 3)
+    run = max((longest_run(p, b) for p in parts), default=0)
+    return run, round(share, 3)
 
 
 def is_close(run: int, share: float) -> bool:

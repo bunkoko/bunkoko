@@ -42,6 +42,7 @@ class EpisodeData:
     # 企画に付いた昔の辞書の語釈（J-）・時代の解釈（I-）のうち、今も使えて確かめ済みのもの
     refs: dict[str, dict[str, Any]] = field(default_factory=dict)
     ref_issues: list[str] = field(default_factory=list)
+    s4_titles: list[str] = field(default_factory=list)  # 照合に使う今の本の書名（語りで出さない）
 
     @classmethod
     def load(cls, conn: sqlite3.Connection, ssd_root: Path, episode_id: str) -> EpisodeData:
@@ -95,6 +96,7 @@ class EpisodeData:
                 if (plan.get("refs") or {}).get(rid) not in (None, r["text_sha"]):
                     ref_issues.append(f"{rid}：企画のあとで本文が変わった（今の本文を使う）")
                 refs[rid] = r
+        s4 = [r[0] for r in conn.execute("SELECT title FROM s4_titles")]
         return cls(
             episode_id,
             plan,
@@ -107,4 +109,5 @@ class EpisodeData:
             person_names=names,
             refs=refs,
             ref_issues=ref_issues,
+            s4_titles=s4,
         )

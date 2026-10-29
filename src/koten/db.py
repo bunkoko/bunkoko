@@ -245,6 +245,11 @@ CREATE TABLE IF NOT EXISTS checks (
 );
 CREATE INDEX IF NOT EXISTS checks_episode ON checks(episode_id);
 
+-- 照合に使う今の本（S4）の書名（koten ref build が config/ref_books.csv から写す。語りで出さない）
+CREATE TABLE IF NOT EXISTS s4_titles (
+    title TEXT PRIMARY KEY
+);
+
 -- 国会図書館のマニフェストで見た公開範囲（koten ref ndl-snapshot。HDD が無くても ref build が見る）
 CREATE TABLE IF NOT EXISTS ndl_checks (
     ref_id TEXT PRIMARY KEY,

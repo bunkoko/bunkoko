@@ -78,12 +78,13 @@ DOUBLED = re.compile(
 BG = "背景："  # 背景の事実にかかわる問題の頭（背景を外して書き直すかを決めるのに使う）
 REF = "資料："  # 語釈・解釈にかかわる問題の頭（語釈・解釈を外して書き直すかを決めるのに使う）
 REF_REF = re.compile(r"\{\{(def|def_src|interp|interp_src):\s*([^{}\s]+)\s*\}\}")
+REF_REF_IDS = re.compile(r"\{\{(?:def|def_src|interp|interp_src):\s*([^{}\s]+)\s*\}\}")
 REF_BODY = re.compile(r"\{\{(def|interp):\s*([^{}\s]+)\s*\}\}")
 REF_BODY_QUOTED = re.compile(r"「\s*\{\{(def|interp):\s*([^{}\s]+)\s*\}\}\s*」")
 # 辞書や昔の本が言ったことにする言い方。同じ文に語釈・解釈の記号があるときだけ使える
 REF_CLAIM = re.compile(
-    r"辞書(?:では|によると|によれば|を引くと|を引けば|には|の説明)|本来の意味|もともとの意味|"
-    r"元々の意味|語源"
+    r"辞書|辞典|字典|字書|字引|本来の意味|もともとの意味|元々の意味|語源"
+    r"|『[^』]{1,30}』(?:では|によれば|によると|には|を引くと|を開くと|の説明)"
 )
 # 根拠を DB に持てない言い方（いつも使わない）
 NEVER_CLAIM = re.compile(r"本当の意味|通説|多くの学者|学者の間で|学説")
@@ -103,6 +104,16 @@ MODERN_REFS = (
     "漢辞海",
     "新釈漢文大系",
     "全釈漢文大系",
+    "字通",
+    "字統",
+    "字訓",
+    "新字源",
+    "漢字源",
+    "新漢和",
+    "日本語源大辞典",
+    "岩波古語辞典",
+    "古語大辞典",
+    "『明鏡』",  # 「明鏡止水」と区別するため『』つきだけ
 )
 # 時代の人全体の考えにする言い方（資料や事実の記号で言う）
 ERA_PEOPLE = re.compile(
@@ -203,8 +214,21 @@ def fact_leaks(text: str, data: EpisodeData, passage: str, facts: set[str]) -> l
     return list(dict.fromkeys(out))
 
 
+def _book_names(data: EpisodeData) -> list[str]:
+    """語りと章タイトルで出さない書名：今の辞書・訳注と、照合に使う今の本（ref_books.csv）。"""
+    names = list(MODERN_REFS)
+    for t in data.s4_titles:
+        names.append(f"『{t}』")
+        if len(t) >= 3:
+            names.append(t)
+    return names
+
+
 def ref_issues(text: str, data: EpisodeData, offered: set[str], kind: str) -> list[str]:
-    """語釈・解釈の記号の使い方と、辞書や昔の本が言ったことにする言い方（段落1つ分）。"""
+    """語釈・解釈の記号の使い方と、辞書や昔の本が言ったことにする言い方（段落1つ分）。
+
+    kind が transition（章タイトル）なら、記号が置けないので、辞書や書名を出す言い方は全部止める。
+    """
     out = []
     bodies = [m.group(2) for m in REF_BODY.finditer(text)]
     quoted = [m.group(2) for m in REF_BODY_QUOTED.finditer(text)]
@@ -223,18 +247,50 @@ def ref_issues(text: str, data: EpisodeData, offered: set[str], kind: str) -> li
         body = ref_text(r)
         if len(body) >= 8 and body in bare:
             out.append(f"{REF}語釈・解釈 {rid} の本文を記号を使わずに書いている")
-    if kind != "narration":
-        return out
-    for sent in split_sentences(text):
-        claim = REF_CLAIM.search(PLACEHOLDER.sub("", sent))
-        if claim and not REF_REF.search(sent):
+    passage = "\n".join(
+        f"{c['quote_text']}\n{c.get('context_text') or ''}\n{c['title']}"
+        for c in data.candidates.values()
+    )
+    titles = {r["ref_title"] for r in data.refs.values() if len(r["ref_title"]) >= 2}
+    quotes = [normalize_for_match(c["quote_text"]) for c in data.candidates.values()]
+    quotes += [normalize_for_match(w["text_general"]) for w in data.worries.values()]
+    for sent in split_sentences(text) if kind == "narration" else [text]:
+        sent_bare = PLACEHOLDER.sub("", sent)
+        has_ref = bool(REF_REF.search(sent))
+        claim = REF_CLAIM.search(sent_bare)
+        if claim and (kind != "narration" or not has_ref):
             out.append(
                 f"「{claim.group(0)}」は、渡した語釈・解釈の記号と同じ文のときだけ言える"
-                "（今の辞書の説明は、自分たちの言葉だと分かる言い方にする）"
+                "（章タイトルでは言わない。今の辞書の説明は、自分たちの言葉だと分かる言い方にする）"
             )
+        for t in sorted(titles):
+            if t in sent_bare and t not in passage and (kind != "narration" or not has_ref):
+                out.append(f"{REF}書名「{t}」は出典の記号（{{{{def_src:…}}}} など）で書く")
+        if kind == "narration" and re.search(r"\{\{(?:def|interp)_src:", sent):
+            allowed = {
+                x
+                for rid in REF_REF_IDS.findall(sent)
+                if (r := data.refs.get(rid))
+                for x in (r.get("headword"), r.get("headword_kana"))
+                if x
+            }
+            for m in QUOTED.finditer(sent):
+                inner = m.group(1).strip()
+                if PLACEHOLDER.fullmatch(inner) or inner in allowed:
+                    continue
+                if any(normalize_for_match(inner) in q for q in quotes):
+                    continue
+                out.append(
+                    f"{REF}出典の記号のある文で、「{inner[:20]}」を資料の言葉のように「」に入れない"
+                    "（資料の本文は「{{def:ID}}」「{{interp:ID}}」で差し込む）"
+                )
     if never := NEVER_CLAIM.search(bare):
         out.append(f"「{never.group(0)}」は根拠を示せないので言わない")
-    out += [f"今の辞書・訳注の名前「{n}」を出さない" for n in MODERN_REFS if n in bare]
+    out += [
+        f"今の辞書・訳注・照合に使う本の名前「{n}」を出さない"
+        for n in _book_names(data)
+        if n in bare
+    ]
     if era := ERA_PEOPLE.search(bare):
         out.append(
             f"{BG}「{era.group(0)}」のように時代の人全体の考えにしない（資料や事実の記号で言う）"
@@ -486,7 +542,11 @@ def title_issues(title: str, data: EpisodeData) -> list[str]:
         f"タイトルに「{w}」のような約束できない言い方を使わない" for w in TITLE_NG if w in bare
     ]
     issues += [f"タイトルに「{w}」を使わない" for w in TITLE_REF_NG if w in bare]
-    issues += [f"タイトルに今の辞書・訳注の名前「{n}」を出さない" for n in MODERN_REFS if n in bare]
+    issues += [
+        f"タイトルに今の辞書・訳注・照合に使う本の名前「{n}」を出さない"
+        for n in _book_names(data)
+        if n in bare
+    ]
     return issues
 
 
@@ -670,10 +730,16 @@ class FaithfulnessJudge:
             except KeyError:
                 return text
 
+        shown_ids = set(shown) | set(shown_refs)
+
+        def markers(sent: str) -> set[str]:
+            # 〔〕は昔の辞書の本文にも出てくる（語源の注など）。見せた ID の印だけを数える
+            return {m for m in MARKER.findall(sent) if m in shown_ids}
+
         sentences: list[tuple[str, str, set[str]]] = []
         lines = []
         if title:
-            sentences.append(("title", marked(title), set(MARKER.findall(marked(title)))))
+            sentences.append(("title", marked(title), markers(marked(title))))
             lines.append(f"S1（動画のタイトル案）：{marked(title)}")
         for seg in chapter["segments"]:
             if seg["kind"] == "stat":
@@ -687,7 +753,7 @@ class FaithfulnessJudge:
                 lines.append(f"（一節）「{text}」")
                 continue
             for sent in split_sentences(text):
-                sentences.append((seg["seg_id"], sent, set(MARKER.findall(sent))))
+                sentences.append((seg["seg_id"], sent, markers(sent)))
                 lines.append(f"S{len(sentences)}（{seg['seg_id']}）：{sent}")
         worries = "\n".join(f"- {w['text_general']}" for w in data.worries.values())
         facts = (

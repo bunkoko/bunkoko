@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from koten.script.gates import split_sentences
-from koten.script.placeholders import Resolver
+from koten.script.placeholders import PLACEHOLDER, Resolver
 
 # 既定で並べる章：一節か語釈・解釈を扱う章（一節の意味の説明は、ここに出てくる）
 SKIP_ROLES = ("opening", "ending")
@@ -26,6 +26,7 @@ class Claim:
     text: str  # 差し込んだあとの文
     context: str  # その段落全体（差し込んだあと）
     sha: str
+    own: str = ""  # 自分たちの言葉だけ（DB から差し込む所は \x00。言い回しの近さはここで数える）
 
 
 def sha(text: str) -> str:
@@ -69,6 +70,7 @@ def claims(script: dict[str, Any], resolver: Resolver, *, everything: bool = Fal
                         text=text,
                         context=context,
                         sha=sha(text),
+                        own=PLACEHOLDER.sub("\x00", sent),
                     )
                 )
     return out

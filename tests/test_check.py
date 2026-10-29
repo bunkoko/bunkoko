@@ -69,6 +69,20 @@ def env(settings_file, tmp_path):
     eid = planned(s, "A", worry_id="W0001")
     r, _ = run(s, eid)
     assert r.state == "script_done", r.state_msg
+    # 偽の台本作家は、どの章も同じ文で始める。保留は文の中身に付くので、文を見分けられるようにする
+    conn = connect(s.ssd_root)
+    script = json.loads(
+        conn.execute("SELECT script_json FROM episodes WHERE episode_id = ?", (eid,)).fetchone()[0]
+    )
+    for ch in script["chapters"]:
+        for seg in ch["segments"]:
+            if seg["kind"] == "narration":
+                seg["text"] = seg["text"].replace("。", f"（{seg['seg_id']}）。", 1)
+    with conn:
+        conn.execute(
+            "UPDATE episodes SET script_json = ? WHERE episode_id = ?",
+            (json.dumps(script, ensure_ascii=False), eid),
+        )
     cfg = tmp_path / "cfg" / "config"
     cfg.mkdir(parents=True)
     shutil.copy(DEFAULT_CONFIG_DIR / "sources.yaml", cfg / "sources.yaml")
@@ -109,7 +123,7 @@ def assert_not_stored(s, tmp_path):
 def test_same_changes_nothing(env, monkeypatch, tmp_path):
     s, eid, st, _ = env
     judge = LocalJudge("same")
-    monkeypatch.setattr(koten.llm, "make_llm", lambda conf, model=None: judge)
+    monkeypatch.setattr(compare, "local_llm", lambda conf: judge)
     number, line = first_claim(st, eid)
     r = cli(
         st,
@@ -142,7 +156,7 @@ def test_same_changes_nothing(env, monkeypatch, tmp_path):
 
 def test_differs_holds_until_rewritten_and_rechecked(env, monkeypatch, tmp_path):
     s, eid, st, _ = env
-    monkeypatch.setattr(koten.llm, "make_llm", lambda conf, model=None: LocalJudge("differs"))
+    monkeypatch.setattr(compare, "local_llm", lambda conf: LocalJudge("differs"))
     number, _ = first_claim(st, eid)
     r = cli(
         st,
@@ -162,7 +176,7 @@ def test_differs_holds_until_rewritten_and_rechecked(env, monkeypatch, tmp_path)
     assert "食い違い" in r.output and "公開を保留します" in r.output
     r = cli(st, "check", "status", "--episode", eid)
     assert r.exit_code == 1 and "内容が食い違う" in r.output
-    assert "照合で食い違いあり" in cli(st, "episode", "list").output
+    assert "照合で公開保留" in cli(st, "episode", "list").output
     # 台本の文を直すと、同じ本でもう一度照合するまで保留のまま
     conn = connect(s.ssd_root)
     key = conn.execute("SELECT claim_key FROM checks").fetchone()[0]
@@ -171,7 +185,9 @@ def test_differs_holds_until_rewritten_and_rechecked(env, monkeypatch, tmp_path)
         conn.execute("SELECT script_json FROM episodes WHERE episode_id = ?", (eid,)).fetchone()[0]
     )
     seg = next(x for ch in script["chapters"] for x in ch["segments"] if x["seg_id"] == seg_id)
-    seg["text"] = "書き直した文です。" + seg["text"] if k == "1" else seg["text"]
+    sents = seg["text"].split("。")
+    sents[int(k) - 1] = "書き直した文です"
+    seg["text"] = "。".join(sents)
     with conn:
         conn.execute(
             "UPDATE episodes SET script_json = ? WHERE episode_id = ?",
@@ -179,7 +195,7 @@ def test_differs_holds_until_rewritten_and_rechecked(env, monkeypatch, tmp_path)
         )
     r = cli(st, "check", "status", "--episode", eid)
     assert r.exit_code == 1 and "同じ本でもう一度照合する" in r.output
-    monkeypatch.setattr(koten.llm, "make_llm", lambda conf, model=None: LocalJudge("same"))
+    monkeypatch.setattr(compare, "local_llm", lambda conf: LocalJudge("same"))
     r = cli(
         st,
         "check",
@@ -201,7 +217,7 @@ def test_differs_holds_until_rewritten_and_rechecked(env, monkeypatch, tmp_path)
 
 def test_close_wording_holds_even_when_same(env, monkeypatch):
     s, eid, st, _ = env
-    monkeypatch.setattr(koten.llm, "make_llm", lambda conf, model=None: LocalJudge("same"))
+    monkeypatch.setattr(compare, "local_llm", lambda conf: LocalJudge("same"))
     number, line = first_claim(st, eid)
     claim_text = line.split("）", 1)[1]
     # 台本の文が本の言い回しとほとんど同じ（今の訳を写したような文）
@@ -303,7 +319,7 @@ def test_cloud_llm_is_refused(env, monkeypatch):
 
 def test_book_text_length_and_unknown_book(env, monkeypatch):
     s, eid, st, _ = env
-    monkeypatch.setattr(koten.llm, "make_llm", lambda conf, model=None: LocalJudge())
+    monkeypatch.setattr(compare, "local_llm", lambda conf: LocalJudge())
     number, _ = first_claim(st, eid)
     r = cli(
         st,
@@ -433,3 +449,198 @@ def test_read_pasted_from_pipe():
     import io
 
     assert compare.read_pasted(io.StringIO("  本の文です。\n")) == "本の文です。"
+
+
+def _script(conn, eid):
+    return json.loads(
+        conn.execute("SELECT script_json FROM episodes WHERE episode_id = ?", (eid,)).fetchone()[0]
+    )
+
+
+def _save_script(conn, eid, script):
+    with conn:
+        conn.execute(
+            "UPDATE episodes SET script_json = ? WHERE episode_id = ?",
+            (json.dumps(script, ensure_ascii=False), eid),
+        )
+
+
+def test_hold_follows_the_sentence_when_it_moves(env, monkeypatch):
+    """食い違った文が、そのまま別の位置に動いても保留は解けない（位置ではなく中身に付く）。"""
+    s, eid, st, _ = env
+    number, _ = first_claim(st, eid)
+    r = cli(
+        st,
+        "check",
+        "run",
+        "--episode",
+        eid,
+        "--claim",
+        number,
+        "--book",
+        "B-gendai",
+        "--page",
+        "9",
+        "--verdict",
+        "differs",
+    )
+    assert r.exit_code == 0, r.output
+    conn = connect(s.ssd_root)
+    key = conn.execute("SELECT claim_key FROM checks").fetchone()[0]
+    seg_id = key.split("#")[0]
+    script = _script(conn, eid)
+    seg = next(x for ch in script["chapters"] for x in ch["segments"] if x["seg_id"] == seg_id)
+    seg["text"] = "新しく足した文です。" + seg["text"]  # 食い違った文は2文目に動いた
+    _save_script(conn, eid, script)
+    # 1文目（新しい文）を照合して一致にしても、動いた文が残っているので保留のまま
+    monkeypatch.setattr(compare, "local_llm", lambda conf: LocalJudge("same"))
+    r = cli(
+        st,
+        "check",
+        "run",
+        "--episode",
+        eid,
+        "--claim",
+        number,
+        "--book",
+        "B-gendai",
+        "--page",
+        "9",
+        input=BOOK_TEXT,
+    )
+    assert r.exit_code == 0, r.output
+    r = cli(st, "check", "status", "--episode", eid)
+    assert r.exit_code == 1 and f"{seg_id}#2" in r.output and "内容が食い違う" in r.output
+    # resolve でも解けない
+    r = cli(st, "check", "resolve", "--episode", eid, "--key", key, "--note", "x")
+    assert r.exit_code == 2
+
+
+def test_human_same_on_unchanged_sentence_keeps_the_hold(env, monkeypatch):
+    s, eid, st, _ = env
+    monkeypatch.setattr(compare, "local_llm", lambda conf: LocalJudge("same"))
+    number, line = first_claim(st, eid)
+    claim_text = line.split("）", 1)[1]
+    r = cli(
+        st,
+        "check",
+        "run",
+        "--episode",
+        eid,
+        "--claim",
+        number,
+        "--book",
+        "B-gendai",
+        "--page",
+        "5",
+        input="本では" + claim_text,
+    )
+    assert "言い回しが本に近い" in r.output
+    r = cli(
+        st,
+        "check",
+        "run",
+        "--episode",
+        eid,
+        "--claim",
+        number,
+        "--book",
+        "B-gendai",
+        "--page",
+        "5",
+        "--verdict",
+        "same",
+    )
+    assert r.exit_code == 0
+    assert cli(st, "check", "status", "--episode", eid).exit_code == 1  # 文を直すまで解けない
+    assert "照合で公開保留" in cli(st, "episode", "list").output
+
+
+def test_close_flag_only_makes_it_stricter(env, monkeypatch):
+    s, eid, st, _ = env
+    monkeypatch.setattr(compare, "local_llm", lambda conf: LocalJudge("same"))
+    number, _ = first_claim(st, eid)
+    r = cli(
+        st,
+        "check",
+        "run",
+        "--episode",
+        eid,
+        "--claim",
+        number,
+        "--book",
+        "B-gendai",
+        "--page",
+        "5",
+        "--close",
+        input=BOOK_TEXT,
+    )
+    assert r.exit_code == 0 and "言い回しが本に近い" in r.output
+    assert connect(s.ssd_root).execute("SELECT close_wording FROM checks").fetchone()[0] == 1
+
+
+def test_episode_list_flag_clears_after_recheck(env, monkeypatch):
+    s, eid, st, _ = env
+    monkeypatch.setattr(compare, "local_llm", lambda conf: LocalJudge("differs"))
+    number, _ = first_claim(st, eid)
+    cli(
+        st,
+        "check",
+        "run",
+        "--episode",
+        eid,
+        "--claim",
+        number,
+        "--book",
+        "B-gendai",
+        "--page",
+        "1",
+        input=BOOK_TEXT,
+    )
+    assert "照合で公開保留" in cli(st, "episode", "list").output
+    conn = connect(s.ssd_root)
+    key = conn.execute("SELECT claim_key FROM checks").fetchone()[0]
+    script = _script(conn, eid)
+    seg = next(
+        x for ch in script["chapters"] for x in ch["segments"] if x["seg_id"] == key.split("#")[0]
+    )
+    seg["text"] = (
+        "書き直した文です。" + seg["text"].split("。", 1)[1] if key.endswith("#1") else seg["text"]
+    )
+    _save_script(conn, eid, script)
+    monkeypatch.setattr(compare, "local_llm", lambda conf: LocalJudge("same"))
+    cli(
+        st,
+        "check",
+        "run",
+        "--episode",
+        eid,
+        "--claim",
+        number,
+        "--book",
+        "B-gendai",
+        "--page",
+        "1",
+        input=BOOK_TEXT,
+    )
+    assert cli(st, "check", "status", "--episode", eid).exit_code == 0
+    assert "照合で公開保留" not in cli(st, "episode", "list").output
+
+
+def test_wording_counts_only_our_own_words():
+    """DB から差し込んだ保護期間満了の訓読が今の本と同じでも、自分たちの言い回しは近くない。"""
+    kundoku = "子曰く、学びて時に之を習ふ、亦説ばしからずや"
+    book = "子曰く、学びて時に之を習う、亦た説ばしからずや。これは学ぶ喜びを述べたものである。"
+    run_len, share = compare.wording("明治の訓読では、「\x00」と読みます。", book)
+    assert not compare.is_close(run_len, share)
+    run_len, share = compare.wording(f"明治の訓読では、「{kundoku}」と読みます。", book)
+    assert compare.is_close(run_len, share)  # 区切らないと近いことになってしまう
+
+
+def test_local_client_ignores_proxy(monkeypatch):
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:9")
+    client = compare.local_client({"timeout_sec": 5})
+    assert client._trust_env is False
+    llm = compare.local_llm({"endpoint": "http://127.0.0.1:11434", "model": "gemma4:26b"})
+    assert llm.client._trust_env is False

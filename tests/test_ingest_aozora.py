@@ -290,7 +290,7 @@ def test_ingest_removes_text_that_is_no_longer_storable(settings_file):
     logs: list[str] = []
     r = aozora.ingest(hdd, CONF, make_fetcher(hdd, server), log=logs.append)
     assert not stale.exists()
-    assert r.removed == ["700 随想（NEEDS_REVIEW）"]
+    assert r.removed == ["aozora:700 随想（NEEDS_REVIEW）"]
     assert any("本文を消しました" in line for line in logs)
     works = {w["source_work_id"]: w for w in read_rows(hdd / "clean/aozora/works.parquet")}
     assert works["700"]["raw_path"] is None

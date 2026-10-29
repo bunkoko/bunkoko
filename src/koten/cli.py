@@ -114,13 +114,16 @@ def ingest(
         typer.secho(f"  取得失敗：{err}", fg="yellow", err=True)
     if r.removed:
         typer.secho(
-            f"権利の判定が厳しくなり、本文を消した作品が {len(r.removed)} 件あります。"
-            "normalize・chunk・index build をやり直し、"
-            "付加情報は forget-works で取り除いてください：",
+            f"権利の判定が厳しくなり、本文を消した作品が {len(r.removed)} 件あります：",
             fg="yellow",
         )
         for line in r.removed:
             typer.echo(f"  {line}")
+        ids = " ".join(f"--work {line.split()[0]}" for line in r.removed)
+        typer.echo(
+            "続けて：uv run koten normalize aozora → uv run koten chunk aozora → "
+            f"uv run koten forget-works {ids} --apply → uv run koten index build"
+        )
 
 
 @app.command()
@@ -242,7 +245,8 @@ def forget_works_cmd(
 
     s = _settings(settings)
     hdd = _hdd(s)
-    targets = set(work or [])
+    # 青空文庫の作品番号だけ（700）でも、内部の ID（aozora:700）にそろえる
+    targets = {w if ":" in w else f"aozora:{w}" for w in work or []}
     if changed:
         targets |= read_changed(changed_works_path(hdd))
     if not targets:
@@ -1493,9 +1497,11 @@ def ref_build(settings: SettingsOpt = None) -> None:
         for line in forget_unusable(hdd, works, eds, set(limited)):
             typer.secho(f"使えない資料のものを HDD から消しました：{line}", fg="yellow")
         imported = load_imported(hdd)
+    from koten.check.books import BooksError
+
     try:
         r = build_refs(conn, s.config_dir, imported, restrictions=limited)
-    except (RefError, TextsError) as e:
+    except (RefError, TextsError, BooksError) as e:
         for ref_id in getattr(e, "tightened", []):
             typer.secho(f"{ref_id} は使えなくなったので、SSD では先に使えなくしました", fg="yellow")
         typer.secho(str(e), fg="red", err=True)
@@ -1869,7 +1875,7 @@ def check_run(
 
     from koten.check import compare
     from koten.check.store import holds, record
-    from koten.llm import load_prompt, make_llm
+    from koten.llm import load_prompt
 
     s = _settings(settings)
     books = _books(s)
@@ -1922,14 +1928,14 @@ def check_run(
                 err=True,
             )
             raise typer.Exit(2)
-        run_len, share = compare.wording(target.text, book_text)
-        close = compare.is_close(run_len, share)
+        run_len, share = compare.wording(target.own or target.text, book_text)
+        close = close or compare.is_close(run_len, share)  # 人の --close は厳しくする向きだけ
         system, user_tpl = load_prompt(
             s.config_dir.parent / "prompts", s.section("check").get("prompt", "check_v1")
         )
         try:
             verdict = compare.ask(
-                make_llm(conf), system, user_tpl, target.text, target.context, book_text
+                compare.local_llm(conf), system, user_tpl, target.text, target.context, book_text
             )
         except compare.CheckError as e:
             typer.secho(str(e), fg="red", err=True)
@@ -2041,16 +2047,28 @@ def episode_list(
     rows = conn.execute(
         "SELECT * FROM episodes ORDER BY created_at DESC, episode_id DESC LIMIT ?", (top,)
     ).fetchall()
-    held = {
+    maybe = {
         x[0]
         for x in conn.execute(
             "SELECT DISTINCT episode_id FROM checks WHERE verdict = 'differs' OR close_wording = 1"
         )
     }
+    s = _settings(settings)
+    held = set()
+    for eid in maybe & {r["episode_id"] for r in rows}:
+        from koten.check.store import holds
+
+        try:
+            hc, current = _episode_claims(s, eid)
+        except typer.Exit:
+            held.add(eid)  # 台本が無くなった回は、念のため保留として出す
+            continue
+        if holds(hc, eid, current):
+            held.add(eid)
     for r in rows:
         review = "　※要確認" if r["review_required"] else ""
         if r["episode_id"] in held:
-            review += "　※照合で食い違いあり（koten check status）"
+            review += "　※照合で公開保留（koten check status）"
         worries = "、".join(json.loads(r["worry_ids"]))
         typer.echo(f"{r['episode_id']} 形式{r['format']} {r['state']:11} {worries}{review}")
         if r["state_msg"]:

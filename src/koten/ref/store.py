@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from koten.check.books import read_books
 from koten.facts.dates import era_year
 from koten.license import License
 from koten.ref.registry import RefWork, read_registry
@@ -137,6 +138,12 @@ def build_refs(
     works = read_registry(config_dir)
     restrict(works, restrictions or {})
     tightened = tighten(conn, works)
+    titles = sorted({b.title for b in read_books(config_dir).values()})
+    with conn:
+        conn.execute("DELETE FROM s4_titles")
+        conn.executemany(
+            "INSERT OR IGNORE INTO s4_titles(title) VALUES (?)", [(t,) for t in titles]
+        )
     by_id = {w.ref_id: w for w in works}
     try:
         renderings = read_renderings(config_dir, by_id, load_canon(config_dir))

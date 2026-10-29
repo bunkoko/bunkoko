@@ -408,7 +408,7 @@ def ingest(
             blocked[str(lic)] += 1
             if rel and (old := fetcher.raw_dir / rel).exists():
                 old.unlink()  # 前の判定で保存した本文も残さない
-                removed.append(f"{w.work_id} {w.title}（{lic}）")
+                removed.append(f"{SOURCE}:{w.work_id} {w.title}（{lic}）")
                 log(f"    本文を消しました（{lic}）：{w.title}")
         elif rel is None:
             blocked["NO_TEXT_ZIP"] += 1

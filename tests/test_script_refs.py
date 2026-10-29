@@ -18,6 +18,7 @@ from koten.script.data import EpisodeData
 from koten.script.run import render, schema_errors
 from tests.m4_corpus import build
 from tests.ref_fixture import entry, person, rendering, work, write, write_texts
+from tests.test_script import PROMPTS as PROMPTS_DIR
 from tests.test_script import FakeScriptLLM, planned, run
 
 REF_LINE = re.compile(r"^- ID：((?:J|I)-\S+)", re.M)
@@ -267,13 +268,21 @@ def chapter_with(*texts, kind="narration", ref_ids=(DEF,)):
         ("『架空辞書』では、素直をまっすぐな心とします。", "書名『架空辞書』を直接書いている"),
         (
             "辞書では、素直とはまっすぐな心のことです。",
-            "「辞書では」は、渡した語釈・解釈の記号と同じ文のときだけ",
+            "「辞書」は、渡した語釈・解釈の記号と同じ文のときだけ",
         ),
         ("素直の語源をたどると、意外な姿が見えます。", "「語源」は"),
         ("素直の本当の意味を考えます。", "「本当の意味」は根拠を示せない"),
         ("通説では、素直は美徳です。", "「通説」は根拠を示せない"),
-        ("広辞苑を開くと、素直の説明があります。", "今の辞書・訳注の名前「広辞苑」"),
+        ("広辞苑を開くと、素直の説明があります。", "名前「広辞苑」"),
         ("明治の人は、素直を美徳と考えました。", "時代の人全体の考えにしない"),
+        ("辞書で調べると、素直とは心がまっすぐなことです。", "「辞書」は"),
+        ("国語辞典によれば、素直とは人に逆らわないことです。", "「辞典」は"),
+        ("架空辞書によると、素直とは人に逆らわないことです。", "書名「架空辞書」は出典の記号"),
+        ("『字通』によれば、素直は美徳です。", "名前「字通」"),
+        (
+            f"{{{{def_src:{DEF}}}}}は、「素直」を「心がまっすぐなこと」と説明しています。",
+            "資料の言葉のように「」に入れない",
+        ),
         (
             f"{{{{interp_src:{INTERP}}}}}では「{{{{interp:{INTERP}}}}}」と読みます。",
             "この章に渡していない語釈・解釈",
@@ -401,3 +410,69 @@ def test_ref_attach_command(env, settings_file):
         ]
         == []
     )
+
+
+@pytest.mark.parametrize(
+    "title,issue",
+    [
+        ("広辞苑で引く「素直」", "名前「広辞苑」"),
+        ("「素直」の本当の意味", "「本当の意味」は根拠を示せない"),
+        ("「素直」の語源をたどる", "「語源」は"),
+        ("明治の人は素直を嫌った", "時代の人全体の考えにしない"),
+    ],
+)
+def test_g1_chapter_title_reference_rules(env, title, issue):
+    eid = planned(env, "A", worry_id="W0001")
+    data = EpisodeData.load(connect(env.ssd_root), env.ssd_root, eid)
+    issues = gates.g1_chapter(
+        chapter_with(title, kind="transition"), data, [], set(), set(), {DEF}, {DEF}
+    )
+    assert any(issue in x for x in issues), issues
+
+
+def test_s4_book_titles_are_never_named(env):
+    from koten.check.books import BOOK_COLUMNS
+    from tests.ref_fixture import write_csv
+
+    write_csv(
+        env.ref_cfg / "ref_books.csv",
+        BOOK_COLUMNS,
+        [
+            {
+                "book_id": "B-gendai",
+                "title": "現代語訳の論語",
+                "people": "今野",
+                "publisher": "架空書房",
+                "year": "2001",
+                "kind": "translation",
+                "medium": "paper_owned",
+            }
+        ],
+    )
+    build_refs(connect(env.ssd_root), env.ref_cfg)
+    eid = planned(env, "A", worry_id="W0001")
+    data = EpisodeData.load(connect(env.ssd_root), env.ssd_root, eid)
+    assert data.s4_titles == ["現代語訳の論語"]
+    issues = gates.g1_chapter(
+        chapter_with("現代語訳の論語を読むと、素直は美徳です。"),
+        data,
+        [],
+        set(),
+        set(),
+        {DEF},
+        {DEF},
+    )
+    assert any("照合に使う本の名前" in x for x in issues), issues
+    assert any("現代語訳の論語" in x for x in gates.title_issues("現代語訳の論語で読む素直", data))
+
+
+def test_judge_ignores_brackets_inside_dictionary_text(env):
+    """昔の辞書の本文にある〔語源の注〕を、事実の印と取り違えない。"""
+    eid = planned(env, "A", worry_id="W0001")
+    write_refs(env.ref_cfg, def_text="〔素ハ白、直ハ真直〕ココロノ マガリナキコト。")
+    build_refs(connect(env.ssd_root), env.ref_cfg)
+    data = EpisodeData.load(connect(env.ssd_root), env.ssd_root, eid)
+    ch = chapter_with(f"{{{{def_src:{DEF}}}}}は、「素直」を「{{{{def:{DEF}}}}}」と説明しています。")
+    ch["refs"] = [DEF]
+    judge = gates.FaithfulnessJudge(RefJudge(), PROMPTS_DIR)
+    assert judge.judge(ch, data) == []

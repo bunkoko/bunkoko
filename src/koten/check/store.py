@@ -84,35 +84,64 @@ def latest(conn: sqlite3.Connection, episode_id: str) -> dict[tuple[str, str], d
     return out
 
 
+def _bad(r: dict[str, Any]) -> bool:
+    return r["verdict"] in HOLD_VERDICTS or (
+        r["verdict"] != "resolved" and bool(r["close_wording"])
+    )
+
+
+def _good(r: dict[str, Any]) -> bool:
+    return r["verdict"] in ("same", "not_covered") and not r["close_wording"]
+
+
 def holds(conn: sqlite3.Connection, episode_id: str, current: list[Claim]) -> list[Hold]:
     """公開を保留する理由（空なら保留しない）。
 
-    current は今の台本の全部の文（claims(..., everything=True)）。
+    current は今の台本の全部の文（claims(..., everything=True)）。保留は文の中身（指紋）に付く：
+    - 食い違い・言い回しが近いと判定した文が、台本のどこかに同じ中身で残っていれば保留
+      （文の位置が変わっても、人の判定で一致にしても、文を直さないかぎり解けない）
+    - 文が変わった・消えたときは、同じ本で、同じ場所（ch2-s3#1）の文を照合し直して一致か
+      触れていないになるか、resolve で理由を書くまで保留
     """
-    now = {c.key: c for c in current}
-    out = []
-    for (key, book_id), r in latest(conn, episode_id).items():
-        bad = r["verdict"] in HOLD_VERDICTS or (r["verdict"] != "resolved" and r["close_wording"])
-        if not bad:
+    by_sha = {c.sha: c for c in current}
+    at_key = {c.key: c for c in current}
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT * FROM checks WHERE episode_id = ? ORDER BY check_id", (episode_id,)
+        )
+    ]
+    out: list[Hold] = []
+    seen: set[tuple[str, str]] = set()
+    for i, r in enumerate(rows):
+        if not _bad(r) or (r["claim_sha"], r["book_id"]) in seen:
             continue
         what = "内容が食い違う" if r["verdict"] in HOLD_VERDICTS else "言い回しが本に近い"
-        cur = now.get(key)
-        if cur is not None and cur.sha == r["claim_sha"]:
-            reason = f"{cur.number}（{key}）：{r['book_label']} {r['locator']} と{what}"
-            out.append(Hold(key, book_id, reason, False))
-        else:
-            state = "書き直した" if cur is not None else "台本から消えた"
-            number = cur.number if cur is not None else "（消えた文）"
+        where = f"{r['book_label']} {r['locator']} と{what}"
+        cur = by_sha.get(r["claim_sha"])
+        if cur is not None:
+            seen.add((r["claim_sha"], r["book_id"]))
+            out.append(Hold(cur.key, r["book_id"], f"{cur.number}（{cur.key}）：{where}", False))
+            continue
+        later = [x for x in rows[i + 1 :] if x["book_id"] == r["book_id"]]
+        if any(
+            x["claim_key"] == r["claim_key"] and (_good(x) or x["verdict"] == "resolved")
+            for x in later
+        ):
+            continue
+        seen.add((r["claim_sha"], r["book_id"]))
+        now = at_key.get(r["claim_key"])
+        if now is not None:
             reason = (
-                f"{number}（{key}）：{r['book_label']} {r['locator']} と{what}。"
-                f"そのあと文が{state}。"
-                + (
-                    "同じ本でもう一度照合する"
-                    if cur is not None
-                    else "koten check resolve で理由を書いて解く"
-                )
+                f"{now.number}（{r['claim_key']}）：{where}。そのあと文が書き直された。"
+                "同じ本でもう一度照合する"
             )
-            out.append(Hold(key, book_id, reason, True))
+        else:
+            reason = (
+                f"（消えた文）（{r['claim_key']}）：{where}。そのあと文が台本から消えた。"
+                "koten check resolve で理由を書いて解く"
+            )
+        out.append(Hold(r["claim_key"], r["book_id"], reason, True))
     return out
 
 
@@ -142,10 +171,14 @@ def resolve_gone(
         raise ValueError(
             f"{claim_key} の文はまだ台本にあります。直してから同じ本でもう一度照合してください"
         )
+    held = [h for h in holds(conn, episode_id, current) if h.claim_key == claim_key]
+    if any(not h.text_changed for h in held):
+        raise ValueError("食い違った文が、台本の別の場所に同じ中身で残っています（check status）")
+    books = {h.book_id for h in held}
     rows = [
         r
-        for (key, _), r in latest(conn, episode_id).items()
-        if key == claim_key and r["verdict"] != "resolved"
+        for (key, book), r in latest(conn, episode_id).items()
+        if key == claim_key and book in books
     ]
     if not rows:
         raise ValueError(f"{claim_key} に解く保留はありません")
