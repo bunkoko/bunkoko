@@ -1417,6 +1417,65 @@ def ref_check(
     typer.echo("、".join(f"{k} {v}" for k, v in sorted(count.items())))
 
 
+@ref_app.command("build")
+def ref_build(settings: SettingsOpt = None) -> None:
+    """台帳と、確かめた本文（renderings.csv・dict_entries.csv）から SSD の表を作り直す。"""
+    from koten.db import connect
+    from koten.ref.registry import RefError
+    from koten.ref.store import build_refs
+    from koten.ref.texts import TextsError
+
+    s = _settings(settings)
+    try:
+        r = build_refs(connect(s.ssd_root), s.config_dir)
+    except (RefError, TextsError) as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
+    typer.echo(
+        f"資料 {r.works}（使える {r.usable}）・時代の解釈 {r.renderings}・"
+        f"取り込んだ本文 {r.imported}・辞書の語釈 {r.entries}"
+    )
+
+
+@ref_app.command("show")
+def ref_show(
+    passage: Annotated[str | None, typer.Option(help="一節の番号（例：lunyu:1.1）")] = None,
+    word: Annotated[
+        str | None, typer.Option(help="語（例：普通）。見出し語を含む語釈を出す")
+    ] = None,
+    all_status: Annotated[
+        bool, typer.Option("--all", help="確かめ中（transcribed・imported）のものも出す")
+    ] = False,
+    settings: SettingsOpt = None,
+) -> None:
+    """SSD に入った時代の解釈・昔の辞書の語釈を読む（koten ref build のあと）。"""
+    from koten.db import connect
+    from koten.ref.store import entries_for_words, renderings_for_passage
+
+    if not (passage or word):
+        typer.secho("--passage か --word を付けてください", fg="red", err=True)
+        raise typer.Exit(2)
+    conn = connect(_settings(settings).ssd_root)
+    rows = []
+    if passage:
+        rows += renderings_for_passage(conn, passage, verified_only=not all_status)
+    if word:
+        rows += entries_for_words(conn, word, verified_only=not all_status)
+    if not rows:
+        typer.echo("見つかりません（koten ref build のあとか、--all で確かめ中のものも見る）")
+        return
+    for r in rows:
+        rid = r.get("rendering_id") or r.get("entry_id")
+        head = r.get("passage_key") or f"{r['headword']}（{r['headword_kana']}）{r['sense'] or ''}"
+        typer.secho(
+            f"{rid}  {head}  [{r['status']}]", fg="green" if r["status"] == "verified" else "yellow"
+        )
+        typer.echo(f"    {r['display_text'] or r['text']}")
+        if r.get("reading"):
+            typer.echo(f"    読み：{r['reading']}")
+        typer.echo(f"    出典：{r['ref_credit']}　{r['locator']}")
+
+
 episode_app = typer.Typer(no_args_is_help=True, help="回（episodes）")
 app.add_typer(episode_app, name="episode")
 

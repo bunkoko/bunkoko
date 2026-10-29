@@ -370,3 +370,13 @@ uv run koten chunk aozora
   - 国籍：country が「日本」で allied が空なら連合国籍ではないとする。ほかの空は「不明」（1955年以降に亡くなっていれば確認へ）。
   - Standard Ebooks が足した手入れは CC0（LICENSE.md で確認済み）なので、人には入れない。元の訳者・原著者を入れる。
   - 1行でもおかしければ、1件も判定しない（facts.csv と同じ扱い）。
+
+### 2026-10-29 M8a：時代の解釈と昔の辞書の本文を入れる
+
+- 人が画像と照らし合わせて書き起こした本文を、config/renderings.csv（訓読・訳・注釈・原文）と config/dict_entries.csv（辞書の語釈）に書き、`koten ref build` で SSD の ref_works・renderings・dict_entries に入れる（db.py の版 4）。手順は docs/ref_sources.md。
+- 書けるのは、台帳で使える（PD_JP など）と判定された資料の本文だけ。使えない資料の本文を書いた行があれば、1件も入れない（R2）。台帳の判定があとで厳しくなった資料の本文は、作り直す前でも読み出さない（読み出しは ref_works の license で絞る）。
+- 一節の番号は config/canon.yaml の付け方（論語は篇.章、自省録は巻.節など）。範囲で結び付ける注（passage_to）も引ける。
+- 台本で使えるのは status が verified のものだけ。日本語の本文には読み上げの読み（かなだけ）を必須にした（文語・カタカナ書きは VOICEVOX がそのままでは読めない）。表記を改めて画面に出すときは display_text に書く。
+- NDL の資料は、locator にコマ番号を必須にした。画面の「○年の『…』」は、取り込んだ刷りの刊行年（pub_year）にする（『言海』のように刷り直しの多い本のため）。
+- M8a を小さくする（§11）：OCR の2回目・自動のページ探しは後回し。人が画像から書き起こす。
+

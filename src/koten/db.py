@@ -2,6 +2,7 @@
 
 悩み（worries）・統計（stats）・回（episodes）・使用履歴（usage）・検索文の控え（query_cache）。
 背景の事実（facts・fact_sources・fact_usage）と、その元になる人物・作品の書誌（persons・works_meta）。
+資料の台帳（ref_works）と、時代の解釈（renderings）・昔の辞書の語釈（dict_entries）。
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ import re
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -155,6 +156,72 @@ CREATE TABLE IF NOT EXISTS fact_usage (
     fact_id TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS fact_usage_episode ON fact_usage(episode_id);
+
+-- 資料の台帳と、その本文（koten ref build が config の CSV から作り直す。M8a）
+CREATE TABLE IF NOT EXISTS ref_works (
+    ref_id TEXT PRIMARY KEY,             -- R-…
+    source_class TEXT NOT NULL,          -- S1 原文 / S2 時代の解釈
+    kind TEXT NOT NULL,                  -- original・dictionary・kundoku・translation・commentary
+    title TEXT NOT NULL,
+    volume TEXT,
+    edition TEXT,
+    pub_year INTEGER NOT NULL,           -- 使う版（取り込んだ刷り）の刊行年
+    first_pub_year INTEGER,
+    publisher TEXT,
+    credited_as TEXT,                    -- 表紙・奥付の名義
+    lang TEXT NOT NULL,
+    source TEXT NOT NULL,                -- ndl・standardebooks・gutenberg・aozora・archive・owned
+    pid TEXT,
+    url TEXT,
+    ndl_access TEXT,
+    ndl_checked_at TEXT,
+    tradition TEXT,                      -- 注の流れ（古注・新注・徂徠 など）
+    based_on TEXT,                       -- JSON 配列（元にした資料の ref_id）
+    credit TEXT NOT NULL,                -- 画面・説明欄の出典表記
+    license TEXT NOT NULL,               -- 人の確認のあとの判定
+    license_reason TEXT NOT NULL,
+    reviewed_by TEXT,
+    reviewed_at TEXT,
+    review_note TEXT,
+    people TEXT NOT NULL                 -- JSON 配列（name・role・death_year）
+);
+
+CREATE TABLE IF NOT EXISTS renderings (
+    rendering_id TEXT PRIMARY KEY,       -- I-…
+    passage_key TEXT NOT NULL,           -- lunyu:1.1 など（config/canon.yaml）
+    passage_to TEXT,                     -- 範囲で結び付けるときの終わり
+    ref_id TEXT NOT NULL,
+    role TEXT NOT NULL,                  -- original / kundoku / translation / commentary
+    lang TEXT NOT NULL,
+    text TEXT NOT NULL,                  -- 資料のままの本文
+    display_text TEXT,                   -- 表記を改めて画面に出す本文
+    reading TEXT,                        -- 読み上げの読み（人が確かめた）
+    locator TEXT NOT NULL,               -- コマ・ページ・章など
+    status TEXT NOT NULL,                -- verified / transcribed / imported（使えるのは verified）
+    checked_by TEXT,
+    checked_at TEXT,
+    note TEXT,
+    text_sha TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS renderings_passage ON renderings(passage_key);
+
+CREATE TABLE IF NOT EXISTS dict_entries (
+    entry_id TEXT PRIMARY KEY,           -- J-…
+    ref_id TEXT NOT NULL,
+    headword TEXT NOT NULL,              -- 今の表記の見出し語（普通）
+    headword_kana TEXT NOT NULL,         -- 辞書の見出しのかな
+    sense TEXT,                          -- 語義番号
+    text TEXT NOT NULL,                  -- 資料のままの語釈
+    display_text TEXT,
+    reading TEXT,
+    locator TEXT NOT NULL,
+    status TEXT NOT NULL,                -- verified / transcribed（使えるのは verified）
+    checked_by TEXT,
+    checked_at TEXT,
+    note TEXT,
+    text_sha TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS dict_entries_headword ON dict_entries(headword);
 """
 
 

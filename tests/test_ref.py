@@ -2,7 +2,6 @@
 
 # ruff: noqa: E501
 
-import csv
 import shutil
 
 import pytest
@@ -11,47 +10,8 @@ from typer.testing import CliRunner
 from koten.cli import app
 from koten.config import DEFAULT_CONFIG_DIR
 from koten.license import License
-from koten.ref.registry import PEOPLE_COLUMNS, WORK_COLUMNS, RefError, read_registry
-
-AUTH = "https://id.ndl.go.jp/auth/ndlna/00000000"  # 架空の典拠 URL
-
-
-def work(ref_id, **kw):
-    base = {
-        "ref_id": ref_id,
-        "source_class": "S2",
-        "kind": "dictionary",
-        "title": "架空辞書",
-        "pub_year": "1891",
-        "source": "owned",
-        "credit": "架空辞書（1891）",
-        "holder_allied": "no",
-    }
-    return {**base, **kw}
-
-
-def person(ref_id, seq, name, role, death, **kw):
-    base = {
-        "ref_id": ref_id,
-        "seq": str(seq),
-        "name": name,
-        "role": role,
-        "death_year": str(death) if death is not None else "",
-        "country": "日本",
-        "death_source": AUTH if death is not None else "",
-    }
-    return {**base, **kw}
-
-
-def write(dirpath, works, people):
-    for name, cols, rows in (
-        ("ref_works.csv", WORK_COLUMNS, works),
-        ("ref_people.csv", PEOPLE_COLUMNS, people),
-    ):
-        with (dirpath / name).open("w", encoding="utf-8", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=cols)
-            w.writeheader()
-            w.writerows(rows)
+from koten.ref.registry import RefError, read_registry
+from tests.ref_fixture import person, work, write
 
 
 def judged(tmp_path, works, people):

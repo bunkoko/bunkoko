@@ -1,0 +1,49 @@
+# 古典の作品と、一節の通し番号（passage_key = <作品記号>:<番号>）の付け方（M8a）
+# 訳・訓読・注釈を同じ一節に結び付けるための番号。pattern に合わない番号は読み込みで断る。
+# 章の分け方が版で違うときは、資料の台帳（ref_works.csv）の note に、どの分け方かを書く。
+works:
+  lunyu:
+    title: 論語
+    lang: zh
+    numbering: 篇.章（学而第一の第1章 = 1.1）
+    pattern: '^\d+\.\d+$'
+  mengzi:
+    title: 孟子
+    lang: zh
+    numbering: 篇.上下.章（梁恵王上の第1章 = 1a.1）
+    pattern: '^\d+[ab]\.\d+$'
+  laozi:
+    title: 老子
+    lang: zh
+    numbering: 章（81章）
+    pattern: '^\d+$'
+  hyakunin:
+    title: 百人一首
+    lang: ja
+    numbering: 歌番号（1〜100）
+    pattern: '^\d+$'
+  tsurezure:
+    title: 徒然草
+    lang: ja
+    numbering: 段（序段は0）
+    pattern: '^\d+$'
+  hojoki:
+    title: 方丈記
+    lang: ja
+    numbering: 段（自分たちで分ける。分け方は台帳の note に書く）
+    pattern: '^\d+$'
+  meditations:
+    title: 自省録
+    lang: grc
+    numbering: 巻.節（第2巻の第1節 = 2.1）
+    pattern: '^\d+\.\d+$'
+  enchiridion:
+    title: 提要（エピクテトス）
+    lang: grc
+    numbering: 章
+    pattern: '^\d+$'
+  hamlet:
+    title: ハムレット
+    lang: en
+    numbering: 幕.場.台詞の順番（行番号は版で違うので、底本での台詞の順番）
+    pattern: '^\d+\.\d+\.\d+$'
