@@ -79,11 +79,13 @@ def _make_fetcher(s: Settings, raw_dir):
             err=True,
         )
         raise typer.Exit(2)
+    rate = s.section("rate_limit")
     return Fetcher(
         raw_dir,
         user_agent=user_agent,
-        per_host_per_sec=s.section("rate_limit").get("per_host_per_sec", 1),
+        per_host_per_sec=rate.get("per_host_per_sec", 1),
         timeout_sec=http.get("timeout_sec", 30),
+        host_intervals={k: float(v) for k, v in (rate.get("min_interval_sec") or {}).items()},
     )
 
 
@@ -1422,6 +1424,8 @@ def ref_check(
 def ref_build(settings: SettingsOpt = None) -> None:
     """台帳と、確かめた本文（renderings.csv・dict_entries.csv）と、取り込んだ古い英訳（HDD）から
     SSD の表を作り直す。"""
+    import json
+
     from koten.db import connect
     from koten.ref.registry import RefError
     from koten.ref.standardebooks import editions, forget_unusable, load_imported
@@ -1441,6 +1445,20 @@ def ref_build(settings: SettingsOpt = None) -> None:
             fg="yellow",
         )
     if hdd is not None:
+        from koten.ref.ndl import snapshot_path
+
+        for w in works.values():
+            snap = snapshot_path(hdd, w.pid) if w.source == "ndl" and w.pid else None
+            if snap is not None and snap.exists():
+                got = json.loads(snap.read_text("utf-8"))
+                if got.get("access") != "internet_pd":
+                    typer.secho(
+                        f"{w.ref_id}：国会図書館のマニフェストの公開範囲は「{got.get('access_value')}」で、"
+                        "台帳の ndl_access（internet_pd）と食い違います。台帳を直してください",
+                        fg="red",
+                        err=True,
+                    )
+                    raise typer.Exit(2)
         removed = forget_unusable(hdd, works, editions(s.sources.get("standardebooks") or {}))
         for line in removed:
             typer.secho(f"使えない資料の、取り込んだ本文を消しました：{line}", fg="yellow")
@@ -1599,6 +1617,66 @@ def ref_attach(
     typer.echo(f"台本を作る：uv run koten script --episode {episode}{' --force' if force else ''}")
 
 
+@ref_app.command("ndl-snapshot")
+def ref_ndl_snapshot(
+    ref: Annotated[str, typer.Option(help="台帳の ref_id（source=ndl の資料）")],
+    koma: Annotated[
+        str, typer.Option(help="取る画像のコマ（例：1-20,35。all で全部。省くとマニフェストだけ）")
+    ] = "",
+    size: Annotated[
+        str | None, typer.Option(help="画像の大きさ（既定は settings の ndl.image_size）")
+    ] = None,
+    settings: SettingsOpt = None,
+) -> None:
+    """国会図書館の資料を一度だけまとめて取る（マニフェストで公開範囲を確かめ、指定のコマの画像）。"""
+    from koten.ref.ndl import NdlError, take_snapshot
+
+    s = _settings(settings)
+    conf = s.section("ndl")
+    if not conf.get("fetch_enabled"):
+        typer.secho(
+            "国会図書館からの取得は止めてあります。NDL の利用条件を確かめ、問い合わせの答えを "
+            "docs/decisions.md の D-003 に書いてから、settings.toml の [ndl] fetch_enabled を"
+            " true にしてください",
+            fg="red",
+            err=True,
+        )
+        raise typer.Exit(2)
+    works = {w.ref_id: w for w in _registry(s)}
+    work = works.get(ref)
+    if work is None:
+        typer.secho(f"{ref} は台帳（config/ref_works.csv）にありません", fg="red", err=True)
+        raise typer.Exit(2)
+    hdd = _hdd(s)
+    fetcher = _make_fetcher(s, hdd / "raw" / "ndl")
+    try:
+        snap = take_snapshot(
+            hdd,
+            work,
+            fetcher,
+            koma=koma,
+            size=size or conf.get("image_size", "full"),
+            log=typer.echo,
+        )
+    except NdlError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
+    pd = "保護期間満了" if snap.access == "internet_pd" else "保護期間満了ではない"
+    shown = snap.access_value or "（無し）"
+    typer.echo(
+        f"{ref}（PID {snap.pid}）：マニフェストの公開範囲「{shown}」→ {pd}。"
+        f"全{snap.koma_total}コマのうち、取った画像 {len(snap.images)}コマ"
+    )
+    if snap.stopped:
+        typer.secho(snap.stopped, fg="yellow")
+        raise typer.Exit(1)
+    typer.echo(
+        "使うコマは、画面（https://dl.ndl.go.jp/pid/"
+        + snap.pid
+        + "）で公開範囲を人が確かめてください"
+    )
+
+
 @ref_app.command("show")
 def ref_show(
     passage: Annotated[str | None, typer.Option(help="一節の番号（例：lunyu:1.1）")] = None,
@@ -1740,11 +1818,16 @@ def check_run(
     by: Annotated[
         str | None, typer.Option(help="照合した人（既定は KOTEN_CHECKER か owner）")
     ] = None,
+    keep_clipboard: Annotated[
+        bool, typer.Option(help="照合のあと Mac のクリップボードを空にしない")
+    ] = False,
     settings: SettingsOpt = None,
 ) -> None:
     """台本の1文を、今の本の該当箇所と照らし合わせ、判定だけを残す。
 
-    本の該当箇所は、このあと貼り付けて Ctrl-D で終える。手元の Ollama だけに渡し、保存しない。
+    本の該当箇所は、このあと貼り付けて Ctrl-D で終える（画面には出さない）。
+    pbpaste | uv run koten check run … のようにパイプでも渡せる。
+    手元の Ollama だけに渡し、保存しない。
     """
     import sys
 
@@ -1776,12 +1859,25 @@ def check_run(
         except compare.CheckError as e:
             typer.secho(str(e), fg="red", err=True)
             raise typer.Exit(2) from e
+        problems = compare.model_problems(conf) + compare.debug_env_problems()
+        if problems:
+            typer.secho(
+                "本の文を手元だけで扱えないので止めます：\n"
+                + "\n".join(f"- {p}" for p in problems)
+                + "\n（docs/check_guide.md の「Ollama の設定」）",
+                fg="red",
+                err=True,
+            )
+            raise typer.Exit(2)
         typer.echo(f"台本の文：{target.text}")
         typer.echo(
             f"{books[book].label()} {page} の該当箇所を貼り付け、最後に Ctrl-D を押してください"
-            "（手元の AI にだけ渡し、保存しません）："
+            "（画面には出しません。手元の AI にだけ渡し、保存しません）："
         )
-        book_text = sys.stdin.read().strip()
+        book_text = compare.read_pasted(sys.stdin)
+        typer.echo(f"（{len(book_text)}字を受け取りました）")
+        if not keep_clipboard and compare.clear_clipboard():
+            typer.echo("（クリップボードを空にしました）")
         if not compare.BOOK_MIN <= len(book_text) <= compare.BOOK_MAX:
             typer.secho(
                 f"該当箇所は{compare.BOOK_MIN}〜{compare.BOOK_MAX}字にしてください"

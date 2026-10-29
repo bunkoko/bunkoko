@@ -20,17 +20,38 @@ import httpx
 
 
 class RateLimiter:
-    def __init__(self, per_host_per_sec: float, clock=time.monotonic, sleep=time.sleep):
+    """ホストごとに間隔を空ける。host_intervals は、ホスト名の末尾ごとの最小の間隔（秒）。
+
+    例：{"ndl.go.jp": 3.0}（国会図書館は、続けて取ると止められた記録があるので3秒あける）。
+    """
+
+    def __init__(
+        self,
+        per_host_per_sec: float,
+        clock=time.monotonic,
+        sleep=time.sleep,
+        host_intervals: dict[str, float] | None = None,
+    ):
         self.min_interval = 1.0 / per_host_per_sec if per_host_per_sec > 0 else 0.0
+        self.host_intervals = dict(host_intervals or {})
         self._last: dict[str, float] = {}
         self._clock = clock
         self._sleep = sleep
+
+    def interval(self, host: str) -> float:
+        name = host.split(":")[0]
+        extra = [
+            sec
+            for suffix, sec in self.host_intervals.items()
+            if name == suffix or name.endswith("." + suffix)
+        ]
+        return max([self.min_interval, *extra])
 
     def wait(self, url: str) -> None:
         host = urlparse(url).netloc
         last = self._last.get(host)
         if last is not None:
-            remaining = self.min_interval - (self._clock() - last)
+            remaining = self.interval(host) - (self._clock() - last)
             if remaining > 0:
                 self._sleep(remaining)
         self._last[host] = self._clock()
@@ -80,12 +101,13 @@ class Fetcher:
         limiter: RateLimiter | None = None,
         max_retries: int = 3,
         sleep=time.sleep,
+        host_intervals: dict[str, float] | None = None,
     ):
         self.raw_dir = raw_dir
         self.max_retries = max_retries
         self._sleep = sleep
         self.manifest = Manifest(raw_dir / "manifest.jsonl")
-        self.limiter = limiter or RateLimiter(per_host_per_sec)
+        self.limiter = limiter or RateLimiter(per_host_per_sec, host_intervals=host_intervals)
         self.client = client or httpx.Client(
             headers={"User-Agent": user_agent}, timeout=timeout_sec, follow_redirects=True
         )

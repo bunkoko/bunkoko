@@ -21,6 +21,9 @@ from tests.test_script import planned, run
 
 BOOK_TEXT = "（訳文）うらやむ心を、人は努力の芽として見なおすことができる、と訳者は述べる。"
 MARK = "見なおすことができる"  # 本の文が、どこにも保存されていないことを確かめる印
+# 手元の Ollama の確かめ（下の local_ollama で差し替える前の、本物の関数）
+MODEL_PROBLEMS = compare.model_problems
+DEBUG_ENV_PROBLEMS = compare.debug_env_problems
 
 
 def book_row(**kw):
@@ -49,6 +52,13 @@ class LocalJudge:
         self.users.append(user)
         assert schema["properties"]["verdict"]["enum"] == ["same", "differs", "not_covered"]
         return json.dumps({"verdict": self.verdict})
+
+
+@pytest.fixture(autouse=True)
+def local_ollama(monkeypatch):
+    """手元の Ollama の確かめ（モデルの転送先・デバッグの設定）は、ここでは問題なしにする。"""
+    monkeypatch.setattr(compare, "model_problems", lambda conf, client=None: [])
+    monkeypatch.setattr(compare, "debug_env_problems", lambda getenv=None: [])
 
 
 @pytest.fixture
@@ -390,3 +400,36 @@ def test_book_registry_rules(tmp_path, rows, cols, message):
     write_csv(tmp_path / "ref_books.csv", cols, rows)
     with pytest.raises(BooksError, match=message):
         read_books(tmp_path)
+
+
+def _show(payload, status=200):
+    import httpx
+
+    def handler(request):
+        assert request.url.path == "/api/show"
+        return httpx.Response(status, json=payload)
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_model_problems_refuses_cloud_models():
+    conf = {"provider": "ollama", "endpoint": "http://127.0.0.1:11434", "model": "gemma4:26b"}
+    assert MODEL_PROBLEMS(conf, _show({"details": {}})) == []
+    assert "クラウド" in MODEL_PROBLEMS(conf, _show({"remote_host": "https://ollama.com:443"}))[0]
+    assert "無い" in MODEL_PROBLEMS(conf, _show({}, status=404))[0]
+    assert ":cloud" in MODEL_PROBLEMS({**conf, "model": "gpt-oss:120b-cloud"})[0]
+    assert ":cloud" in MODEL_PROBLEMS({**conf, "model": "qwen3:cloud"})[0]
+
+
+def test_debug_env_problems():
+    env = {"OLLAMA_DEBUG_LOG_REQUESTS": "1", "OLLAMA_DEBUG": "2"}
+    found = DEBUG_ENV_PROBLEMS(lambda n: env.get(n, ""))
+    assert any("OLLAMA_DEBUG_LOG_REQUESTS" in x for x in found)
+    assert any("OLLAMA_DEBUG=2" in x for x in found)
+    assert DEBUG_ENV_PROBLEMS(lambda n: {"OLLAMA_DEBUG": "1"}.get(n, "")) == []
+
+
+def test_read_pasted_from_pipe():
+    import io
+
+    assert compare.read_pasted(io.StringIO("  本の文です。\n")) == "本の文です。"
