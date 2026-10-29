@@ -57,13 +57,19 @@ class Settings:
     def require_hdd(self) -> Path:
         """HDDを使うコマンドの入口で呼ぶ。未接続なら止める。"""
         root = self.hdd_root
-        # /Volumes/<名前> のようにマウント先が無ければ未接続とみなす。<HDD_ROOT> 自体は作ってよい
+        # /Volumes/<名前> のようにマウント先が無ければ未接続とみなす
         if not root.parent.exists():
             raise HddNotConnectedError(
                 f"HDDが未接続です（{root.parent} がありません）。"
                 "取得・付加・埋め込み・レンダリング系のコマンドは止めます。"
             )
-        root.mkdir(parents=True, exist_ok=True)
+        if not root.exists():
+            # 引っ越しの前に空のフォルダを作って、取得や付加情報づけを一からやり直さないように
+            raise HddNotConnectedError(
+                f"HDD に koten のフォルダ（{root}）がありません。前の置き場所から写すときは "
+                "koten hdd-copy を、新しく始めるときは mkdir -p でフォルダを作ってから"
+                "実行してください"
+            )
         return root
 
 

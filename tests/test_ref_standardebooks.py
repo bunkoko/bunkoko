@@ -267,6 +267,7 @@ def test_ref_fetch_command(conf, tmp_path, monkeypatch):
     import koten.cli as cli
 
     shutil.copy(DEFAULT_CONFIG_DIR / "sources.yaml", conf / "sources.yaml")
+    (tmp_path / "hdd").mkdir(exist_ok=True)
     (conf / "settings.toml").write_text(
         f'[paths]\nhdd_root = "{tmp_path / "hdd"}"\nssd_root = "{tmp_path / "ssd"}"\n', "utf-8"
     )

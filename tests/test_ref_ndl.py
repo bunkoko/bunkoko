@@ -185,6 +185,7 @@ def test_cli_is_off_until_terms_are_confirmed(tmp_path, ndl_work, monkeypatch):
     write_texts(cfg)
     settings = cfg / "settings.toml"
     base = f'[paths]\nhdd_root = "{tmp_path / "hdd"}"\nssd_root = "{tmp_path / "ssd"}"\n'
+    (tmp_path / "hdd").mkdir(exist_ok=True)
     settings.write_text(base, "utf-8")
     st = ["--settings", str(settings)]
     r = CliRunner().invoke(app, ["ref", "ndl-snapshot", "--ref", "R-dict", *st])

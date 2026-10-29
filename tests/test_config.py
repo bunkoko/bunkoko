@@ -11,6 +11,14 @@ def test_japanese_hdd_root(tmp_path):
     card = tmp_path / "SDカード"
     card.mkdir()
     s = _settings(tmp_path, card / "古典×悩み")
+    # HDD はつながっていても koten のフォルダが無ければ止める（引っ越しの前に空で始めないように）
+    try:
+        s.require_hdd()
+    except HddNotConnectedError as e:
+        assert "hdd-copy" in str(e)
+    else:
+        raise AssertionError("フォルダが無いのに通った")
+    (card / "古典×悩み").mkdir()
     root = s.require_hdd()
     assert root == card / "古典×悩み" and root.is_dir()
 

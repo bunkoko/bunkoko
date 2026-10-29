@@ -144,7 +144,7 @@ def _ignore_repo_dotenv(monkeypatch):
 @pytest.fixture
 def settings_file(tmp_path: Path) -> Path:
     hdd = tmp_path / "hdd" / "koten"
-    hdd.parent.mkdir()
+    hdd.mkdir(parents=True)
     p = tmp_path / "settings.toml"
     p.write_text(
         f"""

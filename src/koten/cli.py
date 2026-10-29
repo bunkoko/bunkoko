@@ -434,6 +434,118 @@ def _wait_for_augment(s: Settings, say, poll_sec: int) -> None:
         waited += poll_sec
 
 
+@app.command("hdd-copy")
+def hdd_copy(
+    from_: Annotated[
+        str, typer.Option("--from", help="前の置き場所（SD カードの koten のフォルダなど）")
+    ],
+    settings: SettingsOpt = None,
+) -> None:
+    """前の置き場所から、settings の hdd_root（新しい HDD）へ丸ごと写す（D-031）。
+
+    前の置き場所は変えない。止めても、同じコマンドで続きから写す。augment・update が
+    動いているあいだは写さない（写している途中に書き足されると、写しが半端になる）。
+    """
+    import re
+
+    from koten.hddcopy import copy_tree
+    from koten.runlock import AUGMENT_COMMAND, is_busy, lock_path, other_processes
+
+    s = _settings(settings)
+    src = Path(os.path.expanduser(from_)).resolve()
+    dst = s.hdd_root
+    problem = None
+    if not src.is_dir():
+        problem = f"前の置き場所 {src} がありません（SD カードを挿しているか確かめてください）"
+    elif not dst.parent.exists():
+        problem = f"新しい HDD（{dst.parent}）がつながっていません"
+    elif src == dst.resolve() or src in dst.resolve().parents or dst.resolve() in src.parents:
+        problem = f"前の置き場所と新しい置き場所（{dst}）が重なっています"
+    running = other_processes(AUGMENT_COMMAND) + other_processes(re.compile(r"\bkoten\s+update\b"))
+    if any(is_busy(lock_path(s.ssd_root, n)) for n in ("augment", "update")) or running:
+        problem = (
+            "augment か update が動いています。その窓で Ctrl-C を押して止めてから写してください"
+        )
+    if problem:
+        typer.secho(problem, fg="red", err=True)
+        raise typer.Exit(2)
+    dst.mkdir(parents=True, exist_ok=True)
+    typer.echo(f"{src} → {dst} へ写します（止めても、同じコマンドで続きから写せます）")
+    r = copy_tree(src, dst, log=typer.echo)
+    typer.echo(
+        f"写した {r.copied} ファイル（{r.bytes / 1e9:.1f}GB）、写し済み {r.skipped} ファイル"
+    )
+    if r.problems:
+        for line in r.problems[:20]:
+            typer.secho(f"  {line}", fg="yellow")
+        typer.secho(
+            f"写した先と合わないファイルが {len(r.problems)} 件あります。もう一度同じコマンドを"
+            "実行してください",
+            fg="red",
+            err=True,
+        )
+        raise typer.Exit(1)
+    typer.echo(
+        "全部のファイルが、同じ大きさで写っていることを確かめました。前の置き場所はそのまま残します"
+    )
+    typer.echo("続けて：uv run koten doctor で HDD の行を見る")
+
+
+@app.command()
+def backup(
+    to: Annotated[str, typer.Option(help="控えを置く場所（SD カードのフォルダなど）")],
+    settings: SettingsOpt = None,
+) -> None:
+    """作り直しに時間がかかるものの控えを取る（SPEC §5：augment・emb・SSD の DB・設定と台帳）。
+
+    2回目からは、変わったファイルだけを写す。
+    """
+    from koten.db import db_path
+    from koten.hddcopy import backup_db, copy_tree
+
+    s = _settings(settings)
+    hdd = _hdd(s)
+    out = Path(os.path.expanduser(to))
+    if not out.parent.exists():
+        typer.secho(f"控えを置く場所（{out.parent}）がありません", fg="red", err=True)
+        raise typer.Exit(2)
+    if out.resolve() == hdd.resolve() or hdd.resolve() in out.resolve().parents:
+        typer.secho("控えは、HDD とは別のドライブに置いてください", fg="red", err=True)
+        raise typer.Exit(2)
+    problems: list[str] = []
+    for sub in ("augment", "emb"):
+        if (hdd / sub).is_dir():
+            r = copy_tree(hdd / sub, out / "hdd" / sub)
+            problems += r.problems
+            typer.echo(
+                f"{sub}：写した {r.copied} ファイル（{r.bytes / 1e6:.0f}MB）、写し済み {r.skipped}"
+            )
+    db = db_path(s.ssd_root)
+    if db.exists():
+        backup_db(db, out / "ssd" / db.name)
+        typer.echo(f"SSD の DB：{out / 'ssd' / db.name}")
+    # 設定と台帳（ref_works.csv・aozora_review.csv など。手で書いたもの）。config の直下だけ
+    import shutil
+
+    conf_out = out / "config"
+    conf_out.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for f in sorted(s.config_dir.iterdir()):
+        if (
+            f.is_file()
+            and f.suffix in (".csv", ".yaml", ".yml", ".toml")
+            and not f.name.startswith(".")
+        ):
+            shutil.copy2(f, conf_out / f.name)
+            n += 1
+    typer.echo(f"設定と台帳（config/）：{n} ファイル")
+    if problems:
+        for line in problems[:20]:
+            typer.secho(f"  {line}", fg="yellow")
+        raise typer.Exit(1)
+    typer.echo(f"控えを {out} に取りました")
+
+
 @app.command("forget-works")
 def forget_works_cmd(
     changed: Annotated[

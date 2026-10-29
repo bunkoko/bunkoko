@@ -36,8 +36,14 @@ def check_hdd(s: Settings) -> Check:
     root = s.hdd_root
     if not root.parent.exists():
         return Check("HDD", NG, f"未接続（{root.parent} がありません）")
-    state = "" if root.exists() else "（<HDD_ROOT> は未作成。初回の取得で作ります）"
-    return Check("HDD", OK, f"{root} {_free(root)}{state}")
+    if not root.exists():
+        return Check(
+            "HDD",
+            WARN,
+            f"{root} がありません。前の置き場所から写すなら koten hdd-copy、"
+            f"新しく始めるなら mkdir -p で作る（{_free(root.parent)}）",
+        )
+    return Check("HDD", OK, f"{root} {_free(root)}")
 
 
 def check_ssd(s: Settings) -> Check:
