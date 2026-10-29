@@ -111,7 +111,7 @@ def ingest(
 
     fetcher = _make_fetcher(s, hdd / "raw" / source)
     if dry_run:
-        plan = aozora.plan_ingest(hdd, s.sources["aozora"], fetcher)
+        plan = aozora.plan_ingest(hdd, s.sources["aozora"], fetcher, _aozora_review(s))
         typer.echo(
             f"対象 {plan.selected} 作品（本文を保存できる {plan.storable}）："
             f"取得済み {plan.stored}、これから取る {plan.new}"
@@ -128,15 +128,38 @@ def ingest(
             typer.secho(f"  作品CSVに見つからない作家：{a}（姓名を空白なしで書く）", fg="yellow")
         for w in plan.missing_works:
             typer.secho(f"  作品CSVに見つからない作品：{w}", fg="yellow")
+        if plan.unknown_people:
+            top = "、".join(f"{n} {c}作品" for n, c in list(plan.unknown_people.items())[:15])
+            typer.echo(
+                f"没年が空で判定不能（本文を保存しない）：{top}。人が根拠を確かめて "
+                "config/aozora_review.csv に没年・公表の年を書くと判定できます（D-029）"
+            )
         return
     _ingest_aozora(s, hdd, fetcher, limit=limit, refresh_list=refresh_list, hint=True)
+
+
+def _aozora_review(s: Settings):
+    """人が確かめた没年・公表の年の台帳（config/aozora_review.csv。D-029）。"""
+    from koten.ingest.review import REVIEW_FILE, ReviewError, read_review
+
+    try:
+        return read_review(s.config_dir / REVIEW_FILE)
+    except ReviewError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
 
 
 def _ingest_aozora(s: Settings, hdd, fetcher, *, limit=None, refresh_list=False, hint=True):
     from koten.ingest import aozora
 
     r = aozora.ingest(
-        hdd, s.sources["aozora"], fetcher, limit=limit, refresh_list=refresh_list, log=typer.echo
+        hdd,
+        s.sources["aozora"],
+        fetcher,
+        limit=limit,
+        refresh_list=refresh_list,
+        log=typer.echo,
+        review=_aozora_review(s),
     )
     typer.echo(
         f"対象 {r.selected} 作品（使用可 {r.usable}）："

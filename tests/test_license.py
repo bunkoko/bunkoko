@@ -179,3 +179,14 @@ def test_review_only_resolves_needs_review():
             apply_review(computed, "PD_JP")
     with pytest.raises(ReviewError):
         apply_review(License.NEEDS_REVIEW, "CC0")
+
+
+def test_anonymous_work_counts_from_publication():
+    # 作者不詳は公表から数える（52条）。1967年までの公表は満了、
+    # 1968年からは公表後70年で保護中（D-029）
+    from koten.license import judge_anonymous_work
+
+    assert judge_anonymous_work(1300)[0] == License.PD_JP
+    assert judge_anonymous_work(1967)[0] == License.PD_JP
+    assert judge_anonymous_work(1968)[0] == License.COPYRIGHTED
+    assert judge_anonymous_work(None)[0] == License.UNKNOWN

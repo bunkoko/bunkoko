@@ -21,7 +21,14 @@ import httpx
 import pyarrow as pa
 
 from koten import ids
-from koten.license import License, Person, judge_public_domain, may_store_text
+from koten.ingest.review import AozoraReview
+from koten.license import (
+    License,
+    Person,
+    judge_anonymous_work,
+    judge_public_domain,
+    may_store_text,
+)
 from koten.net import Fetcher
 from koten.parquet import write_rows
 
@@ -177,12 +184,14 @@ def _death_year(date: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
-def judge_license(w: AozoraWork) -> tuple[License, str]:
+def judge_license(w: AozoraWork, review: AozoraReview | None = None) -> tuple[License, str]:
     """青空文庫の作品の権利判定。
 
     1. 作品・人物の著作権フラグが1つでも「あり」なら保護中
     2. 著者・訳者の没年で R3・R4 を判定する（フラグが「なし」でも没年が保護中なら保護中とする）
        訳者がいる作品の原著者は外国人とみなし、国籍不明として R4 を確かめる
+    3. 作品CSVの没年が空か読めない人は、人が確かめた台帳（review。D-029）で埋める。
+       名前のある人は没年で、作者不詳の作品は公表の年（52条）で判定する。台帳に無ければ判定不能
     """
     flags = [w.work_copyright] + [p["copyright"] for p in w.persons]
     if any(f == "あり" for f in flags):
@@ -190,18 +199,52 @@ def judge_license(w: AozoraWork) -> tuple[License, str]:
     if any(f != "なし" for f in flags):
         return License.UNKNOWN, "青空文庫の著作権フラグが不明"
     translated = any(p["role"] == "translator" for p in w.persons)
-    persons = [
-        Person(
-            name=p["name"],
-            death_year=_death_year(p["death_date"]),
-            role=p["role"],
-            allied=None if (translated and p["role"] == "author") else False,
+    persons: list[Person] = []
+    notes: list[str] = []
+    for p in w.persons:
+        if p["role"] not in JUDGED_ROLES:
+            continue
+        year = _death_year(p["death_date"])
+        if year is None and review is not None:
+            if (fact := review.deaths.get(p["name"])) is not None:
+                year = fact.year
+                notes.append(f"{p['name']}の没年{fact.year}は人が確かめた（{fact.basis}）")
+            elif (
+                p["role"] == "author"
+                and (fact := review.anonymous.get((p["name"], w.title))) is not None
+            ):
+                lic, why = judge_anonymous_work(fact.year)
+                if lic is not License.PD_JP:
+                    return lic, f"{why}（{fact.basis}）"
+                notes.append(f"{why}（人が確かめた：{fact.basis}）")
+                continue  # この人は没年では判定しない
+        persons.append(
+            Person(
+                name=p["name"],
+                death_year=year,
+                role=p["role"],
+                allied=None if (translated and p["role"] == "author") else False,
+            )
         )
+    if not persons and notes:
+        lic, reason = License.PD_JP, "；".join(notes)
+    else:
+        lic, reason = judge_public_domain(persons)
+        reason = "；".join([reason, *notes])
+    return lic, f"青空文庫の著作権フラグはすべて「なし」；{reason}"
+
+
+def unknown_people(w: AozoraWork, review: AozoraReview | None = None) -> list[str]:
+    """没年が空か読めず、台帳でも埋まっていない人（著者・訳者）。"""
+    review = review or AozoraReview()
+    return [
+        p["name"]
         for p in w.persons
         if p["role"] in JUDGED_ROLES
+        and _death_year(p["death_date"]) is None
+        and p["name"] not in review.deaths
+        and (p["name"], w.title) not in review.anonymous
     ]
-    lic, reason = judge_public_domain(persons)
-    return lic, f"青空文庫の著作権フラグはすべて「なし」；{reason}"
 
 
 def select_works(works: dict[str, AozoraWork], conf: dict[str, Any]) -> list[AozoraWork]:
@@ -215,6 +258,8 @@ def select_works(works: dict[str, AozoraWork], conf: dict[str, Any]) -> list[Aoz
     # 有名な作家の詩歌・小説など（D-025）。作家名と NDC の両方に合う作品だけ
     authors_in = {str(a) for a in conf.get("include_authors", [])}
     author_ndc = [str(p) for p in conf.get("include_authors_ndc", [])]
+    # 古典の訳（晶子訳『源氏物語』など）。訳者の名前で選ぶ（NDC は問わない。D-029）
+    translators_in = {str(a) for a in conf.get("include_translators", [])}
     picked = []
     listed: set[str] = set()
     for w in works.values():
@@ -225,7 +270,8 @@ def select_works(works: dict[str, AozoraWork], conf: dict[str, Any]) -> list[Aoz
         if by_list:
             listed.add(w.work_id)
         by_author = bool(authors_in & set(authors)) and matches_ndc(w.ndc, author_ndc)
-        if by_list or by_author or matches_ndc(w.ndc, prefixes):
+        by_translator = bool(translators_in & set(w.names("translator")))
+        if by_list or by_author or by_translator or matches_ndc(w.ndc, prefixes):
             picked.append(w)
     best: dict[tuple[str, str, tuple[str, ...]], AozoraWork] = {}
     for w in sorted(picked, key=lambda w: int(w.work_id) if w.work_id.isdigit() else 0):
@@ -372,6 +418,8 @@ class IngestPlan:
     by_reason: dict[str, int]
     missing_authors: list[str]  # include_authors のうち、作品CSVに見つからない作家
     missing_works: list[str]  # include_works のうち、見つからない作品
+    # 没年が空で、台帳（config/aozora_review.csv）でも埋まっていない人 → 作品の数（D-029）
+    unknown_people: dict[str, int]
     chunks_per_work: float | None  # 今の取得済みの作品から数えた、1作品あたりのチャンク数
     est_chunks: int | None
     est_hours: float | None  # 付加情報づけ（augment）の時間の目安
@@ -380,7 +428,9 @@ class IngestPlan:
 AUGMENT_SEC_PER_CHUNK = 4.9  # gemma4:26b で測った1チャンクあたりの秒数（D-005）
 
 
-def plan_ingest(hdd_root: Path, conf: dict[str, Any], fetcher: Fetcher) -> IngestPlan:
+def plan_ingest(
+    hdd_root: Path, conf: dict[str, Any], fetcher: Fetcher, review: AozoraReview | None = None
+) -> IngestPlan:
     """作品CSVだけを見て、対象の作品数と、付加情報づけにかかる時間の目安を出す（本文は取らない）。"""
     list_path, _ = fetcher.fetch(conf["list_url"], LIST_FILE)
     listed = read_work_list(list_path.read_bytes())
@@ -389,7 +439,9 @@ def plan_ingest(hdd_root: Path, conf: dict[str, Any], fetcher: Fetcher) -> Inges
     include = {(i["title"], i["author"]) for i in conf.get("include_works", [])}
     authors_in = {str(a) for a in conf.get("include_authors", [])}
     author_ndc = [str(p) for p in conf.get("include_authors_ndc", [])]
+    translators_in = {str(a) for a in conf.get("include_translators", [])}
     reasons: dict[str, int] = defaultdict(int)
+    unknown: dict[str, int] = defaultdict(int)
     storable = stored = 0
     for w in works:
         names = set(w.names("author"))
@@ -399,12 +451,20 @@ def plan_ingest(hdd_root: Path, conf: dict[str, Any], fetcher: Fetcher) -> Inges
             reasons["NDC（ndc_prefixes）"] += 1
         elif names & authors_in and matches_ndc(w.ndc, author_ndc):
             reasons["有名な作家（include_authors）"] += 1
+        elif translators_in & set(w.names("translator")):
+            reasons["古典の訳者（include_translators）"] += 1
         rel = text_rel_path(w.text_url)
-        if may_store_text(judge_license(w)[0]) and rel:
+        lic = judge_license(w, review)[0]
+        if may_store_text(lic) and rel:
             storable += 1
             stored += (fetcher.raw_dir / rel).exists()
+        elif lic is License.UNKNOWN:
+            for name in unknown_people(w, review):
+                unknown[name] += 1
     every_author = {a for w in listed.values() for a in w.names("author")}
+    every_translator = {a for w in listed.values() for a in w.names("translator")}
     missing_authors = sorted(authors_in - every_author)
+    missing_authors += sorted(f"{a}（訳者）" for a in translators_in - every_translator)
     found_works = {(w.title, a) for w in listed.values() for a in w.names("author")}
     missing_works = sorted(f"{t}（{a}）" for t, a in include - found_works)
     per_work = None
@@ -429,6 +489,7 @@ def plan_ingest(hdd_root: Path, conf: dict[str, Any], fetcher: Fetcher) -> Inges
         by_reason=dict(reasons),
         missing_authors=missing_authors,
         missing_works=missing_works,
+        unknown_people=dict(sorted(unknown.items(), key=lambda kv: -kv[1])),
         chunks_per_work=per_work,
         est_chunks=est_chunks,
         est_hours=est_hours,
@@ -455,6 +516,7 @@ def ingest(
     limit: int | None = None,
     refresh_list: bool = False,
     log: Callable[[str], None] = lambda _: None,
+    review: AozoraReview | None = None,
 ) -> IngestResult:
     """作品CSVを取り、対象作品のテキストzipを raw/aozora/ に保存する。
 
@@ -469,7 +531,7 @@ def ingest(
     storable = [
         rel
         for w in works
-        if may_store_text(judge_license(w)[0]) and (rel := text_rel_path(w.text_url))
+        if may_store_text(judge_license(w, review)[0]) and (rel := text_rel_path(w.text_url))
     ]
     remaining = sum(1 for rel in storable if not (fetcher.raw_dir / rel).exists())
     planned = remaining if limit is None else min(limit, remaining)
@@ -483,7 +545,7 @@ def ingest(
     removed: list[str] = []
     base_url = conf.get("text_base_url") or AOZORA_SITE
     for w in works:
-        lic, reason = judge_license(w)
+        lic, reason = judge_license(w, review)
         rel = text_rel_path(w.text_url)
         raw_path = None
         if not may_store_text(lic):

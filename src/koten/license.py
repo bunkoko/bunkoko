@@ -35,6 +35,10 @@ LAST_EXPIRED_DEATH_YEAR = 1967
 WARTIME_REVIEW_FROM_DEATH_YEAR = 1955
 # 著作権法53条：団体名義の著作物は公表から数える。1967年までに公表したものは満了の見込み
 LAST_EXPIRED_CORPORATE_PUB_YEAR = 1967
+# 著作権法52条：作者不詳（無名）の著作物も公表から数える。今は公表後70年だが、2018年12月30日の
+# 延長は、それまでに満了したものを戻さない。1967年までの公表は、公表後50年で2017年末までに満了した。
+# 戦時加算（R4）を足しても、1952年4月の平和条約より前の公表は2002年ごろまでに満了するので変わらない
+LAST_EXPIRED_ANONYMOUS_PUB_YEAR = 1967
 
 # 厳しさの順。組み合わせるときは厳しいほうを採る（stricter）
 _RANK = {
@@ -111,6 +115,19 @@ def judge_public_domain(
     if needs_review:
         return License.NEEDS_REVIEW, "；".join(reasons)
     return License.PD_JP, "；".join(reasons)
+
+
+def judge_anonymous_work(pub_year: int | None) -> tuple[License, str]:
+    """作者不詳（無名）の著作物（著作権法52条：公表から数える。D-029）。
+
+    pub_year は、人が根拠を確かめて書いた公表（成立）の年。はっきりしないときは遅いほうの年。
+    訳者・編者など、ほかに関わった人の没年は別に判定する。
+    """
+    if pub_year is None:
+        return License.UNKNOWN, "作者不詳で公表の年が不明"
+    if pub_year <= LAST_EXPIRED_ANONYMOUS_PUB_YEAR:
+        return License.PD_JP, f"作者不詳で{pub_year}年までに公表（52条。満了）"
+    return License.COPYRIGHTED, f"作者不詳で{pub_year}年に公表（52条。公表後70年は保護中）"
 
 
 def judge_corporate_work(credited_as: str, pub_year: int | None) -> tuple[License, str]:
