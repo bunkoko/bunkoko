@@ -205,7 +205,7 @@ koten-videos/
 **青空文庫**
 
 - 作品CSV（list_person_all_extended_utf8.zip）には、作品ID・作品名・分類番号（NDC）・文字遣い種別・作品著作権フラグ・没年月日・人物著作権フラグ・テキストファイルURL・底本情報の列がある（[出典](https://qiita.com/ksato9700/items/48fd0eba67316d58b9d6)）。
-- 初期対象は NDC 1類（哲学・思想・心理・倫理。159 人生訓を含む）、914（随筆）、915（日記・書簡）と、sources.yaml の作品リスト。例：三木清『人生論ノート』（新字新仮名版あり、[出典](https://forest.watch.impress.co.jp/docs/bookwatch/aozora/1100711.html)）。
+- 初期対象は NDC 1類（哲学・思想・心理・倫理。159 人生訓を含む）、914（随筆）、915（日記・書簡）と、sources.yaml の作品リスト。有名な作家の詩歌・小説（NDC 911・913・917）は、sources.yaml の作家の一覧（include_authors）で絞って足す（D-025）。例：三木清『人生論ノート』（新字新仮名版あり、[出典](https://forest.watch.impress.co.jp/docs/bookwatch/aozora/1100711.html)）。
 - 一括取得はGitHub上の青空文庫ミラーを優先する（要確認：利用条件）。サイトから取る場合は1秒1件以下にする。
 - 正規化：ルビ《》と｜を除去、［＃…］の注記を除去、外字注記は代替文字に置換して記録、末尾の「底本：」以降は出典情報として切り出す。
 - 同じ作品に旧字旧仮名と新字新仮名があれば、新字新仮名を使う。
