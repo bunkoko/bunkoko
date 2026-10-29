@@ -18,11 +18,11 @@
 | 2 | augment が終わってから、青空文庫を取り直す | 戦時加算の判定を厳しくした（1955年から）。訳書の原著者が1955〜1957年に亡くなった作品は、本文が消える | `uv run koten ingest aozora`。「本文を消した作品」と出たら、normalize・chunk・index build をやり直し、forget-works で付加情報を取り除く |
 | 3 | 国会図書館に問い合わせる | 一度だけまとめて取る使い方で申請が要るか、出典の書き方の決まりがあるかを確かめる | 文の案は decisions.md の D-003。宛先は lab@ndl.go.jp か NDL の問い合わせ先。答えを D-003 に書く |
 | 4 | 最初の資料の公開範囲を画面で見る | 国会図書館の資料は、公開範囲が「インターネット公開（保護期間満了）」のものだけを使う | dl.ndl.go.jp/pid/（PID）を巻ごとに開く。結果を ref_works.csv の ndl_access・ndl_checked_at に書く |
-| 5 | 資料の台帳を書く | 権利の判定の元になる | ref_works.csv・ref_people.csv に書き、`uv run koten ref check` で判定を見る（docs/ref_sources.md） |
+| 5 | 資料の台帳を書く | 権利の判定の元になる | ref_works.csv・ref_people.csv に書き、`uv run koten ref check` で判定を見る。「要確認」の資料を確かめたら、`ref check` が出す確認の印を reviewed_hash に写す（docs/ref_sources.md） |
 | 6 | 古い英訳を取る | 試訳（M8b）の材料と、時代の解釈 | Long・Legge を台帳に書き、`uv run koten ref check` → `uv run koten ref fetch` → `uv run koten ref build` |
 | 7 | 昔の辞書の語釈と、論語の訓読を書き起こす | M8a の受け入れ（3冊から10見出し、論語5章に2種以上） | 画像と照らし、dict_entries.csv・renderings.csv に verified で書く → `uv run koten ref build` |
 | 8 | 照合用の Ollama を設定する | 本の文がクラウドや記録に出ないようにする | docs/check_guide.md の「Ollama の設定」（新しい版にする、クラウドを止める、サインインしない） |
-| 9 | 照合に使う本を台帳に書き、1回試す | ②（判定だけを残す）が使えるかを確かめる | ref_books.csv に書く → `uv run koten check list` → `check run`（docs/check_guide.md） |
+| 9 | 照合に使う本を台帳に書き、1回試す | ②（判定だけを残す）が使えるかを確かめる | ref_books.csv に書く → `uv run koten ref build`（書名を語りで出さないように SSD へ写す）→ `uv run koten check list` → `check run`（docs/check_guide.md） |
 | 10 | 背景の事実の下書きを確かめる | M5b の残り | `uv run koten facts review` → 別の資料で確かめて accept に 1 → `uv run koten facts accept` → `uv run koten facts build` |
 
 あると助かること（任意）：
