@@ -1396,37 +1396,71 @@ def ref_check(
     """config/ref_works.csv・ref_people.csv を読み、1冊ずつ権利を判定する（何も書き込まない）。"""
     from collections import Counter
 
-    works = _registry(_settings(settings))
+    from koten.db import db_path
+
+    s = _settings(settings)
+    works = _registry(s)
     if not works:
         typer.echo("台帳（config/ref_works.csv）に資料がありません")
         return
+    ssd_license: dict[str, str] = {}
+    limited: dict[str, str] = {}
+    if db_path(s.ssd_root).exists():
+        from koten.db import connect
+        from koten.ref.ndl import restrictions
+        from koten.ref.store import restrict
+
+        conn = connect(s.ssd_root)
+        ssd_license = dict(conn.execute("SELECT ref_id, license FROM ref_works").fetchall())
+        limited = restrictions(conn, works)
+        restrict(works, limited)
+    from koten.ref.registry import review_hash
+
     for w in works:
         mark = "使える" if w.usable else "使えない"
         review = ""
-        if w.reviewed_license:
+        if w.reviewed_license and not w.review_stale:
             review = f"（判定 {w.computed} → 人の確認 {w.reviewed_by} {w.reviewed_at}）"
         typer.secho(
             f"{w.ref_id}  {w.label()}  {w.license} {mark}{review}",
             fg="green" if w.usable else "yellow",
         )
-        if verbose or not w.usable:
+        if verbose or not w.usable or w.reviewed_license:
             typer.echo(f"    {w.computed_reason}")
-        if w.computed == "NEEDS_REVIEW" and not w.reviewed_license:
+        if w.review_stale:
+            typer.secho(
+                "    → 人の確認のあとで、確認が要る理由が変わった（または reviewed_hash が無い）。"
+                "上の理由を確かめ直し、reviewed_hash を書き直す",
+                fg="yellow",
+            )
+        if w.computed == "NEEDS_REVIEW" and (not w.reviewed_license or w.review_stale):
             typer.echo(
                 "    → 確かめたら ref_works.csv の reviewed_license に PD_JP か COPYRIGHTED と、"
+                f"reviewed_hash に {review_hash(w.computed_reason)}、"
                 "reviewed_by・reviewed_at・review_note を書く"
             )
     count = Counter(str(w.license) for w in works)
     typer.echo("、".join(f"{k} {v}" for k, v in sorted(count.items())))
+    usable_now = {w.ref_id for w in works if w.usable}
+    stale = sorted(
+        rid
+        for rid, lic in ssd_license.items()
+        if lic in ("PD_JP", "CC0", "CC_BY") and rid not in usable_now
+    )
+    if stale:
+        typer.secho(
+            f"SSD ではまだ使える扱いの資料があります（{'、'.join(stale)}）。"
+            "uv run koten ref build で直す",
+            fg="yellow",
+        )
 
 
 @ref_app.command("build")
 def ref_build(settings: SettingsOpt = None) -> None:
     """台帳と、確かめた本文（renderings.csv・dict_entries.csv）と、取り込んだ古い英訳（HDD）から
     SSD の表を作り直す。"""
-    import json
-
     from koten.db import connect
+    from koten.ref.ndl import restrictions, sync_snapshots
     from koten.ref.registry import RefError
     from koten.ref.standardebooks import editions, forget_unusable, load_imported
     from koten.ref.store import build_refs
@@ -1434,6 +1468,7 @@ def ref_build(settings: SettingsOpt = None) -> None:
 
     s = _settings(settings)
     works = {w.ref_id: w for w in _registry(s)}
+    conn = connect(s.ssd_root)
     try:
         hdd = s.require_hdd()
     except HddNotConnectedError:
@@ -1441,33 +1476,32 @@ def ref_build(settings: SettingsOpt = None) -> None:
         hdd, imported = None, None
         typer.secho(
             "HDD が未接続なので、取り込んだ古い英訳は SSD にあるもの（使える資料の分）を残します。"
-            "使えなくなった資料の HDD の本文は、HDD をつないで ref build をしたときに消します",
+            "使えなくなった資料の HDD の本文・画像は、"
+            "HDD をつないで ref build をしたときに消します",
             fg="yellow",
         )
     if hdd is not None:
-        from koten.ref.ndl import snapshot_path
-
-        for w in works.values():
-            snap = snapshot_path(hdd, w.pid) if w.source == "ndl" and w.pid else None
-            if snap is not None and snap.exists():
-                got = json.loads(snap.read_text("utf-8"))
-                if got.get("access") != "internet_pd":
-                    typer.secho(
-                        f"{w.ref_id}：国会図書館のマニフェストの公開範囲は「{got.get('access_value')}」で、"
-                        "台帳の ndl_access（internet_pd）と食い違います。台帳を直してください",
-                        fg="red",
-                        err=True,
-                    )
-                    raise typer.Exit(2)
-        removed = forget_unusable(hdd, works, editions(s.sources.get("standardebooks") or {}))
-        for line in removed:
-            typer.secho(f"使えない資料の、取り込んだ本文を消しました：{line}", fg="yellow")
+        sync_snapshots(conn, hdd)
+    # 国会図書館のマニフェストで保護期間満了ではなかった資料は、台帳がどうであれ使わない
+    limited = restrictions(conn, list(works.values()))
+    for ref_id, why in limited.items():
+        typer.secho(
+            f"{ref_id}：{why}。この資料は使いません（台帳の ndl_access を直す）", fg="yellow"
+        )
+    if hdd is not None:
+        eds = editions(s.sources.get("standardebooks") or {})
+        for line in forget_unusable(hdd, works, eds, set(limited)):
+            typer.secho(f"使えない資料のものを HDD から消しました：{line}", fg="yellow")
         imported = load_imported(hdd)
     try:
-        r = build_refs(connect(s.ssd_root), s.config_dir, imported)
+        r = build_refs(conn, s.config_dir, imported, restrictions=limited)
     except (RefError, TextsError) as e:
+        for ref_id in getattr(e, "tightened", []):
+            typer.secho(f"{ref_id} は使えなくなったので、SSD では先に使えなくしました", fg="yellow")
         typer.secho(str(e), fg="red", err=True)
         raise typer.Exit(2) from e
+    for ref_id in r.tightened:
+        typer.secho(f"{ref_id} は使えなくなりました（SSD から本文を外しました）", fg="yellow")
     typer.echo(
         f"資料 {r.works}（使える {r.usable}）・時代の解釈 {r.renderings}・"
         f"取り込んだ本文 {r.imported}・辞書の語釈 {r.entries}"
@@ -1629,7 +1663,8 @@ def ref_ndl_snapshot(
     settings: SettingsOpt = None,
 ) -> None:
     """国会図書館の資料を一度だけまとめて取る（マニフェストで公開範囲を確かめ、指定のコマの画像）。"""
-    from koten.ref.ndl import NdlError, take_snapshot
+    from koten.db import connect
+    from koten.ref.ndl import NdlError, record_check, take_snapshot
 
     s = _settings(settings)
     conf = s.section("ndl")
@@ -1661,6 +1696,7 @@ def ref_ndl_snapshot(
     except NdlError as e:
         typer.secho(str(e), fg="red", err=True)
         raise typer.Exit(2) from e
+    record_check(connect(s.ssd_root), snap)
     pd = "保護期間満了" if snap.access == "internet_pd" else "保護期間満了ではない"
     shown = snap.access_value or "（無し）"
     typer.echo(

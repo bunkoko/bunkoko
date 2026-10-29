@@ -54,7 +54,12 @@ uv run koten ref check
 
 - 1冊ずつ、使えるか（PD_JP）と理由を出します。書き込みはしません。
 - いちばん厳しい結果を採ります：関わった人全員の没年（1968年以降の没者がいれば保護中）、連合国籍か国籍不明で1955年以降の没者（確認へ）、団体名義（確認へ）、1968年以降の版（確認へ）、NDL の公開範囲。
-- NEEDS_REVIEW になった資料は、確かめてから ref_works.csv の reviewed_license に PD_JP（使える）か COPYRIGHTED（使えない）と、reviewed_by・reviewed_at・review_note（何を見て決めたか）を書きます。UNKNOWN と COPYRIGHTED は、人の確認では使えるようにできません。データを直して判定し直します。
+- NEEDS_REVIEW になった資料は、確かめてから ref_works.csv に次を書きます。
+  - reviewed_license：PD_JP（使える）か COPYRIGHTED（使えない）
+  - reviewed_hash：`ref check` が出す「確認の印」（8字）。確かめた理由と結び付けるためです。あとで台帳が変わり、確認が要る理由が変わると（たとえば注釈者を足して戦時加算の確認が増えると）、前の確認は使われず NEEDS_REVIEW に戻ります。新しい理由を確かめ直して、印を書き直します
+  - reviewed_by・reviewed_at・review_note（何を見て決めたか）
+- UNKNOWN と COPYRIGHTED は、人の確認では使えるようにできません。データを直して判定し直します。
+- NDL の資料（pid・ndl_access・ndl_checked_at・NDL の URL のどれかがある行）は、source を ndl にします。そうしないと止まります（公開範囲の判定を飛ばさないため）。
 
 ### 4. 本文を書き起こす
 
@@ -140,7 +145,7 @@ uv run koten ref ndl-snapshot --ref R-genkai-v4 --koma all
    | R-long-meditations | S2 | translation | Meditations | （下の注） | en | standardebooks | （確かめて） | George Long 訳『自省録』（Standard Ebooks 版） |
    | R-legge-analects | S2 | translation | The Analects | （下の注） | en | standardebooks | （確かめて） | James Legge 訳『論語』（Standard Ebooks 版） |
 
-   - pub_year は「使う版」の年です。Standard Ebooks の版（colophon の年）を書くと、1968年以降の版なので NEEDS_REVIEW になります。Standard Ebooks の手入れが CC0 であることを確かめたら、reviewed_license に PD_JP と理由を書きます。first_pub_year には訳が最初に出た年を書きます。
+   - pub_year は「使う版」の年です。Standard Ebooks の版（colophon の年）を書くと、1968年以降の版なので NEEDS_REVIEW になります。Standard Ebooks の手入れが CC0 であることを確かめたら、reviewed_license に PD_JP、reviewed_hash に確認の印、review_note に理由を書きます。first_pub_year には訳が最初に出た年を書きます。
    - 人：原著者（マルクス・アウレリウス、孔子）と訳者（Long、Legge）。外国の人なので allied に yes か no を書きます。
 2. 取って分けます。
 

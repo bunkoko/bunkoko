@@ -262,3 +262,98 @@ def test_ref_build_and_show_commands(conf, tmp_path):
     good_texts(conf, renderings=[rendering("I-new-1", "lunyu:1.1", "R-new", "新しい訓読の文")])
     r = CliRunner().invoke(app, ["ref", "build", *st])
     assert r.exit_code == 2 and "本文を書けない" in r.output
+
+
+def test_tightening_reaches_ssd_even_when_build_stops(conf, tmp_path):
+    """資料が使えなくなったのに CSV に行が残っていて作り直しが止まっても、SSD では先に使えなくする。"""
+    good_texts(conf)
+    conn = connect(tmp_path / "ssd")
+    build_refs(conn, conf)
+    assert load_entries(conn, ["J-dict-futsuu-1"])
+    # 辞書の校訂者が1990年没と分かった → 保護中
+    write(
+        conf,
+        [
+            work(
+                "R-dict",
+                title="架空辞書",
+                volume="第4冊",
+                pub_year="1891",
+                source="ndl",
+                pid="000001",
+                ndl_access="internet_pd",
+                ndl_checked_at="2026-10-29",
+                credit="x",
+            ),
+            work("R-kun", kind="kundoku", title="架空漢文大系", pub_year="1909", credit="y"),
+        ],
+        [
+            person("R-dict", 1, "大槻架空", "author", 1928),
+            person("R-dict", 2, "校訂者", "reviser", 1990),
+            person("R-kun", 1, "服部架空", "kundoku", 1939),
+        ],
+    )
+    with pytest.raises(TextsError) as e:
+        build_refs(conn, conf)
+    assert sorted(e.value.tightened) == ["R-dict", "R-en"]  # R-en は台帳から消えた
+    assert load_entries(conn, ["J-dict-futsuu-1"]) == {}
+    assert entries_for_words(conn, "普通の毎日") == []
+    lic = conn.execute("SELECT license FROM ref_works WHERE ref_id = 'R-dict'").fetchone()[0]
+    assert lic == "COPYRIGHTED"
+    # 台帳から消えた資料の本文も外す
+    assert all(
+        r["ref_id"] != "R-en"
+        for r in renderings_for_passage(conn, "lunyu:1.1", verified_only=False)
+    )
+    assert conn.execute("SELECT COUNT(*) FROM ref_works WHERE ref_id = 'R-en'").fetchone()[0] == 0
+
+
+def test_paragraph_ranges_compare_as_numbers(conf, tmp_path):
+    good_texts(
+        conf,
+        renderings=[
+            rendering(
+                "I-en-med",
+                "meditations:2.p3",
+                "R-en",
+                "A note on these paragraphs.",
+                passage_to="meditations:2.p12",
+                role="translation",
+                reading="",
+                locator="text/book-2.xhtml",
+            ),
+        ],
+    )
+    conn = connect(tmp_path / "ssd")
+    build_refs(conn, conf)
+    for key in ("meditations:2.p5", "meditations:2.p12", "meditations:2.p3"):
+        assert [r["rendering_id"] for r in renderings_for_passage(conn, key)] == ["I-en-med"], key
+    for key in ("meditations:2.p13", "meditations:2.p2", "meditations:2.5", "meditations:3.p5"):
+        assert renderings_for_passage(conn, key) == [], key
+
+
+@pytest.mark.parametrize(
+    "start,end,message",
+    [
+        ("meditations:2.3", "meditations:2.p5", "同じ番号の付け方"),
+        ("lunyu:1.5", "lunyu:1.3", "より前"),
+    ],
+)
+def test_bad_ranges_are_refused(conf, tmp_path, start, end, message):
+    good_texts(
+        conf,
+        renderings=[
+            rendering(
+                "I-bad",
+                start,
+                "R-en",
+                "A note.",
+                passage_to=end,
+                role="translation",
+                reading="",
+                locator="x",
+            ),
+        ],
+    )
+    with pytest.raises(TextsError, match=message):
+        build_refs(connect(tmp_path / "ssd"), conf)

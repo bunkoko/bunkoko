@@ -129,6 +129,25 @@ def load_canon(config_dir: Path) -> dict[str, dict[str, Any]]:
     return yaml.safe_load(path.read_text("utf-8")).get("works") or {}
 
 
+def passage_sort_key(num: str) -> tuple:
+    """一節の番号（「1.2」「1a.3」「2.p12」）を、数として並べるための鍵。"""
+    out = []
+    for part in num.split("."):
+        if m := re.fullmatch(r"(\d+)([ab]?)", part):
+            out.append((0, int(m.group(1)), m.group(2)))
+        elif m := re.fullmatch(r"p(\d+)", part):
+            out.append((1, int(m.group(1)), ""))
+        else:
+            out.append((2, 0, part))
+    return tuple(out)
+
+
+def same_shape(a: str, b: str) -> bool:
+    """「2.3」と「2.p5」のように番号の付け方が違うと、範囲にできない。"""
+    ka, kb = passage_sort_key(a), passage_sort_key(b)
+    return len(ka) == len(kb) and all(x[0] == y[0] for x, y in zip(ka, kb, strict=True))
+
+
 def passage_problem(key: str, canon: dict[str, dict[str, Any]]) -> str | None:
     """passage_key が canon.yaml の作品と番号の付け方に合うか。"""
     m = PASSAGE_KEY.match(key)
@@ -206,6 +225,14 @@ def read_renderings(
             bad.append("passage_key が空")
         elif g["passage_to"] and g["passage_to"].split(":")[0] != g["passage_key"].split(":")[0]:
             bad.append("passage_to は passage_key と同じ作品にする")
+        elif g["passage_to"]:
+            a, b = g["passage_key"].partition(":")[2], g["passage_to"].partition(":")[2]
+            if not same_shape(a, b):
+                bad.append(
+                    "passage_key と passage_to は同じ番号の付け方にする（2.3 と 2.p5 は不可）"
+                )
+            elif passage_sort_key(b) < passage_sort_key(a):
+                bad.append("passage_to が passage_key より前")
         if g["role"] not in ROLES:
             bad.append(f"role は {'・'.join(ROLES)} のどれか")
         elif work is not None and g["role"] not in ROLES_BY_KIND.get(work.kind, ()):

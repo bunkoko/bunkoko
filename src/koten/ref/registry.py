@@ -8,12 +8,15 @@
 - 団体名義だけで公表されたもの（53条。D-018 案1：人が確かめるまで NEEDS_REVIEW）
 - 使う版の刊行年（1968年以降の復刻・増補は、足された部分を人が確かめる）
 - NDL の資料は、NDL の公開範囲の表示（「インターネット公開（保護期間満了）」だけ）
-人の確認（reviewed_license）で使えるようにできるのは NEEDS_REVIEW だけ。
+人の確認（reviewed_license）で使えるようにできるのは NEEDS_REVIEW だけ。その確認は、確かめた理由の
+印（reviewed_hash。koten ref check が出す）と結び付ける。あとで台帳が変わり、確認が要る理由が
+変われば、前の確認は使わず NEEDS_REVIEW に戻す（確かめていない理由を通さない）。
 """
 
 from __future__ import annotations
 
 import csv
+import hashlib
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,6 +57,7 @@ WORK_COLUMNS = [
     "based_on",
     "credit",
     "reviewed_license",
+    "reviewed_hash",
     "reviewed_by",
     "reviewed_at",
     "review_note",
@@ -98,6 +102,8 @@ ROLES = {
     "illustrator": "挿絵",
 }
 YES_NO = {"yes": True, "no": False, "unknown": None, "": None}
+NDL_URL = re.compile(r"^https?://([\w.-]+\.)?ndl\.go\.jp(/|$)", re.I)
+NDL_PID_URL = re.compile(r"/pid/(\d+)")
 REF_ID = re.compile(r"^R-[A-Za-z0-9][A-Za-z0-9_.-]*$")
 DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -145,6 +151,7 @@ class RefWork:
     tradition: str = ""
     based_on: list[str] = field(default_factory=list)
     reviewed_license: str = ""
+    reviewed_hash: str = ""
     reviewed_by: str = ""
     reviewed_at: str = ""
     review_note: str = ""
@@ -153,6 +160,7 @@ class RefWork:
     computed: License = License.UNKNOWN
     computed_reason: str = ""
     license: License = License.UNKNOWN
+    review_stale: bool = False  # 人の確認のあとで、確認が要る理由が変わった（確認を使わない）
 
     @property
     def usable(self) -> bool:
@@ -165,6 +173,11 @@ class RefWork:
         if self.edition:
             parts.append(self.edition)
         return " ".join(parts) + f"（{self.pub_year}）"
+
+
+def review_hash(reason: str) -> str:
+    """人が確かめた理由の印（koten ref check が出し、ref_works.csv の reviewed_hash に写す）。"""
+    return hashlib.sha256(reason.encode("utf-8")).hexdigest()[:8]
 
 
 def judge(work: RefWork) -> tuple[License, str]:
@@ -230,11 +243,17 @@ def read_registry(config_dir: Path) -> list[RefWork]:
             bad.append("団体名義なら credited_as（名義）を書く")
         if g["source"] not in SOURCES:
             bad.append(f"source は {'・'.join(SOURCES)} のどれか")
-        if g["pid"] and g["source"] != "ndl":
-            bad.append("pid（NDL の資料）があるなら source は ndl にする（公開範囲も判定する）")
+        ndl_data = g["pid"] or g["ndl_access"] or g["ndl_checked_at"] or NDL_URL.match(g["url"])
+        if ndl_data and g["source"] != "ndl":
+            bad.append(
+                "NDL の資料（pid・ndl_access・ndl_checked_at・NDL の URL のどれかがある）なら、"
+                "source は ndl にして pid を書く（公開範囲も判定する）"
+            )
         if g["source"] == "ndl":
             if not g["pid"]:
                 bad.append("NDL の資料は pid が要る")
+            elif (m := NDL_PID_URL.search(g["url"])) and m.group(1) != g["pid"]:
+                bad.append(f"url の PID（{m.group(1)}）と pid（{g['pid']}）が違う")
             if not DATE.match(g["ndl_checked_at"]):
                 bad.append("NDL の資料は ndl_checked_at（公開範囲を見た日。YYYY-MM-DD）が要る")
         if g["holder_allied"] not in YES_NO:
@@ -273,6 +292,7 @@ def read_registry(config_dir: Path) -> list[RefWork]:
             tradition=g["tradition"],
             based_on=[b.strip() for b in g["based_on"].split(";") if b.strip()],
             reviewed_license=g["reviewed_license"],
+            reviewed_hash=g["reviewed_hash"],
             reviewed_by=g["reviewed_by"],
             reviewed_at=g["reviewed_at"],
             review_note=g["review_note"],
@@ -327,8 +347,17 @@ def read_registry(config_dir: Path) -> list[RefWork]:
             if b not in works:
                 problems.append(f"ref_works.csv（{w.ref_id}）：based_on の {b} が台帳に無い")
         w.computed, w.computed_reason = judge(w)
+        reviewed = w.reviewed_license or None
+        if (
+            reviewed == License.PD_JP
+            and w.computed == License.NEEDS_REVIEW
+            and w.reviewed_hash != review_hash(w.computed_reason)
+        ):
+            # 確かめた理由と、今の確認が要る理由が違う（台帳が変わった・印が無い）
+            w.review_stale = True
+            reviewed = None
         try:
-            w.license = apply_review(w.computed, w.reviewed_license or None)
+            w.license = apply_review(w.computed, reviewed)
         except ReviewError as e:
             problems.append(f"ref_works.csv（{w.ref_id}）：{e}（判定の理由：{w.computed_reason}）")
     if problems:

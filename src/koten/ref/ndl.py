@@ -44,11 +44,13 @@ class NdlError(RuntimeError):
 class Snapshot:
     ref_id: str
     pid: str
-    fetched_at: str
     access_value: str
     access: str  # internet_pd / unknown
+    access_checked_at: str  # マニフェストを取った日時（続きから取るときも、最初に取った日時のまま）
     koma_total: int
-    size: str = ""
+    first_run_at: str = ""
+    last_run_at: str = ""
+    size: str = ""  # 画像の大きさ（続きから取るときに変えると、混ざるので止める）
     images: list[int] = field(default_factory=list)
     stopped: str = ""  # 途中で止めた理由（403 など）
 
@@ -119,25 +121,35 @@ def take_snapshot(
         raise NdlError(f"{work.ref_id} は {work.license}（{work.computed_reason}）。取らない")
     pid = work.pid
     lic = str(work.license)
+    out = snapshot_path(hdd_root, pid)
+    previous = json.loads(out.read_text("utf-8")) if out.exists() else {}
+    if previous.get("images") and previous.get("size") and previous["size"] != size:
+        raise NdlError(
+            f"前に取った画像は大きさ {previous['size']} です。"
+            f"続きも同じ大きさで取る（--size {previous['size']}）"
+        )
+    url = MANIFEST_URL.format(pid=pid)
     try:
-        path, _ = fetcher.fetch(MANIFEST_URL.format(pid=pid), f"{pid}/manifest.json", license=lic)
+        path, _ = fetcher.fetch(url, f"{pid}/manifest.json", license=lic)
     except httpx.HTTPError as e:
         raise NdlError(f"{pid} のマニフェストを取れない（{_short(e)}）") from e
     manifest = json.loads(path.read_text("utf-8"))
     value = access_value(manifest)
     kind = access_kind(value)
     total = koma_total(manifest)
+    stamp = (now or datetime.now(UTC)).isoformat(timespec="seconds")
+    known = fetcher.manifest.get(url)
     snap = Snapshot(
         ref_id=work.ref_id,
         pid=pid,
-        fetched_at=(now or datetime.now(UTC)).isoformat(timespec="seconds"),
         access_value=value,
         access=kind,
+        access_checked_at=known.fetched_at if known else stamp,
         koma_total=total,
+        first_run_at=previous.get("first_run_at") or stamp,
+        last_run_at=stamp,
         size=size,
     )
-    out = snapshot_path(hdd_root, pid)
-    previous = json.loads(out.read_text("utf-8")) if out.exists() else {}
     snap.images = sorted(set(previous.get("images") or []))
     if kind != "internet_pd":
         shown = value or "（無し）"
@@ -177,3 +189,58 @@ def _write(path: Path, snap: Snapshot) -> None:
 def _short(e: Exception) -> str:
     text = str(e).splitlines()[0] if str(e) else type(e).__name__
     return text[:120]
+
+
+def record_check(conn: Any, snap: Snapshot, now: datetime | None = None) -> None:
+    """マニフェストで見た公開範囲を SSD に写す（HDD が無くても ref build が見られるように）。"""
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO ndl_checks(ref_id, pid, access, access_value, "
+            "access_checked_at, recorded_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                snap.ref_id,
+                snap.pid,
+                snap.access,
+                snap.access_value,
+                snap.access_checked_at,
+                (now or datetime.now(UTC)).isoformat(timespec="seconds"),
+            ),
+        )
+
+
+def sync_snapshots(conn: Any, hdd_root: Path) -> None:
+    """HDD の snapshot.json を SSD に写す（SSD を作り直したときのため）。"""
+    for path in sorted((hdd_root / "raw" / "ndl").glob("*/snapshot.json")):
+        if any(part.startswith(".") for part in path.parts[-2:]):
+            continue
+        d = json.loads(path.read_text("utf-8"))
+        if not d.get("ref_id") or not d.get("access"):
+            continue
+        known = conn.execute(
+            "SELECT access_checked_at FROM ndl_checks WHERE ref_id = ?", (d["ref_id"],)
+        ).fetchone()
+        if known is None or (known[0] or "") < (d.get("access_checked_at") or ""):
+            record_check(
+                conn,
+                Snapshot(
+                    ref_id=d["ref_id"],
+                    pid=d.get("pid", ""),
+                    access_value=d.get("access_value", ""),
+                    access=d["access"],
+                    access_checked_at=d.get("access_checked_at", ""),
+                    koma_total=d.get("koma_total", 0),
+                ),
+            )
+
+
+def restrictions(conn: Any, works: list[RefWork]) -> dict[str, str]:
+    """マニフェストで保護期間満了ではなかった NDL の資料（ref_id → 使えない理由）。"""
+    out = {}
+    pids = {w.ref_id: w.pid for w in works if w.source == "ndl"}
+    for r in conn.execute("SELECT * FROM ndl_checks"):
+        if r["ref_id"] in pids and r["pid"] == pids[r["ref_id"]] and r["access"] != "internet_pd":
+            out[r["ref_id"]] = (
+                f"国会図書館のマニフェストの公開範囲は「{r['access_value'] or '（無し）'}」"
+                f"（{r['access_checked_at']}）。保護期間満了ではない"
+            )
+    return out

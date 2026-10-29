@@ -13,7 +13,7 @@ import re
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -244,6 +244,16 @@ CREATE TABLE IF NOT EXISTS checks (
     note TEXT                            -- 自分の言葉で60字まで（本の文は書かない）
 );
 CREATE INDEX IF NOT EXISTS checks_episode ON checks(episode_id);
+
+-- 国会図書館のマニフェストで見た公開範囲（koten ref ndl-snapshot。HDD が無くても ref build が見る）
+CREATE TABLE IF NOT EXISTS ndl_checks (
+    ref_id TEXT PRIMARY KEY,
+    pid TEXT NOT NULL,
+    access TEXT NOT NULL,                -- internet_pd / unknown
+    access_value TEXT,                   -- マニフェストの値（PDM など）
+    access_checked_at TEXT,              -- マニフェストを取った日時
+    recorded_at TEXT NOT NULL
+);
 """
 
 

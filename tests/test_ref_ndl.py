@@ -114,10 +114,15 @@ def test_snapshot_fetches_manifest_and_chosen_koma_once(ndl_work, tmp_path):
     assert f"https://dl.ndl.go.jp/api/iiif/{PID}/R0000002/full/full/0/default.jpg" in server.calls
     saved = json.loads(snapshot_path(hdd, PID).read_text("utf-8"))
     assert saved["images"] == [2, 3] and saved["access_value"] == "PDM"
+    first = saved["access_checked_at"]
     # 2回目は控えを使い、取りに行かない（一度だけ）
     again = FakeNdl()
     snap = take_snapshot(hdd, w, fetcher(hdd / "raw" / "ndl", again), koma="2-3")
     assert again.calls == [] and snap.images == [2, 3]
+    assert snap.access_checked_at == first and snap.first_run_at == saved["first_run_at"]
+    # 続きを違う大きさで取ると、混ざるので止める
+    with pytest.raises(NdlError, match="同じ大きさ"):
+        take_snapshot(hdd, w, fetcher(hdd / "raw" / "ndl", FakeNdl()), koma="4", size="2000,")
 
 
 def test_not_public_domain_manifest_stops_images(ndl_work, tmp_path):
@@ -192,6 +197,46 @@ def test_cli_is_off_until_terms_are_confirmed(tmp_path, ndl_work, monkeypatch):
     )
     r = CliRunner().invoke(app, ["ref", "ndl-snapshot", "--ref", "R-dict", "--koma", "1-2", *st])
     assert r.exit_code == 1 and "保護期間満了ではない" in r.output
-    # 台帳では internet_pd なのに、マニフェストは違う → ref build で止める
+    # 台帳では internet_pd なのに、マニフェストは違う → その資料は使わない（SSD に写した判定で）
+    from koten.db import connect
+
     r = CliRunner().invoke(app, ["ref", "build", *st])
-    assert r.exit_code == 2 and "食い違います" in r.output
+    assert r.exit_code == 0 and "この資料は使いません" in r.output, r.output
+    conn = connect(tmp_path / "ssd")
+    assert (
+        conn.execute("SELECT license FROM ref_works WHERE ref_id = 'R-dict'").fetchone()[0]
+        == "UNKNOWN"
+    )
+    # HDD が無くても、SSD に写したマニフェストの判定で使わない
+    shutil.rmtree(tmp_path / "hdd")
+    settings.write_text(
+        base.replace(str(tmp_path / "hdd"), "/no/such/volume/koten")
+        + "[ndl]\nfetch_enabled = true\n",
+        "utf-8",
+    )
+    r = CliRunner().invoke(app, ["ref", "build", *st])
+    assert r.exit_code == 0 and "この資料は使いません" in r.output, r.output
+    assert (
+        conn.execute("SELECT license FROM ref_works WHERE ref_id = 'R-dict'").fetchone()[0]
+        == "UNKNOWN"
+    )
+    # ref check でも使えないと出る
+    r = CliRunner().invoke(app, ["ref", "check", *st])
+    assert "R-dict" in r.output and "使えない" in r.output and "マニフェスト" in r.output
+
+
+def test_unusable_ndl_images_are_forgotten(tmp_path):
+    from koten.ref.standardebooks import forget_unusable
+
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    write(cfg, [work("R-dict", **NDL)], [person("R-dict", 1, "大槻架空", "author", 1928)])
+    works = {w.ref_id: w for w in read_registry(cfg)}
+    hdd = tmp_path / "hdd"
+    take_snapshot(hdd, works["R-dict"], fetcher(hdd / "raw" / "ndl", FakeNdl()), koma="1-2")
+    images = hdd / "raw" / "ndl" / PID / "images"
+    assert images.exists()
+    assert forget_unusable(hdd, works, {}) == []  # 使えるうちは消さない
+    # マニフェストの公開範囲で使えないと分かった
+    removed = forget_unusable(hdd, works, {}, {"R-dict"})
+    assert not images.exists() and removed == [f"国会図書館の画像 PID {PID}（公開範囲）"]

@@ -254,7 +254,10 @@ def test_unusable_work_is_not_fetched_and_is_forgotten(conf, tmp_path):
         )
     assert server.calls == []
     removed = forget_unusable(hdd, works, editions(CONF))
-    assert removed == ["R-legge-analects（NEEDS_REVIEW）"]
+    assert removed == [
+        "R-legge-analects の取り込んだ本文（NEEDS_REVIEW）",
+        "Standard Ebooks の原本 confucius_analects_james-legge（NEEDS_REVIEW）",
+    ]
     assert not imported_path(hdd, "R-legge-analects").exists()
     assert not (raw / "confucius_analects_james-legge").exists()
     assert load_imported(hdd) == []
@@ -320,3 +323,17 @@ def test_build_without_hdd_keeps_imported_rows(conf, tmp_path):
         [person("R-legge-analects", 1, "訳者", "translator", 1956, country="", allied="")],
     )
     assert build_refs(conn, conf, None).imported == 0
+
+
+def test_raw_files_are_forgotten_even_without_parquet(conf, tmp_path):
+    """取り込みが途中で止まり parquet が無くても、使えない資料の原本は消す。"""
+    hdd = tmp_path / "hdd"
+    raw = hdd / "raw" / "standardebooks" / "confucius_analects_james-legge" / "text"
+    raw.mkdir(parents=True)
+    (raw / "chapter-1.xhtml").write_text(CHAPTER_1, "utf-8")
+    orphan = hdd / "raw" / "standardebooks" / "someone_else_book" / "text"
+    orphan.mkdir(parents=True)
+    works = {}  # 台帳に無い
+    removed = forget_unusable(hdd, works, editions(CONF))
+    assert not raw.parent.exists() and not orphan.parent.exists()
+    assert len(removed) == 2

@@ -227,18 +227,52 @@ def load_imported(hdd_root: Path) -> list[Rendering]:
 
 
 def forget_unusable(
-    hdd_root: Path, works: dict[str, RefWork], eds: dict[str, Edition]
+    hdd_root: Path,
+    works: dict[str, RefWork],
+    eds: dict[str, Edition],
+    restricted: set[str] | None = None,
 ) -> list[str]:
-    """台帳で使えない（または台帳に無い）資料の、取り込んだ本文と原本を消す（R2）。"""
+    """台帳で使えない（台帳に無い）資料の本文と画像を HDD から消す（R2）。
+
+    - 取り込んだ本文（clean/ref/<ref_id>.parquet）
+    - Standard Ebooks の原本（raw/standardebooks/<repo>）。使える版が指していない repo は全部
+    - 国会図書館のページの画像（raw/ndl/<PID>/images）。使える NDL の資料が指していない PID は全部
+    restricted は、台帳の外の事情（マニフェストの公開範囲）で使えない ref_id。
+    """
+    restricted = restricted or set()
+
+    def usable(ref_id: str) -> bool:
+        w = works.get(ref_id)
+        return w is not None and w.usable and ref_id not in restricted
+
+    def why(ref_id: str) -> str:
+        w = works.get(ref_id)
+        if w is None:
+            return "台帳に無い"
+        return "公開範囲" if ref_id in restricted else str(w.license)
+
     removed = []
     for path in data_files(hdd_root / "clean" / "ref", "*.parquet"):
-        ref_id = path.stem
-        work = works.get(ref_id)
-        if work is not None and work.usable:
-            continue
-        path.unlink()
-        ed = eds.get(ref_id)
-        if ed is not None and (raw := hdd_root / "raw" / "standardebooks" / ed.repo).exists():
-            shutil.rmtree(raw)
-        removed.append(f"{ref_id}（{work.license if work else '台帳に無い'}）")
+        if not usable(path.stem):
+            path.unlink()
+            removed.append(f"{path.stem} の取り込んだ本文（{why(path.stem)}）")
+    keep_repos = {ed.repo for rid, ed in eds.items() if usable(rid)}
+    raw_se = hdd_root / "raw" / "standardebooks"
+    for d in sorted(raw_se.iterdir()) if raw_se.exists() else []:
+        if d.is_dir() and not d.name.startswith(".") and d.name not in keep_repos:
+            shutil.rmtree(d)
+            owner = next((rid for rid, ed in eds.items() if ed.repo == d.name), "")
+            removed.append(
+                f"Standard Ebooks の原本 {d.name}（{why(owner) if owner else '台帳に無い'}）"
+            )
+    keep_pids = {w.pid for w in works.values() if w.source == "ndl" and w.pid and usable(w.ref_id)}
+    raw_ndl = hdd_root / "raw" / "ndl"
+    for d in sorted(raw_ndl.iterdir()) if raw_ndl.exists() else []:
+        images = d / "images"
+        if d.is_dir() and d.name not in keep_pids and images.exists():
+            shutil.rmtree(images)
+            owner = next((w.ref_id for w in works.values() if w.pid == d.name), "")
+            removed.append(
+                f"国会図書館の画像 PID {d.name}（{why(owner) if owner else '台帳に無い'}）"
+            )
     return removed

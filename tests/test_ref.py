@@ -10,7 +10,7 @@ from typer.testing import CliRunner
 from koten.cli import app
 from koten.config import DEFAULT_CONFIG_DIR
 from koten.license import License
-from koten.ref.registry import RefError, read_registry
+from koten.ref.registry import RefError, read_registry, review_hash
 from tests.ref_fixture import person, work, write
 
 
@@ -80,9 +80,18 @@ def test_ndl_label_is_a_second_gate(tmp_path):
     assert got["R-blank"].license == License.UNKNOWN
 
 
+def corp_hash(tmp_path):
+    """団体名義で1903年公表の資料の、確認が要る理由の印（ref check が出すもの）。"""
+    d = tmp_path / "probe"
+    d.mkdir(exist_ok=True)
+    write(d, [work("R-p", corporate="yes", credited_as="架空書院編輯所", pub_year="1903")], [])
+    return review_hash(read_registry(d)[0].computed_reason)
+
+
 def test_corporate_work_needs_human_review(tmp_path):
     reviewed = {
         "reviewed_license": "PD_JP",
+        "reviewed_hash": corp_hash(tmp_path),
         "reviewed_by": "owner",
         "reviewed_at": "2026-10-29",
         "review_note": "奥付に団体名だけ。個人の著作者名なし",
@@ -220,3 +229,75 @@ def test_ref_check_command(tmp_path):
     write(tmp_path, [work("R-a", source_class="S4")], [])
     r = CliRunner().invoke(app, ["ref", "check", *st])
     assert r.exit_code == 2 and "台帳に問題があります" in r.output
+
+
+def test_review_goes_stale_when_reasons_change(tmp_path):
+    """人の確認は、確かめた理由と結び付く。台帳が変わって理由が増えたら、確認は使わない。"""
+    d = tmp_path / "c"
+    d.mkdir()
+    base = work("R-a", pub_year="1975", first_pub_year="1891")
+    write(d, [base], [person("R-a", 1, "甲野", "author", 1900)])
+    reason = read_registry(d)[0].computed_reason
+    reviewed = {
+        **base,
+        "reviewed_license": "PD_JP",
+        "reviewed_hash": review_hash(reason),
+        "reviewed_by": "owner",
+        "reviewed_at": "2026-10-29",
+        "review_note": "増補は無い",
+    }
+    write(d, [reviewed], [person("R-a", 1, "甲野", "author", 1900)])
+    w = read_registry(d)[0]
+    assert w.license == License.PD_JP and not w.review_stale
+    # 注釈者を足した：国籍不明で1960年没（R4 の確認が要る、まだ誰も確かめていない理由）
+    write(
+        d,
+        [reviewed],
+        [
+            person("R-a", 1, "甲野", "author", 1900),
+            person("R-a", 2, "乙山", "annotator", 1960, country="", allied=""),
+        ],
+    )
+    w = read_registry(d)[0]
+    assert w.license == License.NEEDS_REVIEW and w.review_stale
+    assert "R4" in w.computed_reason
+    # 印の無い確認も使わない
+    write(d, [{**reviewed, "reviewed_hash": ""}], [person("R-a", 1, "甲野", "author", 1900)])
+    assert read_registry(d)[0].license == License.NEEDS_REVIEW
+    # 厳しくする向きの確認は、印が無くても受ける
+    write(
+        d,
+        [{**reviewed, "reviewed_license": "COPYRIGHTED", "reviewed_hash": ""}],
+        [person("R-a", 1, "甲野", "author", 1900)],
+    )
+    assert read_registry(d)[0].license == License.COPYRIGHTED
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"source": "archive", "url": "https://dl.ndl.go.jp/pid/123"},
+        {"source": "owned", "ndl_access": "kojin"},
+        {"source": "owned", "ndl_checked_at": "2026-10-01"},
+    ],
+)
+def test_ndl_data_requires_ndl_source(tmp_path, row):
+    write(tmp_path, [work("R-a", **row)], [person("R-a", 1, "甲", "author", 1900)])
+    with pytest.raises(RefError, match="source は ndl"):
+        read_registry(tmp_path)
+
+
+def test_ndl_pid_must_match_url(tmp_path):
+    ndl = {
+        "source": "ndl",
+        "pid": "123",
+        "ndl_access": "internet_pd",
+        "ndl_checked_at": "2026-10-29",
+    }
+    write(
+        tmp_path,
+        [work("R-a", url="https://dl.ndl.go.jp/pid/999", **ndl)],
+        [person("R-a", 1, "甲", "author", 1900)],
+    )
+    with pytest.raises(RefError, match="PID"):
+        read_registry(tmp_path)

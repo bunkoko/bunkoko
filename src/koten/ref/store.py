@@ -11,11 +11,12 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from koten.facts.dates import era_year
+from koten.license import License
 from koten.ref.registry import RefWork, read_registry
 from koten.ref.texts import (
     ENTRY_COLUMNS,
@@ -26,8 +27,10 @@ from koten.ref.texts import (
     TextsError,
     load_canon,
     passage_problem,
+    passage_sort_key,
     read_dict_entries,
     read_renderings,
+    same_shape,
 )
 
 WORK_DB_COLUMNS = [
@@ -66,6 +69,42 @@ class RefBuildResult:
     renderings: int
     imported: int
     entries: int
+    tightened: list[str] = field(default_factory=list)  # SSD で使えなくした資料（厳しくなった）
+
+
+def tighten(conn: sqlite3.Connection, works: list[RefWork]) -> list[str]:
+    """台帳で使えなくなった資料（と、台帳から消えた資料）を、SSD ですぐ使えなくする。
+
+    renderings.csv などに行が残っていて作り直しが止まるときも、先にこれだけは行う
+    （厳しくなった判定が SSD に届かず、古い本文が台本に使われ続けないように）。
+    """
+    by_id = {w.ref_id: w for w in works}
+    out = []
+    with conn:
+        for r in conn.execute("SELECT ref_id, license FROM ref_works").fetchall():
+            w = by_id.get(r["ref_id"])
+            if w is not None and w.usable:
+                continue
+            if r["license"] in ("PD_JP", "CC0", "CC_BY"):
+                out.append(r["ref_id"])
+            if w is None:
+                conn.execute("DELETE FROM ref_works WHERE ref_id = ?", (r["ref_id"],))
+            else:
+                conn.execute(
+                    "UPDATE ref_works SET license = ?, license_reason = ? WHERE ref_id = ?",
+                    (str(w.license), w.computed_reason, w.ref_id),
+                )
+            for table in ("renderings", "dict_entries"):
+                conn.execute(f"DELETE FROM {table} WHERE ref_id = ?", (r["ref_id"],))
+    return out
+
+
+def restrict(works: list[RefWork], reasons: dict[str, str]) -> None:
+    """台帳の外で分かった、より厳しい事情（国会図書館のマニフェストの公開範囲など）を当てる。"""
+    for w in works:
+        if w.ref_id in reasons and w.usable:
+            w.license = License.UNKNOWN
+            w.computed_reason = f"{w.computed_reason}；{reasons[w.ref_id]}"
 
 
 def _work_row(w: RefWork) -> list[Any]:
@@ -83,13 +122,28 @@ def _work_row(w: RefWork) -> list[Any]:
 
 
 def build_refs(
-    conn: sqlite3.Connection, config_dir: Path, imported: Iterable[Rendering] | None = ()
+    conn: sqlite3.Connection,
+    config_dir: Path,
+    imported: Iterable[Rendering] | None = (),
+    *,
+    restrictions: dict[str, str] | None = None,
 ) -> RefBuildResult:
-    """imported が None なら（HDD が未接続のとき）、SSD にある取り込んだ本文を残す。"""
+    """imported が None なら（HDD が未接続のとき）、SSD にある取り込んだ本文を残す。
+
+    restrictions：台帳の外で分かった、資料を使えなくする理由（ref_id → 理由）。
+    台帳で使えなくなった資料は、ほかの行に問題があって作り直しが止まっても、先に SSD で
+    使えなくする（tighten）。止まったときは TextsError に tightened を付ける。
+    """
     works = read_registry(config_dir)
+    restrict(works, restrictions or {})
+    tightened = tighten(conn, works)
     by_id = {w.ref_id: w for w in works}
-    renderings = read_renderings(config_dir, by_id, load_canon(config_dir))
-    entries = read_dict_entries(config_dir, by_id)
+    try:
+        renderings = read_renderings(config_dir, by_id, load_canon(config_dir))
+        entries = read_dict_entries(config_dir, by_id)
+    except TextsError as e:
+        e.tightened = tightened  # type: ignore[attr-defined]
+        raise
     if imported is None:
         imported = [
             Rendering(**{c: r[c] or "" for c in RENDERING_COLUMNS})
@@ -129,6 +183,7 @@ def build_refs(
         renderings=len(renderings),
         imported=len(imported),
         entries=len(entries),
+        tightened=tightened,
     )
 
 
@@ -198,19 +253,10 @@ def renderings_for_passage(
     return sorted(out, key=lambda r: (r["ref_pub_year"], r["rendering_id"]))
 
 
-def _num_key(n: str) -> tuple:
-    return tuple(
-        int(p) if p.isdigit() else p for p in n.replace("a", ".0").replace("b", ".1").split(".")
-    )
-
-
 def _in_range(num: str, start: str, end: str) -> bool:
-    if not (start and end):
+    if not (start and end) or not (same_shape(start, num) and same_shape(start, end)):
         return False
-    try:
-        return _num_key(start) <= _num_key(num) <= _num_key(end)
-    except TypeError:
-        return False
+    return passage_sort_key(start) <= passage_sort_key(num) <= passage_sort_key(end)
 
 
 # --- 台本で使う（{{def:}}・{{def_src:}}・{{interp:}}・{{interp_src:}}） -------------
