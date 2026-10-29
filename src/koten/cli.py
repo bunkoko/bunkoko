@@ -1702,9 +1702,9 @@ def ref_ndl_snapshot(
     conf = s.section("ndl")
     if not conf.get("fetch_enabled"):
         typer.secho(
-            "国会図書館からの取得は止めてあります。NDL の利用条件を確かめ、問い合わせの答えを "
-            "docs/decisions.md の D-003 に書いてから、settings.toml の [ndl] fetch_enabled を"
-            " true にしてください",
+            "国会図書館からの取得は止めてあります（settings.toml の [ndl] fetch_enabled）。"
+            "取るときは true にしてください"
+            "（一度だけまとめて取る方針。docs/decisions.md の D-003）",
             fg="red",
             err=True,
         )

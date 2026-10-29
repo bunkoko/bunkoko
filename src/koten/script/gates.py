@@ -460,7 +460,7 @@ def g6_review(data: EpisodeData, script: dict[str, Any]) -> dict[str, Any]:
     for ch in script["chapters"]:
         for seg in ch["segments"]:
             if seg["text"].startswith("{{quote_ja:"):
-                reasons.append(f"{seg['seg_id']}：自前訳（試訳）を含む")
+                reasons.append(f"{seg['seg_id']}：自前の日本語訳を含む（原文か元の訳と照らす）")
     reasons += [f"背景の事実 {x}" for x in data.fact_issues]
     reasons += [f"語釈・解釈 {x}" for x in data.ref_issues]
     used = {r for ch in script["chapters"] for r in ch.get("refs", [])}

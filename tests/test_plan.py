@@ -244,6 +244,10 @@ def test_eval_export_and_evaluate(tmp_path):
     res = {r.name: r for r in evaluate(read_eval(path), run, [good, bad])}
     assert res["良い"].ndcg10 == pytest.approx(1.0) and res["悪い"].ndcg10 == 0.0
     assert res["良い"].recall20 == 1.0 and res["悪い"].unjudged10 == 0.0
+    # やり方を替えて書き出し直しても（リランカーの比べ）、前に付けた点の行は残る
+    total, judged = export_pool(path, worries, run, rows.__getitem__, [good])
+    assert (total, judged) == (4, 4)
+    assert {r["candidate_id"] for r in read_rows(path)} == set("abcd")
 
 
 def test_cli_retrieve_and_plan(env, settings_file, monkeypatch):

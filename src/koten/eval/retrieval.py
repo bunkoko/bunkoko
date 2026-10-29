@@ -131,11 +131,15 @@ def export_pool(
     k: int = 10,
     seed: int = 0,
 ) -> tuple[int, int]:
-    """印付け用の CSV を書く。戻り値は（行の数, そのうち点が付いている数）。"""
+    """印付け用の CSV を書く。戻り値は（行の数, そのうち点が付いている数）。
+
+    前に点を付けた行は、今のやり方の上位に無くても残す（リランカーを替えて比べるとき、
+    前のモデルの上位に付けた点を失わないように）。
+    """
     existing: dict[tuple[str, str], dict[str, str]] = {}
     if path.exists():
         for r in read_rows(path):
-            existing[(r["worry_id"], r["candidate_id"])] = {c: r[c] for c in KEEP_COLUMNS}
+            existing[(r["worry_id"], r["candidate_id"])] = r
     rows = []
     rng = random.Random(seed)
     for w in worries:
@@ -157,10 +161,19 @@ def export_pool(
                     "section": r["section"] or "",
                     "quote_text": r["quote_text"],
                     "summary_ja": r["summary_ja"],
-                    **{c: "" for c in KEEP_COLUMNS},
-                    **existing.get((w["worry_id"], cid), {}),
+                    **{
+                        c: existing.get((w["worry_id"], cid), {}).get(c) or "" for c in KEEP_COLUMNS
+                    },
                 }
             )
+        in_pool = set(pool)
+        for (wid, cid), old in existing.items():
+            if (
+                wid == w["worry_id"]
+                and cid not in in_pool
+                and (old.get("grade") or old.get("llm_grade"))
+            ):
+                rows.append({c: old.get(c) or "" for c in EVAL_COLUMNS})
     write_eval(path, rows)
     return len(rows), sum(1 for r in rows if parse_grade(r["grade"]) is not None)
 

@@ -90,7 +90,7 @@
 
 **量産判定対策（必須）**
 
-YouTubeは2026年7月、テンプレート型で変化の少ない量産を収益化の対象外と明確にし、該当が多いチャンネルは収益化できなくなりました（[TechCrunch](https://techcrunch.com/2026/07/20/youtube-clarifies-policies-around-ai-slop-and-upsetting-videos/)）。日本でも、音声合成とAIで作っていたチャンネルが「大量生産されたコンテンツ」として収益化無効になった例があります（[J-CAST](https://www.j-cast.com/2026/02/03511618.html)）。
+YouTubeは2025年7月15日の収益化ポリシーの改定（repetitious content を inauthentic content に改名）で量産・繰り返しの内容を明記し、2026年7月にもテンプレート型で変化の少ない量産を収益化の対象外と明確にし、該当が多いチャンネルは収益化できなくなりました（[TechCrunch](https://techcrunch.com/2026/07/20/youtube-clarifies-policies-around-ai-slop-and-upsetting-videos/)）。日本でも、音声合成とAIで作っていたチャンネルが「大量生産されたコンテンツ」として収益化無効になった例があります（[J-CAST](https://www.j-cast.com/2026/02/03511618.html)）。
 
 - 回の形式を4種以上持ち（§8）、同じ形式を3回続けない。
 - 同じ作品は直近10回、同じ著者は直近5回で主役にしない（既定値）。
@@ -224,7 +224,7 @@ koten-videos/
 - 本文前後の「*** START OF THE PROJECT GUTENBERG EBOOK」「*** END」の外側を除去する。
 - 原著者と訳者の没年がともに1967年以前で、R4に当たらなければ PD_JP とする（例：古い英訳のストア派の著作）。
 - 「Project Gutenberg」の名前を動画の売り文句に使わない（商標。出典として記すことの可否は要確認）。
-- 画面には自前の日本語訳を「試訳」として出し、原文の英語は説明欄に載せる（任意）。
+- 古い英訳から日本語にした文は、画面と説明欄に元の訳の出典（例：ロングの英訳（1862））を示し、「試訳」とは書かない（R5・D-024）。英訳の文は説明欄に載せてもよい（任意）。
 
 **論文（任意）**
 
@@ -478,7 +478,7 @@ yet → planned → script_done → voice_done → image_done → composed → r
 - kind は narration（地の文）、quote（引用）、stat（統計）、transition（章の区切り）の4つ。quote と stat の text はプレースホルダだけを入れる。
 - read_as は original（原文を読む）か modern（現代語訳を読み、画面は原文）。旧字旧仮名と外国語は modern にする。
 - visual.type は photo、quote_card、title_card、chart、author_card、page_image の6つ。
-- 外国語の一節は、candidates 側に自前訳を持ち `{{quote_ja:<candidate_id>}}` で差し込む。画面には「試訳」を自動で付ける。
+- 外国語の一節は、candidates 側に自前訳を持ち `{{quote_ja:<candidate_id>}}` で差し込む。画面には、原文から自前で訳したものなら「試訳」、保護期間の切れた訳（英訳など）から日本語にしたものなら元の訳の出典を自動で付ける（R5・D-024）。
 - timings・ad_break_candidates_sec・verification は後段が埋める。台本を書くLLMは触らない。
 - 説明欄・チャプター・字幕は publish_kit が timings から作るので、台本JSONには持たない。
 

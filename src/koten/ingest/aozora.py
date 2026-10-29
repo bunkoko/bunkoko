@@ -168,7 +168,12 @@ def matches_ndc(ndc: str, prefixes: list[str]) -> bool:
 
 
 def _death_year(date: str) -> int | None:
-    m = re.match(r"(\d{4})", date or "")
+    """作品CSVの没年月日から年を取る。3桁の年（紀貫之の 945 など）も読む。
+
+    読めない形（前347 のような紀元前・空）は None にし、判定不能のままにする。
+    """
+    s = (date or "").strip()
+    m = re.match(r"(\d{4})", s) or re.match(r"(\d{3})(?:-|$)", s)
     return int(m.group(1)) if m else None
 
 

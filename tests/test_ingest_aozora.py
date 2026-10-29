@@ -308,3 +308,15 @@ def test_include_authors_and_dry_run(settings_file):
     assert plan.missing_authors == ["居ない作家"]
     assert plan.stored == 0 and plan.new == plan.storable
     assert all("cards/" not in c for c in server.calls)  # 本文は取らない
+
+
+def test_death_year_reads_three_digit_years():
+    # 紀貫之（945年没）のような3桁の年も読む。読めない形は判定不能のまま
+    assert aozora._death_year("945") == 945
+    assert aozora._death_year("0945-05-01") == 945
+    assert aozora._death_year("1216-07-26") == 1216
+    assert aozora._death_year("") is None
+    assert aozora._death_year("前347") is None
+    assert aozora._death_year("19") is None
+    assert aozora._death_year("1955年") == 1955  # 4桁は前と同じに読む
+    assert aozora._death_year("945年") is None
