@@ -1638,6 +1638,259 @@ def ref_show(
         typer.echo(f"    出典：{r['ref_credit']}　{r['locator']}")
 
 
+check_app = typer.Typer(
+    no_args_is_help=True,
+    help="今の本（著作権あり）での照合。判定だけを残し、本の文は保存しない（SPEC R8）",
+)
+app.add_typer(check_app, name="check")
+
+
+def _episode_claims(s: Settings, episode: str, *, everything: bool = True):
+    """回の台本と、その文（主張）の一覧。台本が無ければ止める。"""
+    import json
+
+    from koten.check.claims import claims
+    from koten.db import connect
+    from koten.script import gates
+    from koten.script.data import EpisodeData
+
+    conn = connect(s.ssd_root)
+    row = conn.execute(
+        "SELECT script_json FROM episodes WHERE episode_id = ?", (episode,)
+    ).fetchone()
+    if row is None or not row["script_json"]:
+        typer.secho(f"{episode} の台本がありません（koten script が先）", fg="red", err=True)
+        raise typer.Exit(2)
+    script = json.loads(row["script_json"])
+    resolver = gates.resolver_for(EpisodeData.load(conn, s.ssd_root, episode))
+    return conn, claims(script, resolver, everything=everything)
+
+
+def _books(s: Settings):
+    from koten.check.books import BooksError, read_books
+
+    try:
+        return read_books(s.config_dir)
+    except BooksError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
+
+
+@check_app.command("books")
+def check_books(settings: SettingsOpt = None) -> None:
+    """照合に使う今の本の台帳（config/ref_books.csv）を出す。"""
+    from koten.check.books import KINDS, MEDIUMS
+
+    books = _books(_settings(settings))
+    if not books:
+        typer.echo("台帳（config/ref_books.csv）に本がありません")
+    for b in books.values():
+        typer.echo(f"{b.book_id}  {b.label()}  {KINDS[b.kind]}・{MEDIUMS[b.medium]}")
+
+
+@check_app.command("list")
+def check_list(
+    episode: Annotated[str, typer.Option(help="回の ID")],
+    everything: Annotated[
+        bool, typer.Option("--all", help="一節の無い章の文も出す（オープニングなど）")
+    ] = False,
+    settings: SettingsOpt = None,
+) -> None:
+    """照合する台本の文（主張）を番号つきで出す。照合した文には判定を付ける。"""
+    from koten.check.compare import VERDICTS
+    from koten.check.store import holds, latest
+
+    s = _settings(settings)
+    conn, current = _episode_claims(s, episode)
+    done = latest(conn, episode)
+    shown = current if everything else _focus(s, episode)
+    for c in shown:
+        typer.echo(f"{c.number}（{c.key}・{c.role}）{c.text}")
+        for (key, book_id), r in done.items():
+            if key != c.key:
+                continue
+            label = VERDICTS.get(r["verdict"], r["verdict"])
+            close = "・言い回しが近い" if r["close_wording"] else ""
+            old = "" if r["claim_sha"] == c.sha else "（照合のあと文が変わった）"
+            typer.echo(f"    {book_id} {r['locator']}：{label}{close}{old}")
+    for h in holds(conn, episode, current):
+        typer.secho(f"公開保留：{h.reason}", fg="yellow")
+
+
+def _focus(s: Settings, episode: str):
+    return _episode_claims(s, episode, everything=False)[1]
+
+
+@check_app.command("run")
+def check_run(
+    episode: Annotated[str, typer.Option(help="回の ID")],
+    claim: Annotated[str, typer.Option(help="文の番号（koten check list の C…）")],
+    book: Annotated[str, typer.Option(help="本の ID（config/ref_books.csv の B-…）")],
+    page: Annotated[str, typer.Option(help="本の中の場所（例：23ページ）")],
+    verdict: Annotated[
+        str | None,
+        typer.Option(
+            help="人が読んで決めた判定（same・differs・not_covered）。付けると AI は使わない"
+        ),
+    ] = None,
+    close: Annotated[
+        bool, typer.Option("--close", help="人の判定で、台本の文が本の言い回しに近いとき")
+    ] = False,
+    note: Annotated[str, typer.Option(help="自分の言葉のメモ（60字まで。本の文は書かない）")] = "",
+    by: Annotated[
+        str | None, typer.Option(help="照合した人（既定は KOTEN_CHECKER か owner）")
+    ] = None,
+    settings: SettingsOpt = None,
+) -> None:
+    """台本の1文を、今の本の該当箇所と照らし合わせ、判定だけを残す。
+
+    本の該当箇所は、このあと貼り付けて Ctrl-D で終える。手元の Ollama だけに渡し、保存しない。
+    """
+    import sys
+
+    from koten.check import compare
+    from koten.check.store import holds, record
+    from koten.llm import load_prompt, make_llm
+
+    s = _settings(settings)
+    books = _books(s)
+    if book not in books:
+        typer.secho(f"{book} は台帳（config/ref_books.csv）にありません", fg="red", err=True)
+        raise typer.Exit(2)
+    conn, current = _episode_claims(s, episode)
+    target = next((c for c in current if c.number == claim), None)
+    if target is None:
+        typer.secho(
+            f"{claim} という文はありません（koten check list で番号を見る）", fg="red", err=True
+        )
+        raise typer.Exit(2)
+    if verdict is not None and verdict not in compare.VERDICTS:
+        typer.secho(f"--verdict は {'・'.join(compare.VERDICTS)} のどれか", fg="red", err=True)
+        raise typer.Exit(2)
+    checker = by or os.environ.get("KOTEN_CHECKER", "").strip() or "owner"
+    run_len = share = None
+    if verdict is None:
+        conf = s.section("llm.check")
+        try:
+            compare.require_local(conf)
+        except compare.CheckError as e:
+            typer.secho(str(e), fg="red", err=True)
+            raise typer.Exit(2) from e
+        typer.echo(f"台本の文：{target.text}")
+        typer.echo(
+            f"{books[book].label()} {page} の該当箇所を貼り付け、最後に Ctrl-D を押してください"
+            "（手元の AI にだけ渡し、保存しません）："
+        )
+        book_text = sys.stdin.read().strip()
+        if not compare.BOOK_MIN <= len(book_text) <= compare.BOOK_MAX:
+            typer.secho(
+                f"該当箇所は{compare.BOOK_MIN}〜{compare.BOOK_MAX}字にしてください"
+                f"（今は{len(book_text)}字。主張にかかわる所だけ）",
+                fg="red",
+                err=True,
+            )
+            raise typer.Exit(2)
+        run_len, share = compare.wording(target.text, book_text)
+        close = compare.is_close(run_len, share)
+        system, user_tpl = load_prompt(
+            s.config_dir.parent / "prompts", s.section("check").get("prompt", "check_v1")
+        )
+        try:
+            verdict = compare.ask(
+                make_llm(conf), system, user_tpl, target.text, target.context, book_text
+            )
+        except compare.CheckError as e:
+            typer.secho(str(e), fg="red", err=True)
+            raise typer.Exit(1) from e
+        finally:
+            del book_text  # 本の文はここで手放す（どこにも書かない）
+        method = f"ollama:{conf.get('model', '')}"
+    else:
+        method = "human"
+    try:
+        record(
+            conn,
+            episode,
+            target,
+            book_id=book,
+            book_label=books[book].label(),
+            locator=page,
+            verdict=verdict,
+            close_wording=close,
+            run_len=run_len,
+            share=share,
+            method=method,
+            checked_by=checker,
+            note=note,
+        )
+    except ValueError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
+    label = compare.VERDICTS[verdict]
+    extra = "（言い回しが本に近い）" if close else ""
+    typer.echo(f"{target.number}：{label}{extra}")
+    if run_len is not None:
+        typer.echo(
+            f"    言い回し：共通する最長の並び {run_len}字・4字の並びの {share:.0%} が本にある"
+        )
+    held = holds(conn, episode, current)
+    if held:
+        typer.secho(f"この回は公開を保留します（{len(held)}件）：", fg="yellow")
+        for h in held:
+            typer.echo(f"  {h.reason}")
+        typer.echo(
+            "直すときは、本の言い回しを使わず、原文と古い資料から書き直してください。"
+            "直したら同じ本でもう一度照合します"
+        )
+    elif verdict in ("same", "not_covered"):
+        typer.echo("何も変えません")
+
+
+@check_app.command("status")
+def check_status(
+    episode: Annotated[str, typer.Option(help="回の ID")],
+    settings: SettingsOpt = None,
+) -> None:
+    """照合の判定の数と、公開を保留する理由を出す（保留があれば終了コード 1）。"""
+    from koten.check.compare import VERDICTS
+    from koten.check.store import holds, summary
+
+    conn, current = _episode_claims(_settings(settings), episode)
+    counts = summary(conn, episode)
+    names = {**VERDICTS, "resolved": "解いた保留"}
+    typer.echo(
+        "照合："
+        + ("、".join(f"{names.get(k, k)} {v}" for k, v in sorted(counts.items())) or "まだ無し")
+    )
+    held = holds(conn, episode, current)
+    for h in held:
+        typer.secho(f"公開保留：{h.reason}", fg="yellow")
+    if held:
+        raise typer.Exit(1)
+    typer.echo("公開の保留はありません")
+
+
+@check_app.command("resolve")
+def check_resolve(
+    episode: Annotated[str, typer.Option(help="回の ID")],
+    key: Annotated[str, typer.Option(help="台本から消えた文の記録の ID（例：ch2-s3#1）")],
+    note: Annotated[str, typer.Option(help="解く理由（60字まで）")],
+    by: Annotated[str | None, typer.Option(help="解いた人")] = None,
+    settings: SettingsOpt = None,
+) -> None:
+    """台本から消えた文の、照合の保留を解く（文が残っているときは、直して照合し直す）。"""
+    from koten.check.store import resolve_gone
+
+    conn, current = _episode_claims(_settings(settings), episode)
+    checker = by or os.environ.get("KOTEN_CHECKER", "").strip() or "owner"
+    try:
+        n = resolve_gone(conn, episode, current, key, checked_by=checker, note=note)
+    except ValueError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
+    typer.echo(f"{key} の保留を解きました（{n}件）")
+
+
 episode_app = typer.Typer(no_args_is_help=True, help="回（episodes）")
 app.add_typer(episode_app, name="episode")
 
@@ -1656,8 +1909,16 @@ def episode_list(
     rows = conn.execute(
         "SELECT * FROM episodes ORDER BY created_at DESC, episode_id DESC LIMIT ?", (top,)
     ).fetchall()
+    held = {
+        x[0]
+        for x in conn.execute(
+            "SELECT DISTINCT episode_id FROM checks WHERE verdict = 'differs' OR close_wording = 1"
+        )
+    }
     for r in rows:
         review = "　※要確認" if r["review_required"] else ""
+        if r["episode_id"] in held:
+            review += "　※照合で食い違いあり（koten check status）"
         worries = "、".join(json.loads(r["worry_ids"]))
         typer.echo(f"{r['episode_id']} 形式{r['format']} {r['state']:11} {worries}{review}")
         if r["state_msg"]:

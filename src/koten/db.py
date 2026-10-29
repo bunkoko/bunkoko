@@ -3,6 +3,7 @@
 悩み（worries）・統計（stats）・回（episodes）・使用履歴（usage）・検索文の控え（query_cache）。
 背景の事実（facts・fact_sources・fact_usage）と、その元になる人物・作品の書誌（persons・works_meta）。
 資料の台帳（ref_works）と、時代の解釈（renderings）・昔の辞書の語釈（dict_entries）。
+今の本（S4）での照合の判定（checks。本の文は持たない）。
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import re
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -222,6 +223,27 @@ CREATE TABLE IF NOT EXISTS dict_entries (
     text_sha TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS dict_entries_headword ON dict_entries(headword);
+
+-- 今の本（S4）での照合の判定（koten check run。SPEC R8・D-017）。本の文の列は作らない
+CREATE TABLE IF NOT EXISTS checks (
+    check_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    episode_id TEXT NOT NULL,
+    claim_key TEXT NOT NULL,             -- ch2-s3#1（段落の ID と、段落の中の文の順番）
+    claim_sha TEXT NOT NULL,             -- 照合した台本の文（差し込んだあと）の指紋
+    claim_text TEXT NOT NULL,            -- 照合した台本の文（自分たちの文）
+    book_id TEXT NOT NULL,               -- config/ref_books.csv
+    book_label TEXT NOT NULL,
+    locator TEXT NOT NULL,               -- ページなど
+    verdict TEXT NOT NULL,               -- same / differs / not_covered / resolved
+    close_wording INTEGER NOT NULL DEFAULT 0,  -- 言い回しが近い（台本の文が本の言い回しに近い）
+    run_len INTEGER,                     -- 共通する最長の並びの字数
+    share REAL,                          -- 台本の文の4字の並びのうち、本にあるものの割合
+    method TEXT NOT NULL,                -- ollama:モデル名 / human
+    checked_by TEXT NOT NULL,
+    checked_at TEXT NOT NULL,
+    note TEXT                            -- 自分の言葉で60字まで（本の文は書かない）
+);
+CREATE INDEX IF NOT EXISTS checks_episode ON checks(episode_id);
 """
 
 

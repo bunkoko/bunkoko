@@ -31,6 +31,19 @@ retries = 2
 batch_size = 200              # この件数ごとに HDD へまとめて書く
 context_chars = 200
 
+[llm.check]                   # 今の本（著作権あり）での照合（SPEC R8・D-017）。手元の Ollama だけ（クラウド不可）
+provider = "ollama"
+endpoint = "http://127.0.0.1:11434"
+model = "gemma4:26b"
+think = false
+num_ctx = 4096
+num_predict = 64              # ラベルだけを返させる
+keep_alive = "5m"
+timeout_sec = 300
+
+[check]
+prompt = "check_v1"           # prompts/<prompt>.md
+
 [llm.script]                  # 台本を書く（SPEC §8.7）。Mac の Claude Code をサブスクリプションで呼ぶ
 provider = "claude_cli"
 command = "claude"
