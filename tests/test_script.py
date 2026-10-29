@@ -501,3 +501,26 @@ def test_source_uses_author_display():
     assert author_label(c, aliases=True) == "岡倉天心（岡倉覚三）"
     del c["author_display"], c["translator_names"]  # 作り直す前の候補表
     assert format_source(c) == "岡倉覚三・岡倉天心『茶の本』「第一章　人情の碗」"
+
+
+def test_episode_visuals_counts_photos(env, tmp_path):
+    """画面の内訳と、写真が何枚要るかの見積もり（M6 の前の確かめ）。"""
+    from typer.testing import CliRunner
+
+    from koten.cli import app
+
+    eid = planned(env, "A", worry_id="W0001")
+    r, _ = run(env, eid)
+    assert r.state == "script_done"
+    photos = tmp_path / "photos"
+    photos.mkdir()
+    for i in range(3):
+        (photos / f"p{i}.jpg").write_bytes(b"x")
+    (photos / ".DS_Store").write_bytes(b"x")
+    cfg = env.path.read_text("utf-8").replace("[paths]\n", f'[paths]\nphotos_dir = "{photos}"\n', 1)
+    settings = tmp_path / "s.toml"
+    settings.write_text(cfg, "utf-8")
+    out = CliRunner().invoke(app, ["episode", "visuals", "--settings", str(settings)])
+    assert out.exit_code == 0, out.output
+    assert eid in out.output and "写真：段落ごとに1枚なら" in out.output
+    assert "写真のフォルダにある写真：3枚" in out.output

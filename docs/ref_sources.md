@@ -120,7 +120,7 @@ uv run koten ref ndl-snapshot --ref R-genkai-v4 --koma all
 ```
 
 - R-genkai-v4 は例です。台帳に書いた ref_id にしてください。
-- **今は止めてあります**。NDL の利用条件を確かめ、問い合わせの答えを docs/decisions.md の D-003 に書いてから、settings.toml の `[ndl] fetch_enabled` を true にします。
+- 一度だけまとめて取る使い方は「継続的な利用」に当たらないと判断し、取得できるようにしてあります（D-003）。止めるときは settings.toml の `[ndl] fetch_enabled` を false にします。IIIF の「APIの利用について」（dl.ndl.go.jp/ja/help_iiif）の本文はまだ読めていないので、Mac のブラウザで一度目を通しておくと安心です。
 - 動き：
   - マニフェストを1回取り、公開範囲を確かめます。
   - 指定したコマの画像を、1件ずつ3秒あけて取ります（net.py。国会図書館のホストは3秒）。

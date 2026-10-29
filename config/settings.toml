@@ -163,9 +163,9 @@ bitrate = "8M"
 port = 8765                   # 127.0.0.1 だけで待ち受ける
 
 [ndl]                         # 国立国会図書館デジタルコレクション（M8a。docs/decisions.md D-003）
-# 使う資料を一度だけまとめて取る（koten ref ndl-snapshot）。NDL の利用条件
-# （IIIF の「APIの利用について」など）を確かめ、問い合わせの答えを D-003 に書いてから true にする
-fetch_enabled = false
+# 使う資料を一度だけまとめて取る（koten ref ndl-snapshot）。一度だけまとめて取る使い方は
+# 「継続的な利用」に当たらないと利用者が判断した（D-003。2026-10-29）。止めるときは false
+fetch_enabled = true
 image_size = "full"           # IIIF の画像の大きさ（full か、幅を決めるなら "2000,"）
 
 [rate_limit]

@@ -294,3 +294,17 @@ def test_ingest_removes_text_that_is_no_longer_storable(settings_file):
     assert any("本文を消しました" in line for line in logs)
     works = {w["source_work_id"]: w for w in read_rows(hdd / "clean/aozora/works.parquet")}
     assert works["700"]["raw_path"] is None
+
+
+def test_include_authors_and_dry_run(settings_file):
+    """有名な作家の詩歌・小説を足す（D-025）。--dry-run は本文を取らずに数と目安を出す。"""
+    hdd = load_settings(settings_file).require_hdd()
+    conf = {**CONF, "include_authors": ["架空四郎", "居ない作家"], "include_authors_ndc": ["913"]}
+    works = aozora.select_works(aozora.read_work_list(list_zip(ROWS)), conf)
+    assert "400" in {w.work_id for w in works}  # NDC 913 の小説が、作家の指定で入る
+    server = FakeServer()
+    plan = aozora.plan_ingest(hdd, conf, make_fetcher(hdd, server))
+    assert plan.by_reason["有名な作家（include_authors）"] == 1
+    assert plan.missing_authors == ["居ない作家"]
+    assert plan.stored == 0 and plan.new == plan.storable
+    assert all("cards/" not in c for c in server.calls)  # 本文は取らない

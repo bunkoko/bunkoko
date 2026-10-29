@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -94,6 +95,12 @@ def ingest(
     source: str,
     limit: Annotated[int | None, typer.Option(help="今回取得するテキストの上限")] = None,
     refresh_list: Annotated[bool, typer.Option(help="作品CSVを取り直す（ETagで確認）")] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run", help="本文は取らず、対象の作品数と付加情報づけの時間の目安だけを出す"
+        ),
+    ] = False,
     settings: SettingsOpt = None,
 ) -> None:
     """原本を取得して raw/<source>/ へ保存する。"""
@@ -103,6 +110,25 @@ def ingest(
     from koten.ingest import aozora
 
     fetcher = _make_fetcher(s, hdd / "raw" / source)
+    if dry_run:
+        plan = aozora.plan_ingest(hdd, s.sources["aozora"], fetcher)
+        typer.echo(
+            f"対象 {plan.selected} 作品（本文を保存できる {plan.storable}）："
+            f"取得済み {plan.stored}、これから取る {plan.new}"
+        )
+        for reason, n in sorted(plan.by_reason.items()):
+            typer.echo(f"  {reason}：{n} 作品")
+        if plan.est_hours is not None:
+            days = plan.est_hours / 24
+            typer.echo(
+                f"付加情報づけの目安：1作品あたり約{plan.chunks_per_work}チャンク × {plan.new}作品"
+                f" ≒ {plan.est_chunks}チャンク、約{plan.est_hours}時間（約{days:.1f}日）"
+            )
+        for a in plan.missing_authors:
+            typer.secho(f"  作品CSVに見つからない作家：{a}（姓名を空白なしで書く）", fg="yellow")
+        for w in plan.missing_works:
+            typer.secho(f"  作品CSVに見つからない作品：{w}", fg="yellow")
+        return
     r = aozora.ingest(
         hdd, s.sources["aozora"], fetcher, limit=limit, refresh_list=refresh_list, log=typer.echo
     )
@@ -2073,6 +2099,78 @@ def episode_list(
         typer.echo(f"{r['episode_id']} 形式{r['format']} {r['state']:11} {worries}{review}")
         if r["state_msg"]:
             typer.echo(f"    {r['state_msg'][:120]}")
+
+
+@episode_app.command("visuals")
+def episode_visuals_cmd(
+    every: Annotated[
+        float, typer.Option(help="写真を替える間隔の目安（秒）。段落が長いときに何枚要るかを見る")
+    ] = 10.0,
+    settings: SettingsOpt = None,
+) -> None:
+    """台本ができた回の画面の内訳と、写真が何枚要るか（同じ写真を直近の回で使わない前提）。"""
+    import json
+    import os
+
+    from koten.db import connect
+    from koten.script import gates
+    from koten.script.data import EpisodeData
+    from koten.script.visuals import count_photos, episode_visuals
+
+    s = _settings(settings)
+    conn = connect(s.ssd_root)
+    rows = conn.execute(
+        "SELECT episode_id, script_json FROM episodes WHERE script_json IS NOT NULL "
+        "AND state != 'discarded' ORDER BY created_at"
+    ).fetchall()
+    if not rows:
+        typer.echo("台本ができた回がありません")
+        return
+    cpm = int(s.section("episode").get("chars_per_min", 300))
+    names = {
+        "photo": "写真",
+        "quote_card": "引用カード",
+        "title_card": "章タイトル",
+        "chart": "統計グラフ",
+        "fact_card": "事実カード",
+        "ref_card": "資料カード",
+        "author_card": "著者カード",
+        "page_image": "資料の画像",
+    }
+    per_seg, per_every = [], []
+    for r in rows:
+        data = EpisodeData.load(conn, s.ssd_root, r["episode_id"])
+        v = episode_visuals(
+            r["episode_id"], json.loads(r["script_json"]), gates.resolver_for(data), cpm
+        )
+        total = sum(v.seconds.values())
+        parts = "、".join(
+            f"{names.get(k, k)} {v.counts[k]}（{v.seconds[k] / 60:.1f}分）"
+            for k in sorted(v.seconds, key=lambda k: -v.seconds[k])
+        )
+        typer.echo(f"{v.episode_id}（約{total / 60:.1f}分）：{parts}")
+        per_seg.append(v.photos(None))
+        per_every.append(v.photos(every))
+        typer.echo(
+            f"    写真：段落ごとに1枚なら {per_seg[-1]}枚、"
+            f"{every:.0f}秒ごとに替えるなら {per_every[-1]}枚"
+        )
+    window = int(s.section("recency").get("photo_episodes", 5))
+    avg_seg = sum(per_seg) / len(per_seg)
+    avg_every = sum(per_every) / len(per_every)
+    have = count_photos(Path(os.path.expanduser(s.raw["paths"].get("photos_dir", ""))))
+    typer.echo(
+        f"1回あたり平均：段落ごとに {avg_seg:.0f}枚、{every:.0f}秒ごとに {avg_every:.0f}枚。"
+        f"同じ写真を直近{window}回で使わないなら、"
+        f"最低 {avg_seg * window:.0f}〜{avg_every * window:.0f}枚が要ります"
+    )
+    if have is None:
+        typer.echo("写真のフォルダ（settings の paths.photos_dir）がまだありません")
+    else:
+        short = max(0, round(avg_seg * window) - have)
+        typer.echo(
+            f"写真のフォルダにある写真：{have}枚（段落ごとに1枚の場合、足りないのは {short}枚）"
+        )
 
 
 @episode_app.command("discard")

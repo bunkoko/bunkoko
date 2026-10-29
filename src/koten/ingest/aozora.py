@@ -207,6 +207,9 @@ def select_works(works: dict[str, AozoraWork], conf: dict[str, Any]) -> list[Aoz
     prefixes = [str(p) for p in conf.get("ndc_prefixes", [])]
     include = {(i["title"], i["author"]) for i in conf.get("include_works", [])}
     exclude = {str(i) for i in conf.get("exclude_work_ids", [])}
+    # 有名な作家の詩歌・小説など（D-025）。作家名と NDC の両方に合う作品だけ
+    authors_in = {str(a) for a in conf.get("include_authors", [])}
+    author_ndc = [str(p) for p in conf.get("include_authors_ndc", [])]
     picked = []
     listed: set[str] = set()
     for w in works.values():
@@ -216,7 +219,8 @@ def select_works(works: dict[str, AozoraWork], conf: dict[str, Any]) -> list[Aoz
         by_list = any((w.title, a) in include for a in authors)
         if by_list:
             listed.add(w.work_id)
-        if by_list or matches_ndc(w.ndc, prefixes):
+        by_author = bool(authors_in & set(authors)) and matches_ndc(w.ndc, author_ndc)
+        if by_list or by_author or matches_ndc(w.ndc, prefixes):
             picked.append(w)
     best: dict[tuple[str, str, tuple[str, ...]], AozoraWork] = {}
     for w in sorted(picked, key=lambda w: int(w.work_id) if w.work_id.isdigit() else 0):
@@ -350,6 +354,80 @@ def person_rows(
                 },
             )
     return list(seen.values())
+
+
+@dataclass
+class IngestPlan:
+    """取得の前の見積もり（koten ingest aozora --dry-run）。"""
+
+    selected: int
+    storable: int
+    stored: int  # もう取ってある
+    new: int  # これから取る
+    by_reason: dict[str, int]
+    missing_authors: list[str]  # include_authors のうち、作品CSVに見つからない作家
+    missing_works: list[str]  # include_works のうち、見つからない作品
+    chunks_per_work: float | None  # 今の取得済みの作品から数えた、1作品あたりのチャンク数
+    est_chunks: int | None
+    est_hours: float | None  # 付加情報づけ（augment）の時間の目安
+
+
+AUGMENT_SEC_PER_CHUNK = 4.9  # gemma4:26b で測った1チャンクあたりの秒数（D-005）
+
+
+def plan_ingest(hdd_root: Path, conf: dict[str, Any], fetcher: Fetcher) -> IngestPlan:
+    """作品CSVだけを見て、対象の作品数と、付加情報づけにかかる時間の目安を出す（本文は取らない）。"""
+    list_path, _ = fetcher.fetch(conf["list_url"], LIST_FILE)
+    listed = read_work_list(list_path.read_bytes())
+    works = select_works(listed, conf)
+    prefixes = [str(p) for p in conf.get("ndc_prefixes", [])]
+    include = {(i["title"], i["author"]) for i in conf.get("include_works", [])}
+    authors_in = {str(a) for a in conf.get("include_authors", [])}
+    author_ndc = [str(p) for p in conf.get("include_authors_ndc", [])]
+    reasons: dict[str, int] = defaultdict(int)
+    storable = stored = 0
+    for w in works:
+        names = set(w.names("author"))
+        if any((w.title, a) in include for a in names):
+            reasons["作品の指定（include_works）"] += 1
+        elif matches_ndc(w.ndc, prefixes):
+            reasons["NDC（ndc_prefixes）"] += 1
+        elif names & authors_in and matches_ndc(w.ndc, author_ndc):
+            reasons["有名な作家（include_authors）"] += 1
+        rel = text_rel_path(w.text_url)
+        if may_store_text(judge_license(w)[0]) and rel:
+            storable += 1
+            stored += (fetcher.raw_dir / rel).exists()
+    every_author = {a for w in listed.values() for a in w.names("author")}
+    missing_authors = sorted(authors_in - every_author)
+    found_works = {(w.title, a) for w in listed.values() for a in w.names("author")}
+    missing_works = sorted(f"{t}（{a}）" for t, a in include - found_works)
+    per_work = None
+    chunks_path = hdd_root / "chunks" / "aozora.parquet"
+    works_path = hdd_root / "clean" / "aozora" / "texts.parquet"
+    if chunks_path.exists() and works_path.exists():
+        import pyarrow.parquet as pq
+
+        n_chunks = pq.read_metadata(chunks_path).num_rows
+        n_works = pq.read_metadata(works_path).num_rows
+        per_work = round(n_chunks / n_works, 1) if n_works else None
+    new = storable - stored
+    est_chunks = int(new * per_work) if per_work is not None else None
+    est_hours = (
+        round(est_chunks * AUGMENT_SEC_PER_CHUNK / 3600, 1) if est_chunks is not None else None
+    )
+    return IngestPlan(
+        selected=len(works),
+        storable=storable,
+        stored=stored,
+        new=new,
+        by_reason=dict(reasons),
+        missing_authors=missing_authors,
+        missing_works=missing_works,
+        chunks_per_work=per_work,
+        est_chunks=est_chunks,
+        est_hours=est_hours,
+    )
 
 
 @dataclass

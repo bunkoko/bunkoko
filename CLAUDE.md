@@ -49,4 +49,4 @@
 - uv run koten ref fetch（台帳で使えると判定された古い英訳を Standard Ebooks から net.py で取り、一節ごとに分けて HDD に置く）→ ref build
 - uv run koten ref attach --episode E… --chapter ch2 --id I-…（確かめ済みの時代の解釈・語釈を企画の章に付ける。--remove で外す）。悩みの言葉の語釈は企画が自動で付ける
 - uv run koten check list --episode E… → check run --episode E… --claim C5 --book B-… --page 23ページ（本の該当箇所を貼り付けて Ctrl-D。手元の AI で判定だけを残す）→ check status（公開の保留）
-- uv run koten ref ndl-snapshot --ref R-… --koma all（国会図書館の資料を一度だけまとめて取る。マニフェストで公開範囲を確かめ、3秒あけて取る。settings の [ndl] fetch_enabled が true のときだけ。手順は docs/ref_sources.md）
+- uv run koten ref ndl-snapshot --ref R-… --koma all（国会図書館の資料を一度だけまとめて取る。マニフェストで公開範囲を確かめ、3秒あけて取る。一度だけ取る使い方は継続的な利用に当たらないと判断した（D-003）。手順は docs/ref_sources.md）
