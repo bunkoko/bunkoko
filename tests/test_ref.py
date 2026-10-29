@@ -157,6 +157,7 @@ def test_review_cannot_unlock_unknown_or_copyrighted(tmp_path):
         ([work("R-a"), work("R-a")], [], "重複"),
         ([work("R-a", pub_year="")], [], "pub_year"),
         ([work("R-a", source="ndl")], [], "pid"),
+        ([work("R-a", pid="000001")], [], "source は ndl"),
         (
             [work("R-a", reviewed_license="PD_JP")],
             [person("R-a", 1, "甲", "author", 1900)],

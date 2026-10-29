@@ -230,6 +230,8 @@ def read_registry(config_dir: Path) -> list[RefWork]:
             bad.append("団体名義なら credited_as（名義）を書く")
         if g["source"] not in SOURCES:
             bad.append(f"source は {'・'.join(SOURCES)} のどれか")
+        if g["pid"] and g["source"] != "ndl":
+            bad.append("pid（NDL の資料）があるなら source は ndl にする（公開範囲も判定する）")
         if g["source"] == "ndl":
             if not g["pid"]:
                 bad.append("NDL の資料は pid が要る")
