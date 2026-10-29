@@ -29,6 +29,7 @@
 - uv run koten ingest aozora --limit 5 && uv run koten normalize aozora && uv run koten chunk aozora
 - uv sync --extra ml（埋め込みモデルと SudachiPy。M2 以降で必要）
 - uv run koten augment --limit 20 && uv run koten embed && uv run koten index build
+- uv run koten update --index（留守のあいだ用：青空文庫の取り直し → 正規化 → チャンク化 → 動いている augment が終わるのを待って、増えた分の augment → 埋め込み → 索引。augment は2つ同時に動かさない）
 - uv run koten index query "同期の昇進を喜べない"
 - uv run koten serve（127.0.0.1 の API。SSD だけを読む）
 - uv run koten db init（SSD の SQLite を作り、stats.csv を読み込む）

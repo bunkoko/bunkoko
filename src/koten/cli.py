@@ -129,6 +129,12 @@ def ingest(
         for w in plan.missing_works:
             typer.secho(f"  作品CSVに見つからない作品：{w}", fg="yellow")
         return
+    _ingest_aozora(s, hdd, fetcher, limit=limit, refresh_list=refresh_list, hint=True)
+
+
+def _ingest_aozora(s: Settings, hdd, fetcher, *, limit=None, refresh_list=False, hint=True):
+    from koten.ingest import aozora
+
     r = aozora.ingest(
         hdd, s.sources["aozora"], fetcher, limit=limit, refresh_list=refresh_list, log=typer.echo
     )
@@ -145,11 +151,13 @@ def ingest(
         )
         for line in r.removed:
             typer.echo(f"  {line}")
-        ids = " ".join(f"--work {line.split()[0]}" for line in r.removed)
-        typer.echo(
-            "続けて：uv run koten normalize aozora → uv run koten chunk aozora → "
-            f"uv run koten forget-works {ids} --apply → uv run koten index build"
-        )
+        if hint:
+            ids = " ".join(f"--work {line.split()[0]}" for line in r.removed)
+            typer.echo(
+                "続けて：uv run koten normalize aozora → uv run koten chunk aozora → "
+                f"uv run koten forget-works {ids} --apply → uv run koten index build"
+            )
+    return r
 
 
 @app.command()
@@ -207,9 +215,29 @@ def augment(
     settings: SettingsOpt = None,
 ) -> None:
     """引用候補の抽出と付加情報（ローカルLLM。夜間向け）。中断しても続きから再開する。"""
+    from koten.llm import LLMError
+    from koten.runlock import BusyError
+
     s = _settings(settings)
     hdd = _hdd(s)
+    try:
+        _augment_run(s, hdd, model=model, limit=limit)
+    except BusyError as e:
+        typer.secho(
+            "ほかの augment（または koten update の付加情報づけ）が動いています。"
+            "同じ所に2つが同時に書くと結果が消えるので、終わってから実行してください",
+            fg="red",
+            err=True,
+        )
+        raise typer.Exit(2) from e
+    except LLMError as e:
+        raise typer.Exit(1) from e
+
+
+def _augment_run(s: Settings, hdd, *, model=None, limit=None):
+    """augment の本体。ロックを取り、LLM が止まったら LLMError をそのまま出す。"""
     from koten.parquet import data_files
+    from koten.runlock import AUGMENT_COMMAND, BusyError, hold, lock_path, other_processes
 
     if not data_files(hdd / "chunks", "*.parquet"):
         _require_input(hdd / "chunks" / "aozora.parquet", "chunk aozora")
@@ -229,21 +257,25 @@ def augment(
     llm = make_llm(conf, model)
     cfg = AugmentConfig.from_settings(s.section("augment"))
     started = time.monotonic()
-    try:
-        r = run_augment(
-            hdd,
-            s.config_dir.parent / "prompts",
-            load_themes(s.config_dir),
-            llm,
-            cfg,
-            limit=limit,
-            log=typer.echo,
-        )
-    except LLMError as e:
-        typer.secho(str(e), fg="red", err=True)
-        if stats := describe_stats(getattr(llm, "stats", {})):
-            typer.echo(stats)
-        raise typer.Exit(1) from e
+    with hold(lock_path(s.ssd_root, "augment")):
+        # ロックを持たない古い版の augment が動いていないかも見る
+        if others := other_processes(AUGMENT_COMMAND):
+            raise BusyError("、".join(str(pid) for pid, _ in others))
+        try:
+            r = run_augment(
+                hdd,
+                s.config_dir.parent / "prompts",
+                load_themes(s.config_dir),
+                llm,
+                cfg,
+                limit=limit,
+                log=typer.echo,
+            )
+        except LLMError as e:
+            typer.secho(str(e), fg="red", err=True)
+            if stats := describe_stats(getattr(llm, "stats", {})):
+                typer.echo(stats)
+            raise
     elapsed = time.monotonic() - started
     per_chunk = elapsed / r.processed if r.processed else 0.0
     typer.echo(
@@ -253,6 +285,116 @@ def augment(
     typer.echo(f"時間 {elapsed:.0f}秒（1チャンクあたり {per_chunk:.1f}秒）・モデル {model}")
     if stats := describe_stats(getattr(llm, "stats", {})):
         typer.echo(stats)
+    return r
+
+
+@app.command()
+def update(
+    index: Annotated[
+        bool,
+        typer.Option("--index", help="最後に埋め込みと索引も作り直す（uv sync --extra ml が要る）"),
+    ] = False,
+    poll_minutes: Annotated[
+        int, typer.Option(help="動いている augment が終わったかを確かめる間隔（分）")
+    ] = 10,
+    retries: Annotated[int, typer.Option(help="LLM が止まったとき、10分待ってやり直す回数")] = 3,
+    settings: SettingsOpt = None,
+) -> None:
+    """留守のあいだ用：青空文庫を取り直し、正規化・チャンク化して、増えたチャンクに付加情報を付ける。
+
+    今動いている augment と同時に始めてよい。取り直し・正規化・チャンク化はすぐに行い、
+    付加情報づけは、動いている augment が終わるのを待ってから行う（同じ所に2つが書かないように）。
+    """
+    from koten.augment.forget import episodes_using, forget_works, read_changed
+    from koten.db import connect
+    from koten.llm import LLMError
+    from koten.normalize.aozora import changed_works_path
+    from koten.runlock import BusyError, hold, lock_path
+
+    s = _settings(settings)
+    hdd = _hdd(s)
+
+    def say(msg: str) -> None:
+        typer.echo(f"[{time.strftime('%m-%d %H:%M')}] {msg}")
+
+    try:
+        with hold(lock_path(s.ssd_root, "update")):
+            say("1/5 青空文庫を取り直す（増えた作品だけを、1秒に1件以下で取る）")
+            fetcher = _make_fetcher(s, hdd / "raw" / "aozora")
+            r = _ingest_aozora(s, hdd, fetcher, hint=False)
+            say("2/5 正規化")
+            normalize("aozora", settings=settings)
+            say("3/5 チャンク化")
+            chunk("aozora", settings=settings)
+            _wait_for_augment(s, say, poll_minutes * 60)
+            targets = {line.split()[0] for line in r.removed}
+            targets |= read_changed(changed_works_path(hdd))
+            if targets:
+                say(f"4/5 本文を消した作品・本文が変わった作品 {len(targets)} 件の付加情報を除く")
+                users = episodes_using(connect(s.ssd_root), targets)
+                if users:
+                    typer.secho(
+                        "この作品の一節を使っている回があるので、取り除きませんでした："
+                        f"{'、'.join(users)}。koten episode discard と koten forget-works で"
+                        "直してください",
+                        fg="yellow",
+                    )
+                else:
+                    fr = forget_works(hdd, _augment_dir(s, hdd), targets, apply=True)
+                    changed_works_path(hdd).unlink(missing_ok=True)
+                    typer.echo(
+                        f"候補 {fr.candidates} 件・処理済みチャンク {fr.done_chunks} 件を"
+                        "取り除きました"
+                    )
+            else:
+                say("4/5 取り除く付加情報はありません")
+            say("5/5 付加情報づけ（まだのチャンクだけ）")
+            failures = 0
+            while True:
+                try:
+                    _augment_run(s, hdd)
+                    break
+                except BusyError:
+                    _wait_for_augment(s, say, poll_minutes * 60)
+                except LLMError as e:
+                    failures += 1
+                    if failures > retries:
+                        say("LLM が止まったままなので終わります。Ollama を確かめてください")
+                        raise typer.Exit(1) from e
+                    say(f"LLM が止まりました。10分待ってやり直します（{failures}/{retries}）")
+                    time.sleep(600)
+            if index:
+                say("埋め込み")
+                embed(settings=settings)
+                say("索引")
+                index_build(settings=settings)
+            say("終わりました")
+    except BusyError as e:
+        typer.secho("ほかの koten update が動いています", fg="red", err=True)
+        raise typer.Exit(2) from e
+
+
+def _wait_for_augment(s: Settings, say, poll_sec: int) -> None:
+    """ほかの augment が動いていれば、終わるまで待つ。
+
+    ロックを持たない古い版の augment も見つけるよう、プロセスの一覧でも探す。
+    """
+    from koten.runlock import AUGMENT_COMMAND, is_busy, lock_path, other_processes
+
+    waited, logged = 0, None
+    while True:
+        procs = other_processes(AUGMENT_COMMAND)
+        busy = is_busy(lock_path(s.ssd_root, "augment"))
+        if not procs and not busy:
+            if waited:
+                say("動いていた augment が終わりました")
+            return
+        if logged is None or waited - logged >= 6 * 3600:
+            pids = "、".join(str(p) for p, _ in procs) or "ロックを持つプロセス"
+            say(f"ほかの augment（PID {pids}）が動いているので、終わるのを待っています")
+            logged = waited
+        time.sleep(poll_sec)
+        waited += poll_sec
 
 
 @app.command("forget-works")

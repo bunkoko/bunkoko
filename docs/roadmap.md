@@ -15,7 +15,7 @@
 | # | すること | なぜ | 手順 |
 |---|---|---|---|
 | 1 | 最新を取り込み、テストを通す | 今日の変更を Mac に入れる | `git pull` → `uv run pytest` |
-| 2 | augment が終わってから、青空文庫を取り直す。有名な作家も足す | 戦時加算の判定を厳しくした（1955年から）。有名な作家の詩歌・小説を足すと決めた（D-025） | まず `uv run koten ingest aozora --dry-run` で、増える作品の数と付加情報づけの時間を見る（時間は今の随筆・思想の作品の平均から出すので、小説では少なめの目安）。長すぎるときは、config/sources.yaml の「第2群」の作家を外す。よければ `uv run koten ingest aozora` → `uv run koten normalize aozora` → `uv run koten chunk aozora` → `uv run koten augment`（増えた分だけ処理する）。「本文を消した作品」と出たら、forget-works で付加情報を取り除く |
+| 2 | 青空文庫を取り直し、有名な作家を足す（今の augment と同時に始めてよい） | 戦時加算の判定を厳しくした（1955年から）。有名な作家の詩歌・小説を足すと決めた（D-025） | `git pull` → `uv run koten ingest aozora --dry-run` で増える作品の数と時間を見る（時間は小説では少なめの目安。長すぎるときは config/sources.yaml の「第2群」を外す）→ 新しいターミナルの窓で `caffeinate -i uv run koten update --index 2>&1 | tee -i -a ~/koten-update.log`。取り直し・正規化・チャンク化はすぐに行い、増えたチャンクの augment は、今動いている augment が終わるのを待ってから行う。最後に埋め込みと索引も作り直す（--index）。進み具合は `tail -n 20 ~/koten-update.log` |
 | 3 | 資料の台帳を書く | 権利の判定の元になる。台帳で「使える」と判定された資料しか取れない | ref_works.csv・ref_people.csv に書き、`uv run koten ref check` で判定を見る。「要確認」の資料を確かめたら、`ref check` が出す確認の印を reviewed_hash に写す。団体名義の辞書も、1冊ずつ奥付を見て確かめる（D-018 案1）。手順は docs/ref_sources.md |
 | 4 | 国会図書館の資料の公開範囲を画面で見て、一度だけまとめて取る | 公開範囲が「インターネット公開（保護期間満了）」のものだけを使う。取得は始めてよいと決めた（D-003） | dl.ndl.go.jp/pid/（PID）を巻ごとに開き、結果を ref_works.csv の ndl_access・ndl_checked_at に書く → `uv run koten ref check` で「使える」になったのを見る → `uv run koten ref ndl-snapshot --ref` のあとに台帳の ref_id を書き、`--koma all` を付けて取る（docs/ref_sources.md の例：`--ref R-genkai-v4 --koma all`） |
 | 5 | 古い英訳を取る | 『自省録』『論語』の訳の材料と、時代の解釈 | Long・Legge を台帳に書き、`uv run koten ref check` → `uv run koten ref fetch` → `uv run koten ref build` |
