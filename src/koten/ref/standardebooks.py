@@ -24,12 +24,11 @@ import pyarrow as pa
 from koten.net import Fetcher
 from koten.parquet import data_files, read_rows, write_rows
 from koten.ref.registry import RefWork
-from koten.ref.texts import RENDERING_COLUMNS, Rendering
+from koten.ref.texts import IMPORTED, RENDERING_COLUMNS, Rendering
 
 XHTML = "{http://www.w3.org/1999/xhtml}"
 EPUB_TYPE = "{http://www.idpf.org/2007/ops}type"
 OPF = "{http://www.idpf.org/2007/opf}"
-IMPORTED = "imported"
 SCHEMA = pa.schema([(c, pa.string()) for c in RENDERING_COLUMNS])
 
 

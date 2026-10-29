@@ -62,6 +62,7 @@ ROLES_BY_KIND = {
 }
 STATUSES = ("transcribed", "verified")
 USABLE_STATUS = "verified"
+IMPORTED = "imported"  # 電子版から機械で分けた本文（HDD の clean/ref/。引用には使わない）
 RENDERING_ID = re.compile(r"^I-[A-Za-z0-9][A-Za-z0-9_.-]*$")
 ENTRY_ID = re.compile(r"^J-[A-Za-z0-9][A-Za-z0-9_.-]*$")
 PASSAGE_KEY = re.compile(r"^([a-z_]+):(\S+)$")

@@ -284,3 +284,39 @@ def test_ref_fetch_command(conf, tmp_path, monkeypatch):
     assert "The pupil said" in r.output and "[imported]" in r.output
     r = CliRunner().invoke(app, ["ref", "fetch", "--ref", "R-none", *st])
     assert r.exit_code == 2 and "standardebooks.editions に無い" in r.output
+
+
+def test_build_without_hdd_keeps_imported_rows(conf, tmp_path):
+    hdd = tmp_path / "hdd"
+    works = {w.ref_id: w for w in read_registry(conf)}
+    raw = hdd / "raw" / "standardebooks"
+    import_edition(
+        hdd,
+        CONF,
+        editions(CONF)["R-legge-analects"],
+        works["R-legge-analects"],
+        fetcher(raw, Server()),
+    )
+    conn = connect(tmp_path / "ssd")
+    build_refs(conn, conf, load_imported(hdd))
+    # HDD が未接続（imported=None）でも、取り込んだ本文は残る
+    b = build_refs(conn, conf, None)
+    assert b.imported == 3
+    assert renderings_for_passage(conn, "lunyu:1.1", verified_only=False)[0]["status"] == "imported"
+    # 資料が使えなくなったら、HDD が無くても SSD からは外す
+    write(
+        conf,
+        [
+            work(
+                "R-legge-analects",
+                kind="translation",
+                title="The Analects",
+                lang="en",
+                source="standardebooks",
+                pub_year="1893",
+                credit="x",
+            )
+        ],
+        [person("R-legge-analects", 1, "訳者", "translator", 1956, country="", allied="")],
+    )
+    assert build_refs(conn, conf, None).imported == 0

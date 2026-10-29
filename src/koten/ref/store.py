@@ -19,6 +19,7 @@ from koten.facts.dates import era_year
 from koten.ref.registry import RefWork, read_registry
 from koten.ref.texts import (
     ENTRY_COLUMNS,
+    IMPORTED,
     RENDERING_COLUMNS,
     USABLE_STATUS,
     Rendering,
@@ -82,12 +83,18 @@ def _work_row(w: RefWork) -> list[Any]:
 
 
 def build_refs(
-    conn: sqlite3.Connection, config_dir: Path, imported: Iterable[Rendering] = ()
+    conn: sqlite3.Connection, config_dir: Path, imported: Iterable[Rendering] | None = ()
 ) -> RefBuildResult:
+    """imported が None なら（HDD が未接続のとき）、SSD にある取り込んだ本文を残す。"""
     works = read_registry(config_dir)
     by_id = {w.ref_id: w for w in works}
     renderings = read_renderings(config_dir, by_id, load_canon(config_dir))
     entries = read_dict_entries(config_dir, by_id)
+    if imported is None:
+        imported = [
+            Rendering(**{c: r[c] or "" for c in RENDERING_COLUMNS})
+            for r in conn.execute("SELECT * FROM renderings WHERE status = ?", (IMPORTED,))
+        ]
     # 取り込んだ本文は、使える資料のものだけ入れる（使えない資料のものは ref build が HDD から消す）
     imported = [r for r in imported if by_id.get(r.ref_id) and by_id[r.ref_id].usable]
     canon = load_canon(config_dir)

@@ -1429,13 +1429,24 @@ def ref_build(settings: SettingsOpt = None) -> None:
     from koten.ref.texts import TextsError
 
     s = _settings(settings)
-    hdd = _hdd(s)
     works = {w.ref_id: w for w in _registry(s)}
-    removed = forget_unusable(hdd, works, editions(s.sources.get("standardebooks") or {}))
-    for line in removed:
-        typer.secho(f"使えない資料の、取り込んだ本文を消しました：{line}", fg="yellow")
     try:
-        r = build_refs(connect(s.ssd_root), s.config_dir, load_imported(hdd))
+        hdd = s.require_hdd()
+    except HddNotConnectedError:
+        # 辞書の語釈だけを直したときなど。取り込んだ英訳は SSD にあるものを残す
+        hdd, imported = None, None
+        typer.secho(
+            "HDD が未接続なので、取り込んだ古い英訳は SSD にあるもの（使える資料の分）を残します。"
+            "使えなくなった資料の HDD の本文は、HDD をつないで ref build をしたときに消します",
+            fg="yellow",
+        )
+    if hdd is not None:
+        removed = forget_unusable(hdd, works, editions(s.sources.get("standardebooks") or {}))
+        for line in removed:
+            typer.secho(f"使えない資料の、取り込んだ本文を消しました：{line}", fg="yellow")
+        imported = load_imported(hdd)
+    try:
+        r = build_refs(connect(s.ssd_root), s.config_dir, imported)
     except (RefError, TextsError) as e:
         typer.secho(str(e), fg="red", err=True)
         raise typer.Exit(2) from e
