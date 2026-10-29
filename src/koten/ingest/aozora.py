@@ -360,6 +360,8 @@ class IngestResult:
     skipped: int
     blocked: dict[str, int]
     errors: list[str] = field(default_factory=list)
+    # 前は保存できたが、判定が厳しくなって保存できなくなった作品（本文を消した）
+    removed: list[str] = field(default_factory=list)
 
 
 def ingest(
@@ -395,6 +397,7 @@ def ingest(
     blocked: dict[str, int] = defaultdict(int)
     fetched = skipped = usable = 0
     errors: list[str] = []
+    removed: list[str] = []
     base_url = conf.get("text_base_url") or AOZORA_SITE
     for w in works:
         lic, reason = judge_license(w)
@@ -403,6 +406,10 @@ def ingest(
         if not may_store_text(lic):
             # R2：本文は保存しない（書誌情報のみ）
             blocked[str(lic)] += 1
+            if rel and (old := fetcher.raw_dir / rel).exists():
+                old.unlink()  # 前の判定で保存した本文も残さない
+                removed.append(f"{w.work_id} {w.title}（{lic}）")
+                log(f"    本文を消しました（{lic}）：{w.title}")
         elif rel is None:
             blocked["NO_TEXT_ZIP"] += 1
         else:
@@ -431,4 +438,4 @@ def ingest(
     log(f"書誌と判定結果を書き込み中：{clean_dir}")
     write_rows(clean_dir / "works.parquet", rows, WORKS_SCHEMA)
     write_rows(clean_dir / "persons.parquet", person_rows(works, aliases, listed), PERSONS_SCHEMA)
-    return IngestResult(len(works), usable, fetched, skipped, dict(blocked), errors)
+    return IngestResult(len(works), usable, fetched, skipped, dict(blocked), errors, removed)

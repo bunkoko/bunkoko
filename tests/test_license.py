@@ -5,10 +5,16 @@ import pytest
 from koten.license import (
     License,
     Person,
+    ReviewError,
+    apply_review,
     from_cc_license,
     is_usable,
+    judge_corporate_work,
+    judge_edition,
+    judge_ndl_access,
     judge_public_domain,
     may_store_text,
+    stricter,
 )
 
 
@@ -29,8 +35,32 @@ def test_unknown_death_year():
     assert judge_public_domain([])[0] == License.UNKNOWN
 
 
-def test_allied_1957_is_public_domain():
-    assert judge_public_domain([Person("B", 1957, allied=True)])[0] == License.PD_JP
+def test_allied_1954_is_public_domain():
+    assert judge_public_domain([Person("B", 1954, allied=True)])[0] == License.PD_JP
+    assert judge_public_domain([Person("B", 1954, allied=None)])[0] == License.PD_JP
+
+
+@pytest.mark.parametrize("year", [1955, 1956, 1957])
+def test_allied_1955_to_1957_needs_review(year):
+    # 国ごとの戦時加算の日数を確かめるまで、1955〜1957年没も人の確認へ（D-019）
+    lic, reason = judge_public_domain([Person("B", year, allied=True)])
+    assert lic == License.NEEDS_REVIEW and "R4" in reason
+    assert judge_public_domain([Person("B", year, allied=None)])[0] == License.NEEDS_REVIEW
+    assert judge_public_domain([jp("B", year)])[0] == License.PD_JP
+
+
+def test_rights_holder_allied_needs_review():
+    # 1941-12-08 に英米の出版社が権利を持っていた訳書など
+    lic, reason = judge_public_domain([jp("訳者", 1960, "translator")], rights_holder_allied=True)
+    assert lic == License.NEEDS_REVIEW and "権利者が連合国籍" in reason
+    assert (
+        judge_public_domain([jp("訳者", 1960)], rights_holder_allied=None)[0]
+        == License.NEEDS_REVIEW
+    )
+    assert judge_public_domain([jp("訳者", 1960)], rights_holder_allied=False)[0] == License.PD_JP
+    assert judge_public_domain([jp("訳者", 1950)], rights_holder_allied=True)[0] == License.PD_JP
+    lic, _ = judge_public_domain([jp("訳者", 1960)], prewar_work=False, rights_holder_allied=True)
+    assert lic == License.PD_JP
 
 
 def test_allied_1958_needs_review():
@@ -94,3 +124,58 @@ def test_usable_and_storable():
         License.NEEDS_REVIEW,
     ):
         assert not is_usable(lic) and not may_store_text(lic)
+
+
+def test_corporate_work():
+    assert (
+        judge_corporate_work("三省堂編輯所", 1967)[0] == License.NEEDS_REVIEW
+    )  # 案1：人が確かめる
+    assert judge_corporate_work("三省堂編輯所", 1968)[0] == License.COPYRIGHTED
+    assert judge_corporate_work("三省堂編輯所", None)[0] == License.UNKNOWN
+
+
+def test_edition_year():
+    assert judge_edition(1891)[0] == License.PD_JP
+    assert judge_edition(1967)[0] == License.PD_JP
+    assert judge_edition(1968)[0] == License.NEEDS_REVIEW
+    assert judge_edition(None)[0] == License.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    "label,expected",
+    [
+        ("internet_pd", License.PD_JP),
+        ("internet_saitei", License.COPYRIGHTED),
+        ("internet_kyodaku", License.COPYRIGHTED),
+        ("kojin", License.UNKNOWN),
+        ("kannai", License.UNKNOWN),
+        ("", License.UNKNOWN),
+        (None, License.UNKNOWN),
+        ("インターネット公開", License.UNKNOWN),
+    ],
+)
+def test_ndl_access(label, expected):
+    assert judge_ndl_access(label)[0] == expected
+
+
+def test_stricter_takes_worst():
+    ok = (License.PD_JP, "a")
+    assert stricter(ok, (License.PD_JP, "b")) == (License.PD_JP, "a；b")
+    assert stricter(ok, (License.NEEDS_REVIEW, "r"))[0] == License.NEEDS_REVIEW
+    assert stricter((License.NEEDS_REVIEW, "r"), (License.UNKNOWN, "u")) == (License.UNKNOWN, "u")
+    assert stricter((License.UNKNOWN, "u"), (License.COPYRIGHTED, "c"))[0] == License.COPYRIGHTED
+    assert stricter()[0] == License.UNKNOWN
+
+
+def test_review_only_resolves_needs_review():
+    assert apply_review(License.NEEDS_REVIEW, None) == License.NEEDS_REVIEW
+    assert apply_review(License.NEEDS_REVIEW, "PD_JP") == License.PD_JP
+    assert apply_review(License.NEEDS_REVIEW, "COPYRIGHTED") == License.COPYRIGHTED
+    assert apply_review(License.PD_JP, "COPYRIGHTED") == License.COPYRIGHTED
+    assert apply_review(License.PD_JP, "UNKNOWN") == License.UNKNOWN
+    assert apply_review(License.COPYRIGHTED, "UNKNOWN") == License.COPYRIGHTED
+    for computed in (License.UNKNOWN, License.COPYRIGHTED, License.BLOCKED_SA):
+        with pytest.raises(ReviewError):
+            apply_review(computed, "PD_JP")
+    with pytest.raises(ReviewError):
+        apply_review(License.NEEDS_REVIEW, "CC0")

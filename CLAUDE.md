@@ -41,3 +41,4 @@
 - uv run koten forget-works --changed（正規化で本文が変わった作品。--apply で付加情報を取り除き、augment で作り直す）
 - uv run koten facts build（HDD の書誌と config/facts.csv から、SSD の事実の表を作り直す）／ facts coverage ／ facts list --episode <ID>
 - uv run koten facts todo --episode <ID> → facts draft --episode <ID>（AI の下書き）→ facts review（下書きを読む）→ 人が別の資料で確かめ、CSV の accept に 1 → facts accept（--from を省くと最新の下書き）→ facts build → facts attach --episode <ID>（企画に事実を付け直す）→ script
+- uv run koten ref check（config/ref_works.csv・ref_people.csv の資料を、関わった人全員の没年・団体名義・版・NDL の公開範囲で1冊ずつ判定する。書き込みはしない）

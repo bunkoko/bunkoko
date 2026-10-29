@@ -261,3 +261,36 @@ def test_alias_head_outside_selection_gets_a_person_row():
     persons = {p["person_id"]: p for p in aozora.person_rows(selected, aliases, listed)}
     assert set(persons) == {"aozora:person:000020", "aozora:person:000021"}
     assert persons["aozora:person:000020"]["canonical_id"] == "aozora:person:000021"
+
+
+def test_ingest_removes_text_that_is_no_longer_storable(settings_file):
+    """前の判定で保存した本文も、今の判定で保存できなければ消す（R2。R4 を厳しくしたときなど）。"""
+    hdd = load_settings(settings_file).require_hdd()
+    rows = ROWS + [
+        # 翻訳：原著者は国籍不明で1956年没 → 今は R4 の確認へ（前は満了としていた）
+        row(
+            "700", "随想", "NDC 131", "新字新仮名", "000008", "外国", "随想家", "著者", "1956-01-01"
+        ),
+        row(
+            "700", "随想", "NDC 131", "新字新仮名", "000009", "日本", "訳者", "翻訳者", "1940-01-01"
+        ),
+    ]
+
+    def server(request: httpx.Request) -> httpx.Response:
+        if str(request.url).endswith("list_person_all_extended_utf8.zip"):
+            return httpx.Response(200, content=list_zip(rows))
+        return FakeServer()(request)
+
+    work = {w.work_id: w for w in aozora.select_works(aozora.read_work_list(list_zip(rows)), CONF)}
+    assert aozora.judge_license(work["700"])[0] == License.NEEDS_REVIEW
+    stale = hdd / "raw" / "aozora" / aozora.text_rel_path(work["700"].text_url)
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_bytes(text_zip(SAMPLE_TEXT))
+
+    logs: list[str] = []
+    r = aozora.ingest(hdd, CONF, make_fetcher(hdd, server), log=logs.append)
+    assert not stale.exists()
+    assert r.removed == ["700 随想（NEEDS_REVIEW）"]
+    assert any("本文を消しました" in line for line in logs)
+    works = {w["source_work_id"]: w for w in read_rows(hdd / "clean/aozora/works.parquet")}
+    assert works["700"]["raw_path"] is None

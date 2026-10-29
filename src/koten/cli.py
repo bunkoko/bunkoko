@@ -110,6 +110,15 @@ def ingest(
     )
     for err in r.errors:
         typer.secho(f"  取得失敗：{err}", fg="yellow", err=True)
+    if r.removed:
+        typer.secho(
+            f"権利の判定が厳しくなり、本文を消した作品が {len(r.removed)} 件あります。"
+            "normalize・chunk・index build をやり直し、"
+            "付加情報は forget-works で取り除いてください：",
+            fg="yellow",
+        )
+        for line in r.removed:
+            typer.echo(f"  {line}")
 
 
 @app.command()
@@ -1358,6 +1367,54 @@ def facts_accept(
     typer.echo(
         f"{n} 件を config/facts.csv に足しました。uv run koten facts build で SSD に入れます"
     )
+
+
+ref_app = typer.Typer(
+    no_args_is_help=True, help="資料の台帳（時代の解釈・昔の辞書・古い訳）と、その本文"
+)
+app.add_typer(ref_app, name="ref")
+
+
+def _registry(s: Settings):
+    from koten.ref.registry import RefError, read_registry
+
+    try:
+        return read_registry(s.config_dir)
+    except RefError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
+
+
+@ref_app.command("check")
+def ref_check(
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="判定の理由を全部出す")] = False,
+    settings: SettingsOpt = None,
+) -> None:
+    """config/ref_works.csv・ref_people.csv を読み、1冊ずつ権利を判定する（何も書き込まない）。"""
+    from collections import Counter
+
+    works = _registry(_settings(settings))
+    if not works:
+        typer.echo("台帳（config/ref_works.csv）に資料がありません")
+        return
+    for w in works:
+        mark = "使える" if w.usable else "使えない"
+        review = ""
+        if w.reviewed_license:
+            review = f"（判定 {w.computed} → 人の確認 {w.reviewed_by} {w.reviewed_at}）"
+        typer.secho(
+            f"{w.ref_id}  {w.label()}  {w.license} {mark}{review}",
+            fg="green" if w.usable else "yellow",
+        )
+        if verbose or not w.usable:
+            typer.echo(f"    {w.computed_reason}")
+        if w.computed == "NEEDS_REVIEW" and not w.reviewed_license:
+            typer.echo(
+                "    → 確かめたら ref_works.csv の reviewed_license に PD_JP か COPYRIGHTED と、"
+                "reviewed_by・reviewed_at・review_note を書く"
+            )
+    count = Counter(str(w.license) for w in works)
+    typer.echo("、".join(f"{k} {v}" for k, v in sorted(count.items())))
 
 
 episode_app = typer.Typer(no_args_is_help=True, help="回（episodes）")
