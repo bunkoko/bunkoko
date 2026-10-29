@@ -21,8 +21,10 @@ import httpx
 import pyarrow as pa
 
 from koten import ids
-from koten.ingest.review import AozoraReview
+from koten.ingest.review import ANONYMOUS_NAMES, AozoraReview
 from koten.license import (
+    LAST_EXPIRED_ANONYMOUS_PUB_YEAR,
+    LAST_EXPIRED_DEATH_YEAR,
     License,
     Person,
     judge_anonymous_work,
@@ -102,6 +104,8 @@ class AozoraWork:
     original_title: str = ""
     title_yomi: str = ""
     parent_book: str = ""
+    # 初出・底本・底本の親本の年のうち、いちばん早い年（この作品が公表済みだった証拠。D-029）
+    published_by: int | None = None
     persons: list[dict[str, str]] = field(default_factory=list)
 
     def names(self, role: str) -> list[str]:
@@ -149,6 +153,7 @@ def read_work_list(zip_bytes: bytes) -> dict[str, AozoraWork]:
                     )
                     if v
                 ),
+                published_by=_earliest_year(row, PUBLISHED_COLUMNS),
             )
         w.persons.append(
             {
@@ -163,6 +168,21 @@ def read_work_list(zip_bytes: bytes) -> dict[str, AozoraWork]:
             }
         )
     return works
+
+
+# この作品（訳・版を含む）が公表済みだったことを示す年の列
+PUBLISHED_COLUMNS = (
+    "初出",
+    "底本初版発行年1",
+    "底本の親本初版発行年1",
+    "底本初版発行年2",
+    "底本の親本初版発行年2",
+)
+
+
+def _earliest_year(row: dict[str, str], columns: tuple[str, ...]) -> int | None:
+    years = [int(y) for c in columns for y in re.findall(r"(?<!\d)(\d{4})(?!\d)", row.get(c) or "")]
+    return min(years) if years else None
 
 
 def ndc_codes(ndc: str) -> list[str]:
@@ -184,20 +204,72 @@ def _death_year(date: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+# 人の一生の最長の記録（122年）。この年より前に生まれた人は、1967年より後まで生きていない
+MAX_LIFESPAN = 122
+# 利用者の決まり（D-029）：没年が空でも、1900年より前に名前が出ている人は使ってよい
+EARLY_NAME_BEFORE = 1900
+
+
+def _blank_death(
+    p: dict[str, str], w: AozoraWork, review: AozoraReview
+) -> tuple[str, int | None, str]:
+    """作品CSVの没年が空か読めない人の扱い（D-029）。
+
+    戻り値は (扱い, 年, 理由)。扱いは
+    year（この年を没年として判定する）・skip（この人は満了として没年の判定から外す）・
+    copyrighted（作者不詳で1968年からの公表）・unknown（判定不能のまま）。
+    台帳（人が確かめた行）を先に見て、次に作品CSVの生年・公表の年から決める。
+    """
+    name = p["name"]
+    if name in ANONYMOUS_NAMES:
+        if p["role"] != "author":
+            return "unknown", None, ""
+        fact = review.anonymous.get((name, w.title))
+        if fact is not None:
+            lic, why = judge_anonymous_work(fact.year)
+            kind = "skip" if lic is License.PD_JP else "copyrighted"
+            return kind, None, f"{why}（人が確かめた：{fact.basis}）"
+        if w.published_by is not None and w.published_by <= LAST_EXPIRED_ANONYMOUS_PUB_YEAR:
+            # 訳が公表されれば、元の作品も公表されたとみなす（著作権法4条4項）
+            return (
+                "skip",
+                None,
+                (
+                    f"作者不詳で、この作品（訳・版を含む）は{w.published_by}年までに公表（52条。満了）"
+                ),
+            )
+        return "unknown", None, ""
+    if (fact := review.deaths.get(name)) is not None:
+        return "year", fact.year, f"{name}の没年{fact.year}は人が確かめた（{fact.basis}）"
+    if (fact := review.early.get(name)) is not None:
+        return "skip", None, f"{name}は{fact.year}年に名前が出ている（1900年より前。{fact.basis}）"
+    birth = _death_year(p.get("birth_date", ""))
+    if birth is not None and birth + MAX_LIFESPAN <= LAST_EXPIRED_DEATH_YEAR:
+        latest = birth + MAX_LIFESPAN
+        return "year", latest, f"{name}は{birth}年生まれで、遅くとも{latest}年までに没"
+    if w.published_by is not None and w.published_by < EARLY_NAME_BEFORE:
+        return (
+            "skip",
+            None,
+            (f"{name}の作品は{w.published_by}年までに公表（1900年より前に名前が出ている。D-029）"),
+        )
+    return "unknown", None, ""
+
+
 def judge_license(w: AozoraWork, review: AozoraReview | None = None) -> tuple[License, str]:
     """青空文庫の作品の権利判定。
 
     1. 作品・人物の著作権フラグが1つでも「あり」なら保護中
     2. 著者・訳者の没年で R3・R4 を判定する（フラグが「なし」でも没年が保護中なら保護中とする）
        訳者がいる作品の原著者は外国人とみなし、国籍不明として R4 を確かめる
-    3. 作品CSVの没年が空か読めない人は、人が確かめた台帳（review。D-029）で埋める。
-       名前のある人は没年で、作者不詳の作品は公表の年（52条）で判定する。台帳に無ければ判定不能
+    3. 作品CSVの没年が空か読めない人は、_blank_death で決める（D-029）。決まらなければ判定不能
     """
     flags = [w.work_copyright] + [p["copyright"] for p in w.persons]
     if any(f == "あり" for f in flags):
         return License.COPYRIGHTED, "青空文庫の著作権フラグが「あり」"
     if any(f != "なし" for f in flags):
         return License.UNKNOWN, "青空文庫の著作権フラグが不明"
+    review = review or AozoraReview()
     translated = any(p["role"] == "translator" for p in w.persons)
     persons: list[Person] = []
     notes: list[str] = []
@@ -205,19 +277,15 @@ def judge_license(w: AozoraWork, review: AozoraReview | None = None) -> tuple[Li
         if p["role"] not in JUDGED_ROLES:
             continue
         year = _death_year(p["death_date"])
-        if year is None and review is not None:
-            if (fact := review.deaths.get(p["name"])) is not None:
-                year = fact.year
-                notes.append(f"{p['name']}の没年{fact.year}は人が確かめた（{fact.basis}）")
-            elif (
-                p["role"] == "author"
-                and (fact := review.anonymous.get((p["name"], w.title))) is not None
-            ):
-                lic, why = judge_anonymous_work(fact.year)
-                if lic is not License.PD_JP:
-                    return lic, f"{why}（{fact.basis}）"
-                notes.append(f"{why}（人が確かめた：{fact.basis}）")
-                continue  # この人は没年では判定しない
+        if year is None:
+            kind, filled, note = _blank_death(p, w, review)
+            if kind == "copyrighted":
+                return License.COPYRIGHTED, note
+            if note:
+                notes.append(note)
+            if kind == "skip":
+                continue  # この人は満了として、没年では判定しない
+            year = filled
         persons.append(
             Person(
                 name=p["name"],
@@ -235,15 +303,14 @@ def judge_license(w: AozoraWork, review: AozoraReview | None = None) -> tuple[Li
 
 
 def unknown_people(w: AozoraWork, review: AozoraReview | None = None) -> list[str]:
-    """没年が空か読めず、台帳でも埋まっていない人（著者・訳者）。"""
+    """没年が空か読めず、台帳でも作品CSVの生年・公表の年でも決まらない人（著者・訳者）。"""
     review = review or AozoraReview()
     return [
         p["name"]
         for p in w.persons
         if p["role"] in JUDGED_ROLES
         and _death_year(p["death_date"]) is None
-        and p["name"] not in review.deaths
-        and (p["name"], w.title) not in review.anonymous
+        and _blank_death(p, w, review)[0] == "unknown"
     ]
 
 

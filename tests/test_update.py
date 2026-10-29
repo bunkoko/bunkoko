@@ -61,6 +61,7 @@ def _fake_steps(monkeypatch, calls, *, augment_errors=0, others=1):
     )
     monkeypatch.setattr("koten.cli.normalize", lambda src, settings: calls.append("normalize"))
     monkeypatch.setattr("koten.cli.chunk", lambda src, settings: calls.append("chunk"))
+    monkeypatch.setattr("koten.cli.index_build", lambda settings: calls.append("index"))
     seen = {"ps": 0, "augment": 0}
 
     def ps(*a, **k):
@@ -96,6 +97,7 @@ def test_update_waits_for_the_running_augment(settings_file, monkeypatch):
         "ingest",
         "normalize",
         "chunk",
+        "index",  # 権利の判定が厳しくなった作品を、すぐに検索から外す
         "sleep600",
         "forget['aozora:700']",
         "augment",
@@ -123,3 +125,14 @@ def test_only_one_update_at_a_time(settings_file, monkeypatch):
     with runlock.hold(runlock.lock_path(s.ssd_root, "update")):
         r = CliRunner().invoke(app, ["update", "--settings", str(settings_file)])
     assert r.exit_code == 2 and "ほかの koten update" in r.output and calls == []
+
+
+def test_eval_can_compare_several_rerankers():
+    from koten.cli import _eval_configs
+
+    names = [c.name for c in _eval_configs(SimpleNamespace(reranker=None))]
+    assert not any("リランク" in n for n in names)  # settings が「要確認」ならリランクしない
+    cfgs = _eval_configs(SimpleNamespace(reranker=None), ["model-a", "model-b"])
+    reranked = [c for c in cfgs if c.rerank]
+    assert [c.rerank_model for c in reranked] == ["model-a", "model-b"]
+    assert all(c.rerank_model in c.name for c in reranked)

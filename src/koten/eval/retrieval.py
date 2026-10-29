@@ -58,6 +58,7 @@ class EvalConfig:
     queries: tuple[str, ...]
     retrievers: tuple[str, ...]
     rerank: bool = False
+    rerank_model: str | None = None  # 比べるリランカー（None は settings の rerank.model）
 
 
 CONFIGS = [

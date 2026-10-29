@@ -349,6 +349,17 @@ def update(
             normalize("aozora", settings=settings)
             say("3/5 チャンク化")
             chunk("aozora", settings=settings)
+            if r.removed:
+                # 権利の判定が厳しくなった作品を、すぐに検索から外す（索引は今の判定で作り直す）
+                say("本文を消した作品があるので、索引を今の判定で作り直す")
+                try:
+                    index_build(settings=settings)
+                except (typer.Exit, Exception) as e:  # noqa: BLE001  留守のあいだは止めずに続ける
+                    typer.secho(
+                        f"索引を作り直せませんでした（{e!r}）。帰ってから koten index build を"
+                        "実行してください",
+                        fg="yellow",
+                    )
             _wait_for_augment(s, say, poll_minutes * 60)
             targets = {line.split()[0] for line in r.removed}
             targets |= read_changed(changed_works_path(hdd))
@@ -374,12 +385,15 @@ def update(
             say("5/5 付加情報づけ（まだのチャンクだけ）")
             failures = 0
             while True:
+                started = time.monotonic()
                 try:
                     _augment_run(s, hdd)
                     break
                 except BusyError:
                     _wait_for_augment(s, say, poll_minutes * 60)
                 except LLMError as e:
+                    if time.monotonic() - started > 3600:
+                        failures = 0  # 1時間以上進んでから止まったなら、続けて止まった数を数え直す
                     failures += 1
                     if failures > retries:
                         say("LLM が止まったままなので終わります。Ollama を確かめてください")
@@ -921,11 +935,12 @@ eval_app = typer.Typer(no_args_is_help=True, help="検索の評価（SPEC §12�
 app.add_typer(eval_app, name="eval")
 
 
-def _eval_runner(p):
+def _eval_runner(p, device: str = "auto"):
     from koten.eval.retrieval import EVAL_FILTER
-    from koten.retrieve.search import apply_rerank, hybrid_search
+    from koten.retrieve.search import apply_rerank, hybrid_search, make_reranker
 
     cache: dict = {}
+    rerankers: dict = {}
 
     def run(worry_id: str, cfg, k: int) -> list[str]:
         if worry_id not in cache:
@@ -944,22 +959,46 @@ def _eval_runner(p):
             top=p.cfg.fused_top,
         )
         if cfg.rerank:
-            items = apply_rerank(items, p.reranker, q.text)
+            reranker = p.reranker
+            if cfg.rerank_model:
+                if cfg.rerank_model not in rerankers:
+                    rerankers[cfg.rerank_model] = make_reranker(cfg.rerank_model, device=device)
+                reranker = rerankers[cfg.rerank_model]
+            items = apply_rerank(items, reranker, q.text)
         return [s.candidate_id for s in items[:k]]
 
     return run
 
 
-def _eval_configs(p):
+def _eval_configs(p, models: list[str] | None = None):
+    """比べるやり方。models を渡すと、settings の代わりにそのリランカーを1つずつ足す（D-010）。"""
+    from dataclasses import replace
+
     from koten.eval.retrieval import CONFIGS
 
-    return [c for c in CONFIGS if not c.rerank or p.reranker is not None]
+    base = [c for c in CONFIGS if not c.rerank]
+    rerank = [c for c in CONFIGS if c.rerank]
+    if models:
+        return base + [
+            replace(c, name=f"{c.name}（{m}）", rerank_model=m) for c in rerank for m in models
+        ]
+    return base + (rerank if p.reranker is not None else [])
+
+
+RerankModels = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--rerank-model",
+        help="比べるリランカーのモデル名（くり返し指定できる。settings の rerank.model の代わり）",
+    ),
+]
 
 
 @eval_app.command("export")
 def eval_export(
     n: Annotated[int, typer.Option(help="評価に使う悩みの数（優先度の高い代表から）")] = 20,
     out: Annotated[str, typer.Option(help="書き出す CSV")] = "tests/eval/retrieval.csv",
+    rerank_model: RerankModels = None,
     settings: SettingsOpt = None,
 ) -> None:
     """印付け用の CSV を書き出す（すでに付けた点は残す）。grade 列に 1・0 を付ける。"""
@@ -974,9 +1013,9 @@ def eval_export(
     total, judged = export_pool(
         Path(out),
         worries,
-        _eval_runner(p),
+        _eval_runner(p, s.section("rerank").get("device", "auto")),
         lambda cid: p._row({"candidate_id": cid}),
-        _eval_configs(p),
+        _eval_configs(p, rerank_model),
     )
     typer.echo(
         f"{out} に {len(worries)} 件の悩み・{total} 行を書きました（点が付いている行 {judged}）"
@@ -988,6 +1027,7 @@ def eval_export(
 def eval_retrieval(
     file: Annotated[str, typer.Option(help="点を付けた評価セット")] = "tests/eval/retrieval.csv",
     by: Annotated[str, typer.Option(help="human（人の点）か llm（LLM の点）")] = "human",
+    rerank_model: RerankModels = None,
     settings: SettingsOpt = None,
 ) -> None:
     """評価セットで、やり方ごとの nDCG@10・Recall@20 を出す。"""
@@ -999,7 +1039,8 @@ def eval_retrieval(
     if column is None:
         typer.secho("--by は human か llm です", fg="red", err=True)
         raise typer.Exit(2)
-    p = _planner(_settings(settings))
+    s = _settings(settings)
+    p = _planner(s)
     grades = read_eval(Path(file), column)
     if not grades:
         typer.secho(f"{file} の {column} 列に点の付いた行がありません", fg="red", err=True)
@@ -1007,7 +1048,8 @@ def eval_retrieval(
     who = "人" if by == "human" else "LLM"
     total = sum(len(g) for g in grades.values())
     typer.echo(f"評価セット（{who}の点）：悩み {len(grades)} 件・点 {total} 件")
-    typer.echo(report(evaluate(grades, _eval_runner(p), _eval_configs(p))))
+    runner = _eval_runner(p, s.section("rerank").get("device", "auto"))
+    typer.echo(report(evaluate(grades, runner, _eval_configs(p, rerank_model))))
 
 
 @eval_app.command("grade")
