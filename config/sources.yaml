@@ -12,3 +12,15 @@ aozora:
     - {title: "人生論ノート", author: "三木清"}
   # 入れない作品ID（青空文庫の作品ID）
   exclude_work_ids: []
+
+# 古い英訳（Standard Ebooks。M8a）。GitHub の raw ファイルを net.py で1つずつ取る（git clone はしない）
+# 取る前に、資料の台帳（config/ref_works.csv）でその ref_id が使える（PD_JP）と判定されている必要がある
+# Standard Ebooks が足した手入れは CC0。原著者と訳者の没年は台帳で判定する
+standardebooks:
+  raw_base: "https://raw.githubusercontent.com/standardebooks/"
+  branch: master
+  editions:
+    # 台帳の ref_id: {repo: GitHub のリポジトリ名, canon: config/canon.yaml の作品記号, split: 分け方}
+    R-long-meditations: {repo: marcus-aurelius_meditations_george-long, canon: meditations, split: meditations}
+    R-legge-analects: {repo: confucius_analects_james-legge, canon: lunyu, split: analects}
+

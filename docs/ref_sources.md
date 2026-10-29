@@ -89,6 +89,34 @@ uv run koten ref show --passage lunyu:1.1
 - `ref show` は verified だけを出します。確かめ中のものも見るときは `--all` を付けます。
 - あとで台帳の判定が厳しくなった資料の本文は、作り直す前でも台本からは読み出されません。
 
+## 古い英訳（Standard Ebooks）を取る
+
+いま取れるのは、George Long 訳『自省録』と James Legge 訳『論語』です（config/sources.yaml の standardebooks）。
+
+1. 台帳に書きます（ref_works.csv に1行ずつ、ref_people.csv に原著者と訳者）。没年は自分で確かめて death_source を書きます。
+
+   | ref_id | source_class | kind | title | pub_year | lang | source | holder_allied | credit |
+   |---|---|---|---|---|---|---|---|---|
+   | R-long-meditations | S2 | translation | Meditations | （下の注） | en | standardebooks | （確かめて） | George Long 訳『自省録』（Standard Ebooks 版） |
+   | R-legge-analects | S2 | translation | The Analects | （下の注） | en | standardebooks | （確かめて） | James Legge 訳『論語』（Standard Ebooks 版） |
+
+   - pub_year は「使う版」の年です。Standard Ebooks の版（colophon の年）を書くと、1968年以降の版なので NEEDS_REVIEW になります。Standard Ebooks の手入れが CC0 であることを確かめたら、reviewed_license に PD_JP と理由を書きます。first_pub_year には訳が最初に出た年を書きます。
+   - 人：原著者（マルクス・アウレリウス、孔子）と訳者（Long、Legge）。外国の人なので allied に yes か no を書きます。
+2. 取って分けます。
+
+   ```sh
+   uv run koten ref check
+   uv run koten ref fetch
+   uv run koten ref build
+   uv run koten ref show --passage lunyu:1.1 --all
+   ```
+
+   - `ref fetch` は、台帳で使える（PD_JP）と判定された資料だけを取ります。GitHub の raw ファイル（content.opf と本文）を net.py で1秒1件ずつ取り、HDD の raw/standardebooks/ に置きます。分けた本文は HDD の clean/ref/<ref_id>.parquet です。
+   - 論語は Legge の章立て（chapter-篇-章）のまま `lunyu:篇.章` にします（499章）。
+   - 『自省録』は、Standard Ebooks 版に節の番号が無く、段落と節が一致しません（第11巻は段落55・節39など）。節の番号を作らないよう、`meditations:巻.p段落`（例 `meditations:2.p1`）にします（505段落）。引用（blockquote）とそれをつなぐ短い段落は前の段落にまとめ、巻の終わりの場所の書き添え（「This in Carnuntum.」など）は除きます。節の番号は、番号のある版で人が確かめてから renderings.csv に書きます。
+   - 取り込んだ本文の status は imported です。台本の引用には使わず、試訳（M8b）の材料にします。引用するときは、人が確かめて renderings.csv に verified で書きます。
+   - 台帳で使えなくなった資料の、取り込んだ本文と原本は、次の `ref build` で消します（R2）。
+
 ## 手間の目安
 
 - 資料1冊の権利の確認：30分〜2時間。2〜3割は UNKNOWN のまま残る見込みです。
@@ -97,6 +125,5 @@ uv run koten ref show --passage lunyu:1.1
 
 ## まだ無いもの（このあと）
 
-- 古い英訳（Standard Ebooks）の取得と、巻・節への分け方
 - 台本での差し込み（`{{def}}`・`{{def_src}}`・`{{interp}}`・`{{interp_src}}`）と、G1 の新しい決まり
 - NDL からの OCR・画像の取得（M8a では人が画像から書き起こす）

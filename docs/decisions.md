@@ -380,3 +380,12 @@ uv run koten chunk aozora
 - NDL の資料は、locator にコマ番号を必須にした。画面の「○年の『…』」は、取り込んだ刷りの刊行年（pub_year）にする（『言海』のように刷り直しの多い本のため）。
 - M8a を小さくする（§11）：OCR の2回目・自動のページ探しは後回し。人が画像から書き起こす。
 
+### 2026-10-29 M8a：古い英訳（Standard Ebooks）を取り、一節に分ける
+
+- このクラウド環境から開けたのは GitHub の raw ファイル（raw.githubusercontent.com）だけ（Gutenberg・standardebooks.org・api.github.com は 403）。そこで Standard Ebooks の GitHub リポジトリの content.opf と本文の xhtml を、net.py で1つずつ取る（git clone・tarball は使わない）。2026-10-29 にこの環境で実際に取り、『自省録』（Long 訳）12ファイル・505段落、『論語』（Legge 訳）20ファイル・499章に分かれることを確かめた。
+- 取る前に、台帳で使える（PD_JP）と判定されていることを確かめる（R2）。使えなくなった資料の取り込んだ本文と原本は、`koten ref build` で消す。
+- 論語の番号は Legge の章立て（Standard Ebooks の chapter-篇-章）を `lunyu:篇.章` の基準にした。朱熹『論語集注』の章立てとされる（要確認）。ほかの本の章は人が対応づける。
+- 『自省録』は段落と節が一致しない（第1〜3巻は17・17・16で合うが、第11巻は段落55・節39など）。節の番号を作り話にしないよう、`meditations:巻.p段落` にした（canon.yaml の pattern を広げた）。画面には、節の番号を人が確かめたものだけ節まで出す。
+- 取り込んだ本文の status は imported。台本の引用には使わない（verified だけ）。試訳（M8b）の材料にする。
+- XML は ENTITY 宣言のあるものを読まない（取得した外のファイルなので）。
+

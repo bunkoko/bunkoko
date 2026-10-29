@@ -23,6 +23,7 @@ from koten.ref.texts import (
     Rendering,
     TextsError,
     load_canon,
+    passage_problem,
     read_dict_entries,
     read_renderings,
 )
@@ -86,7 +87,12 @@ def build_refs(
     by_id = {w.ref_id: w for w in works}
     renderings = read_renderings(config_dir, by_id, load_canon(config_dir))
     entries = read_dict_entries(config_dir, by_id)
+    # 取り込んだ本文は、使える資料のものだけ入れる（使えない資料のものは ref build が HDD から消す）
     imported = [r for r in imported if by_id.get(r.ref_id) and by_id[r.ref_id].usable]
+    canon = load_canon(config_dir)
+    bad = [(r.rendering_id, p) for r in imported if (p := passage_problem(r.passage_key, canon))]
+    if bad:
+        raise TextsError(f"取り込んだ本文の一節の番号が合わない：{bad[:3]}")
     clash = {r.rendering_id for r in renderings} & {r.rendering_id for r in imported}
     if clash:
         raise TextsError(f"取り込んだ本文と renderings.csv で ID が重なる：{sorted(clash)[:5]}")

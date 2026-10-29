@@ -1419,15 +1419,22 @@ def ref_check(
 
 @ref_app.command("build")
 def ref_build(settings: SettingsOpt = None) -> None:
-    """台帳と、確かめた本文（renderings.csv・dict_entries.csv）から SSD の表を作り直す。"""
+    """台帳と、確かめた本文（renderings.csv・dict_entries.csv）と、取り込んだ古い英訳（HDD）から
+    SSD の表を作り直す。"""
     from koten.db import connect
     from koten.ref.registry import RefError
+    from koten.ref.standardebooks import editions, forget_unusable, load_imported
     from koten.ref.store import build_refs
     from koten.ref.texts import TextsError
 
     s = _settings(settings)
+    hdd = _hdd(s)
+    works = {w.ref_id: w for w in _registry(s)}
+    removed = forget_unusable(hdd, works, editions(s.sources.get("standardebooks") or {}))
+    for line in removed:
+        typer.secho(f"使えない資料の、取り込んだ本文を消しました：{line}", fg="yellow")
     try:
-        r = build_refs(connect(s.ssd_root), s.config_dir)
+        r = build_refs(connect(s.ssd_root), s.config_dir, load_imported(hdd))
     except (RefError, TextsError) as e:
         typer.secho(str(e), fg="red", err=True)
         raise typer.Exit(2) from e
@@ -1435,6 +1442,67 @@ def ref_build(settings: SettingsOpt = None) -> None:
         f"資料 {r.works}（使える {r.usable}）・時代の解釈 {r.renderings}・"
         f"取り込んだ本文 {r.imported}・辞書の語釈 {r.entries}"
     )
+
+
+@ref_app.command("fetch")
+def ref_fetch(
+    ref: Annotated[
+        list[str] | None, typer.Option(help="台帳の ref_id（くり返し指定できる。省くと全部）")
+    ] = None,
+    settings: SettingsOpt = None,
+) -> None:
+    """古い英訳（Standard Ebooks）を net.py で取り、一節ごとに分けて HDD に置く。"""
+    import httpx
+
+    from koten.ref.standardebooks import EditionError, editions, import_edition
+
+    s = _settings(settings)
+    hdd = _hdd(s)
+    conf = s.sources.get("standardebooks") or {}
+    eds = editions(conf)
+    works = {w.ref_id: w for w in _registry(s)}
+    targets = ref or list(eds)
+    unknown = [t for t in targets if t not in eds]
+    if unknown:
+        typer.secho(
+            f"sources.yaml の standardebooks.editions に無い ref_id：{'、'.join(unknown)}",
+            fg="red",
+            err=True,
+        )
+        raise typer.Exit(2)
+    fetcher = None
+    failed = False
+    for ref_id in targets:
+        work = works.get(ref_id)
+        if work is None:
+            typer.secho(
+                f"{ref_id}：台帳（config/ref_works.csv）にありません。"
+                "先に書いて ref check で確かめる",
+                fg="yellow",
+            )
+            failed = True
+            continue
+        if not work.usable:
+            typer.secho(
+                f"{ref_id}：{work.license}（{work.computed_reason}）。"
+                "使えると判定されるまで取りません",
+                fg="yellow",
+            )
+            failed = True
+            continue
+        fetcher = fetcher or _make_fetcher(s, hdd / "raw" / "standardebooks")
+        try:
+            r = import_edition(hdd, conf, eds[ref_id], work, fetcher, log=typer.echo)
+        except (EditionError, httpx.HTTPError) as e:
+            typer.secho(f"{ref_id}：{e}", fg="red", err=True)
+            failed = True
+            continue
+        typer.echo(
+            f"{ref_id}：ファイル {r.files}（今回取得 {r.fetched}）・一節 {r.units} → {r.path}"
+        )
+    if failed:
+        raise typer.Exit(1)
+    typer.echo("uv run koten ref build で SSD に入れます")
 
 
 @ref_app.command("show")

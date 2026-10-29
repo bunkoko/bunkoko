@@ -43,3 +43,4 @@
 - uv run koten facts todo --episode <ID> → facts draft --episode <ID>（AI の下書き）→ facts review（下書きを読む）→ 人が別の資料で確かめ、CSV の accept に 1 → facts accept（--from を省くと最新の下書き）→ facts build → facts attach --episode <ID>（企画に事実を付け直す）→ script
 - uv run koten ref check（config/ref_works.csv・ref_people.csv の資料を、関わった人全員の没年・団体名義・版・NDL の公開範囲で1冊ずつ判定する。書き込みはしない）
 - uv run koten ref build（台帳と、人が確かめた時代の解釈 renderings.csv・昔の辞書 dict_entries.csv から SSD の表を作り直す）→ ref show --word 普通 ／ --passage lunyu:1.1（手順は docs/ref_sources.md）
+- uv run koten ref fetch（台帳で使えると判定された古い英訳を Standard Ebooks から net.py で取り、一節ごとに分けて HDD に置く）→ ref build

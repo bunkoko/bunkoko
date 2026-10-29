@@ -5,7 +5,9 @@ works:
   lunyu:
     title: 論語
     lang: zh
-    numbering: 篇.章（学而第一の第1章 = 1.1）
+    # Legge の英訳（Standard Ebooks 版の chapter-篇-章）と同じ分け方。朱熹『論語集注』の
+    # 章立てとされる（要確認）。郷党篇などは本によって分け方が違うので、ほかの本の章は人が対応づける
+    numbering: 篇.章（学而第一の第1章 = 1.1。Legge の分け方）
     pattern: '^\d+\.\d+$'
   mengzi:
     title: 孟子
@@ -35,8 +37,10 @@ works:
   meditations:
     title: 自省録
     lang: grc
-    numbering: 巻.節（第2巻の第1節 = 2.1）
-    pattern: '^\d+\.\d+$'
+    # 節の番号が確かめられていない段落は「巻.p段落」（Long 訳の Standard Ebooks 版の段落の順）。
+    # 段落と節は一致しない（第11巻など）。画面では、節の番号を確かめたものだけ節まで出す
+    numbering: 巻.節（第2巻の第1節 = 2.1）。節が未確認の段落は 巻.p段落（2.p3）
+    pattern: '^\d+\.p?\d+$'
   enchiridion:
     title: 提要（エピクテトス）
     lang: grc
