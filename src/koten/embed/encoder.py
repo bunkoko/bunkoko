@@ -32,9 +32,9 @@ def hf_cache_dir(model: str) -> Path:
 
 class SentenceTransformerEncoder:
     def __init__(self, model: str, *, device: str = "auto", batch_size: int = 32):
-        if hf_cache_dir(model).exists():
-            # ダウンロード済みならネットに問い合わせない（検索のたびの通信と警告をなくす）
-            os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        # ダウンロード済みならネットに問い合わせない（検索のたびの通信と警告をなくす）。
+        # HF_HUB_OFFLINE はプロセス全体に効き、あとで読むリランカーを落とせなくなるので使わない
+        cached = hf_cache_dir(model).exists()
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError as e:
@@ -47,7 +47,7 @@ class SentenceTransformerEncoder:
             device = "mps" if torch.backends.mps.is_available() else "cpu"
         self.name = model
         self.batch_size = batch_size
-        self._model = SentenceTransformer(model, device=device)
+        self._model = SentenceTransformer(model, device=device, local_files_only=cached)
         # 版によってメソッド名が違うので、取れなければ1件埋め込んで次元を測る
         getter = getattr(self._model, "get_embedding_dimension", None) or getattr(
             self._model, "get_sentence_embedding_dimension", None

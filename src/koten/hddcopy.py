@@ -15,10 +15,13 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# 写している途中の印（hdd-copy が置き、写し終えて確かめたら消す）。印があるあいだは HDD を使わない
+COPYING_MARK = ".koten-copying"
+
 
 def _skipped(rel: Path) -> bool:
-    """写さないもの：Mac の付帯情報・書きかけのファイル（.part・.copying）。"""
-    if rel.name.endswith((".part", ".copying")):
+    """写さないもの：Mac の付帯情報・書きかけのファイル（.part・.copying）・写している途中の印。"""
+    if rel.name.endswith((".part", ".copying")) or rel.name == COPYING_MARK:
         return True
     return any(part.startswith("._") or part == ".DS_Store" for part in rel.parts)
 

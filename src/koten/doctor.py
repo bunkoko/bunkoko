@@ -43,6 +43,8 @@ def check_hdd(s: Settings) -> Check:
             f"{root} がありません。前の置き場所から写すなら koten hdd-copy、"
             f"新しく始めるなら mkdir -p で作る（{_free(root.parent)}）",
         )
+    if (root / ".koten-copying").exists():
+        return Check("HDD", NG, f"{root} は写している途中です（koten hdd-copy をもう一度）")
     return Check("HDD", OK, f"{root} {_free(root)}")
 
 

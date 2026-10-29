@@ -448,7 +448,7 @@ def hdd_copy(
     """
     import re
 
-    from koten.hddcopy import copy_tree
+    from koten.hddcopy import COPYING_MARK, copy_tree
     from koten.runlock import AUGMENT_COMMAND, is_busy, lock_path, other_processes
 
     s = _settings(settings)
@@ -470,6 +470,8 @@ def hdd_copy(
         typer.secho(problem, fg="red", err=True)
         raise typer.Exit(2)
     dst.mkdir(parents=True, exist_ok=True)
+    mark = dst / COPYING_MARK
+    mark.write_text(f"{src}\n", "utf-8")  # 写し終えて確かめるまで、ほかのコマンドは HDD を使わない
     typer.echo(f"{src} → {dst} へ写します（止めても、同じコマンドで続きから写せます）")
     r = copy_tree(src, dst, log=typer.echo)
     typer.echo(
@@ -485,6 +487,7 @@ def hdd_copy(
             err=True,
         )
         raise typer.Exit(1)
+    mark.unlink()
     typer.echo(
         "全部のファイルが、同じ大きさで写っていることを確かめました。前の置き場所はそのまま残します"
     )

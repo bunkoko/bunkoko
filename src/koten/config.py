@@ -63,6 +63,11 @@ class Settings:
                 f"HDDが未接続です（{root.parent} がありません）。"
                 "取得・付加・埋め込み・レンダリング系のコマンドは止めます。"
             )
+        if (root / ".koten-copying").exists():  # koten.hddcopy.COPYING_MARK
+            raise HddNotConnectedError(
+                f"{root} は写している途中です。koten hdd-copy をもう一度実行し、"
+                "「確かめました」と出るまで待ってください"
+            )
         if not root.exists():
             # 引っ越しの前に空のフォルダを作って、取得や付加情報づけを一からやり直さないように
             raise HddNotConnectedError(

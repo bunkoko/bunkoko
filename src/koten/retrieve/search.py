@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -182,8 +181,7 @@ class Reranker(Protocol):
 
 class CrossEncoderReranker:
     def __init__(self, model: str, *, device: str = "auto", batch_size: int = 16):
-        if hf_cache_dir(model).exists():
-            os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        cached = hf_cache_dir(model).exists()  # 落としてあれば、ネットに問い合わせない
         try:
             from sentence_transformers import CrossEncoder
         except ImportError as e:
@@ -196,7 +194,7 @@ class CrossEncoderReranker:
             device = "mps" if torch.backends.mps.is_available() else "cpu"
         self.name = model
         self.batch_size = batch_size
-        self._model = CrossEncoder(model, device=device)
+        self._model = CrossEncoder(model, device=device, local_files_only=cached)
 
     def score(self, query: str, docs: list[str]) -> list[float]:
         if not docs:
