@@ -34,11 +34,10 @@ def _free(path: Path) -> str:
 
 def _format_note(root: Path) -> str:
     """Mac の HDD に向かない形式（NTFS・exFAT・FAT32）なら、そのことを書く（D-031）。"""
-    from koten.hddcopy import UNSUITED_FORMATS, volume_format
+    from koten.hddcopy import unsuited_format, volume_format
 
-    fmt = volume_format(root)
-    if fmt in UNSUITED_FORMATS:
-        return f"。形式が {UNSUITED_FORMATS[fmt]} です。APFS に消去するのを勧めます"
+    if bad := unsuited_format(volume_format(root)):
+        return f"。形式が {bad} です。APFS に消去するのを勧めます"
     return ""
 
 

@@ -2,21 +2,26 @@
 
 - copy_tree：前の置き場所（SD カード）から、新しい HDD へ丸ごと写す。途中で止めても、同じ
   コマンドで続きから写す（大きさと更新日時が同じファイルは飛ばす）。写した先のほうが新しい
-  ファイルは上書きしない。Mac が exFAT に作る付帯情報（._ で始まるファイル）と .DS_Store は
-  ファイルとしては写さない（タグなどの付帯情報は、Mac では cp が中身といっしょに写す）
+  ファイルは上書きしない。リンク（シンボリックリンク）はリンクのまま写す。Mac が exFAT に作る
+  付帯情報（._ で始まるファイル）と .DS_Store はファイルとしては写さない（ファイルとフォルダの
+  タグなどの付帯情報は、Mac では中身といっしょに写す）
 - verify_tree：写した先に、元のファイルが同じ大きさで全部あるかを確かめる
 - skip_card：SD カードの、koten のフォルダ以外のもの（hdd-copy --whole-card）で写さないもの
-- mount_root・volume_format・can_write：HDD がつながっているか・Mac で書ける形式か
+- mount_root・on_drive・volume_format・can_write：HDD がつながっているか・Mac で書ける形式か
 - backup_db：SSD の SQLite を、書き込み中でも壊れない方法（SQLite の backup）で写す
 """
 
 from __future__ import annotations
 
 import contextlib
+import ctypes
+import functools
+import hashlib
 import os
 import plistlib
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import unicodedata
@@ -29,6 +34,13 @@ COPYING_MARK = ".koten-copying"
 # 写し終えた印。HDD で動かし始めたあとに SD カードの古い中身で戻さないよう、koten のフォルダは
 # もう写さない
 COPIED_MARK = ".koten-copied"
+# koten backup の控えのフォルダの印。hdd-copy --whole-card は、この印のあるフォルダを写さない
+BACKUP_MARK = ".koten-backup"
+# koten のデータのフォルダにあるはずのもの（--from の取り違えを見つける）
+DATA_DIRS = ("raw", "clean", "chunks", "augment")
+# 書きかけのファイルの名前（.koten-<元の名前から作った12文字>.copying）。長い名前でも255字を超えない
+TMP_PREFIX = ".koten-"
+TMP_SUFFIX = ".copying"
 # ボリュームの直下にある、Mac・Windows の管理用のもの（ゴミ箱・Spotlight の索引など）
 SYSTEM_ENTRIES = frozenset(
     {
@@ -42,25 +54,46 @@ SYSTEM_ENTRIES = frozenset(
         "$RECYCLE.BIN",
     }
 )
-# Mac の HDD に向かない形式（diskutil の FilesystemType → 見せる名前）。NTFS は Mac からは読むだけ
-UNSUITED_FORMATS = {
+# Mac の HDD に使う形式（diskutil の FilesystemType）。ほかの形式は写す前に止める
+SUITED_FORMATS = frozenset({"apfs", "hfs"})
+FORMAT_NAMES = {
     "ntfs": "NTFS（Windows 用。Mac からは書き込めません）",
     "exfat": "exFAT（記録の仕組み〔ジャーナル〕が無く、抜けたときに壊れやすい）",
     "msdos": "FAT32（1ファイル4GBまで）",
 }
+VOLUMES = Path("/Volumes")  # Mac の外付けのドライブがつながる場所
 MAC = sys.platform == "darwin"
 NEWER_SEC = 2  # 写した先の更新日時がこれより新しければ、写した先のほうが新しいとみなす
+COPYFILE_XATTR = 1 << 2  # Mac の copyfile.h
 
 Skip = Callable[[Path], bool]
+
+
+def unsuited_format(fmt: str | None) -> str | None:
+    """Mac の HDD に向かない形式なら、見せる名前。APFS・Mac OS 拡張か、分からなければ None。"""
+    if not fmt or fmt in SUITED_FORMATS:
+        return None
+    if "ntfs" in fmt and fmt != "ntfs":  # 追加のソフト（ufsd_ntfs・tuxera_ntfs など）で書ける NTFS
+        return f"NTFS（{fmt}。追加のソフトで書けても、試用が切れるなどで書けなくなります）"
+    return FORMAT_NAMES.get(fmt, fmt)
 
 
 def _mac_meta(rel: Path) -> bool:
     return any(part.startswith("._") or part == ".DS_Store" for part in rel.parts)
 
 
+def _is_tmp(name: str) -> bool:
+    return name.startswith(TMP_PREFIX) and name.endswith(TMP_SUFFIX)
+
+
+def _tmp_for(target: Path) -> Path:
+    digest = hashlib.sha1(target.name.encode("utf-8", "surrogateescape")).hexdigest()[:12]
+    return target.with_name(f"{TMP_PREFIX}{digest}{TMP_SUFFIX}")
+
+
 def skip_koten(rel: Path) -> bool:
     """koten のフォルダで写さないもの：Mac の付帯情報・書きかけ（.part・.copying）・印。"""
-    if rel.name.endswith((".part", ".copying")) or rel.name in (COPYING_MARK, COPIED_MARK):
+    if rel.name.endswith((".part", TMP_SUFFIX)) or rel.name in (COPYING_MARK, COPIED_MARK):
         return True
     return _mac_meta(rel)
 
@@ -69,32 +102,45 @@ def _nfc(parts: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(unicodedata.normalize("NFC", p) for p in parts)
 
 
-def skip_card(exclude: Path) -> Skip:
-    """SD カードのほかのもので写さないもの：直下の管理用のもの・Mac の付帯情報・exclude の下
-    （koten のフォルダ。別に hdd_root へ写す）。利用者のファイルなので .part は写す。"""
-    ex = _nfc(exclude.parts)
+def skip_card(*excludes: Path) -> Skip:
+    """SD カードのほかのもので写さないもの：直下の管理用のもの・Mac の付帯情報・hdd-copy の
+    書きかけと印・excludes の下（koten のフォルダは別に hdd_root へ写す。控えは写さない）。
+    利用者のファイルなので、.part や .copying で終わるものも写す。"""
+    exs = [_nfc(e.parts) for e in excludes]
 
     def skip(rel: Path) -> bool:
         if rel.parts and rel.parts[0] in SYSTEM_ENTRIES:
             return True
-        if _nfc(rel.parts[: len(ex)]) == ex:
+        if any(_nfc(rel.parts[: len(ex)]) == ex for ex in exs):
             return True
-        if rel.name.endswith(".copying") or rel.name in (COPYING_MARK, COPIED_MARK):
+        if _is_tmp(rel.name) or rel.name in (COPYING_MARK, COPIED_MARK):
             return True
         return _mac_meta(rel)
 
     return skip
 
 
+def backup_dirs(card: Path) -> list[Path]:
+    """card のいちばん上にある、koten backup の控えのフォルダ（相対パス）。"""
+    found = []
+    with contextlib.suppress(OSError):
+        for p in card.iterdir():
+            with contextlib.suppress(OSError):
+                if p.is_dir() and not p.is_symlink() and (p / BACKUP_MARK).exists():
+                    found.append(Path(p.name))
+    return sorted(found)
+
+
 @dataclass
 class Listing:
     files: list[tuple[Path, Path]] = field(default_factory=list)  # (元のファイル, 相対パス)
     dirs: list[Path] = field(default_factory=list)  # 相対パス（空のフォルダも写す）
-    problems: list[str] = field(default_factory=list)  # 読めなかったフォルダ
+    links: list[tuple[Path, Path]] = field(default_factory=list)  # リンク（リンクのまま写す）
+    problems: list[str] = field(default_factory=list)  # 読めなかったもの
 
 
 def list_files(root: Path, skip: Skip = skip_koten) -> Listing:
-    """root の下の、写すファイルとフォルダ。読めないフォルダは problems に書いて先へ進む。"""
+    """root の下の、写すファイル・フォルダ・リンク。読めないものは problems に書いて先へ進む。"""
     out = Listing()
 
     def onerror(e: OSError) -> None:
@@ -102,20 +148,37 @@ def list_files(root: Path, skip: Skip = skip_koten) -> Listing:
         rel = where.relative_to(root) if where.is_relative_to(root) else where
         out.problems.append(f"読めない：{rel}（{e.strerror or e}）")
 
+    def mode(p: Path, rel: Path) -> int | None:
+        try:
+            return p.lstat().st_mode
+        except OSError as e:  # 傷んだ SD カードの読めない項目など。止めずに書いておく
+            out.problems.append(f"読めない：{rel}（{e.strerror or e}）")
+            return None
+
     for dirpath, dirnames, filenames in os.walk(root, onerror=onerror):
         here = Path(dirpath)
         rel_dir = here.relative_to(root)
         keep = []
         for d in sorted(dirnames):
             rel = rel_dir / d
-            if not skip(rel) and not (here / d).is_symlink():
+            if skip(rel) or (m := mode(here / d, rel)) is None:
+                continue
+            if stat.S_ISLNK(m):
+                out.links.append((here / d, rel))
+            else:
                 keep.append(d)
                 out.dirs.append(rel)
         dirnames[:] = keep
         for name in sorted(filenames):
             p, rel = here / name, rel_dir / name
-            if not skip(rel) and p.is_file() and not p.is_symlink():
+            if skip(rel) or (m := mode(p, rel)) is None:
+                continue
+            if stat.S_ISREG(m):
                 out.files.append((p, rel))
+            elif stat.S_ISLNK(m):
+                out.links.append((p, rel))
+            else:
+                out.problems.append(f"写せない：{rel}（ふつうのファイルではありません）")
     return out
 
 
@@ -123,12 +186,9 @@ def _state(src: Path, dst: Path) -> str:
     """same（写し済み）・newer（写した先のほうが新しい。上書きしない）・copy（写す）。"""
     try:
         b = dst.stat()
-    except FileNotFoundError:
-        return "copy"
-    try:
         a = src.stat()
     except OSError:
-        return "copy"  # 読めない元は、写すときに理由を書く
+        return "copy"  # 写す先に無い・読めない元は、写すときに理由を書く
     if a.st_size == b.st_size and int(a.st_mtime) == int(b.st_mtime):
         return "same"
     return "newer" if b.st_mtime - a.st_mtime > NEWER_SEC else "copy"
@@ -146,11 +206,11 @@ def bytes_to_copy(files: list[tuple[Path, Path]], dst: Path) -> int:
 
 @dataclass
 class CopyResult:
-    copied: int = 0
-    skipped: int = 0  # 写し済み（同じ大きさ・更新日時）
+    copied: int = 0  # 写したファイルとリンク
+    skipped: int = 0  # 写し済み（同じ大きさ・更新日時。同じ行き先のリンク）
     bytes: int = 0
     kept: list[str] = field(default_factory=list)  # 写した先のほうが新しいので上書きしなかった
-    meta_lost: int = 0  # 中身は写したが、タグなどの付帯情報は写せなかった（Mac）
+    meta_lost: int = 0  # 中身は写したが、タグなどの付帯情報を写せなかったファイル・フォルダ（Mac）
     problems: list[str] = field(default_factory=list)  # 写せない・写した先に無い・大きさが違う
 
 
@@ -172,11 +232,42 @@ def _copy_data(src: Path, tmp: Path) -> bool:
     return True
 
 
+@functools.cache
+def _libsystem() -> ctypes.CDLL:
+    lib = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+    lib.fcopyfile.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+    lib.fcopyfile.restype = ctypes.c_int
+    return lib
+
+
+def _copy_dir_meta(src: Path, dst: Path) -> bool:
+    """Mac：フォルダのタグ・コメントなどの付帯情報（拡張属性）を写す。"""
+    try:
+        a = os.open(src, os.O_RDONLY)
+        try:
+            b = os.open(dst, os.O_RDONLY)
+            try:
+                return _libsystem().fcopyfile(a, b, None, COPYFILE_XATTR) == 0
+            finally:
+                os.close(b)
+        finally:
+            os.close(a)
+    except OSError:
+        return False
+
+
+def _keep_hidden(st: os.stat_result, target: Path) -> None:
+    """Mac：隠す印（Finder で見えない）だけを写す。ロック（uchg）は写さない
+    （写すと、書きかけの名前から本物の名前に変えられなくなる）。"""
+    if MAC and getattr(st, "st_flags", 0) & stat.UF_HIDDEN:
+        with contextlib.suppress(OSError, NotImplementedError):
+            os.chflags(target, stat.UF_HIDDEN, follow_symlinks=False)
+
+
 def _copy_one(src: Path, target: Path, result: CopyResult) -> int:
-    # 上のフォルダはたどって作らない（途中で HDD が外れたら、Mac 本体の /Volumes に書かずに
-    # 失敗する）
-    target.parent.mkdir(exist_ok=True)
-    tmp = target.with_name(target.name + ".copying")
+    # 上のフォルダはここでは作らない（copy_tree が順に作ってある。途中で HDD が外れたら、
+    # Mac 本体の /Volumes に書かずに失敗する）
+    tmp = _tmp_for(target)
     tmp.unlink(missing_ok=True)  # 前に止めたときの書きかけ
     st = src.stat()
     try:
@@ -188,7 +279,24 @@ def _copy_one(src: Path, target: Path, result: CopyResult) -> int:
         with contextlib.suppress(OSError):
             tmp.unlink(missing_ok=True)
         raise
+    _keep_hidden(st, target)
     return st.st_size
+
+
+def _copy_link(src: Path, target: Path, result: CopyResult) -> None:
+    """リンクをリンクのまま写す（行き先の文字列を変えない。cp -R・Finder と同じ）。"""
+    want = os.readlink(src)
+    if target.is_symlink():
+        if os.readlink(target) == want:
+            result.skipped += 1
+            return
+    elif target.exists():
+        raise FileExistsError(17, "HDD に同じ名前のリンクでないものがあります")
+    tmp = _tmp_for(target)
+    tmp.unlink(missing_ok=True)
+    os.symlink(want, tmp)
+    os.replace(tmp, target)
+    result.copied += 1
 
 
 def copy_tree(
@@ -201,16 +309,35 @@ def copy_tree(
     every: int = 1000,
     log_bytes: int = 5 * 10**9,
 ) -> CopyResult:
-    """src の中身を dst へ写す（src は変えない）。終わったら写した分を verify_tree で確かめる。"""
+    """src の中身を dst へ写す（src は変えない）。終わったら写した分を verify_tree で確かめる。
+
+    dst は呼ぶ側が作っておく。無ければ HDD が外れているとみなし、何も作らずに返す。
+    """
     # 始めた時点のファイルだけを写して確かめる（途中で増えても止めない）
     listing = listing if listing is not None else list_files(src, skip)
     result = CopyResult(problems=list(listing.problems))
-    dst.mkdir(parents=True, exist_ok=True)  # 置き場所は呼ぶ側で確かめてある
+
+    def gone() -> bool:
+        if dst.is_dir():
+            return False
+        result.problems.append(f"写す先（{dst}）がありません。HDD が外れていないか確かめてください")
+        return True
+
+    if gone():
+        return result
     for rel in listing.dirs:  # 上のフォルダから順に並んでいる
         try:
             (dst / rel).mkdir(exist_ok=True)
         except OSError as e:
+            if gone():
+                return result
             result.problems.append(f"フォルダを作れない：{rel}（{e.strerror or e}）")
+            continue
+        if MAC:
+            if not _copy_dir_meta(src / rel, dst / rel):
+                result.meta_lost += 1
+            with contextlib.suppress(OSError):
+                _keep_hidden((src / rel).lstat(), dst / rel)
     checked: list[tuple[Path, Path]] = []
     logged = 0
     for n, (p, rel) in enumerate(listing.files, start=1):
@@ -224,6 +351,8 @@ def copy_tree(
             try:
                 result.bytes += _copy_one(p, dst / rel, result)
             except OSError as e:
+                if gone():
+                    return result
                 result.problems.append(f"写せない：{rel}（{e.strerror or e}）")
             else:
                 result.copied += 1
@@ -234,6 +363,13 @@ def copy_tree(
                 f"  {n}/{len(listing.files)} ファイル（写した {result.copied}・"
                 f"{result.bytes / 1e9:.1f}GB、写し済み {result.skipped}）"
             )
+    for p, rel in listing.links:
+        try:
+            _copy_link(p, dst / rel, result)
+        except OSError as e:
+            if gone():
+                return result
+            result.problems.append(f"写せない：{rel}（リンク。{e.strerror or e}）")
     result.problems += verify_tree(src, dst, checked)
     return result
 
@@ -243,19 +379,27 @@ def verify_tree(src: Path, dst: Path, files: list[tuple[Path, Path]] | None = No
     problems = []
     for p, rel in files if files is not None else list_files(src).files:
         target = dst / rel
-        if not target.exists():
-            problems.append(f"無い：{rel}")
-        elif target.stat().st_size != p.stat().st_size:
-            problems.append(f"大きさが違う：{rel}")
+        try:
+            if not target.exists():
+                problems.append(f"無い：{rel}")
+            elif target.stat().st_size != p.stat().st_size:
+                problems.append(f"大きさが違う：{rel}")
+        except OSError as e:
+            problems.append(f"確かめられない：{rel}（{e.strerror or e}）")
     return problems
 
 
 def mount_root(path: Path) -> Path:
-    """path があるドライブのいちばん上（/Volumes/HD-NRLD-A など。Mac 本体の上なら /）。"""
+    """path があるドライブのいちばん上（/Volumes/HD-NRLD-A など）。Mac 本体の上なら / など。"""
     p = Path(path).expanduser().resolve()
     while not os.path.ismount(p):
         p = p.parent
     return p
+
+
+def on_drive(root: Path) -> bool:
+    """mount_root の結果が、外付けのドライブ（/Volumes/名前）か。Mac 本体の / などは違う。"""
+    return root.parent == VOLUMES
 
 
 def volume_format(path: Path) -> str | None:
@@ -290,9 +434,17 @@ def free_bytes(folder: Path) -> int:
 
 
 def backup_db(db: Path, dst: Path) -> None:
-    """SQLite を、書き込み中でも整った形で写す（WAL の分も含む）。"""
+    """SQLite を、書き込み中でも整った形で写す（WAL の分も含む）。失敗したら書きかけを消す。"""
     dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.with_name(dst.name + ".copying")
-    with sqlite3.connect(db) as src_conn, sqlite3.connect(tmp) as out:
-        src_conn.backup(out)
-    tmp.replace(dst)
+    tmp = dst.with_name(dst.name + TMP_SUFFIX)
+    try:
+        with (
+            contextlib.closing(sqlite3.connect(db)) as src_conn,
+            contextlib.closing(sqlite3.connect(tmp)) as out,
+        ):
+            src_conn.backup(out)
+        tmp.replace(dst)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise
