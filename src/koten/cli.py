@@ -488,10 +488,13 @@ def _hdd_copy(s: Settings, from_: str, whole_card: bool) -> None:
     dst = s.hdd_root.resolve()
     if not src.is_dir():
         stop(f"前の置き場所 {src} がありません（SD カードを挿しているか確かめてください）")
-    if not any((src / d).is_dir() for d in hc.DATA_DIRS):
+    # koten のデータのフォルダか（SD カードのいちばん上や DCIM などを渡したら止める）。exFAT は
+    # 大文字と小文字を区別しないので、カメラの RAW フォルダ1つでは koten のデータとみなさない
+    if sum((src / d).is_dir() for d in hc.DATA_DIRS) < 2 or hc.on_drive(src):
         stop(
             "--from には、SD カードの中の koten のデータのフォルダ（「古典×悩み」など）を渡して"
-            f"ください。{src} には {'・'.join(hc.DATA_DIRS)} のどれもありません"
+            f"ください。{src} は koten のデータのフォルダではありません"
+            f"（{'・'.join(hc.DATA_DIRS)} のうち2つ以上があるフォルダ）"
         )
     if not dst.parent.exists():
         stop(f"新しい HDD（{dst.parent}）がつながっていません")
@@ -552,14 +555,17 @@ def _hdd_copy(s: Settings, from_: str, whole_card: bool) -> None:
         backups = hc.backup_dirs(card)  # koten backup の控え（HDD の中身の写し）は写さない
         rest = hc.list_files(card, hc.skip_card(rel, *backups))
 
-    koten = None if done_before else hc.list_files(src)
-    koten_need = hc.bytes_to_copy(koten.files, dst) if koten else 0
-    rest_need = hc.bytes_to_copy(rest.files, hdd) if rest else 0
+    # 写し終えたあとに打ったときは、写さずに HDD にあるかだけを確かめる（HDD で消したり直したり
+    # したものを、SD カードの古いもので戻さない）
+    rest_done = bool(rest) and (hdd / hc.CARD_COPIED_MARK).exists()
+    koten = hc.list_files(src)
+    koten_need = 0 if done_before else hc.bytes_to_copy(koten.files, dst)
+    rest_need = hc.bytes_to_copy(rest.files, hdd) if rest and not rest_done else 0
     free = hc.free_bytes(dst.parent)
     need = koten_need + rest_need
     if need and need > free - 2 * 10**9:  # 2GB は余らせる
         stop(f"HDD の空きが足りません（これから写す {need / 1e9:.1f}GB、空き {free / 1e9:.1f}GB）")
-    if koten:
+    if not done_before:
         typer.echo(
             f"koten のフォルダ：{src} → {dst}（{len(koten.files)} ファイル。これから写すのは "
             f"{koten_need / 1e9:.1f}GB）"
@@ -567,9 +573,14 @@ def _hdd_copy(s: Settings, from_: str, whole_card: bool) -> None:
     else:
         typer.echo(
             f"koten のフォルダは写し終えています（{dst / hc.COPIED_MARK}）。HDD で動かし始めた"
-            "あとに古い中身で戻さないよう、もう写しません"
+            "あとに古い中身で戻さないよう、もう写さずに、HDD にあるかだけを確かめます"
         )
-    if rest:
+    if rest_done:
+        typer.echo(
+            f"SD カードのほかのものは写し終えています（{hdd / hc.CARD_COPIED_MARK}）。"
+            "もう写さずに、HDD にあるかだけを確かめます"
+        )
+    elif rest:
         tops = sorted(
             {r.parts[0] for _, r in rest.files + rest.links} | {d.parts[0] for d in rest.dirs}
         )
@@ -592,7 +603,9 @@ def _hdd_copy(s: Settings, from_: str, whole_card: bool) -> None:
         f"HDD（{hdd}）が外れました。つなぎ直してから、同じコマンドをもう一度打つと続きから写します"
     )
     ok = True
-    if koten:
+    if done_before:
+        ok = _report_check("koten のフォルダ", hc.check_tree(koten, dst, same=False))
+    else:
         dst.mkdir(exist_ok=True)
         mark = dst / hc.COPYING_MARK
         # 写し終えて確かめるまで、ほかのコマンドは HDD を使わない
@@ -605,13 +618,25 @@ def _hdd_copy(s: Settings, from_: str, whole_card: bool) -> None:
             stamp = datetime.now().isoformat(timespec="seconds")
             (dst / hc.COPIED_MARK).write_text(f"{src}\n{stamp}\n", "utf-8")
             mark.unlink()
-    if rest:
+    if rest_done:
+        ok = _report_check("SD カードのほかのもの", hc.check_tree(rest, hdd, same=True)) and ok
+    elif rest:
         if hdd_gone():
             stop(gone_message, 1)
         r = hc.copy_tree(card, hdd, listing=rest, log=typer.echo)
-        ok = _report_copy("SD カードのほかのもの", r) and ok
+        rest_ok = _report_copy("SD カードのほかのもの", r)
         if hdd_gone():
             stop(gone_message, 1)
+        if rest_ok:
+            stamp = datetime.now().isoformat(timespec="seconds")
+            (hdd / hc.CARD_COPIED_MARK).write_text(f"{card}\n{stamp}\n", "utf-8")
+        ok = rest_ok and ok
+    if not ok and (done_before or rest_done):
+        stop(
+            "SD カードにあって HDD に無い（または違う）ものがあります。HDD で消したり直したりした"
+            "ものかもしれません。SD カードのものは消さずに、この画面を Claude に貼ってください",
+            1,
+        )
     if not ok:
         stop(
             "写せない・写した先と合わないファイルがあります。もう一度同じコマンドを実行すると、"
@@ -620,6 +645,18 @@ def _hdd_copy(s: Settings, from_: str, whole_card: bool) -> None:
         )
     typer.echo("前の置き場所（SD カード）はそのまま残します")
     typer.echo("続けて：uv run koten doctor で HDD の行を見る")
+
+
+def _report_check(label: str, problems: list[str]) -> bool:
+    if problems:
+        for line in problems[:20]:
+            typer.secho(f"  {line}", fg="yellow")
+        typer.secho(
+            f"  {label}：HDD に無い・違うものが {len(problems)} 件あります", fg="red", err=True
+        )
+        return False
+    typer.echo(f"  {label}は、SD カードにあるものが全部 HDD にもあることを確かめました")
+    return True
 
 
 def _report_copy(label: str, r) -> bool:
@@ -659,7 +696,22 @@ def backup(
     """作り直しに時間がかかるものの控えを取る（SPEC §5：augment・emb・SSD の DB・設定と台帳）。
 
     2回目からは、変わったファイルだけを写す。写す前に空きを確かめ、足りなければ止める。
+    2つの窓で同時には動かさない（同じ書きかけのファイルを取り合わないように）。
     """
+    from koten.runlock import BusyError, hold, lock_path
+
+    s = _settings(settings)
+    try:
+        with hold(lock_path(s.ssd_root, "backup")):
+            _backup(s, to)
+    except BusyError:
+        typer.secho(
+            "ほかの窓で backup が動いています。その窓で終わるのを待ってください", fg="red", err=True
+        )
+        raise typer.Exit(2) from None
+
+
+def _backup(s: Settings, to: str) -> None:
     import shutil
     import sqlite3
 
@@ -670,13 +722,17 @@ def backup(
         typer.secho(message, fg="red", err=True)
         raise typer.Exit(2)
 
-    s = _settings(settings)
     hdd = _hdd(s)
     out = Path(os.path.expanduser(to))
     if not out.parent.exists():
         stop(f"控えを置く場所（{out.parent}）がありません")
-    if out.resolve() == hdd.resolve() or hdd.resolve() in out.resolve().parents:
-        stop("控えは、HDD とは別のドライブに置いてください")
+    drive = hc.mount_root(hdd)
+    if (
+        out.resolve() == hdd.resolve()
+        or hdd.resolve() in out.resolve().parents
+        or (hc.on_drive(drive) and hc.mount_root(out.parent) == drive)
+    ):
+        stop("控えは、HDD とは別のドライブに置いてください（HDD が壊れると、控えもなくなるため）")
     lists = {sub: hc.list_files(hdd / sub) for sub in ("augment", "emb") if (hdd / sub).is_dir()}
     db = db_path(s.ssd_root)
     configs = [
@@ -692,8 +748,9 @@ def backup(
     if need > free - 10**8:  # 100MB は余らせる
         stop(
             f"控えを置く場所の空きが足りません（これから写す {need / 1e9:.1f}GB、空き "
-            f"{free / 1e9:.1f}GB）。SD カードの前の中身を消すまでは、控えは取らずに進めてください"
-            "（docs/roadmap.md の 0 の7）"
+            f"{free / 1e9:.1f}GB）。SD カードの「古典×悩み」を消す前（docs/roadmap.md の 0 の8 の"
+            "前）なら、控えは取らずに進めてください。もう消したあとなら、SD カードのものは"
+            "消さずに、この画面を Claude に貼ってください"
         )
     try:
         out.mkdir(exist_ok=True)

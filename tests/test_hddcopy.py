@@ -378,14 +378,24 @@ def test_hdd_copy_whole_card(tmp_path, monkeypatch):
     assert r.output.index("数えています") < r.output.index("koten のフォルダ：")
     assert "DCIM、Docs、empty" in r.output and "ゴミ箱" in r.output and "控え" in r.output
     assert r.output.rstrip().splitlines()[-2] == "前の置き場所（SD カード）はそのまま残します"
-    # 写し終えたあとは、koten のフォルダを SD カードの古い中身で戻さない
+    # 写し終えたあとに打つと、写さずに HDD にあるかだけを確かめる（HDD で消したり直したりした
+    # ものを、SD カードの古いもので戻さない）
     (card / "古典×悩み" / "chunks" / "aozora.parquet").write_bytes(b"old")
-    (card / "DCIM" / "100" / "b.jpg").write_bytes(b"b")
+    (vol / "DCIM" / "100" / "a.jpg").unlink()  # HDD で消した
+    r = CliRunner().invoke(app, args)
+    assert r.exit_code == 1 and "HDD に無い：DCIM/100/a.jpg" in r.output, r.output
+    assert "そのまま残します" not in r.output and "Claude に貼って" in r.output
+    assert not (vol / "DCIM" / "100" / "a.jpg").exists()
+    assert (vol / "koten" / "chunks" / "aozora.parquet").read_bytes() == b"x" * 1000
+    (card / "DCIM" / "100" / "a.jpg").unlink()
+    (vol / "koten" / "chunks" / "aozora.parquet").unlink()  # HDD の koten から消えた
+    r = CliRunner().invoke(app, args)
+    assert r.exit_code == 1 and "HDD に無い：chunks/aozora.parquet" in r.output, r.output
+    (card / "古典×悩み" / "chunks" / "aozora.parquet").unlink()
     r = CliRunner().invoke(app, args)
     assert r.exit_code == 0, r.output
-    assert "写し終えています" in r.output and "そのまま残します" in r.output
-    assert (vol / "koten" / "chunks" / "aozora.parquet").read_bytes() == b"x" * 1000
-    assert (vol / "DCIM" / "100" / "b.jpg").exists()
+    assert "写し終えています" in r.output and "全部 HDD にもある" in r.output
+    assert "そのまま残します" in r.output
 
 
 def test_hdd_copy_refuses_wrong_from(tmp_path, monkeypatch):
@@ -507,3 +517,62 @@ def test_backup_stops_before_filling_the_card(tmp_path, monkeypatch):
     os.utime(f, (t, t))
     r = CliRunner().invoke(app, ["backup", "--to", str(out), *st])
     assert r.exit_code == 1 and "控えのほうが新しい" in r.output
+
+
+def test_rerun_keeps_folder_tags_made_on_the_hdd(tmp_path, monkeypatch):
+    """2回目に打っても、前からある HDD のフォルダのタグなどを SD カードの古いもので戻さない。"""
+    import shutil
+
+    from koten import hddcopy
+
+    src, dst = _pair(tmp_path)
+    monkeypatch.setattr(hddcopy, "MAC", True)
+
+    def cp(s, d):
+        shutil.copyfile(s, d)
+        return 0
+
+    monkeypatch.setattr(hddcopy, "_cp", cp)
+    calls = []
+    monkeypatch.setattr(hddcopy, "_copy_dir_meta", lambda a, b: calls.append(b.name) or True)
+    copy_tree(src, dst)
+    calls.clear()
+    copy_tree(src, dst)
+    assert calls == []
+    (src / "chunks" / "new").mkdir()
+    copy_tree(src, dst)
+    assert calls == ["new"]
+
+
+def test_folder_dates_follow_the_card(tmp_path):
+    """中に写したフォルダの更新日時を、SD カードのフォルダの日付に戻す。"""
+    src, dst = _pair(tmp_path)
+    for d in (src / "augment" / "m" / "p", src / "augment" / "m", src / "chunks"):
+        os.utime(d, (1_600_000_000, 1_600_000_000))
+    copy_tree(src, dst)
+    for rel in ("augment/m/p", "augment/m", "chunks"):
+        assert int((dst / rel).stat().st_mtime) == 1_600_000_000, rel
+
+
+def test_from_needs_koten_layout(tmp_path, monkeypatch):
+    """RAW フォルダ1つだけでは koten のデータとみなさない（exFAT は大文字小文字を区別しない）。"""
+    card, vol, st = _card(tmp_path, monkeypatch)
+    (card / "DCIM" / "raw").mkdir()
+    r = CliRunner().invoke(app, ["hdd-copy", "--from", str(card / "DCIM"), *st])
+    assert r.exit_code == 2 and "koten のデータのフォルダ" in r.output and list(vol.iterdir()) == []
+
+
+def test_backup_refuses_same_drive_and_runs_once(tmp_path, monkeypatch):
+    from koten import hddcopy
+    from koten.runlock import hold, lock_path
+
+    card, vol, st = _card(tmp_path, monkeypatch)
+    (vol / "koten" / "chunks").mkdir(parents=True)
+    r = CliRunner().invoke(app, ["backup", "--to", str(vol / "koten-backup"), *st])
+    assert r.exit_code == 2 and "別のドライブ" in r.output
+    with hold(lock_path(tmp_path / "ssd", "backup")):
+        r = CliRunner().invoke(app, ["backup", "--to", str(card / "koten-backup"), *st])
+    assert r.exit_code == 2 and "ほかの窓で backup" in r.output
+    r = CliRunner().invoke(app, ["backup", "--to", str(card / "koten-backup"), *st])
+    assert r.exit_code == 0, r.output
+    assert (card / "koten-backup" / hddcopy.BACKUP_MARK).exists()

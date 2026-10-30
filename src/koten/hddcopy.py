@@ -34,6 +34,9 @@ COPYING_MARK = ".koten-copying"
 # 写し終えた印。HDD で動かし始めたあとに SD カードの古い中身で戻さないよう、koten のフォルダは
 # もう写さない
 COPIED_MARK = ".koten-copied"
+# SD カードのほかのものを写し終えた印（HDD のいちばん上）。それからは写さずに、HDD にあるかだけを
+# 確かめる（HDD で消したり直したりしたものを、SD カードの古いもので戻さない）
+CARD_COPIED_MARK = ".koten-card-copied"
 # koten backup の控えのフォルダの印。hdd-copy --whole-card は、この印のあるフォルダを写さない
 BACKUP_MARK = ".koten-backup"
 # koten のデータのフォルダにあるはずのもの（--from の取り違えを見つける）
@@ -65,6 +68,7 @@ VOLUMES = Path("/Volumes")  # Mac の外付けのドライブがつながる場�
 MAC = sys.platform == "darwin"
 NEWER_SEC = 2  # 写した先の更新日時がこれより新しければ、写した先のほうが新しいとみなす
 COPYFILE_XATTR = 1 << 2  # Mac の copyfile.h
+ATTR_BIT_MAP_COUNT, ATTR_CMN_CRTIME, FSOPT_NOFOLLOW = 5, 0x200, 0x1  # Mac の sys/attr.h
 
 Skip = Callable[[Path], bool]
 
@@ -113,7 +117,7 @@ def skip_card(*excludes: Path) -> Skip:
             return True
         if any(_nfc(rel.parts[: len(ex)]) == ex for ex in exs):
             return True
-        if _is_tmp(rel.name) or rel.name in (COPYING_MARK, COPIED_MARK):
+        if _is_tmp(rel.name) or rel.name in (COPYING_MARK, COPIED_MARK, CARD_COPIED_MARK):
             return True
         return _mac_meta(rel)
 
@@ -232,12 +236,54 @@ def _copy_data(src: Path, tmp: Path) -> bool:
     return True
 
 
+class _AttrList(ctypes.Structure):  # Mac の struct attrlist
+    _fields_ = [
+        ("bitmapcount", ctypes.c_ushort),
+        ("reserved", ctypes.c_uint16),
+        ("commonattr", ctypes.c_uint32),
+        ("volattr", ctypes.c_uint32),
+        ("dirattr", ctypes.c_uint32),
+        ("fileattr", ctypes.c_uint32),
+        ("forkattr", ctypes.c_uint32),
+    ]
+
+
+class _Timespec(ctypes.Structure):
+    _fields_ = [("tv_sec", ctypes.c_long), ("tv_nsec", ctypes.c_long)]
+
+
 @functools.cache
 def _libsystem() -> ctypes.CDLL:
     lib = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
     lib.fcopyfile.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
     lib.fcopyfile.restype = ctypes.c_int
+    lib.setattrlist.argtypes = [
+        ctypes.c_char_p,
+        ctypes.POINTER(_AttrList),
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_ulong,
+    ]
+    lib.setattrlist.restype = ctypes.c_int
     return lib
+
+
+def _keep_times(st: os.stat_result, target: Path) -> None:
+    """更新日時を元のとおりにする。Mac では作成日も（utime だけだと、作成日が更新日時に寄る）。"""
+    os.utime(target, ns=(st.st_atime_ns, st.st_mtime_ns), follow_symlinks=False)
+    born = getattr(st, "st_birthtime", 0)
+    if MAC and born > 0:
+        sec = int(born)
+        ts = _Timespec(sec, int((born - sec) * 1e9))
+        attrs = _AttrList(ATTR_BIT_MAP_COUNT, 0, ATTR_CMN_CRTIME, 0, 0, 0, 0)
+        with contextlib.suppress(OSError, AttributeError):
+            _libsystem().setattrlist(
+                os.fsencode(target),
+                ctypes.byref(attrs),
+                ctypes.byref(ts),
+                ctypes.sizeof(ts),
+                FSOPT_NOFOLLOW,
+            )
 
 
 def _copy_dir_meta(src: Path, dst: Path) -> bool:
@@ -261,7 +307,8 @@ def _keep_hidden(st: os.stat_result, target: Path) -> None:
     （写すと、書きかけの名前から本物の名前に変えられなくなる）。"""
     if MAC and getattr(st, "st_flags", 0) & stat.UF_HIDDEN:
         with contextlib.suppress(OSError, NotImplementedError):
-            os.chflags(target, stat.UF_HIDDEN, follow_symlinks=False)
+            flags = os.lstat(target).st_flags  # 写した先のほかの印は変えない
+            os.chflags(target, flags | stat.UF_HIDDEN, follow_symlinks=False)
 
 
 def _copy_one(src: Path, target: Path, result: CopyResult) -> int:
@@ -273,7 +320,7 @@ def _copy_one(src: Path, target: Path, result: CopyResult) -> int:
     try:
         if not _copy_data(src, tmp):
             result.meta_lost += 1
-        os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))
+        _keep_times(st, tmp)
         tmp.replace(target)  # 途中で止めても、半端なファイルを本物の名前で残さない
     except BaseException:
         with contextlib.suppress(OSError):
@@ -283,13 +330,13 @@ def _copy_one(src: Path, target: Path, result: CopyResult) -> int:
     return st.st_size
 
 
-def _copy_link(src: Path, target: Path, result: CopyResult) -> None:
-    """リンクをリンクのまま写す（行き先の文字列を変えない。cp -R・Finder と同じ）。"""
+def _copy_link(src: Path, target: Path, result: CopyResult) -> bool:
+    """リンクをリンクのまま写す（行き先の文字列は変えない。cp -R と同じ）。写したら True。"""
     want = os.readlink(src)
     if target.is_symlink():
         if os.readlink(target) == want:
             result.skipped += 1
-            return
+            return False
     elif target.exists():
         raise FileExistsError(17, "HDD に同じ名前のリンクでないものがあります")
     tmp = _tmp_for(target)
@@ -297,6 +344,7 @@ def _copy_link(src: Path, target: Path, result: CopyResult) -> None:
     os.symlink(want, tmp)
     os.replace(tmp, target)
     result.copied += 1
+    return True
 
 
 def copy_tree(
@@ -325,19 +373,26 @@ def copy_tree(
 
     if gone():
         return result
+    touched: set[Path] = set()  # この回に作った・中に写したフォルダ（あとで日付を元に戻す）
     for rel in listing.dirs:  # 上のフォルダから順に並んでいる
+        target = dst / rel
         try:
-            (dst / rel).mkdir(exist_ok=True)
+            target.mkdir()
+        except FileExistsError:
+            if not target.is_dir():
+                result.problems.append(f"フォルダを作れない：{rel}（同じ名前のファイルがある）")
+            continue  # 前からあるフォルダは、HDD で付けたタグなどを SD カードの古いもので戻さない
         except OSError as e:
             if gone():
                 return result
             result.problems.append(f"フォルダを作れない：{rel}（{e.strerror or e}）")
             continue
+        touched.update((rel, rel.parent))
         if MAC:
-            if not _copy_dir_meta(src / rel, dst / rel):
+            if not _copy_dir_meta(src / rel, target):
                 result.meta_lost += 1
             with contextlib.suppress(OSError):
-                _keep_hidden((src / rel).lstat(), dst / rel)
+                _keep_hidden((src / rel).lstat(), target)
     checked: list[tuple[Path, Path]] = []
     logged = 0
     for n, (p, rel) in enumerate(listing.files, start=1):
@@ -357,6 +412,7 @@ def copy_tree(
             else:
                 result.copied += 1
                 checked.append((p, rel))
+                touched.add(rel.parent)
         if n % every == 0 or result.bytes - logged >= log_bytes:
             logged = result.bytes
             log(
@@ -365,13 +421,37 @@ def copy_tree(
             )
     for p, rel in listing.links:
         try:
-            _copy_link(p, dst / rel, result)
+            if _copy_link(p, dst / rel, result):
+                touched.add(rel.parent)
         except OSError as e:
             if gone():
                 return result
             result.problems.append(f"写せない：{rel}（リンク。{e.strerror or e}）")
+    # 中に写すとフォルダの更新日時が変わるので、深いほうから元の日付に戻す（いちばん上は変えない）
+    for rel in sorted(touched - {Path(".")}, key=lambda r: len(r.parts), reverse=True):
+        with contextlib.suppress(OSError):
+            _keep_times((src / rel).stat(), dst / rel)
     result.problems += verify_tree(src, dst, checked)
     return result
+
+
+def check_tree(listing: Listing, dst: Path, *, same: bool) -> list[str]:
+    """写さずに、listing のものが dst にあるかだけを確かめる（写し終えたあとに打ったとき）。
+
+    same=True なら、大きさか更新日時が違うもの（HDD のほうが新しいものは除く）も挙げる。
+    koten のフォルダは HDD で作り直すので、あるかだけを見る（same=False）。
+    """
+    problems = list(listing.problems)
+    for p, rel in listing.files + listing.links:
+        target = dst / rel
+        try:
+            if not os.path.lexists(target):
+                problems.append(f"HDD に無い：{rel}")
+            elif same and (p, rel) in listing.files and _state(p, target) == "copy":
+                problems.append(f"HDD と違う：{rel}")
+        except OSError as e:
+            problems.append(f"確かめられない：{rel}（{e.strerror or e}）")
+    return problems
 
 
 def verify_tree(src: Path, dst: Path, files: list[tuple[Path, Path]] | None = None) -> list[str]:
