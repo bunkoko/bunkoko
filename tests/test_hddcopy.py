@@ -645,3 +645,26 @@ def test_backup_refuses_the_hdd_root(tmp_path, monkeypatch):
     (vol / "koten" / "chunks").mkdir(parents=True)
     r = CliRunner().invoke(app, ["backup", "--to", str(vol), *st])
     assert r.exit_code == 2 and "別のドライブ" in r.output
+
+
+def test_backup_includes_photos_and_bgm(tmp_path):
+    """自分の写真と BGM は作り直せないので控えに入れる（D-032）。"""
+    hdd = tmp_path / "hdd" / "koten"
+    make_tree(hdd)
+    (hdd / "media" / "bg").mkdir(parents=True)
+    (hdd / "media" / "bg" / "sky.jpg").write_bytes(b"sky")
+    (hdd / "media" / "bgm").mkdir()
+    (hdd / "media" / "bgm" / "calm.mp3").write_bytes(b"mp3")
+    p = tmp_path / "settings.toml"
+    p.write_text(
+        f'[paths]\nhdd_root = "{hdd}"\nssd_root = "{tmp_path / "ssd"}"\n'
+        f'photos_dir = "{hdd / "media" / "bg"}"\nbgm_dir = "{hdd / "media" / "bgm"}"\n',
+        "utf-8",
+    )
+    (tmp_path / "SDカード").mkdir()
+    out = tmp_path / "SDカード" / "koten-backup"
+    r = CliRunner().invoke(app, ["backup", "--to", str(out), "--settings", str(p)])
+    assert r.exit_code == 0, r.output
+    assert (out / "media" / "photos" / "sky.jpg").read_bytes() == b"sky"
+    assert (out / "media" / "bgm" / "calm.mp3").read_bytes() == b"mp3"
+    assert "写真：写した 1 ファイル" in r.output and "BGM：写した 1 ファイル" in r.output

@@ -7,8 +7,10 @@
 # （--whole-card で SD カードのほかのものも HDD のいちばん上へ写す）
 hdd_root = "/Volumes/HD-NRLD-A/koten"
 ssd_root = "~/koten-hot"
-photos_dir = "~/Pictures/koten-bg"
-bgm_dir = "~/Music/koten-bgm"
+# 自分の写真と BGM。内蔵 SSD の空きを使わないよう HDD に置く（D-032）。使うのは動画の書き出し（M6）と
+# 写真を数えるとき（episode visuals）だけで、検索と API は読まない。koten backup で控えも取る
+photos_dir = "/Volumes/HD-NRLD-A/koten/media/bg"
+bgm_dir = "/Volumes/HD-NRLD-A/koten/media/bgm"
 
 [llm.augment]                 # Mac上のローカルLLM（docs/decisions.md D-005）
 provider = "ollama"           # Ollama 独自の API。LM Studio などは "openai_compatible"（endpoint に /v1）

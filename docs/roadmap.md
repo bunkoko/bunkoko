@@ -74,6 +74,7 @@
    - 有名な作家と古典の訳を足し、残りの augment（前の分と増えた分）→ 埋め込み → 索引まで、1つで進めます。
    - Mac は電源につなぎ、HDD をつないだまま、ふたを開けたままにします。
    - 進み具合は `tail -n 30 ~/koten-update.log` で見ます。
+   - 6 と並べて、別の窓で、写真と BGM を HDD に移します（D-032。下の「写真と BGM を HDD に移す」）。
 
 7. 控えを取ります（週1回。update が動いていても、別の窓で取れます）。
 
@@ -82,7 +83,7 @@
    uv run koten backup --to "/Volumes/SDカード/koten-backup"
    ```
 
-   - augment・埋め込み（作り直しに日数がかかるもの）・SSD の DB・config の台帳を写します。2回目からは変わったものだけを写します。最後に「控えを … に取りました」と出れば終わりです。
+   - augment・埋め込み（作り直しに日数がかかるもの）・自分の写真と BGM・SSD の DB・config の台帳を写します。2回目からは変わったものだけを写します。最後に「控えを … に取りました」と出れば終わりです。
    - SD カードには前の中身が残っているので、空きが足りないと、写す前に「空きが足りません」と出て止まります。そのときは、8 の片付けが済むまで、控えは取らずに進めます（SD カードの「古典×悩み」が、引っ越しの前の控えの代わりになります）。8 で「古典×悩み」を消したあとにこの表示が出たときは、SD カードのものは消さずに、その画面を Claude に貼ってください。
    - 控えは、HDD とは別のドライブに置きます（HDD の中を指すと止まります）。同じコマンドを2つの窓で同時に打つと、2つ目は止まります。
    - 「書き込めません」と出たら、SD カードの横の書き込み禁止のつまみ（LOCK）を確かめます。
@@ -99,6 +100,42 @@
    2. まず、SD カードの「古典×悩み」フォルダだけを消します（控えのための空きができます）。Finder で SD カードを開き、「古典×悩み」を選んでから、option キーを押しながら「ファイル」メニューを開き「すぐに削除…」を選びます（⌥⌘⌫）。ゴミ箱は使いません（ゴミ箱を空にすると、Mac のほかの場所から捨てたものも消えます）。「koten-backup」は消しません。
       消したら、すぐに 7 のコマンドで控えを取り、最後に「控えを … に取りました」と出ることを確かめます（それまでは、augment と埋め込みが HDD にしかありません）。それでも「空きが足りません」と出たら、SD カードのほかのものは消さずに、その画面を Claude に貼ってください。
    3. SD カードのほかのもの（写真や書類など）は、入りきるなら SD カードにも残しておくのを勧めます。koten backup が写すのは koten のものだけです。SD カードから消すと HDD にしか無くなり、HDD が壊れると戻せません。消すときは、先に別のドライブかクラウドにも写してください。
+
+### 写真と BGM を HDD に移す（D-032。4 が終わってから。6 と並べてかまいません）
+
+置き場所は `/Volumes/HD-NRLD-A/koten/media/bg`（写真）と `/Volumes/HD-NRLD-A/koten/media/bgm`（BGM）です。settings.toml はもう書き換えてあります。
+
+1. 最新を取り込み、HDD にフォルダを作ります。
+
+   ```sh
+   cd /Users/bunkoko/koten
+   git pull
+   mkdir -p /Volumes/HD-NRLD-A/koten/media/bg /Volumes/HD-NRLD-A/koten/media/bgm
+   ls ~/Pictures/koten-bg ~/Music/koten-bgm
+   ```
+
+   - 最後のコマンドで、両方とも「No such file or directory」と出たら、移すものはありません。これで終わりです。
+
+2. ある方を写します（無い方の行は打たなくてかまいません）。「ターミナルが…フォルダにアクセスしようとしています」と出たら「許可」を押します。
+
+   ```sh
+   ditto ~/Pictures/koten-bg /Volumes/HD-NRLD-A/koten/media/bg
+   ditto ~/Music/koten-bgm /Volumes/HD-NRLD-A/koten/media/bgm
+   ```
+
+3. 数が合うかを確かめます。上と下の数が同じなら大丈夫です。
+
+   ```sh
+   find ~/Pictures/koten-bg -type f | wc -l
+   find /Volumes/HD-NRLD-A/koten/media/bg -type f | wc -l
+   find ~/Music/koten-bgm -type f | wc -l
+   find /Volumes/HD-NRLD-A/koten/media/bgm -type f | wc -l
+   ```
+
+4. 元の写真と BGM（内蔵 SSD のもの）は、次に 7 の控えが「控えを … に取りました」で終わってから消します（それまでは、HDD のほかに写しがありません）。Finder でフォルダを選び、option キーを押しながら「ファイル」メニューを開き「すぐに削除…」（⌥⌘⌫）。ゴミ箱は使いません。
+   - 7 の控えが「空きが足りません」で取れないあいだ（8 の片付けの前）は、元の写真と BGM は消さずに置いておきます。
+
+- これからは、写真と BGM を HDD のこのフォルダに入れます。写真は動画の書き出し（M6）と `uv run koten episode visuals` だけが読みます。検索と API は読みません。
 
 ## 1. オーナーが Mac ですること（0 のあと、上から順に）
 
@@ -216,16 +253,10 @@
 | D-029 | 作者不詳は1967年までに出たもの、没年が空の人は1900年より前に名前が出ていれば使う |
 | D-030 | Long 訳『自省録』の Standard Ebooks 版を使う |
 | D-031 | 4TB の HDD に移す。SD カードは控えに使う |
+| D-032 | 自分の写真と BGM を HDD（/Volumes/HD-NRLD-A/koten/media/）に移し、koten backup で控えも取る |
 | D-033 | SD カードの中身を全部 HDD（HD-NRLD-A）へ写す。koten のデータは /Volumes/HD-NRLD-A/koten |
 
 ### まだ決めること
-
-#### D-032 写真と BGM を HDD に移すか
-
-- 何が問題か：内蔵 SSD の空きは約10GB です。自分の写真（数百枚で数GB）と BGM を内蔵（~/Pictures/koten-bg・~/Music/koten-bgm）に置くと、空きがさらに減ります。
-- 移す：内蔵の空きが守れます。写真を使うのは動画の書き出し（M6）で、HDD を読んでよいバッチの処理なので、困りません。HDD を外していると、写真の枚数を数えられません。
-- 移さない：写真アプリから直接入れやすいです。
-- 推奨：移す。決まったら、settings.toml の photos_dir・bgm_dir を /Volumes/HD-NRLD-A/media/ の下に変えます。
 
 #### D-028 の残り：画像をどこに使うか（M6 で決める）
 

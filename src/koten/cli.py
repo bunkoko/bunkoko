@@ -756,7 +756,12 @@ def _backup(s: Settings, to: str) -> None:
         or (hc.on_drive(drive) and hc.mount_root(out) == drive)
     ):
         stop("控えは、HDD とは別のドライブに置いてください（HDD が壊れると、控えもなくなるため）")
-    lists = {sub: hc.list_files(hdd / sub) for sub in ("augment", "emb") if (hdd / sub).is_dir()}
+    # 写すもの：(名前, 元, 控えの中の場所)。自分の写真と BGM は作り直せないので控えに入れる（D-032）
+    sources = [(sub, hdd / sub, out / "hdd" / sub) for sub in ("augment", "emb")]
+    for key, name in (("photos_dir", "写真"), ("bgm_dir", "BGM")):
+        if folder := s.raw["paths"].get(key):
+            sources.append((name, Path(os.path.expanduser(folder)), out / "media" / key[:-4]))
+    lists = {name: (hc.list_files(src), src, dst) for name, src, dst in sources if src.is_dir()}
     db = db_path(s.ssd_root)
     configs = [
         f
@@ -765,7 +770,7 @@ def _backup(s: Settings, to: str) -> None:
         and f.suffix in (".csv", ".yaml", ".yml", ".toml")
         and not f.name.startswith(".")
     ]
-    need = sum(hc.bytes_to_copy(lst.files, out / "hdd" / sub) for sub, lst in lists.items())
+    need = sum(hc.bytes_to_copy(lst.files, dst) for lst, _, dst in lists.values())
     need += (db.stat().st_size if db.exists() else 0) + sum(f.stat().st_size for f in configs)
     free = hc.free_bytes(out if out.is_dir() else out.parent)
     if need > free - 10**8:  # 100MB は余らせる
@@ -786,14 +791,13 @@ def _backup(s: Settings, to: str) -> None:
             "書き込み禁止のつまみ（LOCK）が下がっていないか確かめてください"
         )
     problems: list[str] = []
-    for sub, lst in lists.items():
-        target = out / "hdd" / sub
+    for sub, (lst, src, target) in lists.items():
         try:
             target.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             problems.append(f"写せない：{sub}（{e.strerror or e}）")
             continue
-        r = hc.copy_tree(hdd / sub, target, listing=lst)
+        r = hc.copy_tree(src, target, listing=lst)
         problems += r.problems
         if r.kept:  # 控えのほうが新しい：HDD の中身が古いものに戻っていないか
             problems.append(
@@ -2759,14 +2763,17 @@ def episode_visuals_cmd(
     window = int(s.section("recency").get("photo_episodes", 5))
     avg_seg = sum(per_seg) / len(per_seg)
     avg_every = sum(per_every) / len(per_every)
-    have = count_photos(Path(os.path.expanduser(s.raw["paths"].get("photos_dir", ""))))
+    photos_dir = Path(os.path.expanduser(s.raw["paths"].get("photos_dir", "")))
+    have = count_photos(photos_dir)
     typer.echo(
         f"1回あたり平均：段落ごとに {avg_seg:.0f}枚、{every:.0f}秒ごとに {avg_every:.0f}枚。"
         f"同じ写真を直近{window}回で使わないなら、"
         f"最低 {avg_seg * window:.0f}〜{avg_every * window:.0f}枚が要ります"
     )
-    if have is None:
-        typer.echo("写真のフォルダ（settings の paths.photos_dir）がまだありません")
+    if have is None and s.hdd_root in photos_dir.parents and not s.hdd_root.parent.exists():
+        typer.echo(f"写真のフォルダ（{photos_dir}）は HDD にあります。HDD をつなぐと数えられます")
+    elif have is None:
+        typer.echo(f"写真のフォルダ（{photos_dir}。settings の paths.photos_dir）がまだありません")
     else:
         short = max(0, round(avg_seg * window) - have)
         typer.echo(
