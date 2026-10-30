@@ -10,35 +10,55 @@
 - 進み具合は docs/decisions.md の「マイルストーンの状況」に書きます。
 - このページは、誰が何をするかの一覧です。判断の中身と根拠は docs/decisions.md、調べの全文は docs/research/ にあります。
 
-## 0. 今すぐ：HDD へ引っ越す（D-031）
+## 0. 今すぐ：SD カードの中身を全部 HDD へ移して、HDD で始める（D-031・D-033）
 
-置き場所を SD カードから、4TB の HDD（/Volumes/koten-hdd/koten）に移します。SD カードの中身はそのまま残し、あとで控えに使います。
+新しい HDD は `/Volumes/HD-NRLD-A` です。SD カードの中身を、次のように写します。SD カードの中身は消さずに残します（消すのは、HDD で問題なく動いたのを確かめてから。下の 7）。
+
+| SD カード | HDD |
+|---|---|
+| 古典×悩み（koten のデータ） | koten（`/Volumes/HD-NRLD-A/koten`。日本語と × の無い名前にする。D-031） |
+| ほかのもの全部 | いちばん上に、同じ名前・同じ並びで |
+| ゴミ箱の中身、Mac と Windows の管理用のもの（.Spotlight-V100 など）、`._` で始まるファイル、.DS_Store | 写さない（タグなどの付帯情報は、ファイルといっしょに写ります） |
 
 1. 動いている augment と update を止めます。それぞれの窓で Ctrl-C を押します。ここまでの結果は保存され、あとで続きから再開します。
 
-2. HDD を Mac 用に整えます（**HDD の中身は全部消えます**。届いたばかりで何も入っていないことを確かめてください）。
-   - 「ディスクユーティリティ」を開く →「表示」→「すべてのデバイスを表示」
-   - 左の一覧で、新しい HDD（4TB）のいちばん上の行を選ぶ →「消去」
-   - 名前：`koten-hdd`、フォーマット：APFS、方式：GUID パーティションマップ →「消去」
-   - Time Machine に使うかを聞かれたら「使用しない」
+2. SD カードのゴミ箱を見ます。ゴミ箱の中身は写しません。Finder でゴミ箱を開き、SD カードから捨てたもので残したいものがあれば、右クリック →「戻す」で SD カードに戻します。
 
-3. 最新を取り込み、SD カードから HDD へ写します（SD カードは挿したまま）。
+3. HDD の形式を確かめます。
+
+   ```sh
+   diskutil info /Volumes/HD-NRLD-A | grep -E "Personality|Read-Only"
+   ```
+
+   - 「File System Personality」が `APFS` か `Journaled HFS+` で、「Volume Read-Only」が `No` なら、4 へ進みます。
+   - `NTFS`（買ったときの形式のことが多い。Mac からは書き込めません）・`ExFAT`・`MS-DOS FAT32` なら、Mac 用に整えます。**HDD の中身は全部消えます**。先に `ls -la /Volumes/HD-NRLD-A` で、残したいものが入っていないことを確かめてください。
+     - 「ディスクユーティリティ」を開く →「表示」→「すべてのデバイスを表示」
+     - 左の一覧で、HDD（4TB）のいちばん上の行を選ぶ →「消去」
+     - 名前：`HD-NRLD-A`（同じ名前にすると、場所が /Volumes/HD-NRLD-A のまま変わりません）、フォーマット：APFS、方式：GUID パーティションマップ →「消去」
+     - Time Machine に使うかを聞かれたら「使用しない」
+   - 形式を確かめ忘れても、次の hdd-copy が写す前に形式を見て、合わなければ止まります。
+
+4. 最新を取り込み、SD カードの中身を HDD へ写します（SD カードは挿したまま。中身の量によって数時間かかります）。
 
    ```sh
    cd /Users/bunkoko/koten
    git pull
-   uv run koten hdd-copy --from "/Volumes/SDカード/古典×悩み"
+   caffeinate -i uv run koten hdd-copy --from "/Volumes/SDカード/古典×悩み" --whole-card 2>&1 | tee -i -a ~/koten-hdd-copy.log
    ```
 
-   - 最後に「同じ大きさで写っていることを確かめました」と出れば終わりです。止まったときは、同じコマンドをもう一度打つと続きから写します。
+   - 始めに、写すファイルの数と大きさ、SD カードのいちばん上にあるものの名前、HDD の空きが出ます。思っていたものが並んでいるかを見てください。
+   - 最後に「koten のフォルダは、全部のファイルが同じ大きさで写っていることを確かめました」と「SD カードのほかのものは、…確かめました」が出れば終わりです。
+   - 止まったときや「写せない」と出たときは、同じコマンドをもう一度打つと続きから写します。何度打っても同じファイルで止まるときは、その行を Claude に貼ってください。
+   - Mac は電源につなぎ、ふたを開けたままにします。
+   - koten のフォルダは、写し終えたあとはもう写しません。HDD で動かし始めたあとに、もう一度このコマンドを打っても、SD カードの古い中身で戻すことはありません。
 
-4. 確かめます。HDD の行が `/Volumes/koten-hdd/koten` になり、空きが 3.5TB 以上あれば大丈夫です。
+5. 確かめます。HDD の行が `/Volumes/HD-NRLD-A/koten` で「OK」なら大丈夫です。
 
    ```sh
    uv run koten doctor
    ```
 
-5. 止めた作業を再開します（新しい窓で。数日かかります）。
+6. 止めた作業を、HDD で再開します（新しい窓で。数日かかります）。
 
    ```sh
    caffeinate -i uv run koten update --index 2>&1 | tee -i -a ~/koten-update.log
@@ -48,14 +68,15 @@
    - Mac は電源につなぎ、HDD をつないだまま、ふたを開けたままにします。
    - 進み具合は `tail -n 30 ~/koten-update.log` で見ます。
 
-6. 控えを取ります（週1回。update が動いていても取れます）。
+7. 控えを取ります（週1回。update が動いていても取れます）。
 
    ```sh
    uv run koten backup --to "/Volumes/SDカード/koten-backup"
    ```
 
    - augment・埋め込み（作り直しに日数がかかるもの）・SSD の DB・config の台帳を写します。2回目からは変わったものだけを写します。
-   - SD カードの空きが足りなくなったら、HDD で1〜2週間問題なく動いたのを確かめてから、SD カードの「古典×悩み」フォルダを消します。
+   - SD カードには前の中身が残っているので、空きが足りないと「写せない」と出ます。HDD で1〜2週間問題なく動いたのを確かめてから、SD カードの中身を消して、控え専用にします（Finder で SD カードを開き、中身をゴミ箱に入れて、ゴミ箱を空にする）。
+   - ほかのアプリ（写真の取り込みなど）が SD カードの場所を使っていたら、その設定も HDD の場所に変えます。
 
 ## 1. オーナーが Mac ですること（0 のあと、上から順に）
 
@@ -68,10 +89,10 @@
 | 5 | 照合用の Ollama を設定する | 本の文がクラウドや記録に出ないようにする | docs/check_guide.md の「Ollama の設定」 |
 | 6 | 照合に使う本を台帳に書き、1回試す | ②（判定だけを残す）が使えるかを確かめる | ref_books.csv に書く → `uv run koten ref build` → `uv run koten episode list` で台本のある回の ID を見る → `uv run koten check list --episode` のあとにその ID を書く → `check run`（docs/check_guide.md） |
 | 7 | 背景の事実の下書きを確かめる | M5b の残り | `uv run koten facts review` → 別の資料で確かめて accept に 1 → `uv run koten facts accept` → `uv run koten facts build` |
-| 8 | 検索の評価の点を付け、リランカーを試す（D-010） | M4 の残りとリランカーの比べ。update（0 の5）が終わってから | 下の「リランカーを試すコマンド」 |
+| 8 | 検索の評価の点を付け、リランカーを試す（D-010） | M4 の残りとリランカーの比べ。update（0 の6）が終わってから | 下の「リランカーを試すコマンド」 |
 | 9 | 写真が何枚足りないかを見る | 資料の画像をどれだけ足すかを決める（D-028） | `uv run koten episode visuals` |
 | 10 | まだ判定不能の古典を見る（D-029） | 没年が空でも、1900年より前に名前が出ている人・1967年までに出た作者不詳の作品は自動で使える | `uv run koten ingest aozora --dry-run` の「没年が空で判定不能」に残った人だけ、config/aozora_review.csv に書く（docs/ref_sources.md）→ `uv run koten update --index` |
-| 11 | HDD の使った量を測る（任意） | D-006（テキスト類の容量）を記録する | `du -sh /Volumes/koten-hdd/koten/*` の結果を Claude に貼る |
+| 11 | HDD の使った量を測る（任意） | D-006（テキスト類の容量）を記録する | `du -sh /Volumes/HD-NRLD-A/koten/*` の結果を Claude に貼る |
 
 ### リランカーを試すコマンド（#8）
 
@@ -80,7 +101,7 @@
 1. 評価セットを書き出す。候補のリランカーが上に上げた一節も入れる
 
    ```sh
-   HF_HOME=/Volumes/koten-hdd/hf-cache uv run koten eval export --rerank-model hotchpotch/japanese-reranker-small-v2 --rerank-model cl-nagoya/ruri-v3-reranker-310m --rerank-model BAAI/bge-reranker-v2-m3
+   HF_HOME=/Volumes/HD-NRLD-A/hf-cache uv run koten eval export --rerank-model hotchpotch/japanese-reranker-small-v2 --rerank-model cl-nagoya/ruri-v3-reranker-310m --rerank-model BAAI/bge-reranker-v2-m3
    ```
 
 2. tests/eval/retrieval.csv の grade 列に、合う 1・合わない 0 を付ける。grader（Claude の Haiku）にも付けさせる
@@ -93,7 +114,7 @@
 3. 比べる（LLM の点で見るときは `--by llm` を付ける）
 
    ```sh
-   HF_HOME=/Volumes/koten-hdd/hf-cache uv run koten eval retrieval --rerank-model hotchpotch/japanese-reranker-small-v2 --rerank-model cl-nagoya/ruri-v3-reranker-310m --rerank-model BAAI/bge-reranker-v2-m3
+   HF_HOME=/Volumes/HD-NRLD-A/hf-cache uv run koten eval retrieval --rerank-model hotchpotch/japanese-reranker-small-v2 --rerank-model cl-nagoya/ruri-v3-reranker-310m --rerank-model BAAI/bge-reranker-v2-m3
    ```
 
 - 「点の無い一節」（unjudged）がほぼ0の行どうしで比べます。0でなければ、手順1〜2をやり直します（前に付けた点は残ります）。
@@ -173,6 +194,7 @@
 | D-029 | 作者不詳は1967年までに出たもの、没年が空の人は1900年より前に名前が出ていれば使う |
 | D-030 | Long 訳『自省録』の Standard Ebooks 版を使う |
 | D-031 | 4TB の HDD に移す。SD カードは控えに使う |
+| D-033 | SD カードの中身を全部 HDD（HD-NRLD-A）へ写す。koten のデータは /Volumes/HD-NRLD-A/koten |
 
 ### まだ決めること
 
@@ -181,7 +203,7 @@
 - 何が問題か：内蔵 SSD の空きは約10GB です。自分の写真（数百枚で数GB）と BGM を内蔵（~/Pictures/koten-bg・~/Music/koten-bgm）に置くと、空きがさらに減ります。
 - 移す：内蔵の空きが守れます。写真を使うのは動画の書き出し（M6）で、HDD を読んでよいバッチの処理なので、困りません。HDD を外していると、写真の枚数を数えられません。
 - 移さない：写真アプリから直接入れやすいです。
-- 推奨：移す。決まったら、settings.toml の photos_dir・bgm_dir を /Volumes/koten-hdd/media/ の下に変えます。
+- 推奨：移す。決まったら、settings.toml の photos_dir・bgm_dir を /Volumes/HD-NRLD-A/media/ の下に変えます。
 
 #### D-028 の残り：画像をどこに使うか（M6 で決める）
 

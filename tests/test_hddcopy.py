@@ -1,6 +1,7 @@
 """HDD の引っ越し（koten hdd-copy）と控え（koten backup）。"""
 
 import os
+from pathlib import Path
 
 from typer.testing import CliRunner
 
@@ -51,16 +52,19 @@ def test_hdd_copy_command(tmp_path, monkeypatch):
     (tmp_path / "koten-hdd").mkdir()
     hdd = tmp_path / "koten-hdd" / "koten"
     st = _settings(tmp_path, hdd)
+    # augment か update が動いているあいだは写さない
+    monkeypatch.setattr(runlock, "other_processes", lambda *a, **k: [(9, "koten augment")])
+    r = CliRunner().invoke(app, ["hdd-copy", "--from", str(src), *st])
+    assert r.exit_code == 2 and "Ctrl-C" in r.output and not hdd.exists()
     monkeypatch.setattr(runlock, "other_processes", lambda *a, **k: [])
     r = CliRunner().invoke(app, ["hdd-copy", "--from", str(src), *st])
     assert r.exit_code == 0, r.output
     assert (hdd / "chunks" / "aozora.parquet").exists() and "確かめました" in r.output
-    # augment か update が動いているあいだは写さない
-    monkeypatch.setattr(runlock, "other_processes", lambda *a, **k: [(9, "koten augment")])
+    # 写し終えたあとは、update が HDD で動いていても、もう写さないので止めない
+    monkeypatch.setattr(runlock, "other_processes", lambda *a, **k: [(9, "koten update")])
     r = CliRunner().invoke(app, ["hdd-copy", "--from", str(src), *st])
-    assert r.exit_code == 2 and "Ctrl-C" in r.output
+    assert r.exit_code == 0 and "写し終えています" in r.output
     # HDD がつながっていなければ止める
-    monkeypatch.setattr(runlock, "other_processes", lambda *a, **k: [])
     st = _settings(tmp_path, tmp_path / "none" / "koten")
     r = CliRunner().invoke(app, ["hdd-copy", "--from", str(src), *st])
     assert r.exit_code == 2 and "つながっていません" in r.output
@@ -150,3 +154,200 @@ def test_models_load_offline_only_when_cached(tmp_path, monkeypatch):
     import os
 
     assert "HF_HUB_OFFLINE" not in os.environ
+
+
+def test_newer_file_on_hdd_is_not_overwritten(tmp_path):
+    """HDD で動かし始めたあとに写し直しても、HDD のほうが新しいファイルは古い中身で戻さない。"""
+    src, dst = tmp_path / "sd", tmp_path / "hdd"
+    make_tree(src)
+    copy_tree(src, dst)
+    f = dst / "chunks" / "aozora.parquet"
+    f.write_bytes(b"new")
+    t = (src / "chunks" / "aozora.parquet").stat().st_mtime + 100
+    os.utime(f, (t, t))
+    r = copy_tree(src, dst)
+    assert r.kept == ["chunks/aozora.parquet"] and r.problems == [] and r.copied == 0
+    assert f.read_bytes() == b"new"
+
+
+def test_copy_error_is_reported_and_others_continue(tmp_path, monkeypatch):
+    from koten import hddcopy
+
+    src, dst = tmp_path / "sd", tmp_path / "hdd"
+    make_tree(src)
+    real = hddcopy._copy_data
+
+    def broken(s, tmp):
+        if s.name == "aozora.parquet":
+            tmp.write_bytes(b"ha")
+            raise PermissionError(13, "Permission denied")
+        return real(s, tmp)
+
+    monkeypatch.setattr(hddcopy, "_copy_data", broken)
+    r = copy_tree(src, dst)
+    assert r.copied == 1 and r.problems == ["写せない：chunks/aozora.parquet（Permission denied）"]
+    assert not (dst / "chunks" / "aozora.parquet.copying").exists()
+
+
+def test_hdd_gone_midway_does_not_recreate_folders(tmp_path, monkeypatch):
+    """途中で HDD が外れたら、上のフォルダをたどって作り直さない（Mac 本体に書かない）。"""
+    import shutil
+
+    from koten import hddcopy
+
+    src = tmp_path / "sd"
+    for d, name in (("a", "x"), ("b", "y")):
+        (src / d).mkdir(parents=True)
+        (src / d / name).write_bytes(b"1")
+    real = hddcopy._copy_data
+
+    def vanish(s, tmp):
+        ok = real(s, tmp)
+        shutil.rmtree(tmp_path / "hdd")
+        return ok
+
+    monkeypatch.setattr(hddcopy, "_copy_data", vanish)
+    r = copy_tree(src, tmp_path / "hdd" / "koten")
+    assert r.copied == 0 and len(r.problems) == 2
+    assert not (tmp_path / "hdd").exists()
+
+
+def test_mac_copies_tags_or_falls_back_to_contents(tmp_path, monkeypatch):
+    import shutil
+
+    from koten import hddcopy
+
+    src, dst = tmp_path / "sd", tmp_path / "hdd"
+    make_tree(src)
+    monkeypatch.setattr(hddcopy, "MAC", True)
+
+    def cp(s, d):  # Mac の cp：付帯情報を写せないと 1 を返す（中身は写っていることがある）
+        shutil.copyfile(s, d)
+        d.chmod(0o444)
+        return 1 if s.name == "aozora.parquet" else 0
+
+    monkeypatch.setattr(hddcopy, "_cp", cp)
+    r = copy_tree(src, dst)
+    assert (r.copied, r.meta_lost, r.problems) == (2, 1, [])
+    assert (dst / "chunks" / "aozora.parquet").read_bytes() == b"x" * 1000
+
+
+def test_skip_card_rules():
+    import unicodedata
+
+    from koten.hddcopy import skip_card
+
+    skip = skip_card(Path("データ"))
+    # 別に写す koten のフォルダ（Mac が濁点を分けて書いた名前でも同じとみなす）
+    assert skip(Path(unicodedata.normalize("NFD", "データ")) / "chunks")
+    assert skip(Path(".Trashes") / "501" / "old.txt")
+    assert skip(Path(".Spotlight-V100"))
+    assert skip(Path("DCIM") / "._a.jpg") and skip(Path("DCIM") / ".DS_Store")
+    assert not skip(Path("DCIM") / "a.jpg")
+    assert not skip(Path("Downloads") / "movie.part")  # 利用者のファイルは写す
+    assert not skip(Path("Docs") / ".Trashes")  # 直下のものだけが管理用
+
+
+def _card(tmp_path, monkeypatch):
+    """SD カード（tmp/SDカード）と HDD（tmp/HD-NRLD-A）。それぞれをドライブのいちばん上とみなす。"""
+
+    from koten import hddcopy
+
+    card, vol = tmp_path / "SDカード", tmp_path / "HD-NRLD-A"
+    make_tree(card / "古典×悩み")
+    (card / "DCIM" / "100").mkdir(parents=True)
+    (card / "DCIM" / "100" / "a.jpg").write_bytes(b"jpg")
+    (card / "Docs").mkdir()
+    (card / "Docs" / "report.part").write_bytes(b"p")
+    (card / "empty").mkdir()
+    (card / ".Trashes" / "501").mkdir(parents=True)
+    (card / ".Trashes" / "501" / "old.txt").write_bytes(b"t")
+    (card / "._DCIM").write_bytes(b"apple")
+    vol.mkdir()
+
+    def mount_root(path):
+        p = Path(path).resolve()
+        for root in (card, vol):
+            if p == root or root in p.parents:
+                return root
+        return Path("/")
+
+    monkeypatch.setattr(hddcopy, "mount_root", mount_root)
+    monkeypatch.setattr(runlock, "other_processes", lambda *a, **k: [])
+    return card, vol, _settings(tmp_path, vol / "koten")
+
+
+def test_hdd_copy_whole_card(tmp_path, monkeypatch):
+    from koten.hddcopy import COPIED_MARK, COPYING_MARK
+
+    card, vol, st = _card(tmp_path, monkeypatch)
+    args = ["hdd-copy", "--from", str(card / "古典×悩み"), "--whole-card", *st]
+    r = CliRunner().invoke(app, args)
+    assert r.exit_code == 0, r.output
+    # koten のフォルダは hdd_root（koten）へ、ほかのものは HDD のいちばん上へ同じ並びで
+    assert (vol / "koten" / "chunks" / "aozora.parquet").read_bytes() == b"x" * 1000
+    assert (vol / "DCIM" / "100" / "a.jpg").read_bytes() == b"jpg"
+    assert (vol / "Docs" / "report.part").exists() and (vol / "empty").is_dir()
+    for absent in ("古典×悩み", ".Trashes", "._DCIM"):
+        assert not (vol / absent).exists()
+    assert (vol / "koten" / COPIED_MARK).exists() and not (vol / "koten" / COPYING_MARK).exists()
+    assert "DCIM、Docs、empty" in r.output and "ゴミ箱" in r.output
+    # 写し終えたあとは、koten のフォルダを SD カードの古い中身で戻さない
+    (card / "古典×悩み" / "chunks" / "aozora.parquet").write_bytes(b"old")
+    (card / "DCIM" / "100" / "b.jpg").write_bytes(b"b")
+    r = CliRunner().invoke(app, args)
+    assert r.exit_code == 0, r.output
+    assert "写し終えています" in r.output
+    assert (vol / "koten" / "chunks" / "aozora.parquet").read_bytes() == b"x" * 1000
+    assert (vol / "DCIM" / "100" / "b.jpg").exists()
+
+
+def test_hdd_copy_whole_card_refuses(tmp_path, monkeypatch):
+    from koten import hddcopy
+
+    card, vol, st = _card(tmp_path, monkeypatch)
+
+    def run(src, *extra):
+        return CliRunner().invoke(app, ["hdd-copy", "--from", str(src), *extra, *st])
+
+    # SD カードのいちばん上を渡した
+    r = run(card, "--whole-card")
+    assert r.exit_code == 2 and "いちばん上" in r.output
+    # SD カードにも koten という名前のものがあると、HDD の koten のフォルダと重なる
+    (card / "koten").mkdir()
+    r = run(card / "古典×悩み", "--whole-card")
+    assert r.exit_code == 2 and "重なります" in r.output
+    (card / "koten").rmdir()
+    # Mac 本体の上のフォルダから --whole-card で写さない
+    monkeypatch.setattr(
+        hddcopy, "mount_root", lambda p: vol if str(p).startswith(str(vol)) else Path("/")
+    )
+    r = run(card / "古典×悩み", "--whole-card")
+    assert r.exit_code == 2 and "Mac 本体" in r.output
+
+
+def test_hdd_copy_checks_format_and_space(tmp_path, monkeypatch):
+    from koten import hddcopy
+
+    card, vol, st = _card(tmp_path, monkeypatch)
+    args = ["hdd-copy", "--from", str(card / "古典×悩み"), "--whole-card", *st]
+    monkeypatch.setattr(hddcopy, "volume_format", lambda p: "ntfs")
+    r = CliRunner().invoke(app, args)
+    assert r.exit_code == 2 and "NTFS" in r.output and not (vol / "koten").exists()
+    monkeypatch.setattr(hddcopy, "volume_format", lambda p: "apfs")
+    monkeypatch.setattr(hddcopy, "free_bytes", lambda p: 10)
+    r = CliRunner().invoke(app, args)
+    assert r.exit_code == 2 and "空きが足りません" in r.output and not (vol / "koten").exists()
+
+
+def test_doctor_warns_unsuited_format(tmp_path, monkeypatch):
+    from koten import hddcopy
+    from koten.config import load_settings
+    from koten.doctor import WARN, check_hdd
+
+    hdd = tmp_path / "HD-NRLD-A" / "koten"
+    hdd.mkdir(parents=True)
+    s = load_settings(_settings(tmp_path, hdd)[1])
+    monkeypatch.setattr(hddcopy, "volume_format", lambda p: "exfat")
+    c = check_hdd(s)
+    assert c.status == WARN and "exFAT" in c.detail

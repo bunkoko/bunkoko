@@ -2,9 +2,10 @@
 # KOTEN_SETTINGS 環境変数で別のファイルを指定できる。
 
 [paths]
-# 本文・埋め込み・動画の置き場所。4TB の外付け HDD（名前 koten-hdd・APFS。docs/decisions.md D-031）
+# 本文・埋め込み・動画の置き場所。4TB の外付け HDD（名前 HD-NRLD-A・APFS。docs/decisions.md D-031・D-033）
 # 前は SD カード（/Volumes/SDカード/古典×悩み。D-008）。写すときは koten hdd-copy --from でその場所を渡す
-hdd_root = "/Volumes/koten-hdd/koten"
+# （--whole-card で SD カードのほかのものも HDD のいちばん上へ写す）
+hdd_root = "/Volumes/HD-NRLD-A/koten"
 ssd_root = "~/koten-hot"
 photos_dir = "~/Pictures/koten-bg"
 bgm_dir = "~/Music/koten-bgm"

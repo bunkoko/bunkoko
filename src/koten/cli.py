@@ -437,61 +437,181 @@ def _wait_for_augment(s: Settings, say, poll_sec: int) -> None:
 @app.command("hdd-copy")
 def hdd_copy(
     from_: Annotated[
-        str, typer.Option("--from", help="前の置き場所（SD カードの koten のフォルダなど）")
+        str, typer.Option("--from", help="前の置き場所（SD カードの koten のフォルダ）")
     ],
+    whole_card: Annotated[
+        bool,
+        typer.Option(
+            "--whole-card",
+            help="前の置き場所があるドライブ（SD カード）のほかのものも全部、HDD の同じ場所へ写す",
+        ),
+    ] = False,
     settings: SettingsOpt = None,
 ) -> None:
-    """前の置き場所から、settings の hdd_root（新しい HDD）へ丸ごと写す（D-031）。
+    """前の置き場所から、settings の hdd_root（新しい HDD）へ丸ごと写す（D-031・D-033）。
 
-    前の置き場所は変えない。止めても、同じコマンドで続きから写す。augment・update が
-    動いているあいだは写さない（写している途中に書き足されると、写しが半端になる）。
+    --whole-card を付けると、SD カードのほかのもの（ゴミ箱・管理用のものを除く）も、HDD の
+    いちばん上へ同じ並びで写す。koten のフォルダだけは hdd_root の名前になる。前の置き場所は
+    変えない。止めても、同じコマンドで続きから写す。HDD のほうが新しいファイルは上書きしない。
+    koten のフォルダは、写し終えたあとはもう写さない（HDD で動かし始めたあとに古い中身で
+    戻さない）。augment・update が動いているあいだは写さない（写している途中に書き足されると、
+    写しが半端になる）。
     """
     import re
+    from datetime import datetime
 
-    from koten.hddcopy import COPYING_MARK, copy_tree
+    from koten import hddcopy as hc
     from koten.runlock import AUGMENT_COMMAND, is_busy, lock_path, other_processes
+
+    def stop(message: str) -> None:
+        typer.secho(message, fg="red", err=True)
+        raise typer.Exit(2)
 
     s = _settings(settings)
     src = Path(os.path.expanduser(from_)).resolve()
-    dst = s.hdd_root
-    problem = None
+    dst = s.hdd_root.resolve()
     if not src.is_dir():
-        problem = f"前の置き場所 {src} がありません（SD カードを挿しているか確かめてください）"
-    elif not dst.parent.exists():
-        problem = f"新しい HDD（{dst.parent}）がつながっていません"
-    elif src == dst.resolve() or src in dst.resolve().parents or dst.resolve() in src.parents:
-        problem = f"前の置き場所と新しい置き場所（{dst}）が重なっています"
-    running = other_processes(AUGMENT_COMMAND) + other_processes(re.compile(r"\bkoten\s+update\b"))
-    if any(is_busy(lock_path(s.ssd_root, n)) for n in ("augment", "update")) or running:
-        problem = (
-            "augment か update が動いています。その窓で Ctrl-C を押して止めてから写してください"
+        stop(f"前の置き場所 {src} がありません（SD カードを挿しているか確かめてください）")
+    if not dst.parent.exists():
+        stop(f"新しい HDD（{dst.parent}）がつながっていません")
+    hdd = hc.mount_root(dst.parent)
+    if hdd == Path("/") and dst.parts[1:2] == ("Volumes",):
+        stop(f"新しい HDD がつながっていません（{dst.parent} は Mac 本体の中のフォルダです）")
+    if src == dst or src in dst.parents or dst in src.parents:
+        stop(f"前の置き場所と新しい置き場所（{dst}）が重なっています")
+    fmt = hc.volume_format(hdd)
+    if fmt in hc.UNSUITED_FORMATS:
+        stop(
+            f"HDD（{hdd}）の形式が {hc.UNSUITED_FORMATS[fmt]} です。docs/roadmap.md の 0 の"
+            "手順で、ディスクユーティリティで APFS に消去してから写してください"
         )
-    if problem:
-        typer.secho(problem, fg="red", err=True)
-        raise typer.Exit(2)
-    dst.mkdir(parents=True, exist_ok=True)
-    mark = dst / COPYING_MARK
-    mark.write_text(f"{src}\n", "utf-8")  # 写し終えて確かめるまで、ほかのコマンドは HDD を使わない
-    typer.echo(f"{src} → {dst} へ写します（止めても、同じコマンドで続きから写せます）")
-    r = copy_tree(src, dst, log=typer.echo)
-    typer.echo(
-        f"写した {r.copied} ファイル（{r.bytes / 1e9:.1f}GB）、写し済み {r.skipped} ファイル"
-    )
-    if r.problems:
-        for line in r.problems[:20]:
-            typer.secho(f"  {line}", fg="yellow")
+    if why := hc.can_write(dst.parent):
+        stop(f"HDD（{dst.parent}）に書き込めません（{why}）")
+    # koten のフォルダは、写し終えて確かめたあとはもう写さない
+    done_before = (dst / hc.COPIED_MARK).exists() and not (dst / hc.COPYING_MARK).exists()
+    if not done_before:
+        running = other_processes(AUGMENT_COMMAND) + other_processes(
+            re.compile(r"\bkoten\s+update\b")
+        )
+        if any(is_busy(lock_path(s.ssd_root, n)) for n in ("augment", "update")) or running:
+            stop(
+                "augment か update が動いています。その窓で Ctrl-C を押して止めてから写してください"
+            )
+
+    rest = card = None
+    if whole_card:
+        card = hc.mount_root(src)
+        rel = src.relative_to(card)
+        if card == Path("/"):
+            stop(
+                f"{src} は Mac 本体の上にあります。--whole-card は、SD カードなど外付けの"
+                "ドライブから写すときに使います"
+            )
+        if card == hdd:
+            stop("前の置き場所と新しい HDD が同じドライブです")
+        if rel == Path("."):
+            stop(
+                "--from には、SD カードのいちばん上ではなく、中の koten のフォルダ"
+                "（古典×悩みなど）を渡してください"
+            )
+        # SD カードのほかのものが、HDD の koten のフォルダ（またはその途中）と同じ名前にならないか
+        parts = dst.relative_to(hdd).parts
+        for i in range(1, len(parts) + 1):
+            there = card.joinpath(*parts[:i])
+            if (there.exists() or there.is_symlink()) and there != src:
+                if i == len(parts) or not there.is_dir():
+                    stop(
+                        f"SD カードにも {there.relative_to(card)} があり、HDD の koten の"
+                        f"フォルダ（{dst}）と重なります。SD カードのほうの名前を変えてから"
+                        "写してください"
+                    )
+        rest = hc.list_files(card, hc.skip_card(rel))
+
+    koten = None if done_before else hc.list_files(src)
+    koten_need = hc.bytes_to_copy(koten.files, dst) if koten else 0
+    rest_need = hc.bytes_to_copy(rest.files, hdd) if rest else 0
+    free = hc.free_bytes(dst.parent)
+    if koten_need + rest_need and koten_need + rest_need > free - 2 * 10**9:  # 2GB は余らせる
+        stop(
+            f"HDD の空きが足りません（これから写す {(koten_need + rest_need) / 1e9:.1f}GB、"
+            f"空き {free / 1e9:.1f}GB）"
+        )
+    if koten:
+        typer.echo(
+            f"koten のフォルダ：{src} → {dst}（{len(koten.files)} ファイル。これから写すのは "
+            f"{koten_need / 1e9:.1f}GB）"
+        )
+    else:
+        typer.echo(
+            f"koten のフォルダは写し終えています（{dst / hc.COPIED_MARK}）。HDD で動かし始めた"
+            "あとに古い中身で戻さないよう、もう写しません"
+        )
+    if rest:
+        tops = sorted({r.parts[0] for _, r in rest.files} | {d.parts[0] for d in rest.dirs})
+        more = f" ほか {len(tops) - 30}" if len(tops) > 30 else ""
+        typer.echo(
+            f"SD カードのほかのもの：{card} → {hdd}（{len(rest.files)} ファイル。これから写すのは "
+            f"{rest_need / 1e9:.1f}GB）"
+        )
+        typer.echo(f"  {'、'.join(tops[:30])}{more}")
+        typer.echo("  SD カードのゴミ箱（.Trashes）と、Mac・Windows の管理用のものは写しません")
+    typer.echo(f"HDD の空き：{free / 1e9:.0f}GB。止めても、同じコマンドで続きから写せます")
+
+    ok = True
+    if koten:
+        dst.mkdir(exist_ok=True)
+        mark = dst / hc.COPYING_MARK
+        # 写し終えて確かめるまで、ほかのコマンドは HDD を使わない
+        mark.write_text(f"{src}\n", "utf-8")
+        r = hc.copy_tree(src, dst, listing=koten, log=typer.echo)
+        if _report_copy("koten のフォルダ", r):
+            stamp = datetime.now().isoformat(timespec="seconds")
+            (dst / hc.COPIED_MARK).write_text(f"{src}\n{stamp}\n", "utf-8")
+            mark.unlink()
+        else:
+            ok = False
+    if rest:
+        r = hc.copy_tree(card, hdd, listing=rest, log=typer.echo)
+        ok = _report_copy("SD カードのほかのもの", r) and ok
+    if not ok:
         typer.secho(
-            f"写した先と合わないファイルが {len(r.problems)} 件あります。もう一度同じコマンドを"
-            "実行してください",
+            "写せない・写した先と合わないファイルがあります。もう一度同じコマンドを実行すると、"
+            "続きから写します",
             fg="red",
             err=True,
         )
         raise typer.Exit(1)
-    mark.unlink()
-    typer.echo(
-        "全部のファイルが、同じ大きさで写っていることを確かめました。前の置き場所はそのまま残します"
-    )
+    typer.echo("前の置き場所（SD カード）はそのまま残します")
     typer.echo("続けて：uv run koten doctor で HDD の行を見る")
+
+
+def _report_copy(label: str, r) -> bool:
+    typer.echo(
+        f"{label}：写した {r.copied} ファイル（{r.bytes / 1e9:.1f}GB）、"
+        f"写し済み {r.skipped} ファイル"
+    )
+    if r.kept:
+        typer.secho(
+            f"  HDD のほうが新しいので上書きしなかった：{len(r.kept)} ファイル"
+            f"（{'、'.join(r.kept[:5])}{' など' if len(r.kept) > 5 else ''}）",
+            fg="yellow",
+        )
+    if r.meta_lost:
+        typer.secho(
+            f"  中身は写したが、タグなどの付帯情報は写せなかった：{r.meta_lost} ファイル",
+            fg="yellow",
+        )
+    if r.problems:
+        for line in r.problems[:20]:
+            typer.secho(f"  {line}", fg="yellow")
+        typer.secho(
+            f"  {label}：写せない・写した先と合わないファイルが {len(r.problems)} 件あります",
+            fg="red",
+            err=True,
+        )
+        return False
+    typer.echo(f"  {label}は、全部のファイルが同じ大きさで写っていることを確かめました")
+    return True
 
 
 @app.command()

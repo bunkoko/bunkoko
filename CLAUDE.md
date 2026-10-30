@@ -30,7 +30,7 @@
 - uv sync --extra ml（埋め込みモデルと SudachiPy。M2 以降で必要）
 - uv run koten augment --limit 20 && uv run koten embed && uv run koten index build
 - uv run koten update --index（留守のあいだ用：青空文庫の取り直し → 正規化 → チャンク化 → 動いている augment が終わるのを待って、増えた分の augment → 埋め込み → 索引。augment は2つ同時に動かさない）
-- uv run koten hdd-copy --from "/Volumes/SDカード/古典×悩み"（前の置き場所から新しい HDD へ写す。augment・update を止めてから）／ uv run koten backup --to "/Volumes/SDカード/koten-backup"（augment・emb・SSD の DB・設定の控え。週1）
+- uv run koten hdd-copy --from "/Volumes/SDカード/古典×悩み" --whole-card（前の置き場所から新しい HDD へ写す。--whole-card で SD カードのほかのものも HDD のいちばん上へ。augment・update を止めてから）／ uv run koten backup --to "/Volumes/SDカード/koten-backup"（augment・emb・SSD の DB・設定の控え。週1）
 - uv run koten index query "同期の昇進を喜べない"
 - uv run koten serve（127.0.0.1 の API。SSD だけを読む）
 - uv run koten db init（SSD の SQLite を作り、stats.csv を読み込む）

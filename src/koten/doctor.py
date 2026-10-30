@@ -32,20 +32,31 @@ def _free(path: Path) -> str:
     return f"空き {usage.free / 1024**3:.1f}GB / {usage.total / 1024**3:.1f}GB"
 
 
+def _format_note(root: Path) -> str:
+    """Mac の HDD に向かない形式（NTFS・exFAT・FAT32）なら、そのことを書く（D-031）。"""
+    from koten.hddcopy import UNSUITED_FORMATS, volume_format
+
+    fmt = volume_format(root)
+    if fmt in UNSUITED_FORMATS:
+        return f"。形式が {UNSUITED_FORMATS[fmt]} です。APFS に消去するのを勧めます"
+    return ""
+
+
 def check_hdd(s: Settings) -> Check:
     root = s.hdd_root
     if not root.parent.exists():
         return Check("HDD", NG, f"未接続（{root.parent} がありません）")
+    note = _format_note(root.parent)
     if not root.exists():
         return Check(
             "HDD",
             WARN,
             f"{root} がありません。前の置き場所から写すなら koten hdd-copy、"
-            f"新しく始めるなら mkdir -p で作る（{_free(root.parent)}）",
+            f"新しく始めるなら mkdir -p で作る（{_free(root.parent)}）{note}",
         )
     if (root / ".koten-copying").exists():
         return Check("HDD", NG, f"{root} は写している途中です（koten hdd-copy をもう一度）")
-    return Check("HDD", OK, f"{root} {_free(root)}")
+    return Check("HDD", WARN if note else OK, f"{root} {_free(root)}{note}")
 
 
 def check_ssd(s: Settings) -> Check:
