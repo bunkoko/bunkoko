@@ -446,6 +446,13 @@ def hdd_copy(
             help="前の置き場所があるドライブ（SD カード）のほかのものも全部、HDD の同じ場所へ写す",
         ),
     ] = False,
+    check: Annotated[
+        bool,
+        typer.Option(
+            "--check",
+            help="写さずに、SD カードのものが HDD にあるかだけを確かめる（SD カードを片付ける前）",
+        ),
+    ] = False,
     settings: SettingsOpt = None,
 ) -> None:
     """前の置き場所から、settings の hdd_root（新しい HDD）へ丸ごと写す（D-031・D-033）。
@@ -455,14 +462,15 @@ def hdd_copy(
     前の置き場所は変えない。止めても、同じコマンドで続きから写す。HDD のほうが新しいファイルは
     上書きしない。koten のフォルダは、写し終えたあとはもう写さない（HDD で動かし始めたあとに
     古い中身で戻さない）。augment・update が動いているあいだは写さない（写している途中に
-    書き足されると、写しが半端になる）。2つの窓で同時には動かさない。
+    書き足されると、写しが半端になる）。2つの窓で同時には動かさない。--check は HDD に何も書かずに、
+    SD カードのものが HDD にあるかだけを確かめる（SD カードを片付ける前）。
     """
     from koten.runlock import BusyError, hold, lock_path
 
     s = _settings(settings)
     try:
         with hold(lock_path(s.ssd_root, "hdd-copy")):
-            _hdd_copy(s, from_, whole_card)
+            _hdd_copy(s, from_, whole_card, check)
     except BusyError:
         typer.secho(
             "ほかの窓で hdd-copy が動いています。その窓で終わるのを待つか、Ctrl-C で止めてから"
@@ -473,7 +481,7 @@ def hdd_copy(
         raise typer.Exit(2) from None
 
 
-def _hdd_copy(s: Settings, from_: str, whole_card: bool) -> None:
+def _hdd_copy(s: Settings, from_: str, whole_card: bool, check: bool = False) -> None:
     import re
     from datetime import datetime
 
@@ -507,15 +515,20 @@ def _hdd_copy(s: Settings, from_: str, whole_card: bool) -> None:
         stop(f"新しい HDD がつながっていません（{dst.parent} は Mac 本体の中のフォルダです）")
     if src == dst or src in dst.parents or dst in src.parents:
         stop(f"前の置き場所と新しい置き場所（{dst}）が重なっています")
-    if bad := hc.unsuited_format(hc.volume_format(hdd)):
+    if not check and (bad := hc.unsuited_format(hc.volume_format(hdd))):
         stop(
             f"HDD（{hdd}）の形式が {bad} です。docs/roadmap.md の 0 の3 の手順で、"
             "ディスクユーティリティで APFS に消去してから写してください"
         )
-    if why := hc.can_write(dst.parent):
+    if not check and (why := hc.can_write(dst.parent)):
         stop(f"HDD（{dst.parent}）に書き込めません（{why}）")
     # koten のフォルダは、写し終えて確かめたあとはもう写さない
     done_before = (dst / hc.COPIED_MARK).exists() and not (dst / hc.COPYING_MARK).exists()
+    if check and not done_before:
+        stop(
+            "koten のフォルダは、まだ写し終えていません。--check を付けずに、docs/roadmap.md の"
+            " 0 の4 のコマンドで写し終えてから確かめてください"
+        )
     if not done_before:
         running = other_processes(AUGMENT_COMMAND) + other_processes(
             re.compile(r"\bkoten\s+update\b")
@@ -555,9 +568,10 @@ def _hdd_copy(s: Settings, from_: str, whole_card: bool) -> None:
         backups = hc.backup_dirs(card)  # koten backup の控え（HDD の中身の写し）は写さない
         rest = hc.list_files(card, hc.skip_card(rel, *backups))
 
-    # 写し終えたあとに打ったときは、写さずに HDD にあるかだけを確かめる（HDD で消したり直したり
-    # したものを、SD カードの古いもので戻さない）
-    rest_done = bool(rest) and (hdd / hc.CARD_COPIED_MARK).exists()
+    # 写し終えたあとに打ったときと --check のときは、写さずに HDD にあるかだけを確かめる（HDD で
+    # 消したり直したりしたものを、SD カードの古いもので戻さない）
+    card_mark = (hdd / hc.CARD_COPIED_MARK).exists()
+    rest_done = bool(rest) and (check or card_mark)
     koten = hc.list_files(src)
     koten_need = 0 if done_before else hc.bytes_to_copy(koten.files, dst)
     rest_need = hc.bytes_to_copy(rest.files, hdd) if rest and not rest_done else 0
@@ -575,10 +589,15 @@ def _hdd_copy(s: Settings, from_: str, whole_card: bool) -> None:
             f"koten のフォルダは写し終えています（{dst / hc.COPIED_MARK}）。HDD で動かし始めた"
             "あとに古い中身で戻さないよう、もう写さずに、HDD にあるかだけを確かめます"
         )
-    if rest_done:
+    if rest_done and card_mark:
         typer.echo(
             f"SD カードのほかのものは写し終えています（{hdd / hc.CARD_COPIED_MARK}）。"
             "もう写さずに、HDD にあるかだけを確かめます"
+        )
+    elif rest_done:
+        typer.echo(
+            "SD カードのほかのものは、写し終えた印がありません（写しきれなかったものがある）。"
+            "写さずに、HDD にあるかだけを確かめます"
         )
     elif rest:
         tops = sorted(
@@ -594,7 +613,8 @@ def _hdd_copy(s: Settings, from_: str, whole_card: bool) -> None:
         if backups:
             skipped += f"、koten backup の控え（{'、'.join(map(str, backups))}）"
         typer.echo(f"  {skipped}は写しません")
-    typer.echo(f"HDD の空き：{free / 1e9:.0f}GB。止めても、同じコマンドで続きから写せます")
+    if not check:
+        typer.echo(f"HDD の空き：{free / 1e9:.0f}GB。止めても、同じコマンドで続きから写せます")
 
     def hdd_gone() -> bool:
         return not (hdd.is_dir() and hc.mount_root(hdd) == hdd)
@@ -604,7 +624,8 @@ def _hdd_copy(s: Settings, from_: str, whole_card: bool) -> None:
     )
     ok = True
     if done_before:
-        ok = _report_check("koten のフォルダ", hc.check_tree(koten, dst, same=False))
+        found = hc.check_tree(koten, dst, same=False, log=typer.echo)
+        ok = _report_check("koten のフォルダ", found)
     else:
         dst.mkdir(exist_ok=True)
         mark = dst / hc.COPYING_MARK
@@ -619,7 +640,8 @@ def _hdd_copy(s: Settings, from_: str, whole_card: bool) -> None:
             (dst / hc.COPIED_MARK).write_text(f"{src}\n{stamp}\n", "utf-8")
             mark.unlink()
     if rest_done:
-        ok = _report_check("SD カードのほかのもの", hc.check_tree(rest, hdd, same=True)) and ok
+        found = hc.check_tree(rest, hdd, same=True, log=typer.echo)
+        ok = _report_check("SD カードのほかのもの", found) and ok
     elif rest:
         if hdd_gone():
             stop(gone_message, 1)
@@ -644,7 +666,8 @@ def _hdd_copy(s: Settings, from_: str, whole_card: bool) -> None:
             1,
         )
     typer.echo("前の置き場所（SD カード）はそのまま残します")
-    typer.echo("続けて：uv run koten doctor で HDD の行を見る")
+    if not check:
+        typer.echo("続けて：uv run koten doctor で HDD の行を見る")
 
 
 def _report_check(label: str, problems: list[str]) -> bool:
@@ -730,7 +753,7 @@ def _backup(s: Settings, to: str) -> None:
     if (
         out.resolve() == hdd.resolve()
         or hdd.resolve() in out.resolve().parents
-        or (hc.on_drive(drive) and hc.mount_root(out.parent) == drive)
+        or (hc.on_drive(drive) and hc.mount_root(out) == drive)
     ):
         stop("控えは、HDD とは別のドライブに置いてください（HDD が壊れると、控えもなくなるため）")
     lists = {sub: hc.list_files(hdd / sub) for sub in ("augment", "emb") if (hdd / sub).is_dir()}

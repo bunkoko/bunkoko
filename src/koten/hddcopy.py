@@ -427,7 +427,12 @@ def copy_tree(
             if gone():
                 return result
             result.problems.append(f"写せない：{rel}（リンク。{e.strerror or e}）")
-    # 中に写すとフォルダの更新日時が変わるので、深いほうから元の日付に戻す（いちばん上は変えない）
+    # 中に写すとフォルダの更新日時が変わるので、深いほうから元の日付に戻す（いちばん上は変えない）。
+    # 前に途中で止めた回に写したフォルダ（HDD のほうが新しい日付のまま）も戻す
+    for rel in listing.dirs:
+        with contextlib.suppress(OSError):
+            if (dst / rel).stat().st_mtime - (src / rel).stat().st_mtime > NEWER_SEC:
+                touched.add(rel)
     for rel in sorted(touched - {Path(".")}, key=lambda r: len(r.parts), reverse=True):
         with contextlib.suppress(OSError):
             _keep_times((src / rel).stat(), dst / rel)
@@ -435,22 +440,33 @@ def copy_tree(
     return result
 
 
-def check_tree(listing: Listing, dst: Path, *, same: bool) -> list[str]:
+def check_tree(
+    listing: Listing,
+    dst: Path,
+    *,
+    same: bool,
+    log: Callable[[str], None] = lambda _: None,
+    every: int = 10000,
+) -> list[str]:
     """写さずに、listing のものが dst にあるかだけを確かめる（写し終えたあとに打ったとき）。
 
-    same=True なら、大きさか更新日時が違うもの（HDD のほうが新しいものは除く）も挙げる。
+    same=True なら、大きさか更新日時が違うファイル（HDD のほうが新しいものは除く）も挙げる。
     koten のフォルダは HDD で作り直すので、あるかだけを見る（same=False）。
     """
     problems = list(listing.problems)
-    for p, rel in listing.files + listing.links:
+    entries = [(p, rel, True) for p, rel in listing.files]
+    entries += [(p, rel, False) for p, rel in listing.links]
+    for n, (p, rel, is_file) in enumerate(entries, start=1):
         target = dst / rel
         try:
             if not os.path.lexists(target):
                 problems.append(f"HDD に無い：{rel}")
-            elif same and (p, rel) in listing.files and _state(p, target) == "copy":
+            elif same and is_file and _state(p, target) == "copy":
                 problems.append(f"HDD と違う：{rel}")
         except OSError as e:
             problems.append(f"確かめられない：{rel}（{e.strerror or e}）")
+        if n % every == 0:
+            log(f"  {n}/{len(entries)} 確かめました")
     return problems
 
 

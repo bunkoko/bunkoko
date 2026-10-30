@@ -11,3 +11,5 @@ data/
 *.npy
 *.mp4
 *.wav
+# 試しに作った一時フォルダ（tempfile.mkdtemp をリポジトリの中で動かしたときなど）
+/tmp*/

@@ -576,3 +576,72 @@ def test_backup_refuses_same_drive_and_runs_once(tmp_path, monkeypatch):
     r = CliRunner().invoke(app, ["backup", "--to", str(card / "koten-backup"), *st])
     assert r.exit_code == 0, r.output
     assert (card / "koten-backup" / hddcopy.BACKUP_MARK).exists()
+
+
+def test_check_mode_never_writes(tmp_path, monkeypatch):
+    """--check は HDD に何も書かない。写しきれなかった回のあとでも、HDD で消したものを戻さない。"""
+    from koten import hddcopy
+
+    card, vol, st = _card(tmp_path, monkeypatch)
+    args = ["hdd-copy", "--from", str(card / "古典×悩み"), "--whole-card"]
+    # koten のフォルダを写し終える前は、確かめない
+    r = CliRunner().invoke(app, [*args, "--check", *st])
+    assert r.exit_code == 2 and "まだ写し終えていません" in r.output and list(vol.iterdir()) == []
+    # 1回目：SD カードのほかのものの1つが読めず、写し終えた印が付かない
+    real = hddcopy._copy_data
+
+    def broken(s, tmp):
+        if s.name == "report.part":
+            raise OSError(5, "Input/output error")
+        return real(s, tmp)
+
+    monkeypatch.setattr(hddcopy, "_copy_data", broken)
+    r = CliRunner().invoke(app, [*args, *st])
+    assert r.exit_code == 1 and not (vol / hddcopy.CARD_COPIED_MARK).exists()
+    monkeypatch.setattr(hddcopy, "_copy_data", real)
+    (vol / "DCIM" / "100" / "a.jpg").unlink()  # 使っているあいだに HDD で消した
+
+    def no_write(folder):
+        raise AssertionError("--check で書き込みを試した")
+
+    monkeypatch.setattr(hddcopy, "can_write", no_write)
+    before = sorted(str(p) for p in vol.rglob("*"))
+    r = CliRunner().invoke(app, [*args, "--check", *st])
+    assert r.exit_code == 1 and "HDD に無い：DCIM/100/a.jpg" in r.output
+    assert "HDD に無い：Docs/report.part" in r.output and "写し終えた印がありません" in r.output
+    assert sorted(str(p) for p in vol.rglob("*")) == before  # 何も書いていない
+    (card / "DCIM" / "100" / "a.jpg").unlink()
+    (card / "Docs" / "report.part").unlink()
+    r = CliRunner().invoke(app, [*args, "--check", *st])
+    assert r.exit_code == 0 and "そのまま残します" in r.output, r.output
+
+
+def test_folder_dates_fixed_after_an_interrupted_run(tmp_path, monkeypatch):
+    from koten import hddcopy
+
+    src, dst = _pair(tmp_path)
+    for d in (src / "augment" / "m" / "p", src / "augment" / "m", src / "chunks"):
+        os.utime(d, (1_600_000_000, 1_600_000_000))
+    real = hddcopy._copy_one
+
+    def stop_at_last(s, target, result):
+        if s.name == "done-00001.parquet":
+            raise KeyboardInterrupt
+        return real(s, target, result)
+
+    monkeypatch.setattr(hddcopy, "_copy_one", stop_at_last)
+    try:
+        copy_tree(src, dst)
+    except KeyboardInterrupt:
+        pass
+    monkeypatch.setattr(hddcopy, "_copy_one", real)
+    copy_tree(src, dst)
+    for rel in ("augment/m/p", "augment/m", "chunks"):
+        assert int((dst / rel).stat().st_mtime) == 1_600_000_000, rel
+
+
+def test_backup_refuses_the_hdd_root(tmp_path, monkeypatch):
+    card, vol, st = _card(tmp_path, monkeypatch)
+    (vol / "koten" / "chunks").mkdir(parents=True)
+    r = CliRunner().invoke(app, ["backup", "--to", str(vol), *st])
+    assert r.exit_code == 2 and "別のドライブ" in r.output

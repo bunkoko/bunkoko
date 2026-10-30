@@ -88,11 +88,11 @@
    - 「書き込めません」と出たら、SD カードの横の書き込み禁止のつまみ（LOCK）を確かめます。
 
 8. SD カードを片付けます（HDD で1〜2週間問題なく動いたのを確かめてから）。
-   1. 同じコマンドで、SD カードのものが全部 HDD にもあるかを確かめます。2回目なので、もう写しません（HDD で消したり直したりしたものを、SD カードの古いもので戻さないため）。HDD には何も書きません。
+   1. SD カードのものが全部 HDD にもあるかを確かめます。最後に `--check` が付いているので、写さずに確かめるだけです（HDD で消したり直したりしたものを、SD カードの古いもので戻さないため）。HDD には何も書きません。ファイルが多いと数分かかります（1万ファイルごとに「確かめました」と出ます）。
 
       ```sh
       cd /Users/bunkoko/koten
-      caffeinate -i uv run koten hdd-copy --from "/Volumes/SDカード/古典×悩み" --whole-card 2>&1 | tee -i -a ~/koten-hdd-copy.log
+      caffeinate -i uv run koten hdd-copy --from "/Volumes/SDカード/古典×悩み" --whole-card --check 2>&1 | tee -i -a ~/koten-hdd-copy.log
       ```
 
       最後に「前の置き場所（SD カード）はそのまま残します」と出たときだけ、次へ進みます。「HDD に無い」「HDD と違う」の行が出て止まったら、何も消さずに、その画面を Claude に貼ってください（HDD で消したり、名前を変えたり、直したりしたものも、この行に出ます）。
