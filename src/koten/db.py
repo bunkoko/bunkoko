@@ -93,7 +93,8 @@ CREATE TABLE IF NOT EXISTS stats (
     year TEXT,
     url TEXT NOT NULL,
     trend TEXT,                          -- 増加・減少（同じ調査・同じ設問で人が確かめた）
-    trend_note TEXT                      -- 移り変わりの根拠（年の範囲と、同じ設問であること）
+    trend_note TEXT,                     -- 移り変わりの根拠（年の範囲と、同じ設問であること）
+    status TEXT                          -- 空は使う。保留は企画に出さない（規約を確かめるまで）
 );
 
 -- 背景の事実（koten facts build が HDD の書誌と config の CSV から作り直す）
@@ -275,7 +276,7 @@ def connect(ssd_root: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
-    _add_missing_columns(conn, "stats", {"trend": "TEXT", "trend_note": "TEXT"})
+    _add_missing_columns(conn, "stats", {"trend": "TEXT", "trend_note": "TEXT", "status": "TEXT"})
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)", (SCHEMA_VERSION,)
     )
@@ -306,8 +307,10 @@ STATS_COLUMNS = [
     "url",
     "trend",
     "trend_note",
+    "status",
 ]
 TRENDS = ("増加", "減少")
+STAT_STATUSES = ("", "保留")  # 空は使う。保留は読み込むが企画に出さない
 
 
 def load_stats(conn: sqlite3.Connection, csv_path: Path) -> int:
@@ -334,6 +337,8 @@ def load_stats(conn: sqlite3.Connection, csv_path: Path) -> int:
         if trend and not (r.get("trend_note") or "").strip():
             # 「増え続けています」と語らせる根拠。年の範囲と、同じ調査・同じ設問であることを人が書く
             problems.append(f"{i}行目：trend を書いたら trend_note（根拠）も書く")
+        if (r.get("status") or "").strip() not in STAT_STATUSES:
+            problems.append(f"{i}行目：status は空（使う）か 保留 にする")
         if r.get("stat_id") in seen:
             problems.append(f"{i}行目：stat_id {r['stat_id']} が重複")
         seen.add(r.get("stat_id"))

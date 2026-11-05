@@ -181,7 +181,7 @@ def plan_of(s, eid):
 def test_plan_attaches_definition_of_worry_word(env):
     eid = planned(env, "A", worry_id="W0001")  # 同期の昇進を素直に喜べない
     plan = plan_of(env, eid)
-    assert plan["schema_version"] == "1.2"
+    assert plan["schema_version"] == "1.3"
     context = next(c for c in plan["chapters"] if c["role"] == "context")
     # 確かめ済みの「素直」だけ。確かめ中の「昇進」は付かない
     assert context["ref_ids"] == [DEF]
@@ -194,7 +194,7 @@ def test_script_quotes_definition_with_source(env):
     judge = RefJudge()
     r, logs = run(env, eid, writer_llm=RefWriter(), judge_llm=judge)
     assert r.state == "script_done", r.state_msg
-    assert not schema_errors(r.script) and r.script["schema_version"] == "1.2"
+    assert not schema_errors(r.script) and r.script["schema_version"] == "1.3"
     context = next(c for c in r.script["chapters"] if c["role"] == "context")
     assert context["refs"] == [DEF]
     seg = next(s for s in context["segments"] if s.get("refs"))

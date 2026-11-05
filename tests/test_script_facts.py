@@ -96,7 +96,7 @@ def test_script_tells_background_with_facts(env):
     judge = SentenceJudge()
     r, _ = run(env, eid, writer_llm=FactWriter(), judge_llm=judge)
     assert r.state == "script_done", r.state_msg
-    assert not schema_errors(r.script) and r.script["schema_version"] == "1.2"
+    assert not schema_errors(r.script) and r.script["schema_version"] == "1.3"
     used = [f for ch in r.script["chapters"] for f in ch.get("facts", [])]
     assert "F-w001-001" in used and judge.calls["v2"] >= 1
     seg = next(
@@ -240,7 +240,7 @@ def test_g1_catches_kanji_years_numbers_and_doubled_units(env):
     # 背景の段落（事実の記号がある段落）では、年齢や月の数も直接書かない
     assert any("数「38歳」" in i for i in issues(f"{{{{fact:{fid}}}}}そのころ作者は38歳でした。"))
     assert issues("今は38歳の人も、20代の人もいます。") == []  # 背景でない段落の年齢は許す
-    assert issues("人生100年時代と言われます。2020年代の今も変わりません。") == []
+    assert issues("今は人生100年時代です。2020年代の今も変わりません。") == []
     assert any(
         "単位や括弧を重ねている" in i for i in issues(f"{{{{fact:{fid}.year}}}}年のことです。")
     )

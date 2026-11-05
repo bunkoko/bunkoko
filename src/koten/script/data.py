@@ -15,6 +15,7 @@ import pyarrow.parquet as pq
 
 from koten.facts.model import Fact
 from koten.facts.store import load_facts, load_sources, text_sha
+from koten.findings import load_findings
 from koten.index.build import cache_path
 from koten.ref.store import load_refs
 from koten.ref.texts import USABLE_STATUS
@@ -43,6 +44,9 @@ class EpisodeData:
     refs: dict[str, dict[str, Any]] = field(default_factory=dict)
     ref_issues: list[str] = field(default_factory=list)
     s4_titles: list[str] = field(default_factory=list)  # 照合に使う今の本の書名（語りで出さない）
+    # 企画に付いた研究の一文のうち、今も使えるもの（D-034）
+    findings: dict[str, dict[str, Any]] = field(default_factory=dict)
+    finding_issues: list[str] = field(default_factory=list)
 
     @classmethod
     def load(cls, conn: sqlite3.Connection, ssd_root: Path, episode_id: str) -> EpisodeData:
@@ -97,6 +101,25 @@ class EpisodeData:
                     ref_issues.append(f"{rid}：企画のあとで本文が変わった（今の本文を使う）")
                 refs[rid] = r
         s4 = [r[0] for r in conn.execute("SELECT title FROM s4_titles")]
+        finding_ids = list(
+            dict.fromkeys(i for c in plan["chapters"] for i in c.get("finding_ids", []))
+        )
+        got = load_findings(conn, finding_ids)
+        findings, finding_issues = {}, []
+        for fid in finding_ids:
+            f = got.get(fid)
+            if f is None:
+                finding_issues.append(f"{fid}：研究の表に無い（koten findings build で消えた）")
+            elif not f["usable"]:
+                finding_issues.append(
+                    f"{fid}：使えない状態になった（{f['status']}・{f['replication']}）"
+                )
+            else:
+                if (plan.get("findings") or {}).get(fid) not in (None, f["text_sha"]):
+                    finding_issues.append(
+                        f"{fid}：企画のあとで研究の一文が変わった（今の文を使う）"
+                    )
+                findings[fid] = f
         return cls(
             episode_id,
             plan,
@@ -110,4 +133,6 @@ class EpisodeData:
             refs=refs,
             ref_issues=ref_issues,
             s4_titles=s4,
+            findings=findings,
+            finding_issues=finding_issues,
         )

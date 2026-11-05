@@ -22,7 +22,9 @@ from koten.llm import ChatLLM, fill, load_prompt, parse_json_object
 from koten.ref.store import ref_source_label, ref_text
 from koten.script.data import EpisodeData
 
-SCRIPT_SCHEMA_VERSION = "1.2"  # 1.2：段落と章の refs、画面 ref_card。1.1：facts・fact_card
+SCRIPT_SCHEMA_VERSION = (
+    "1.3"  # 1.3：段落と章の findings、画面 finding_card。1.2：refs・ref_card。1.1：facts
+)
 
 ROLE_NAMES = {
     "opening": "オープニング",
@@ -91,13 +93,14 @@ QUOTE_ONLY = re.compile(r"^\{\{quote:([^{}]+)\}\}$")
 FACT_REF = re.compile(r"\{\{fact:\s*([^{}.\s]+)\s*(?:\.[^{}]+)?\}\}")
 REF_REF = re.compile(r"\{\{(?:def|def_src|interp|interp_src):\s*([^{}\s]+)\s*\}\}")
 STAT_ONLY = re.compile(r"^\{\{stat:([^{}]+)\}\}$")
+FINDING_REF = re.compile(r"\{\{(finding|finding_src):\s*([^{}\s]+)\s*\}\}")
 
 
 @dataclass
 class ScriptConfig:
     prompt: str = "script_v5"
     judge_prompt: str = "judge_v1"
-    judge_facts_prompt: str = "judge_v3"  # 背景の事実・語釈・解釈を使った章の判定（1文ずつ）
+    judge_facts_prompt: str = "judge_v4"  # 背景の事実・語釈・解釈・研究を使った章の判定（1文ずつ）
     chars_per_min: int = 300
     min_sec: int = 600
     max_sec: int = 900
@@ -223,6 +226,26 @@ class ScriptWriter:
             )
         return "\n".join(blocks) or "（なし）"
 
+    def _findings(self, data: EpisodeData, ids: list[str]) -> str:
+        """章に渡す研究の一文（D-034）。差し込んだあとの値・調べた人・限界と、記号の書き方を示す。"""
+        blocks = []
+        for fid in ids:
+            f = data.findings.get(fid)
+            if f is None:
+                continue
+            extra = [f"調べた人：{f['population_ja']}"]
+            if f.get("effect_ja"):
+                extra.append(f"効果の大きさ：{f['effect_ja']}")
+            if f.get("limits_ja"):
+                extra.append(f"限界（必ず添える）：{f['limits_ja']}")
+            blocks.append(
+                f"- 研究ID：{fid}\n"
+                f"  出典の記号：{{{{finding_src:{fid}}}}}＝{f['source_label']}\n"
+                f"  一文の記号：{{{{finding:{fid}}}}}＝{f['claim_ja']}\n"
+                f"  {'、'.join(extra)}"
+            )
+        return "\n".join(blocks) or "（なし）"
+
     def _stats(self, data: EpisodeData, ids: list[str]) -> str:
         if not ids:
             return "（なし）"
@@ -245,6 +268,7 @@ class ScriptWriter:
         *,
         use_facts: bool = True,
         use_refs: bool = True,
+        use_findings: bool = True,
     ) -> ChapterDraft:
         plan = data.plan
         guide = ROLE_GUIDE.get(chapter["role"], "")
@@ -270,6 +294,7 @@ class ScriptWriter:
             stats=self._stats(data, chapter.get("stat_ids", [])),
             facts=self._facts(data, chapter.get("fact_ids", []) if use_facts else []),
             refs=self._refs(data, chapter.get("ref_ids", []) if use_refs else []),
+            findings=self._findings(data, chapter.get("finding_ids", []) if use_findings else []),
             feedback=fb,
         )
         raw: dict[str, Any] | None = None
@@ -322,6 +347,10 @@ class ScriptWriter:
                 seg["visual"] = {"type": "photo", "ref": None}
                 facts = list(dict.fromkeys(FACT_REF.findall(text)))
                 refs = list(dict.fromkeys(REF_REF.findall(text)))
+                findings = list(dict.fromkeys(fid for _, fid in FINDING_REF.findall(text)))
+                if findings:
+                    seg["findings"] = findings  # 研究の段落（画面は研究のカード。M6。D-034）
+                    seg["visual"] = {"type": "finding_card", "ref": findings[0]}
                 if refs:
                     seg["refs"] = refs  # 語釈・解釈の段落（画面は資料のまま・出典・ページ。M6）
                     seg["visual"] = {"type": "ref_card", "ref": refs[0]}
@@ -339,7 +368,16 @@ class ScriptWriter:
             "segments": [
                 {
                     k: seg[k]
-                    for k in ("seg_id", "kind", "text", "read_as", "visual", "facts", "refs")
+                    for k in (
+                        "seg_id",
+                        "kind",
+                        "text",
+                        "read_as",
+                        "visual",
+                        "facts",
+                        "refs",
+                        "findings",
+                    )
                     if k in seg
                 }
                 for seg in segments
@@ -353,6 +391,9 @@ class ScriptWriter:
         used_refs = list(dict.fromkeys(r for seg in segments for r in seg.get("refs", [])))
         if used_refs:
             out["refs"] = used_refs
+        used_findings = list(dict.fromkeys(f for seg in segments for f in seg.get("findings", [])))
+        if used_findings:
+            out["findings"] = used_findings
         return out
 
     @staticmethod

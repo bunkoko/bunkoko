@@ -252,10 +252,11 @@ koten-videos/
 | candidates | HDDのParquet → SSDのcache | candidate_id, chunk_id, quote_text, quote_start, quote_end, context_text, summary_ja, themes, worries, quotability, caution, llm, prompt_ver | 引用候補と付加情報 |
 | embeddings | HDDのnpy | candidate_id, model, vector（float16） | 密ベクトル |
 | worries | SQLite | worry_id, text_general, situation, emotion, themes, audience, source_type, source_ref, demand_score, cluster_id, status, blocked_reason, enabled | 悩みマスター（§9） |
-| stats | SQLite（config/stats.csv から） | stat_id, theme, label, value, unit, survey, year, url, trend, trend_note（移り変わりと、その根拠。人が確かめる。D-035） | 統計の数値。台本へはIDで差し込む |
+| stats | SQLite（config/stats.csv から） | stat_id, theme, label, value, unit, survey, year, url, trend, trend_note（移り変わりと、その根拠。人が確かめる）, status（空は使う・保留は企画に出さない。D-035） | 統計の数値。台本へはIDで差し込む |
+| findings | SQLite（config/findings.csv から。koten findings build） | finding_id, themes, claim_ja（人が書いた研究の一文）, limits_ja, effect_ja, design, population_ja, affiliation_ja/authors_ja, 書誌（authors・year・title・journal・巻号・ページ・doi・url）, license, replication, retraction_checked_at, verified_from, checked_by, status, usable, text_sha | 研究の一文（D-034）。台本へは `{{finding:ID}}`・`{{finding_src:ID}}` で差し込む。有料の論文の本文・要旨は持たない |
 | episodes | SQLite | episode_id, format, theme, worry_ids, state, state_msg, plan_json, script_json, verification_json, review_required, reviewer_note, human_take, duration_sec, created_at, published_at | 1回分の動画 |
 | usage | SQLite | episode_id, candidate_id, work_id, author_id, role（main/sub） | 再使用間隔の判定 |
-| references | SQLite | ref_id, kind（book/paper）, title, authors, isbn, doi, license | 著作権ありの書誌情報 |
+| references | SQLite | ref_id, kind（book/paper）, title, authors, isbn, doi, license | 著作権ありの書誌情報（論文は findings 表に移した。D-034） |
 
 **IDの形式**：work_id = `<source>:<元のID>`、chunk_id = `<work_id>#<連番>`、candidate_id = `<chunk_id>/q<連番>`、episode_id = `E<YYYYMMDD>-<連番>`。
 
@@ -332,6 +333,7 @@ yet → planned → script_done → voice_done → image_done → composed → r
 - タイトル案は、悩みの言葉を前に置き、差し込んだあとで40字以内。著者名・作品名は {{author:}}・{{title:}} の記号で書かせ、DBの値で差し込む。中身で約束できない言い方（絶対・必ず・人生が変わる など）を使わない。条件を満たさなければ、悩みから作る仮のタイトルにして確認画面に出す。
 - まとめの章に、人の一言を入れる枠（human_take）を必ず1つ置く。確認時に人が埋めるか、省略を選ぶ。
 - 背景の事実（作者の歩み・作品の成り立ち・時代）：企画で、章の一節の作品・作者・訳者についての確認済みの事実を付け（facts 表）、その章でだけ語らせる。名前・年・数は `{{fact:事実ID.項目}}` で書かせ、背景のあとは一節か悩みに戻す。事実のある章は目安に20〜60秒を足し、回の合計は12分のままにする（docs/background_facts_plan.md）。
+- 研究の一文（D-034）：人が論文の本文で確かめて config/findings.csv に書いた一文（findings 表）を、企画がテーマの合う章（古典の章を除く）に1章2つまで付け、`{{finding_src:FN-…}}`（「ミシガン大学の調査（2019年）」の形）と `{{finding:FN-…}}`（一文）を同じ段落に置かせる。研究・実験・大学・専門家の言葉は、この記号と同じ文でだけ言える（G1）。限界があれば一文のすぐあとに添えさせ、判定役（judge_v4）が、調べた人より広く言う・相関を原因と言う・効果を大きく言う・限界を落とす文を止める。書き方は docs/findings.md。
 - 昔の辞書の語釈・時代の解釈（訓読・古い訳・注釈。M8a・D-015）：画像と照らし合わせて確かめた資料のままの本文（dict_entries・renderings 表）を、企画で章に付け、`{{def:J-…}}`・`{{def_src:J-…}}`・`{{interp:I-…}}`・`{{interp_src:I-…}}` で差し込ませる。本文は「」の中に記号だけを置き、同じ段落に出典の記号を置く（出典は「1891年（明治24年）の『言海』」の形）。悩みの文に見出し語がある確かめ済みの語釈は、企画が「悩みの解像度を上げる」章に1つまで自動で付け（20〜30秒を足す）、時代の解釈は `koten ref attach` で人が章に付ける。昔の説明は、その時代の説明として紹介し、今の意味・正しい意味とは言わない。今の辞書・訳注（著作権あり）の名前と本文は語りに出さない（docs/ref_sources.md）。
 
 **8.8 検証ゲート（必須）**

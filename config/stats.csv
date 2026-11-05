@@ -1,7 +1,7 @@
-stat_id,theme,label,value,unit,survey,year,url,trend,trend_note
-rodo_r7_amount,仕事の量,強い不安・悩み・ストレスがある労働者のうち、その内容に「仕事の量」を挙げた人の割合（複数回答）,39.5,%,労働安全衛生調査（令和7年）,2025,https://www.rodo.co.jp/series/225471/,,
-rodo_r7_failure,失敗・責任,強い不安・悩み・ストレスがある労働者のうち、その内容に「仕事の失敗、責任の発生等」を挙げた人の割合（複数回答）,39.5,%,労働安全衛生調査（令和7年）,2025,https://www.rodo.co.jp/series/225471/,,
-rodo_r7_relations,職場の人間関係,強い不安・悩み・ストレスがある労働者のうち、その内容に「対人関係（セクハラ・パワハラを含む）」を挙げた人の割合（複数回答）,32.9,%,労働安全衛生調査（令和7年）,2025,https://www.rodo.co.jp/series/225471/,,
-funso_r7_harassment,いじめ・嫌がらせ,民事上の個別労働紛争の相談件数（14年連続最多）,55614,件,個別労働紛争解決制度の施行状況（令和7年度）,2025,https://www.mhlw.go.jp/stf/houdou/newpage_00235.html,,
-nf_2026_future,将来への不安,17〜19歳で「自国の将来は良くなる」と答えた割合,16,%,日本財団18歳意識調査 第78回,2026,https://webtan.impress.co.jp/r/prtimes/items/000000511.000025872,,
-gakujo_2025_jobchange,転職の迷い,20代の転職希望者で「転職すべきか迷った」割合,7割超,,学情 20代の転職意向調査,2025,https://service.gakujo.ne.jp/wp-content/uploads/2025/08/250901-rekatsuenq.pdf,,
+stat_id,theme,label,value,unit,survey,year,url,trend,trend_note,status
+rodo_r7_amount,仕事の量,強い不安・悩み・ストレスがある労働者のうち、その内容に「仕事の量」を挙げた人の割合（複数回答）,39.5,%,労働安全衛生調査（令和7年）,2025,https://www.rodo.co.jp/series/225471/,,,
+rodo_r7_failure,失敗・責任,強い不安・悩み・ストレスがある労働者のうち、その内容に「仕事の失敗、責任の発生等」を挙げた人の割合（複数回答）,39.5,%,労働安全衛生調査（令和7年）,2025,https://www.rodo.co.jp/series/225471/,,,
+rodo_r7_relations,職場の人間関係,強い不安・悩み・ストレスがある労働者のうち、その内容に「対人関係（セクハラ・パワハラを含む）」を挙げた人の割合（複数回答）,32.9,%,労働安全衛生調査（令和7年）,2025,https://www.rodo.co.jp/series/225471/,,,
+funso_r7_harassment,いじめ・嫌がらせ,民事上の個別労働紛争の相談件数（14年連続最多）,55614,件,個別労働紛争解決制度の施行状況（令和7年度）,2025,https://www.mhlw.go.jp/stf/houdou/newpage_00235.html,,,
+nf_2026_future,将来への不安,17〜19歳で「自国の将来は良くなる」と答えた割合,16,%,日本財団18歳意識調査 第78回,2026,https://webtan.impress.co.jp/r/prtimes/items/000000511.000025872,,,保留
+gakujo_2025_jobchange,転職の迷い,20代の転職希望者で「転職すべきか迷った」割合,7割超,,学情 20代の転職意向調査,2025,https://service.gakujo.ne.jp/wp-content/uploads/2025/08/250901-rekatsuenq.pdf,,,保留

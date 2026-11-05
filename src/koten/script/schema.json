@@ -7,7 +7,7 @@
                "review_required", "verification", "timings"],
   "additionalProperties": false,
   "properties": {
-    "schema_version": {"enum": ["1.0", "1.1", "1.2"]},
+    "schema_version": {"enum": ["1.0", "1.1", "1.2", "1.3"]},
     "episode_id": {"type": "string", "pattern": "^E\\d{8}-\\d{2}$"},
     "format": {"enum": ["A", "B", "C", "D"]},
     "title": {"type": "string", "minLength": 1},
@@ -43,10 +43,11 @@
                 "read_as": {"enum": ["original", "modern"]},
                 "facts": {"type": "array", "items": {"type": "string"}},
                 "refs": {"type": "array", "items": {"type": "string"}},
+                "findings": {"type": "array", "items": {"type": "string"}},
                 "visual": {
                   "type": "object", "required": ["type", "ref"], "additionalProperties": false,
                   "properties": {
-                    "type": {"enum": ["photo", "quote_card", "title_card", "chart", "author_card", "page_image", "fact_card", "ref_card"]},
+                    "type": {"enum": ["photo", "quote_card", "title_card", "chart", "author_card", "page_image", "fact_card", "ref_card", "finding_card"]},
                     "ref": {"type": ["string", "null"]}
                   }
                 }
@@ -62,7 +63,8 @@
           },
           "sources": {"type": "array", "items": {"type": "string"}},
           "facts": {"type": "array", "items": {"type": "string"}},
-          "refs": {"type": "array", "items": {"type": "string"}}
+          "refs": {"type": "array", "items": {"type": "string"}},
+          "findings": {"type": "array", "items": {"type": "string"}}
         }
       }
     },

@@ -24,6 +24,7 @@ from koten.authors import author_label
 from koten.embed.encoder import Encoder
 from koten.facts.select import recently_used, select_facts
 from koten.facts.store import fact_shas
+from koten.findings import finding_shas, findings_for
 from koten.index.search import Filter, HotIndex
 from koten.llm import ChatLLM, fill, load_prompt, parse_json_object
 from koten.ref.store import entries_for_words, ref_shas
@@ -36,9 +37,13 @@ from koten.retrieve.search import (
     transform_query,
 )
 
+# 1.3：章の finding_ids（研究の一文。D-034）と、回の findings（一文の指紋の写し）
 # 1.2：章の ref_ids（昔の辞書の語釈・時代の解釈）と、回の refs（本文の指紋の写し）
 # 1.1：章の fact_ids と、回の facts（事実の指紋の写し）
-PLAN_SCHEMA_VERSION = "1.2"
+PLAN_SCHEMA_VERSION = "1.3"
+# 研究の一文を渡す章（古典の章には渡さない。研究は脇役。D-034）と、1章に渡す数
+FINDING_ROLES = {"context", "research", "summary", "worry_block", "compare"}
+FINDINGS_PER_CHAPTER = 2
 EPISODE_TOTAL_SEC = 720  # 12分の回を基準にする（SPEC §2）
 ACTIVE_STATES = "state NOT IN ('discarded')"
 
@@ -516,7 +521,9 @@ class Planner:
             return []
         marks = ",".join("?" for _ in themes)
         rows = self.conn.execute(
-            f"SELECT stat_id FROM stats WHERE theme IN ({marks}) ORDER BY stat_id", themes
+            f"SELECT stat_id FROM stats WHERE theme IN ({marks}) "
+            "AND COALESCE(status, '') = '' ORDER BY stat_id",
+            themes,
         ).fetchall()
         return [r[0] for r in rows][:2]
 
@@ -534,11 +541,20 @@ class Planner:
         all_worry_ids = [w["worry_id"] for w in worries]
         used_facts = recently_used(self.conn, self.cfg.fact_episodes)
         taken: set[str] = set()  # この回でもう付けた事実（同じ事実を2つの章に付けない）
+        pool = findings_for(self.conn, themes)  # テーマの合う、使える研究の一文
+
+        def take_findings(role: str) -> list[str]:
+            if role not in FINDING_ROLES:
+                return []
+            got = pool[:FINDINGS_PER_CHAPTER]
+            del pool[: len(got)]
+            return got
+
         for spec in self.formats[fmt]["chapters"]:
             role = spec["role"]
             lo, hi = spec["target_sec"]
-            if spec.get("optional"):
-                continue  # 研究の章（CC BY の論文）は M8 で論文が入ってから
+            if spec.get("optional") and not (role == "research" and pool):
+                continue  # 研究の章は、テーマの合う研究の一文があるときだけ
             if "repeat" in spec:
                 r_lo, r_hi = spec["repeat"]
                 merged = _fit_groups(groups, r_lo, r_hi)
@@ -550,6 +566,7 @@ class Planner:
                         "worry_ids": sorted({p["worry_id"] for p in g}),
                         "stat_ids": [],
                         "ref_ids": [],
+                        "finding_ids": take_findings(role),
                     }
                     self._attach_facts(ch, spec, g, used_facts, taken)
                     chapters.append(ch)
@@ -560,6 +577,7 @@ class Planner:
                 "candidate_ids": [],
                 "worry_ids": all_worry_ids,
                 "stat_ids": self._stats_for(themes) if role == "context" else [],
+                "finding_ids": take_findings(role),
             }
             ch["ref_ids"] = chapter_defs(self.conn, spec, worries)
             if ch["ref_ids"]:
@@ -640,6 +658,10 @@ class Planner:
             "facts": fact_shas(self.conn, [f for c in chapters for f in c.get("fact_ids", [])]),
             # 語釈・解釈の本文の指紋（同じく、台本のときに変わっていれば人の確認を立てる）
             "refs": ref_shas(self.conn, [r for c in chapters for r in c.get("ref_ids", [])]),
+            # 研究の一文の指紋（同じく。D-034）
+            "findings": finding_shas(
+                self.conn, [f for c in chapters for f in c.get("finding_ids", [])]
+            ),
             # 章の切れ目（オープニングの後から）を広告位置の候補にする。秒は音声のあとで決まる
             "ad_break_after_chapters": [c["chapter_id"] for c in chapters[1:-1]],
             "review_required": any(x["review_required"] for x in selection),

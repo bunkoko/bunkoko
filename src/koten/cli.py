@@ -2007,6 +2007,72 @@ def facts_accept(
     )
 
 
+findings_app = typer.Typer(
+    no_args_is_help=True,
+    help="研究の台帳（人が論文の本文を読んで、自分の言葉で書いた研究の一文。D-034）",
+)
+app.add_typer(findings_app, name="findings")
+
+
+@findings_app.command("build")
+def findings_build(settings: SettingsOpt = None) -> None:
+    """config/findings.csv から、SSD の研究の表を作り直す（HDD は読まない）。"""
+    from koten.db import connect
+    from koten.findings import FindingsError, build_findings, read_findings
+
+    s = _settings(settings)
+    try:
+        findings = read_findings(s.config_dir)
+    except FindingsError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
+    build_findings(connect(s.ssd_root), findings)
+    usable = sum(f.usable for f in findings)
+    typer.echo(
+        f"研究の一文 {len(findings)}件（台本で使える {usable}件・"
+        f"使わない {len(findings) - usable}件）"
+    )
+    for f in findings:
+        if not f.usable:
+            why = (
+                "追試で再現しなかった"
+                if f.replication == "failed"
+                else "本文で確かめていない"
+                if f.verified_from != "full_text"
+                else "取り下げを確かめていない"
+                if not f.retraction_checked_at
+                else f.status
+            )
+            typer.echo(f"  使わない：{f.finding_id}（{why}）")
+
+
+@findings_app.command("list")
+def findings_list(
+    theme: Annotated[str | None, typer.Option(help="テーマ（config/themes.yaml の言葉）")] = None,
+    settings: SettingsOpt = None,
+) -> None:
+    """SSD の研究の表を、出典・一文・限界と一緒に見る。"""
+    from koten.db import connect
+
+    conn = connect(_settings(settings).ssd_root)
+    has = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'findings'"
+    ).fetchone()
+    if not has:
+        typer.echo("研究の表がまだありません（koten findings build）")
+        return
+    rows = conn.execute("SELECT * FROM findings ORDER BY finding_id").fetchall()
+    for r in rows:
+        if theme and theme not in r["themes"].split(";"):
+            continue
+        mark = "○" if r["usable"] else "×"
+        typer.echo(f"{mark} {r['finding_id']}［{r['themes']}］{r['source_label']}")
+        typer.echo(f"    {r['claim_ja']}")
+        if r["limits_ja"]:
+            typer.echo(f"    限界：{r['limits_ja']}")
+        typer.echo(f"    {r['citation']}")
+
+
 ref_app = typer.Typer(
     no_args_is_help=True, help="資料の台帳（時代の解釈・昔の辞書・古い訳）と、その本文"
 )

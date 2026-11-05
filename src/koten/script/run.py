@@ -164,25 +164,56 @@ def run_script(
     viewing: list[str] = []
     used_facts: list[str] = []  # これまでの章で使った背景の事実（あとの章で指してよい）
     used_refs: list[str] = []  # これまでの章で使った語釈・解釈
+    used_findings: list[str] = []  # これまでの章で使った研究の一文（D-034）
 
-    def attempt_chapter(chapter: dict[str, Any], use_facts: bool, use_refs: bool = True) -> tuple:
+    # 形式D の問い（企画のときに AI が書いた）は、比べる章の手本にする前に確かめる。
+    # 決まりに合わなければ、手本にもコメントへの問いかけにも使わない（data.plan は保存しない）
+    plan_q = data.plan.get("question") or ""
+    if plan_q and (bad_q := gates.question_issues(plan_q, data, categories)):
+        data.plan["question"] = ""
+        viewing.append(f"企画の問いを使わなかった（{'、'.join(bad_q)}）")
+    plan_q_ok = bool(data.plan.get("question"))
+
+    def attempt_chapter(
+        chapter: dict[str, Any],
+        use_facts: bool,
+        use_refs: bool = True,
+        use_findings: bool = True,
+    ) -> tuple:
         offered = set(chapter.get("fact_ids") or []) if use_facts else set()
         allowed = set(used_facts) | offered
         offered_r = set(chapter.get("ref_ids") or []) if use_refs else set()
         allowed_r = set(used_refs) | offered_r
+        offered_fn = set(chapter.get("finding_ids") or []) if use_findings else set()
+        allowed_fn = set(used_findings) | offered_fn
         feedback: list[str] | None = None
+        passed: tuple | None = None  # G1・G3 が通ったいちばん新しい版（書き直しで悪くしない）
         for attempt in range(cfg.retries + 1):
             draft = writer.write_chapter(
-                data, chapter, feedback, use_facts=use_facts, use_refs=use_refs
+                data,
+                chapter,
+                feedback,
+                use_facts=use_facts,
+                use_refs=use_refs,
+                use_findings=use_findings,
             )
             issues1 = gates.g1_chapter(
-                draft.chapter, data, draft.issues, allowed, offered, allowed_r, offered_r
+                draft.chapter,
+                data,
+                draft.issues,
+                allowed,
+                offered,
+                allowed_r,
+                offered_r,
+                allowed_fn,
             )
             issues3: list[str] = []
             if not issues1 and judge.needs_judge(draft.chapter):
                 # オープニングは動画のタイトル案も一緒に判定する
                 title_text = draft.episode_title if chapter["role"] == "opening" else ""
-                issues3 = judge.judge(draft.chapter, data, used_facts, title_text, used_refs)
+                issues3 = judge.judge(
+                    draft.chapter, data, used_facts, title_text, used_refs, used_findings
+                )
             # 長さと視聴の確かめは G1・G3 が通ってから見る（尺の本当の確かめは音声のあとの G7）
             length = None
             hook: list[str] = []
@@ -193,12 +224,14 @@ def run_script(
                 if chapter["role"] == "opening":
                     hook = gates.opening_issues(draft.chapter, resolver, cfg.chars_per_min)
                     title = gates.title_issues(draft.episode_title, data)
-                if chapter["role"] == "ending":
-                    # コメントへの問いかけ（説明欄にも出す）。直らなければ決まった問いにする
+                if chapter["role"] == "ending" and not plan_q_ok:
+                    # コメントへの問いかけ（説明欄にも出す）。直らなければ決まった問いにする。
+                    # 形式D で企画の問いが使えるときは、そちらを使うので見ない
                     title = [
                         f"問いかけ：{x}"
                         for x in gates.question_issues(draft.comment_prompt, data, categories)
                     ]
+                passed = (draft, issues1, issues3, length, hook, title)
             if not issues1 and not issues3 and length is None and not hook and not title:
                 break
             feedback = issues1 + issues3 + ([length] if length else []) + hook + title
@@ -206,25 +239,34 @@ def run_script(
                 f"  {chapter['chapter_id']}：書き直し（{attempt + 1}回目）"
                 f"{'、'.join(feedback)[:120]}"
             )
+        if (issues1 or issues3) and passed is not None:
+            return passed  # 書き直しで G1・G3 が悪くなったら、通った版に戻す
         return draft, issues1, issues3, length, hook, title
 
     for chapter in data.plan["chapters"]:
         offered = [f for f in chapter.get("fact_ids") or [] if f in data.facts]
         offered_r = [r for r in chapter.get("ref_ids") or [] if r in data.refs]
+        offered_fn = [f for f in chapter.get("finding_ids") or [] if f in data.findings]
         result = attempt_chapter(chapter, True)
         draft, issues1, issues3, length, hook, title = result
         found = issues1 + issues3
         drop_facts = bool(offered) and any(gates.BG in x for x in found)
         drop_refs = bool(offered_r) and any(gates.REF in x for x in found)
-        if drop_facts or drop_refs:
-            # 背景・語釈のせいで通らない章は、それを外して書き直す（回を止めない。D-012）。
+        drop_fn = bool(offered_fn) and any(gates.FINDING in x for x in found)
+        if drop_facts or drop_refs or drop_fn:
+            # 背景・語釈・研究のせいで通らない章は、それを外して書き直す（回を止めない。D-012）。
             # 外した版が全部通ったときだけ使い、通らなければ最初の結果のまま（悪くしない）
-            what = "・".join(["背景"] * drop_facts + ["語釈・解釈"] * drop_refs)
-            told = "・".join(["背景の事実"] * drop_facts + ["語釈・解釈"] * drop_refs)
+            kinds = [
+                (drop_facts, "背景", "背景の事実", gates.BG),
+                (drop_refs, "語釈・解釈", "語釈・解釈", gates.REF),
+                (drop_fn, "研究", "研究の一文", gates.FINDING),
+            ]
+            what = "・".join(k[1] for k in kinds if k[0])
+            told = "・".join(k[2] for k in kinds if k[0])
             log(f"  {chapter['chapter_id']}：{told}を外して書き直します")
-            marks = [gates.BG] * drop_facts + [gates.REF] * drop_refs
+            marks = [k[3] for k in kinds if k[0]]
             reason = "、".join(x for x in found if any(m in x for m in marks))[:80]
-            plain = attempt_chapter(chapter, not drop_facts, not drop_refs)
+            plain = attempt_chapter(chapter, not drop_facts, not drop_refs, not drop_fn)
             if not plain[1] and not plain[2]:
                 draft, issues1, issues3, length, hook, title = plain
                 viewing.append(f"{chapter['chapter_id']}：{what}を外した（{reason}）")
@@ -235,6 +277,7 @@ def run_script(
                 viewing.append(f"{chapter['chapter_id']}：語釈・解釈を渡したが使っていない")
         used_facts += [f for f in draft.chapter.get("facts", []) if f not in used_facts]
         used_refs += [r for r in draft.chapter.get("refs", []) if r not in used_refs]
+        used_findings += [f for f in draft.chapter.get("findings", []) if f not in used_findings]
         if title and chapter["role"] == "ending":
             # 直らない問いかけは使わず、決まった問いにする（確認のときに人が直す）
             viewing.append(f"問いかけを決まった問いにした（{'、'.join(title)}）")
@@ -262,11 +305,13 @@ def run_script(
         return _save(conn, episode_id, "error", msg, False, None, verification, log)
     script = writer.assemble(data, drafts)
     if bad := gates.question_issues(script["comment_prompt"], data, categories):
-        # 形式D の問い（企画のときに AI が書いた）が決まりに合わなければ、最後の章の問いかけにする
-        ending = next((d.comment_prompt for d in reversed(drafts) if d.comment_prompt), "")
-        ok = ending and not gates.question_issues(ending, data, categories)
-        script["comment_prompt"] = ending if ok else gates.FALLBACK_QUESTION
-        viewing.append(f"企画の問いを使わなかった（{'、'.join(bad)}）")
+        # 書き直しの中で確かめられなかった問いかけ（G3 が直らなかった章のもの）。決まった問いにする
+        script["comment_prompt"] = gates.FALLBACK_QUESTION
+        viewing.append(f"問いかけを決まった問いにした（{'、'.join(bad)}）")
+    if not script["comment_prompt"]:
+        # 最後の章が問いかけを書かなかったときも、決まった問いにする（説明欄に出す。D-036）
+        script["comment_prompt"] = gates.FALLBACK_QUESTION
+        viewing.append("問いかけが無かったので決まった問いにした")
     verification["G1"] = gates._gate(g1_issues)
     verification["G3"] = gates._gate(g3_issues, needs_human=bool(g3_issues))
     verification["G6"] = gates.g6_review(data, script)
@@ -279,6 +324,7 @@ def run_script(
     verification["viewing"] = gates._gate(viewing)
     verification["facts"] = facts_record(script, data)
     verification["refs"] = refs_record(script, data)
+    verification["findings"] = findings_record(script, data)
     review = bool(script["review_required"] or verification["G6"]["review_required"] or g3_issues)
     script["review_required"] = review
     script["verification"] = {
@@ -295,6 +341,29 @@ def run_script(
         return _save(conn, episode_id, "error", msg, review, script, verification, log)
     msg = gates.summarize(verification)
     return _save(conn, episode_id, "script_done", msg, review, script, verification, log)
+
+
+def findings_record(script: dict[str, Any], data: EpisodeData) -> dict[str, Any]:
+    """使った研究の一文と、その書誌（説明欄の「この動画で使った研究・データ」と、あとで確かめるため）。"""
+    used = []
+    for ch in script["chapters"]:
+        for fid in ch.get("findings", []):
+            f = data.findings.get(fid)
+            if f is None:
+                continue
+            used.append(
+                {
+                    "finding_id": fid,
+                    "chapter_id": ch["chapter_id"],
+                    "text_sha": f["text_sha"],
+                    "source_label": f["source_label"],
+                    "citation": f["citation"],
+                    "license": f["license"],
+                    "replication": f["replication"],
+                    "checked_by": f["checked_by"],
+                }
+            )
+    return {"used": used, "issues": list(data.finding_issues)}
 
 
 def facts_record(script: dict[str, Any], data: EpisodeData) -> dict[str, Any]:

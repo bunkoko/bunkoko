@@ -26,7 +26,8 @@ from koten.authors import author_label, translator_label
 from koten.ref.store import ref_source_label, ref_text
 
 PLACEHOLDER = re.compile(
-    r"\{\{(quote|quote_ja|source|author|title|stat|worry|fact|def|def_src|interp|interp_src)"
+    r"\{\{(quote|quote_ja|source|author|title|stat|worry|fact|def|def_src|interp|interp_src"
+    r"|finding|finding_src)"
     r":([^{}]+?)\}\}"
 )
 REF_KINDS = {"def": "J-", "def_src": "J-", "interp": "I-", "interp_src": "I-"}
@@ -78,12 +79,14 @@ class Resolver:
         worries: dict[str, str],
         facts: dict[str, Any] | None = None,
         refs: dict[str, dict[str, Any]] | None = None,
+        findings: dict[str, dict[str, Any]] | None = None,
     ):
         self.candidates = candidates
         self.stats = stats
         self.worries = worries
         self.facts = facts or {}  # この回の企画に付いた、使える事実だけ（koten.facts.model.Fact）
         self.refs = refs or {}  # この回の企画に付いた、確かめ済みの語釈・解釈だけ
+        self.findings = findings or {}  # この回の企画に付いた、使える研究の一文だけ（D-034）
 
     def value(self, kind: str, key: str) -> str:
         key = key.strip()
@@ -128,6 +131,11 @@ class Resolver:
             if r is None or not key.startswith(REF_KINDS[kind]):
                 raise UnresolvedPlaceholder(f"{{{{{kind}:{key}}}}}：この回の企画に無い語釈・解釈")
             return ref_source_label(r) if kind.endswith("_src") else ref_text(r)
+        if kind in ("finding", "finding_src"):
+            f = self.findings.get(key)
+            if f is None:
+                raise UnresolvedPlaceholder(f"{{{{{kind}:{key}}}}}：この回の企画に無い研究")
+            return f["source_label"] if kind == "finding_src" else f["claim_ja"]
         raise UnresolvedPlaceholder(f"{{{{{kind}:{key}}}}}")
 
     def resolve(self, text: str) -> str:

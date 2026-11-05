@@ -16,7 +16,7 @@
 - 今の本（S4）での照合は、手元の Ollama（127.0.0.1）にだけ本の該当箇所を渡し、判定だけを残す。本の文はファイル・DB・ログ・画面に残さない。食い違い・言い回しが近い文がある回は公開しない（SPEC R8）
 - 資料の台帳（config/ref_works.csv・ref_people.csv）の判定は、関わった人全員の没年・団体名義・版・NDL の公開範囲のいちばん厳しい結果。人の確認で使えるようにできるのは NEEDS_REVIEW だけ
 - ウィキペディアは背景の事実を探す手がかりだけ。索引にせず、台本を書くLLMと判定役に渡さない。事実は別の資料で人が確かめてから使う（SPEC R2）
-- 調査・研究・数字は DB にあるものだけを記号で差し込む。語りで研究・実験・専門家の話をしない（研究の一文を DB に持てるまで）。「増え続けています」は、増え方を人が確かめた統計（trend）の隣だけ。有料の論文・民間の報告書の本文や要旨は保存せず、クラウドの AI に渡さない（人が読んで自分の言葉で書いた1文と書誌だけ。D-034・D-035）
+- 調査・研究・数字は DB にあるものだけを記号で差し込む。研究・実験・専門家の話は、研究の台帳（config/findings.csv）の記号 {{finding:ID}}・{{finding_src:ID}} と同じ文でだけ。「増え続けています」は、増え方を人が確かめた統計（trend）の隣だけ。有料の論文・民間の報告書の本文や要旨は保存せず、クラウドの AI に渡さない（人が読んで自分の言葉で書いた1文と書誌だけ。D-034・D-035）
 - 除外カテゴリ（医療・自傷・お金の判断・法律相談など）の悩みで回を作らない
 - 大きなデータはGitに入れない。HDD/SSDのパスは config/settings.toml から読む
 - 検索・APIの処理中にHDDを読まない（索引とDBはSSD）
@@ -47,6 +47,7 @@
 - uv run koten forget-works --changed（正規化で本文が変わった作品。--apply で付加情報を取り除き、augment で作り直す）
 - uv run koten facts build（HDD の書誌と config/facts.csv から、SSD の事実の表を作り直す）／ facts coverage ／ facts list --episode <ID>
 - uv run koten facts todo --episode <ID> → facts draft --episode <ID>（AI の下書き）→ facts review（下書きを読む）→ 人が別の資料で確かめ、CSV の accept に 1 → facts accept（--from を省くと最新の下書き）→ facts build → facts attach --episode <ID>（企画に事実を付け直す）→ script
+- uv run koten findings build（config/findings.csv の研究の一文を SSD に入れる。書き方は docs/findings.md）／ findings list
 - uv run koten ref check（config/ref_works.csv・ref_people.csv の資料を、関わった人全員の没年・団体名義・版・NDL の公開範囲で1冊ずつ判定する。書き込みはしない）
 - uv run koten ref build（台帳と、人が確かめた時代の解釈 renderings.csv・昔の辞書 dict_entries.csv から SSD の表を作り直す）→ ref show --word 普通 ／ --passage lunyu:1.1（手順は docs/ref_sources.md）
 - uv run koten ref fetch（台帳で使えると判定された古い英訳を Standard Ebooks から net.py で取り、一節ごとに分けて HDD に置く）→ ref build
