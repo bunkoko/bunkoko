@@ -227,7 +227,12 @@ class ScriptWriter:
         if not ids:
             return "（なし）"
         return "\n".join(
-            f"- 統計ID：{sid}（{data.stats[sid]['label']}。数字は書かず {{{{stat:{sid}}}}} を使う）"
+            f"- 統計ID：{sid}（{data.stats[sid]['label']}。数字は書かず {{{{stat:{sid}}}}} を使う"
+            + (
+                f"。{t}の傾向を確かめてある：{data.stats[sid].get('trend_note') or ''}）"
+                if (t := data.stats[sid].get("trend"))
+                else "。増え方・減り方は言わない）"
+            )
             for sid in ids
             if sid in data.stats
         )

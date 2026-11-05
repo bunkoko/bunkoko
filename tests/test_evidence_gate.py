@@ -22,6 +22,7 @@ INVENTED = [
     "心理学の実験で、科学的に証明されています。",
     "ハーバード大学の研究では、孤独はたばこ15本分の害があるそうです。",
     "職場のいじめの相談は増え続けています。",
+    "こうした悩みは年々増えています。",
     "多くの若者がこの悩みを抱えています。",
     "最新の調査では、若い人ほど悩んでいます。",
     "専門家は、比べるのをやめるよう勧めています。",
@@ -163,3 +164,51 @@ def NOW_PLUS():
     from tests.test_script import NOW
 
     return NOW + timedelta(days=40)
+
+
+def test_trend_only_next_to_a_checked_trend(env):  # noqa: F811
+    """「増え続けています」は、同じ調査で増え方を人が確かめた統計（trend）の隣でだけ言える。"""
+    data = load(env)
+    text = "こうした相談は、増え続けています。"
+    ch = chapter(text, stat_after=0)
+    assert evidence(gates.g1_chapter(ch, data, []))  # trend の無い統計の隣
+    data.stats["rodo_r7_amount"]["trend"] = "増加"
+    assert evidence(gates.g1_chapter(ch, data, [])) == []
+    down = chapter("こうした相談は、減り続けています。", stat_after=0)
+    assert evidence(gates.g1_chapter(down, data, []))  # 向きが違う
+    assert evidence(gates.g1_chapter(chapter(text), data, []))  # 統計の隣でない
+
+
+def test_stats_trend_columns_and_old_db(tmp_path):
+    """trend には根拠が要る。前の版の DB（trend の列が無い）にも読み込める。"""
+    import sqlite3
+
+    import pytest
+
+    from koten.db import StatsError, connect, db_path, load_stats
+
+    path = db_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    with sqlite3.connect(path) as old:  # 前の版の stats 表
+        old.execute(
+            "CREATE TABLE stats (stat_id TEXT PRIMARY KEY, theme TEXT NOT NULL,"
+            " label TEXT NOT NULL, value TEXT NOT NULL, unit TEXT, survey TEXT, year TEXT,"
+            " url TEXT NOT NULL)"
+        )
+    conn = connect(tmp_path)
+    head = "stat_id,theme,label,value,unit,survey,year,url,trend,trend_note\n"
+    row = "s1,孤独,ラベル,10,%,調査,2025,https://example.go.jp/a"
+    csv = tmp_path / "stats.csv"
+    csv.write_text(head + row + ",増加,令和元年から令和7年まで毎年（同じ設問）\n", "utf-8")
+    assert load_stats(conn, csv) == 1
+    got = conn.execute("SELECT trend, trend_note FROM stats").fetchone()
+    assert tuple(got) == ("増加", "令和元年から令和7年まで毎年（同じ設問）")
+    csv.write_text(head + row + ",増加,\n", "utf-8")
+    with pytest.raises(StatsError, match="trend_note"):
+        load_stats(conn, csv)
+    csv.write_text(head + row + ",横ばい,x\n", "utf-8")
+    with pytest.raises(StatsError, match="trend"):
+        load_stats(conn, csv)
+    old_csv = tmp_path / "old.csv"  # trend の列の無い前の stats.csv も読める
+    old_csv.write_text("stat_id,theme,label,value,unit,survey,year,url\n" + row + "\n", "utf-8")
+    assert load_stats(conn, old_csv) == 1

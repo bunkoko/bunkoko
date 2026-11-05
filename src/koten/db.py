@@ -91,7 +91,9 @@ CREATE TABLE IF NOT EXISTS stats (
     unit TEXT,
     survey TEXT,
     year TEXT,
-    url TEXT NOT NULL
+    url TEXT NOT NULL,
+    trend TEXT,                          -- 増加・減少（同じ調査・同じ設問で人が確かめた）
+    trend_note TEXT                      -- 移り変わりの根拠（年の範囲と、同じ設問であること）
 );
 
 -- 背景の事実（koten facts build が HDD の書誌と config の CSV から作り直す）
@@ -273,6 +275,7 @@ def connect(ssd_root: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+    _add_missing_columns(conn, "stats", {"trend": "TEXT", "trend_note": "TEXT"})
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)", (SCHEMA_VERSION,)
     )
@@ -280,11 +283,31 @@ def connect(ssd_root: Path) -> sqlite3.Connection:
     return conn
 
 
+def _add_missing_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    """前の版で作った表に、あとから足した列を足す（CREATE TABLE IF NOT EXISTS は列を足さない）。"""
+    have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    for name, kind in columns.items():
+        if name not in have:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
+
+
 class StatsError(ValueError):
     pass
 
 
-STATS_COLUMNS = ["stat_id", "theme", "label", "value", "unit", "survey", "year", "url"]
+STATS_COLUMNS = [
+    "stat_id",
+    "theme",
+    "label",
+    "value",
+    "unit",
+    "survey",
+    "year",
+    "url",
+    "trend",
+    "trend_note",
+]
+TRENDS = ("増加", "減少")
 
 
 def load_stats(conn: sqlite3.Connection, csv_path: Path) -> int:
@@ -305,6 +328,12 @@ def load_stats(conn: sqlite3.Connection, csv_path: Path) -> int:
         if (r.get("value") or "").strip() and not re.search(r"\d", r["value"]):
             # 「報告書から転記」のような書きかけを、数字として語らせない
             problems.append(f"{i}行目：value に数字が無い（{r['value'].strip()}）")
+        trend = (r.get("trend") or "").strip()
+        if trend and trend not in TRENDS:
+            problems.append(f"{i}行目：trend は {'・'.join(TRENDS)} か空にする（{trend}）")
+        if trend and not (r.get("trend_note") or "").strip():
+            # 「増え続けています」と語らせる根拠。年の範囲と、同じ調査・同じ設問であることを人が書く
+            problems.append(f"{i}行目：trend を書いたら trend_note（根拠）も書く")
         if r.get("stat_id") in seen:
             problems.append(f"{i}行目：stat_id {r['stat_id']} が重複")
         seen.add(r.get("stat_id"))

@@ -153,10 +153,19 @@ RESEARCH_CLAIM = re.compile(
     r"|科学的に|エビデンス|証明され|実証され|裏付けられ"
 )
 # いつも言わない：時期は統計の記号で入る。移り変わりは、続けて調べた数が DB に無い
-NEVER_EVIDENCE = re.compile(
-    r"(?:最新|最近|今年|昨年|去年)の(?:調査|研究|データ|統計)"
-    r"|増え続け|減り続け|急増|急減|年々|過去最多|過去最高|過去最低|右肩上がり|増加傾向|減少傾向"
-)
+NEVER_EVIDENCE = re.compile(r"(?:最新|最近|今年|昨年|去年)の(?:調査|研究|データ|統計)")
+# 移り変わりの言い方。同じ調査・同じ設問で増え方・減り方を人が確かめた統計（stats.csv の trend）の
+# 段落の隣でだけ言える（利用者の決まり。D-035）
+TRENDS = {
+    "増加": re.compile(
+        r"増え続け|増えてきて|増えています|急増|急激に増|年々(?:増|多く|高ま)|過去最多|過去最高"
+        r"|右肩上がり|増加傾向|増加して|高まり続け"
+    ),
+    "減少": re.compile(
+        r"減り続け|減ってきて|減っています|急減|年々(?:減|少な|低)|過去最少|過去最低"
+        r"|右肩下がり|減少傾向|減少して"
+    ),
+}
 # 割合・倍・「○人に1人」・「半数」（語りに直接書かない。統計は {{stat:ID}} で差し込む）
 NUMBER_CLAIM = re.compile(
     rf"[{NUM}]+(?:[.．][{NUM}]+)?\s*(?:%|％|パーセント|ポイント|割|倍)"
@@ -167,14 +176,25 @@ NUMBER_CLAIM = re.compile(
 HEDGE_OK = re.compile(r"\{\{(?:fact|def|interp|def_src|interp_src):")
 
 
-def evidence_issues(text: str, passage: str, near_stat: bool, kind: str = "narration") -> list[str]:
+def evidence_issues(
+    text: str,
+    passage: str,
+    near_stat: bool | list[dict[str, Any]],
+    kind: str = "narration",
+) -> list[str]:
     """調査・研究・数字の主張（R6・D-035）。kind は narration・transition・title・question。
 
-    near_stat：この段落が、DB の統計の段落の直前か直後にあるか（語りのときだけ使う）。
+    near_stat：この段落の直前・直後にある統計の段落の統計（stats 表の行）。真偽値なら、統計の
+    段落が隣にあるかだけ（移り変わりは言えない）。語りのときだけ使う。
     一節と前後の文脈（passage）にある言葉は除く。
     """
     out = []
-    near = near_stat and kind == "narration"
+    near = bool(near_stat) and kind == "narration"
+    trends = (
+        {s.get("trend") for s in near_stat if s.get("trend")}
+        if near and isinstance(near_stat, list)
+        else set()
+    )
     for sent in split_sentences(text) if kind == "narration" else [text]:
         bare = PLACEHOLDER.sub("", sent)
         for m in RESEARCH_CLAIM.finditer(bare):
@@ -189,6 +209,13 @@ def evidence_issues(text: str, passage: str, near_stat: bool, kind: str = "narra
                     f"{EVIDENCE}「{m.group(0)}」は言わない（調べた時期は統計の記号で入る。"
                     "移り変わりを示す数は DB に無い）"
                 )
+        for direction, pattern in TRENDS.items():
+            for m in pattern.finditer(bare):
+                if direction not in trends and m.group(0) not in passage:
+                    out.append(
+                        f"{EVIDENCE}「{m.group(0)}」のような移り変わりは、同じ調査で"
+                        f"{direction}を確かめた統計（stats.csv の trend）の段落の隣でだけ言える"
+                    )
         for m in NUMBER_CLAIM.finditer(bare):
             if m.group(0) not in passage:
                 out.append(
@@ -419,7 +446,13 @@ def g1_chapter(
     for i, seg in enumerate(segments):
         sid, text = seg["seg_id"], seg["text"]
         neighbors = segments[max(i - 1, 0) : i] + segments[i + 1 : i + 2]
-        near_stat = any(n["kind"] == "stat" for n in neighbors)
+        near_stat = [
+            data.stats.get(m.group(2).strip(), {"stat_id": m.group(2).strip()})
+            for n in neighbors
+            if n["kind"] == "stat"
+            for m in [PLACEHOLDER.fullmatch(n["text"].strip())]
+            if m
+        ] or any(n["kind"] == "stat" for n in neighbors)
         if seg["kind"] in ("narration", "transition"):
             issues += [
                 f"{sid}：{x}" for x in evidence_issues(text, passage, near_stat, seg["kind"])
