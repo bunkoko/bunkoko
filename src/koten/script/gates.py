@@ -20,6 +20,13 @@ G3 は、背景の事実を使った章を、1文ずつ「一節・前後の文�
 「本来の意味」「語源」は語釈・解釈の記号と同じ文のときだけ、「本当の意味」「通説」「多くの学者」と
 今の辞書の名前（広辞苑など）は使わせない。G3 は、語釈・解釈を使った文を、その本文と照らし合わせる。
 
+調査・研究・数字（SPEC R6・D-035）：G1 は、作り話の調査・研究・数字を止める。調査・統計の言い方
+（「調査では」「〜ことが分かっています」）と「多くの人が」のような量の言い方は、DB の統計の段落
+（{{stat:ID}}）の直前・直後の段落でだけ言える。研究・実験・専門家の話は、研究の一文を DB に持てる
+ようになるまで（M8d）言わない。語りに割合・倍・「○人に1人」・「半数」を直接書かない。「最新の調査」
+「増え続けています」「科学的に証明」は言わない。章タイトル・動画のタイトル・コメントへの問いかけ
+では、どれも言わない。
+
 ゲートとは別に、視聴の確かめ（冒頭30秒・タイトル・尺の見積もり）をする。不合格でも回は止めず、
 章を書き直させ、直らなければ確認画面に出す（docs/decisions.md D-011）。
 """
@@ -119,6 +126,91 @@ MODERN_REFS = (
 ERA_PEOPLE = re.compile(
     r"(?:江戸|明治|大正|昭和|平安|鎌倉|室町|戦国|当時)(?:時代)?の(?:人々|人|日本人|学者|読者)(?:は|が|も)"
 )
+# --- 調査・研究・数字の主張（R6・D-035） -------------------------------------
+EVIDENCE = "根拠："  # 調査・研究・数字にかかわる問題の頭
+# 調査・統計の言い方。DB の統計の段落（{{stat:ID}}）の直前・直後の段落でだけ言える
+SURVEY_CLAIM = re.compile(
+    r"(?:調査|統計|データ|アンケート)"
+    r"(?:によると|によれば|では|でも|で[、,]|の結果|を見ると|から(?:は|も)?[、,]?(?:分か|わか|見え))"
+    r"|ことが(?:分かって|わかって|明らかになって|示されて)(?:い|お)"
+)
+# 言い伝えの言い方。統計の段落の隣か、事実・語釈・解釈の記号と同じ文でだけ言える
+# （「『頑張れ』と言われていませんか」のように、見ている人が言われたことは除く）
+HEARSAY = re.compile(
+    r"(?:と|そう)(?:言|い)われて(?:います|おり)(?!か)|(?:一般に|一般的に|よく|俗に)(?:言|い)われ"
+)
+# 量の言い方（根拠の数が要る）。統計の段落の隣でだけ言える
+QUANT_CLAIM = re.compile(
+    r"(?:多くの|大勢の|たくさんの|ほとんどの|大半の)"
+    r"(?:人|若者|会社員|社会人|働く人|日本人|学生|新人|人たち)(?:が|は|も|に|の)"
+    r"|日本人の(?:多く|大半|ほとんど)|(?:今どきの|最近の|今の)若者(?:は|が|の多く)"
+)
+# 研究・実験・専門家の話。研究の一文を DB に持てるようになるまで（M8d）言わない
+RESEARCH_CLAIM = re.compile(
+    r"(?:研究|実験|論文|学会)(?:によると|によれば|では|でも|で[、,]|の結果|が示|で分か|で明らか|で証明|で確かめ)"
+    r"|研究者|専門家|心理学者|脳科学者|科学者|精神科医"
+    r"|(?:心理学|脳科学|行動経済学|社会心理学|神経科学|進化心理学)(?:では|でも|によると|によれば|の(?:研究|実験)|的に)"
+    r"|科学的に|エビデンス|証明され|実証され|裏付けられ"
+)
+# いつも言わない：時期は統計の記号で入る。移り変わりは、続けて調べた数が DB に無い
+NEVER_EVIDENCE = re.compile(
+    r"(?:最新|最近|今年|昨年|去年)の(?:調査|研究|データ|統計)"
+    r"|増え続け|減り続け|急増|急減|年々|過去最多|過去最高|過去最低|右肩上がり|増加傾向|減少傾向"
+)
+# 割合・倍・「○人に1人」・「半数」（語りに直接書かない。統計は {{stat:ID}} で差し込む）
+NUMBER_CLAIM = re.compile(
+    rf"[{NUM}]+(?:[.．][{NUM}]+)?\s*(?:%|％|パーセント|ポイント|割|倍)"
+    rf"|(?<![{KANJI_NUM}人])[一二三四五六七八九十]+(?:割|倍)(?!り)"
+    rf"|[{NUM}{KANJI_NUM}]+\s*人に\s*[{NUM}一]+\s*人"
+    r"|過半数|半数|大半|大多数|半分以上|半分近く|ほぼ全員"
+)
+HEDGE_OK = re.compile(r"\{\{(?:fact|def|interp|def_src|interp_src):")
+
+
+def evidence_issues(text: str, passage: str, near_stat: bool, kind: str = "narration") -> list[str]:
+    """調査・研究・数字の主張（R6・D-035）。kind は narration・transition・title・question。
+
+    near_stat：この段落が、DB の統計の段落の直前か直後にあるか（語りのときだけ使う）。
+    一節と前後の文脈（passage）にある言葉は除く。
+    """
+    out = []
+    near = near_stat and kind == "narration"
+    for sent in split_sentences(text) if kind == "narration" else [text]:
+        bare = PLACEHOLDER.sub("", sent)
+        for m in RESEARCH_CLAIM.finditer(bare):
+            if m.group(0) not in passage:
+                out.append(
+                    f"{EVIDENCE}「{m.group(0)}」：研究・実験・専門家の話は言わない"
+                    "（根拠の研究を DB に持てるようになるまで。作り話の研究を防ぐ）"
+                )
+        for m in NEVER_EVIDENCE.finditer(bare):
+            if m.group(0) not in passage:
+                out.append(
+                    f"{EVIDENCE}「{m.group(0)}」は言わない（調べた時期は統計の記号で入る。"
+                    "移り変わりを示す数は DB に無い）"
+                )
+        for m in NUMBER_CLAIM.finditer(bare):
+            if m.group(0) not in passage:
+                out.append(
+                    f"{EVIDENCE}割合や人数「{m.group(0)}」を直接書かない"
+                    "（統計は kind を stat にして {{stat:ID}} で出す）"
+                )
+        for pattern, what in ((SURVEY_CLAIM, "調査・統計の言い方"), (QUANT_CLAIM, "量の言い方")):
+            for m in pattern.finditer(bare):
+                if not near and m.group(0) not in passage:
+                    out.append(
+                        f"{EVIDENCE}「{m.group(0)}」のような{what}は、統計（{{{{stat:ID}}}}）の段落の"
+                        "すぐ前かすぐあとの段落でだけ使う（ほかでは、根拠の数を示せない）"
+                    )
+        if (m := HEARSAY.search(bare)) and not near and not HEDGE_OK.search(sent):
+            if m.group(0) not in passage:
+                out.append(
+                    f"{EVIDENCE}「{m.group(0)}」は、事実・語釈・解釈の記号と同じ文か、"
+                    "統計の段落の隣でだけ使う（誰が言ったかを示せない）"
+                )
+    return list(dict.fromkeys(out))
+
+
 SHORT_QUOTE_MAX = 10  # 「」で語を強調するだけなら許す長さ
 JUDGED_ROLES = {"work_intro", "summary", "compare"}  # 一節を持たないが、一節に触れる章
 # 一節を持たない章のうち、1文ずつの判定（judge_v2）にかける章（背景の作り話が紛れやすい）
@@ -323,8 +415,15 @@ def g1_chapter(
     stat_values = [
         str(s["value"]) for s in data.stats.values() if re.search(r"\d", str(s["value"]))
     ]
-    for seg in chapter["segments"]:
+    segments = chapter["segments"]
+    for i, seg in enumerate(segments):
         sid, text = seg["seg_id"], seg["text"]
+        neighbors = segments[max(i - 1, 0) : i] + segments[i + 1 : i + 2]
+        near_stat = any(n["kind"] == "stat" for n in neighbors)
+        if seg["kind"] in ("narration", "transition"):
+            issues += [
+                f"{sid}：{x}" for x in evidence_issues(text, passage, near_stat, seg["kind"])
+            ]
         for p in resolver.problems(text):
             issues.append(f"{sid}：解決できない記号 {p}")
         refs = {fid for fid, _ in FACT_REF.findall(text)}
@@ -547,6 +646,72 @@ def title_issues(title: str, data: EpisodeData) -> list[str]:
         for n in _book_names(data)
         if n in bare
     ]
+    issues += [f"タイトル：{x}" for x in evidence_issues(title, "", False, "title")]
+    return issues
+
+
+QUESTION_MAX = 60
+# コメントへの問いかけが直らないときに使う、決まった問い（AI に書かせない）
+FALLBACK_QUESTION = "この一節を、あなたならどう読みますか。"
+# コメント欄で聞かないこと（勤め先・学校など人が分かること）。健康・お金・法律は除外カテゴリで見る
+PRIVATE_ASK = re.compile(r"勤め先|勤務先|会社名|学校名|本名|住所|年収|給料の額|貯金|病名|診断")
+
+
+def question_issues(
+    text: str, data: EpisodeData, categories: dict[str, list[str]] | None = None
+) -> list[str]:
+    """コメントへの問いかけ（comment_prompt・形式D の問い）が、決まりを守っているか。
+
+    考えや日々の経験だけを聞き、健康・お金の判断・法律・人が分かることは聞かない。
+    調査・研究・数字・事実を言わない。記号は author・title・worry だけ。
+    """
+    if not text:
+        return []
+    from koten.worries.master import keyword_block
+
+    resolver = resolver_for(data)
+    issues = [f"問いかけの記号を解決できない：{p}" for p in resolver.problems(text)]
+    for m in PLACEHOLDER.finditer(text):
+        if m.group(1) not in TITLE_KINDS:
+            issues.append(f"問いかけで使える記号は author・title・worry だけ（{m.group(0)}）")
+    bare = PLACEHOLDER.sub("", text)
+    issues += [
+        f"問いかけに著者名・作品名「{n}」を直接書いている（記号を使う）"
+        for n in sorted(_names(data))
+        if n in bare
+    ]
+    issues += [x.removeprefix(BG) for x in fact_leaks(text, data, "", set())]
+    issues += [f"問いかけ：{x}" for x in evidence_issues(text, "", False, "question")]
+    issues += [f"問いかけに「{w}」を使わない" for w in TITLE_NG if w in bare]
+    issues += [f"問いかけに「{w}」を使わない" for w in TITLE_REF_NG if w in bare]
+    issues += [
+        f"問いかけに今の辞書・訳注・照合に使う本の名前「{n}」を出さない"
+        for n in _book_names(data)
+        if n in bare
+    ]
+    for m in QUOTED.finditer(text):
+        inner = m.group(1).strip()
+        pm = PLACEHOLDER.fullmatch(inner)
+        if (
+            not (pm and pm.group(1) == "worry")
+            and len(normalize_for_match(inner)) > SHORT_QUOTE_MAX
+        ):
+            issues.append(
+                f"問いかけの「」の中に、誰かが言ったことにする文を書かない（{inner[:20]}）"
+            )
+    if m := PRIVATE_ASK.search(bare):
+        issues.append(f"問いかけで「{m.group(0)}」のような、人が分かることや個人の事情を聞かない")
+    try:
+        resolved = resolver.resolve(text)
+    except KeyError:
+        resolved = text
+    if categories and (hit := keyword_block(resolved, categories)):
+        issues.append(
+            f"問いかけに除外カテゴリ「{hit[0]}」の言葉（{hit[1]}）がある"
+            "（健康・お金の判断・法律のことは聞かない）"
+        )
+    if not issues and len(resolved) > QUESTION_MAX:
+        issues.append(f"問いかけが長い（{len(resolved)}字。{QUESTION_MAX}字以内）")
     return issues
 
 

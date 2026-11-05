@@ -95,7 +95,7 @@ STAT_ONLY = re.compile(r"^\{\{stat:([^{}]+)\}\}$")
 
 @dataclass
 class ScriptConfig:
-    prompt: str = "script_v4"
+    prompt: str = "script_v5"
     judge_prompt: str = "judge_v1"
     judge_facts_prompt: str = "judge_v3"  # 背景の事実・語釈・解釈を使った章の判定（1文ずつ）
     chars_per_min: int = 300

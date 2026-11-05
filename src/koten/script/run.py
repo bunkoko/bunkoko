@@ -193,6 +193,12 @@ def run_script(
                 if chapter["role"] == "opening":
                     hook = gates.opening_issues(draft.chapter, resolver, cfg.chars_per_min)
                     title = gates.title_issues(draft.episode_title, data)
+                if chapter["role"] == "ending":
+                    # コメントへの問いかけ（説明欄にも出す）。直らなければ決まった問いにする
+                    title = [
+                        f"問いかけ：{x}"
+                        for x in gates.question_issues(draft.comment_prompt, data, categories)
+                    ]
             if not issues1 and not issues3 and length is None and not hook and not title:
                 break
             feedback = issues1 + issues3 + ([length] if length else []) + hook + title
@@ -229,7 +235,11 @@ def run_script(
                 viewing.append(f"{chapter['chapter_id']}：語釈・解釈を渡したが使っていない")
         used_facts += [f for f in draft.chapter.get("facts", []) if f not in used_facts]
         used_refs += [r for r in draft.chapter.get("refs", []) if r not in used_refs]
-        if title:
+        if title and chapter["role"] == "ending":
+            # 直らない問いかけは使わず、決まった問いにする（確認のときに人が直す）
+            viewing.append(f"問いかけを決まった問いにした（{'、'.join(title)}）")
+            draft.comment_prompt = gates.FALLBACK_QUESTION
+        elif title:
             # 直らないタイトル案は使わず、悩みから作る仮のタイトルにする（確認のときに人が直す）
             viewing.append(f"仮のタイトルにした（{'、'.join(title)}）")
             draft.episode_title = ""
@@ -251,6 +261,12 @@ def run_script(
         verification["G1"] = gates._gate(g1_issues)
         return _save(conn, episode_id, "error", msg, False, None, verification, log)
     script = writer.assemble(data, drafts)
+    if bad := gates.question_issues(script["comment_prompt"], data, categories):
+        # 形式D の問い（企画のときに AI が書いた）が決まりに合わなければ、最後の章の問いかけにする
+        ending = next((d.comment_prompt for d in reversed(drafts) if d.comment_prompt), "")
+        ok = ending and not gates.question_issues(ending, data, categories)
+        script["comment_prompt"] = ending if ok else gates.FALLBACK_QUESTION
+        viewing.append(f"企画の問いを使わなかった（{'、'.join(bad)}）")
     verification["G1"] = gates._gate(g1_issues)
     verification["G3"] = gates._gate(g3_issues, needs_human=bool(g3_issues))
     verification["G6"] = gates.g6_review(data, script)
