@@ -63,8 +63,9 @@ ROLE_GUIDE = {
     "compare": "AとBを比べ、どちらが正しいとは決めずに、視聴者に問いかける。",
     "research": "渡した研究の一文だけを、古典の読みを補う脇役として紹介する。1つの文に"
     "出典の記号 {{finding_src:研究ID}} と一文の記号 {{finding:研究ID}} を一緒に書き、"
-    "すぐあとの文で限界を添える（「ただ、この研究は、{{finding_limits:研究ID}}。」か"
-    "「ただ、この研究で調べたのは、{{finding_pop:研究ID}}です。」）。"
+    "同じ段落のすぐあとの文で、限界の記号を必ず添える（「ただ、この研究は、"
+    "{{finding_limits:研究ID}}。」。段落を分けない）。調べた人の記号を渡したときは、"
+    "「この研究で調べたのは、{{finding_pop:研究ID}}です。」を足してもよい。"
     "そのあと、前の章で読んだ一節に戻ってつなげる。章タイトルに研究・調査・データ・科学の"
     "言葉を使わない。",
     "summary": "この回で見た一節をふり返り、今日からできる小さな一歩を1つ示す。"
@@ -251,7 +252,8 @@ class ScriptWriter:
                 lines.append(f"  調べた人の記号：{{{{finding_pop:{fid}}}}}＝{f['population_ja']}")
             if f.get("limits_ja"):
                 lines.append(
-                    f"  限界の記号（必ず添える）：{{{{finding_limits:{fid}}}}}＝{f['limits_ja']}"
+                    f"  限界の記号（必ず添える。一文と同じ段落に）：{{{{finding_limits:{fid}}}}}"
+                    f"＝{f['limits_ja']}"
                 )
             if f.get("effect_ja"):
                 lines.append(f"  効果の大きさ：{f['effect_ja']}（言い切らない・大きく言わない）")

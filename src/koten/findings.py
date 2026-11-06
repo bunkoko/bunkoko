@@ -91,6 +91,13 @@ CLAIM_OVERCLAIM = re.compile(
 CAUSAL = re.compile(r"原因|せいで|引き起こ|もたら")
 CAUSAL_DESIGNS = {"experiment", "field_experiment", "meta_analysis"}
 ASCII_WORDS = re.compile(r"[A-Za-z]")
+# 限界と調べた人は、台本の決まった形にそのまま入る（「ただ、この研究は、{限界}。」
+# 「この研究で調べたのは、{調べた人}です。」）。その形で読めるように書く
+LIMITS_HEAD = re.compile(
+    r"^(?:ただし?|しかし|でも|なお|とはいえ|一方)|^(?:この|その)(?:研究|調査|実験|論文|分析)"
+)
+POLITE_END = re.compile(r"(?:ません|ます|です|でした|ました)$")
+POP_END = re.compile(r"(?:です|でした|だ)$")
 
 
 class FindingsError(ValueError):
@@ -225,6 +232,7 @@ def read_findings(config_dir: Path) -> list[Finding]:
         v["claim_ja"] = v["claim_ja"].rstrip("。．.").rstrip()
         # 限界も「ただ、この研究は、{{finding_limits:ID}}。」と差し込むので、終わりの「。」は外す
         v["limits_ja"] = v["limits_ja"].rstrip("。．.").rstrip()
+        v["population_ja"] = v["population_ja"].rstrip("。．.").rstrip()
         # DOI は https://doi.org/ や doi: を付けて写しがちなので、10. で始まる形にそろえる
         v["doi"] = DOI_PREFIX.sub("", v["doi"]).strip()
         fid = v["finding_id"]
@@ -254,12 +262,32 @@ def read_findings(config_dir: Path) -> list[Finding]:
             )
         if re.search(r"[。．！？!?]", limits):
             problems.append(f"{where}：limits_ja は1文で書く（途中に「。」を入れない）")
+        if limits and LIMITS_HEAD.search(limits):
+            problems.append(
+                f"{where}：limits_ja は「ただ、この研究は、」に続くので、ただ・しかし・この研究で"
+                "始めない"
+            )
+        if limits and not POLITE_END.search(limits):
+            problems.append(
+                f"{where}：limits_ja は「〜ません」「〜です」のような丁寧な形で終える"
+                "（台本では「ただ、この研究は、〜。」に入る）"
+            )
+        pop = v["population_ja"]
+        if re.search(r"[。．！？!?]", pop):
+            problems.append(
+                f"{where}：population_ja は短い名詞の形で書く（途中に「。」を入れない）"
+            )
+        if pop and POP_END.search(pop) and v["design"] != "theory":
+            problems.append(
+                f"{where}：population_ja は「です」を付けずに書く"
+                "（台本では「この研究で調べたのは、〜です。」に入る）"
+            )
         if m := OVERCLAIM.search(limits.replace("必ずしも", "")):
             problems.append(
                 f"{where}：limits_ja に「{m.group(0)}」を書かない"
                 "（「〜とまでは言えません」「〜かは分かっていません」のように書く）"
             )
-        for col, text in (("claim_ja", claim), ("limits_ja", limits)):
+        for col, text in (("claim_ja", claim), ("limits_ja", limits), ("population_ja", pop)):
             if len(ASCII_WORDS.findall(text)) > len(text) * 0.3:
                 problems.append(
                     f"{where}：{col} は自分の日本語で書く（論文の文を写さない。D-034）"

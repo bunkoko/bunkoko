@@ -101,6 +101,11 @@ def test_read_findings_rules(tmp_path):
         ({"retraction_checked_at": "2018-01-01"}, "論文の年より前"),
         ({"checked_at": "2026-02-30"}, "checked_at"),
         ({"limits_ja": "大学生だけです。働く人は調べていません"}, "limits_ja は1文"),
+        ({"limits_ja": "ただ、調べたのはアメリカの大学生だけです"}, "始めない"),
+        ({"limits_ja": "アメリカの大学生の相関の調査で、効果は小さい"}, "丁寧な形"),
+        ({"population_ja": "アメリカの大学生300人です"}, "population_ja"),
+        ({"population_ja": "アメリカの大学生300人。働く人は調べていない"}, "population_ja"),
+        ({"population_ja": "US undergraduates (N=300) via MTurk"}, "日本語"),
     ]
     for change, word in bad_cases:
         write(tmp_path, {**GOOD, **change})
@@ -176,52 +181,79 @@ def test_planner_attaches_findings(fenv):
     assert r.resolve("{{finding:FN-test-1}}").startswith("人と比べる時間が長い人ほど")
 
 
-def test_g1_finding_rules(fenv):
-    eid = planned(fenv, "A", worry_id="W0001")
-    data = EpisodeData.load(connect(fenv.ssd_root), fenv.ssd_root, eid)
+LIM = "ただ、この研究は、{{finding_limits:FN-test-1}}。"
 
-    def issues(text, allowed=frozenset({"FN-test-1"})):
+
+def g1_issues(env, allowed=("FN-test-1",), **kw):  # noqa: F811
+    eid = planned(env, "A", worry_id="W0001", **kw)
+    data = EpisodeData.load(connect(env.ssd_root), env.ssd_root, eid)
+
+    def issues(text, allowed=frozenset(allowed)):
         seg = {"seg_id": "ch9-s1", "kind": "narration", "text": text}
         ch = {"chapter_id": "ch9", "segments": [seg]}
         return gates.g1_chapter(ch, data, [], allowed_findings=set(allowed))
 
-    ok = (
-        "{{finding_src:FN-test-1}}では、{{finding:FN-test-1}}。ただ、これは大学生を調べたものです。"
-    )
+    return data, issues
+
+
+def test_g1_finding_rules(fenv):
+    data, issues = g1_issues(fenv)
+    first = "{{finding_src:FN-test-1}}では、{{finding:FN-test-1}}。"
+    ok = first + LIM
     assert issues(ok) == []
     # 研究の言葉も、研究の記号と同じ文なら言える
-    assert issues("{{finding_src:FN-test-1}}の研究によると、{{finding:FN-test-1}}。") == []
+    assert issues("{{finding_src:FN-test-1}}の研究によると、{{finding:FN-test-1}}。" + LIM) == []
+    team = "{{finding_src:FN-test-1}}の研究チームによると、{{finding:FN-test-1}}。"
+    assert issues(team + LIM) == []
     assert any("渡していない研究" in x for x in issues(ok, allowed=frozenset()))
     assert any("出典の記号" in x for x in issues("{{finding:FN-test-1}}。"))
     assert any("「ミシガン大学」を直接書いている" in x for x in issues("ミシガン大学の調べです。"))
     assert any(gates.EVIDENCE in x for x in issues("ある大学の研究では、そう分かっています。"))
+    # 台帳に限界がある研究は、限界の記号を必ず添える（調べた人だけでは足りない）
+    assert any("限界があるので" in x for x in issues(first))
+    pop_only = first + "ただ、この研究で調べたのは、{{finding_pop:FN-test-1}}です。"
+    assert any("限界があるので" in x for x in issues(pop_only))
     # 「この研究では」は、論文に書いてあること（台帳の調べた人・限界）を記号で差し込む文でだけ
     # 通す。書き手の評価（効果が大きかった）は止める（利用者 2026-11-06）
-    first = "{{finding_src:FN-test-1}}では、{{finding:FN-test-1}}。"
     for good in (
-        "ただ、この研究は、{{finding_limits:FN-test-1}}。",
-        "ただ、この研究で調べたのは、{{finding_pop:FN-test-1}}です。",
-        "この研究では、{{finding_pop:FN-test-1}}を調べています。",
+        LIM,
+        "ただ、この研究で調べたのは、{{finding_pop:FN-test-1}}です。" + LIM,
+        "この研究では、{{finding_pop:FN-test-1}}を調べています。" + LIM,
+        "ただ、この研究の参加者は、{{finding_pop:FN-test-1}}です。" + LIM,
+        "この研究は、{{finding_pop:FN-test-1}}を対象にしています。" + LIM,
+        "ただ、この研究で調べたのは{{finding_pop:FN-test-1}}で、{{finding_limits:FN-test-1}}。",
+        "でも、この研究は、{{finding_limits:FN-test-1}}。",
+        "ただ、この調査は、{{finding_limits:FN-test-1}}。",  # 調査なので「この調査」も言える
         "ただ、{{finding_limits:FN-test-1}}。",
-        "ただ、調べたのはアメリカの大学生だけです。",
+        "ただ、調べたのはアメリカの大学生だけです。" + LIM,
     ):
         assert issues(first + good) == [], good
     for bad in (
         "ただ、この研究では効果が大きかったそうです。",
+        "ただ、この研究は効果が大きかったです。",  # 記号の無い文の「この研究は」
+        "この研究の効果は大きかったです。",
+        "ただ、この研究で調べたのは大学生だけです。",  # 調べた人も記号で差し込む
+        "ただ、この研究では大学生だけを調べています。",
+        "この論文は高く評価されています。",
         "ただ、この研究は、{{finding_limits:FN-test-1}}が、効果は大きかったです。",
         "この研究では、{{finding_pop:FN-test-1}}を調べ、はっきりした差が出ました。",
         "この研究は、{{finding_limits:FN-test-1}}が、ほかの研究でも同じ結果です。",
-        "ただ、この研究では大学生だけを調べています。",  # 調べた人も記号で差し込む
+        "ただ、この研究で調べたのは{{finding_pop:FN-test-1}}で、効果は大きかったです。",
+        "この研究でも、その実験でも、{{finding_limits:FN-test-1}}。",  # 研究を2つにしない
+        "この研究でも、その調査でも、調べたのは{{finding_pop:FN-test-1}}です。",
+        "この研究チームが調べたのは、{{finding_pop:FN-test-1}}です。",
+        # ほかの記号を足さない
+        "この研究で調べたのは、{{worry:W0001}}{{finding_pop:FN-test-1}}です。",
+        "ただ、この実験は、{{finding_limits:FN-test-1}}。",  # 調査を「実験」と言わない
     ):
-        assert issues(first + bad), bad
-    # 調べた人・限界の記号は、同じ段落で研究の一文を出したあとだけ
-    assert any(
-        "出したあとに使う" in x for x in issues("この研究は、{{finding_limits:FN-test-1}}。")
-    )
+        assert issues(first + bad + LIM), bad
+    # 古典の章（研究を渡していない）でも、記号の無い「この研究」は止める
+    assert issues("この研究で効果ははっきりしました。", allowed=frozenset())
+    # 調べた人・限界の記号は、同じ段落で研究の一文を出したすぐあとだけ
+    assert any("出したすぐあとに使う" in x for x in issues(LIM))
     r = gates.resolver_for(data)
     assert r.resolve("{{finding_pop:FN-test-1}}") == "アメリカの大学生300人"
     assert r.resolve("{{finding_limits:FN-test-1}}").startswith("アメリカの大学生を調べた")
-    assert issues("{{finding_src:FN-test-1}}の研究チームによると、{{finding:FN-test-1}}。") == []
     # 出典の記号に作った結果を付けない。研究の記号の隣でも言いすぎ・ほかの研究・専門家は止める
     smuggled = [
         "{{finding_src:FN-test-1}}では、人と比べる人は必ず不幸になると科学的に証明されています。",
@@ -237,6 +269,59 @@ def test_g1_finding_rules(fenv):
     ]
     for text in smuggled:
         assert issues(text), text
+
+
+def test_backref_points_to_the_last_finding(env, tmp_path):  # noqa: F811
+    """研究を2つ出した段落の「この研究」は、すぐ前の研究だけを指す（前の研究の限界を付けない）。"""
+    cfg = tmp_path / "cfg2f"
+    cfg.mkdir()
+    second = {
+        **GOOD,
+        "finding_id": "FN-test-2",
+        "affiliation_ja": "東北大学",
+        "population_ja": "日本の会社員2000人",
+        "limits_ja": "会社員を一度だけ調べたもので、原因かどうかは分かっていません",
+    }
+    write(cfg, GOOD, second)
+    build_findings(connect(env.ssd_root), read_findings(cfg))
+    _, issues = g1_issues(env, allowed=("FN-test-1", "FN-test-2"))
+    f1 = "{{finding_src:FN-test-1}}では、{{finding:FN-test-1}}。"
+    f2 = "{{finding_src:FN-test-2}}では、{{finding:FN-test-2}}。"
+    l2 = "ただ、この研究は、{{finding_limits:FN-test-2}}。"
+    assert issues(f1 + LIM + f2 + l2) == []
+    assert any("別の研究" in x for x in issues(f1 + f2 + LIM + l2))
+
+
+def test_theory_and_empty_limits(env, tmp_path):  # noqa: F811
+    """考え方の論文には調べた人の記号を使わない。台帳に限界が無い研究の限界の記号は使えない。"""
+    cfg = tmp_path / "cfgt"
+    cfg.mkdir()
+    theory = {
+        **GOOD,
+        "design": "theory",
+        "population_ja": "人を調べた研究ではない",
+        "replication": "not_tested",
+        "replication_note": "",
+        "limits_ja": "考え方を示したもので、データで確かめたものではありません",
+    }
+    no_limits = {
+        **GOOD,
+        "finding_id": "FN-test-2",
+        "limits_ja": "",
+        "replication": "replicated",
+        "replication_note": "2022年のメタ分析",
+    }
+    write(cfg, theory, no_limits)
+    build_findings(connect(env.ssd_root), read_findings(cfg))
+    _, issues = g1_issues(env, allowed=("FN-test-1", "FN-test-2"))
+    first = "{{finding_src:FN-test-1}}では、{{finding:FN-test-1}}。"
+    assert issues(first + LIM) == []
+    pop = "ただ、この研究で調べたのは、{{finding_pop:FN-test-1}}です。"
+    assert any(gates.FINDING in x and "考え方" in x for x in issues(first + pop + LIM))
+    f2 = "{{finding_src:FN-test-2}}では、{{finding:FN-test-2}}。"
+    assert issues(f2) == []  # 限界が無ければ添えなくてよい
+    empty = issues(f2 + "ただ、この研究は、{{finding_limits:FN-test-2}}。")
+    assert any(gates.FINDING in x and "欄が空" in x for x in empty)  # 研究を外す書き直しへ
 
 
 class FindingWriter(FakeScriptLLM):

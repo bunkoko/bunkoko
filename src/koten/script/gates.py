@@ -286,20 +286,39 @@ FINDING_CLAIM_ID = re.compile(r"\{\{finding:\s*([^{}\s]+)\s*\}\}")
 FINDING_SRC_ID = re.compile(r"\{\{finding_src:\s*([^{}\s]+)\s*\}\}")
 # 台帳の調べた人・限界の記号（論文に書いてあることを、人が確かめて台帳に書いた文）
 FINDING_DETAIL_ID = re.compile(r"\{\{finding_(?:pop|limits):\s*([^{}\s]+)\s*\}\}")
+FINDING_DETAIL = re.compile(r"\{\{finding_(pop|limits):\s*([^{}\s]+)\s*\}\}")
+FINDING_LIMITS_ID = re.compile(r"\{\{finding_limits:\s*([^{}\s]+)\s*\}\}")
+FINDING_POP_ID = re.compile(r"\{\{finding_pop:\s*([^{}\s]+)\s*\}\}")
 # 研究の文のあとで、その研究を指す言い方（「この研究では」）。調べた人・限界の記号と同じ文でだけ
-# 言える（論文に書いてあることだけを台帳から差し込む。書き手の評価を足させない。利用者 2026-11-06）
+# 言える（論文に書いてあることだけを台帳から差し込む。書き手の評価を足させない。
+# 利用者 2026-11-06）。
+# 「この研究でも」はほかの研究があるように聞こえ、「研究チーム」は台帳に無いので入れない
 FINDING_BACKREF = re.compile(
-    r"(?:この|その)(?:研究|調査|実験|論文|分析)(?:チーム)?"
-    r"(?:によると|によれば|では|でも|で|は|が|の)?"
+    r"(?:この|その)(研究|調査|実験|論文|分析)"
+    r"(?:によると|によれば|では(?!も)|で(?!も)|は|が|の|に(?=参加))?"
 )
+# 「この〇〇」に使える言葉（研究・論文はいつも。調査・実験・分析は、その研究の作り方のときだけ。
+# 調査を「この実験」と言うと、原因を確かめたように聞こえる）
+BACKREF_NOUNS = {
+    "survey": "調査",
+    "longitudinal": "調査",
+    "experiment": "実験",
+    "field_experiment": "実験",
+    "meta_analysis": "分析",
+}
 # その文で、記号と「この研究では」のほかに書いてよい短いつなぎの言葉だけ
 BACKREF_REST = re.compile(
-    r"(?:ただし|ただ|なお|しかし|とはいえ|もっとも|一方で?)?"
-    r"(?:調べたのは|調べた人は|対象は|対象になったのは|対象となったのは)?"
+    r"(?:ただし|ただ|なお|しかし|でも|ですが|けれど(?:も)?|それでも|また|ちなみに|とはいえ"
+    r"|もっとも|もちろん|一方で?)?"
+    r"(?:について(?:は)?|に関して(?:言えば|は)?)?"
+    r"(?:調べたのは|調べられたのは|調べたのが|調べた人は|参加者は|参加したのは|対象は"
+    r"|対象になったのは|対象となったのは)?"
     r"(?:だけ|のみ)?(?:を|が)?"
-    r"(?:調べ(?:ています|ました|たもの(?:です|でした)?)|対象(?:です|でした)"
-    r"|です|でした|だけです|だけでした)?"
+    r"(?:調べ(?:ています|ました|た(?:もの|研究)(?:です|でした)?)"
+    r"|対象(?:です|でした|[にと](?:して(?:います|いました)|した(?:もの|研究)(?:です|でした)))"
+    r"|(?:だけ)?(?:です|でした)(?:ね|よ)?|なんです|に限られ(?:ます|ています)|で)?"
 )
+BACKREF_PUNCT = re.compile(r"[、。，．,.！？!?\s―—…]")
 # 出典の記号のすぐあとの「〜の研究によると」「〜では」だけを、研究の言葉として通す
 FINDING_ATTR = re.compile(
     r"\{\{finding_src:[^{}]+\}\}"
@@ -361,6 +380,7 @@ def evidence_issues(
     near_stat: bool | list[dict[str, Any]],
     kind: str = "narration",
     facts_text: dict[str, str] | None = None,
+    finding_designs: dict[str, str] | None = None,
 ) -> list[str]:
     """調査・研究・数字の主張（R6・D-034・D-035）。kind は narration・transition・title・question。
 
@@ -371,6 +391,8 @@ def evidence_issues(
     人の説明として使った言葉（作者が「精神科医でもありました」）は止めない。
     研究の言葉は、研究の台帳の出典の記号と一文の記号が同じ文にそろうときの、出典のすぐあとの
     「〜の研究によると」「〜では」だけを通す（ほかの研究・専門家の言葉は、その文でも止める）。
+    そのあとの「この研究では」は、台帳の調べた人・限界の記号と短いつなぎの言葉だけの文で通す。
+    finding_designs：研究ID → design（「この調査」「この実験」を作り方に合わせる）。
     """
     out = []
     near = bool(near_stat) and kind == "narration"
@@ -379,6 +401,7 @@ def evidence_issues(
         if near and isinstance(near_stat, list)
         else set()
     )
+    designs = finding_designs or {}
     claimed: set[str] = set()  # この段落で、出典と一文をそろえて出した研究
     for sent in _evidence_sentences(text) if kind == "narration" else [text]:
         has_finding = kind == "narration" and _finding_pair(sent)
@@ -388,20 +411,47 @@ def evidence_issues(
         # そのあとの「この研究では」は、台帳の調べた人・限界の記号と短いつなぎの言葉だけの文で
         # 通す。ほかの研究・調査・専門家の言葉と、書き手の評価は止める（作った結果を付けない）
         body = FINDING_ATTR.sub("", sent) if has_finding else sent
-        backref = (
-            kind == "narration"
-            and bool(set(FINDING_DETAIL_ID.findall(sent)) & claimed)
-            and bool(FINDING_BACKREF.search(PLACEHOLDER.sub("", body)))
-        )
+        detail = set(FINDING_DETAIL_ID.findall(sent)) & claimed
+        ref_m = FINDING_BACKREF.search(PLACEHOLDER.sub("", body)) if kind == "narration" else None
+        backref = bool(detail) and ref_m is not None
         if backref:
-            rest = FINDING_BACKREF.sub("", PLACEHOLDER.sub("", body))
-            if not BACKREF_REST.fullmatch(re.sub(r"[、。，．,.！？!?\s]", "", rest)):
+            nouns = {"研究", "論文"} | {
+                BACKREF_NOUNS.get(designs.get(f, ""), "研究") for f in detail
+            }
+            if ref_m.group(1) not in nouns:
                 out.append(
-                    f"{EVIDENCE}「この研究では」の文は、台帳の記号（{{{{finding_pop:ID}}}}・"
-                    "{{finding_limits:ID}}）と短いつなぎの言葉だけで書く（「ただ、この研究は、"
-                    "{{finding_limits:ID}}。」。効果の大きさや自分の評価を足さない）"
+                    f"{EVIDENCE}「この{ref_m.group(1)}」：この研究の作り方に合わない言い方"
+                    "（「この研究」と言う。調査を「実験」と言うと、原因を確かめたように聞こえる）"
                 )
-            body = FINDING_BACKREF.sub("", body)
+            # 記号は、この段落で出した研究の調べた人・限界のものだけを外す（ほかの記号は残して
+            # つなぎの言葉でないと見る）。「この研究」は1つだけ外す（2つ目は別の研究の話になる）
+            mine = FINDING_DETAIL.sub(
+                lambda m, ids=frozenset(claimed): "" if m.group(2) in ids else m.group(0), body
+            )
+            rest = FINDING_BACKREF.sub("", mine, count=1)
+            left = BACKREF_PUNCT.sub("", rest)
+            if not BACKREF_REST.fullmatch(left):
+                out.append(
+                    f"{EVIDENCE}「この研究では」の文に「{left[:20]}」は足せない。台帳の記号"
+                    "（{{finding_pop:ID}}・{{finding_limits:ID}}）と短いつなぎの言葉だけで書く"
+                    "（例：「ただ、この研究は、{{finding_limits:ID}}。」。効果の大きさや自分の"
+                    "評価・言い換えを書かない）"
+                )
+            body = FINDING_BACKREF.sub("", body, count=1)
+        elif ref_m is not None and (
+            claimed
+            or ref_m.group(1) in ("研究", "実験", "論文")
+            or ("調査" == ref_m.group(1) and not near)
+        ):
+            # 調べた人・限界の記号が無い文の「この研究は」（「この研究は効果が大きかった」
+            # 「この研究で調べたのは大学生だけ」）は止める。統計の段落の隣の「この調査では」と、
+            # 研究を出していない段落の「この分析」（古典の読みの話）は止めない
+            out.append(
+                f"{EVIDENCE}「{ref_m.group(0)}」：「この研究では」は、同じ段落で研究の一文を出した"
+                "あとの、台帳の記号（{{finding_pop:ID}}・{{finding_limits:ID}}）がある文でだけ"
+                "言う（「ただ、この研究は、{{finding_limits:ID}}。」。効果の大きさや自分の評価・"
+                "言い換えを書かない）"
+            )
         bare = PLACEHOLDER.sub("", body)
 
         # この文にある事実の記号の文だけを使う（段落のほかの文の事実で、専門家の話を通さない）
@@ -516,14 +566,35 @@ def finding_issues(seg: dict[str, Any], data: EpisodeData, allowed: set[str]) ->
             out.append(f"{FINDING}この章に渡していない研究 {fid} を使っている")
     if seg["kind"] == "transition" and refs:
         out.append(f"{FINDING}章タイトルに研究の記号を使わない")
+    for kind, fid in sorted(set(refs)):
+        f = data.findings.get(fid)
+        if f is None:
+            continue
+        if kind == "finding_pop" and f.get("design") == "theory":
+            out.append(
+                f"{FINDING}研究 {fid} は考え方の論文で人を調べていないので、調べた人の記号は"
+                f"使わない（限界は {{{{finding_limits:{fid}}}}} で添える）"
+            )
+        elif not f.get(FINDING_FIELDS[kind]):
+            out.append(
+                f"{FINDING}研究 {fid} は台帳のこの欄が空なので {{{{{kind}:{fid}}}}} は使えない"
+            )
     shown: set[str] = set()  # この段落で、出典と一文をそろえて出した研究
+    last: set[str] = set()  # その中でいちばんあとに出した研究（「この研究」が指すもの）
     for sent in split_sentences(text):
         claims, srcs = set(FINDING_CLAIM_ID.findall(sent)), set(FINDING_SRC_ID.findall(sent))
+        if claims & srcs:
+            last = claims & srcs
         shown |= claims & srcs
-        for fid in sorted(set(FINDING_DETAIL_ID.findall(sent)) - shown):
+        for fid in sorted(set(FINDING_DETAIL_ID.findall(sent)) - last):
             out.append(
                 f"{FINDING}研究 {fid} の調べた人・限界の記号は、同じ段落でその研究の一文"
-                f"（{{{{finding_src:{fid}}}}}では、{{{{finding:{fid}}}}}。）を出したあとに使う"
+                f"（{{{{finding_src:{fid}}}}}では、{{{{finding:{fid}}}}}。）を出したすぐあとに使う"
+                + (
+                    "（あいだに別の研究の一文を挟まない。「この研究」が別の研究を指してしまう）"
+                    if fid in shown
+                    else "（段落を分けない）"
+                )
             )
         for fid in sorted(claims - srcs):
             out.append(
@@ -547,6 +618,13 @@ def finding_issues(seg: dict[str, Any], data: EpisodeData, allowed: set[str]) ->
             claim = f.get("claim_ja") or ""
             if len(claim) >= 8 and normalize_for_match(claim) in normalize_for_match(bare):
                 out.append(f"{FINDING}研究の一文 {fid} を記号を使わずに書いている")
+    # 台帳に限界がある研究は、一文を出した段落で必ず限界の記号を添える（落とさない）
+    for fid in sorted(set(FINDING_CLAIM_ID.findall(text)) - set(FINDING_LIMITS_ID.findall(text))):
+        if (data.findings.get(fid) or {}).get("limits_ja"):
+            out.append(
+                f"{FINDING}研究 {fid} には台帳に限界があるので、同じ段落の次の文で"
+                f"「ただ、この研究は、{{{{finding_limits:{fid}}}}}。」と添える"
+            )
     return out
 
 
@@ -786,7 +864,14 @@ def g1_chapter(
             }
             issues += [
                 f"{sid}：{x}"
-                for x in evidence_issues(text, passage, near_stat, seg["kind"], facts_text)
+                for x in evidence_issues(
+                    text,
+                    passage,
+                    near_stat,
+                    seg["kind"],
+                    facts_text,
+                    {f: d.get("design") or "" for f, d in data.findings.items()},
+                )
             ]
         for p in resolver.problems(text):
             issues.append(f"{sid}：解決できない記号 {p}")

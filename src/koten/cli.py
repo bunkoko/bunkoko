@@ -2076,9 +2076,12 @@ def findings_list(
             continue
         mark = "○" if r["usable"] else "×"
         typer.echo(f"{mark} {r['finding_id']}［{r['themes']}］{r['source_label']}")
-        typer.echo(f"    {r['claim_ja']}")
+        typer.echo(f"    {r['source_label']}では、{r['claim_ja']}。")
+        # 台本に入る形のまま見せる（おかしな日本語なら台帳を直す）
+        if r["design"] != "theory" and r["population_ja"]:
+            typer.echo(f"    この研究で調べたのは、{r['population_ja']}です。")
         if r["limits_ja"]:
-            typer.echo(f"    限界：{r['limits_ja']}")
+            typer.echo(f"    ただ、この研究は、{r['limits_ja']}。")
         typer.echo(f"    {r['citation']}")
 
 
