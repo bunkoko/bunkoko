@@ -1577,6 +1577,15 @@ def script(
             raise typer.Exit(2)
         data = EpisodeData.load(conn, s.ssd_root, episode)
         typer.echo(f"状態：{row['state']}（{row['state_msg']}）")
+        changed = (
+            [f"背景の事実 {x}" for x in data.fact_issues]
+            + [f"語釈・解釈 {x}" for x in data.ref_issues]
+            + [f"研究の一文 {x}" for x in data.finding_issues]
+            + [f"統計 {x}" for x in data.stat_issues]
+        )
+        for x in changed:
+            # 企画のあとで台帳が変わった（台本は前の文で確かめた。作り直すなら --force）
+            typer.secho(f"※{x}", fg="yellow")
         for line in render(json.loads(row["script_json"]), gates.resolver_for(data)):
             typer.echo(line)
         return
@@ -2041,7 +2050,7 @@ def findings_build(settings: SettingsOpt = None) -> None:
                 if f.verified_from != "full_text"
                 else "取り下げを確かめていない"
                 if not f.retraction_checked_at
-                else f.status
+                else "下書き（status が draft）"
             )
             typer.echo(f"  使わない：{f.finding_id}（{why}）")
 
@@ -2805,6 +2814,7 @@ def episode_visuals_cmd(
         "chart": "統計グラフ",
         "fact_card": "事実カード",
         "ref_card": "資料カード",
+        "finding_card": "研究カード",
         "author_card": "著者カード",
         "page_image": "資料の画像",
     }

@@ -24,7 +24,7 @@ from koten.authors import author_label
 from koten.embed.encoder import Encoder
 from koten.facts.select import recently_used, select_facts
 from koten.facts.store import fact_shas
-from koten.findings import finding_shas, findings_for
+from koten.findings import FINDING_ROLES, finding_shas, findings_for
 from koten.index.search import Filter, HotIndex
 from koten.llm import ChatLLM, fill, load_prompt, parse_json_object
 from koten.ref.store import entries_for_words, ref_shas
@@ -41,8 +41,7 @@ from koten.retrieve.search import (
 # 1.2：章の ref_ids（昔の辞書の語釈・時代の解釈）と、回の refs（本文の指紋の写し）
 # 1.1：章の fact_ids と、回の facts（事実の指紋の写し）
 PLAN_SCHEMA_VERSION = "1.3"
-# 研究の一文を渡す章（古典の章には渡さない。研究は脇役。D-034）と、1章に渡す数
-FINDING_ROLES = {"context", "research", "summary", "worry_block", "compare"}
+# 1章に渡す研究の一文の数（渡す章は koten.findings.FINDING_ROLES。研究は脇役。D-034）
 FINDINGS_PER_CHAPTER = 2
 EPISODE_TOTAL_SEC = 720  # 12分の回を基準にする（SPEC §2）
 ACTIVE_STATES = "state NOT IN ('discarded')"

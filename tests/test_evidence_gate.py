@@ -7,6 +7,7 @@ from koten.script import gates
 from koten.script.data import EpisodeData
 from tests.test_script import (
     CATEGORIES,
+    FakeJudge,
     FakeScriptLLM,
     env,  # noqa: F401  フィクスチャ
     planned,
@@ -48,6 +49,56 @@ INVENTED = [
     "医師によると、眠りが足りないと人と比べやすくなるそうです。",
     "Z世代は、ほかの世代よりも比べやすいのです。",
     "職場の悩みの第1位は、人間関係です。",
+    # 見直しで見つかった言い方（研究で分かった、の過去形・言い伝え・機関の名前）
+    "比べる人ほど落ち込みやすいことが分かりました。",
+    "比べる人ほど落ち込みやすいことが明らかになりました。",
+    "比べる人ほど落ち込みやすいことが判明しました。",
+    "比べる人ほど落ち込みやすいことが分かってきました。",
+    "比べる人ほど落ち込みやすいことが、明らかになっています。",
+    "比べる人ほど落ち込みやすいことが確かめられています。",
+    "比べる人ほど落ち込みやすいと考えられています。",
+    "比べる人ほど落ち込みやすいと指摘されています。",
+    "比べる人ほど落ち込みやすいと報告されています。",
+    "比べる人ほど落ち込みやすいという説があります。",
+    "比べる人ほど落ち込みやすいとも言われています。",
+    "比べる人ほど落ち込みやすいと言われることもあります。",
+    "ある研究は、比べる人ほど不幸だと示しています。",
+    "研究によって、比べる人ほど不幸だと分かっています。",
+    "ある研究から、比べる人ほど不幸だと分かりました。",
+    "多くの研究は、比べる人ほど不幸だと示しています。",
+    "ある調査は、比べる人ほど不幸だと示しています。",
+    "人と比べると幸福感が下がる傾向が見られます。",
+    "誰かに話すだけで、心が軽くなると言われています。",
+    "周りに合わせる人ほど疲れやすいと言われています。",
+    "友人に囲まれている人ほど、長生きしやすいそうです。",
+    "上司に「まだか」と言われていますが、比べる人ほど不幸になると言われています。",
+    "ハーバード大学によれば、人は比べるほど不幸になります。",
+    "ハーバード大学の教授は、比べる心を手放せと説きます。",
+    "スタンフォード大学の発表によると、比べる人ほど疲れます。",
+    "海外の論文にも、似た話があります。",
+    "人は比べることで不幸になる、というのが定説です。",
+    "これは確証バイアスと呼ばれる心の働きです。",
+    "単純接触効果という言葉があります。",
+    "これは認知的不協和の一つです。",
+    "学習性無力感に近い状態です。",
+    "社会的比較理論で説明できます。",
+    "インポスター症候群に悩む人もいます。",
+    "人と比べると、脳の中ではストレスホルモンが出ています。",
+    "人間の脳は、もともと他人と比べるようにできています。",
+    "ハーバード大学の教授によると、比べる心は消せません。",
+    "ある学者は、比べる心を手放せと言いました。",
+    "フロイトによれば、比べる心は幼いころに育ちます。",
+    "毎年およそ2000人が、仕事を辞めています。",
+    "数万人の若者が、同じ悩みを持っています。",
+    "何万人もの人が、同じ悩みを持っています。",
+    "日本の若者の自己肯定感は、ほかの国より低いのです。",
+    "人は比べるほど不幸になることが分かっています。",
+    "あなたは知らないかもしれませんが、比べるほど不幸になることが分かっています。",
+    "私たちは、比べるほど不幸になることが知られています。",
+    "あなたの周りでも、こうした悩みは年々増えています。",
+    "あなたの職場でも悩みは年々増えています。",
+    "うつで休職する社員が増えています。",
+    "孤独死は年々増えています。",
 ]
 # 普通の文（止めない）
 PLAIN = [
@@ -67,6 +118,38 @@ PLAIN = [
     "上司からは、毎日のように「まだか」と言われています。",
     "多くの方法があります。",
     "仕事の量が増えていくと、誰でも疲れてしまいます。",
+    "頭では、比べても仕方ないと分かっています。",
+    "この一節を読むと、孔子も同じことで悩んでいたことが分かります。",
+    "あなたも、真面目すぎると言われることがあるかもしれません。",
+    "上司からは、遅いとも言われています。",
+    "自分のことが少しずつ分かってきました。",
+    "人は、自分を責める傾向があります。",
+    "上司にそう言われています。",
+    "大学では、友だちがなかなかできませんでした。",
+    "卒業論文に追われる毎日です。",
+    "大学の先輩から、よく励まされました。",
+    "台風のような自然現象には、誰も逆らえません。",
+    "頭脳が冴える朝もあります。",
+    "あの日の言葉が、脳裏に焼きついています。",
+    "百人一首の歌に、こんな一首があります。",
+    "10人の同期のうち、昇進したのは1人だけでした。",
+    "同期が100人いる会社です。",
+    "無力感に襲われる夜もあります。",
+    "理論上は、休めば治るはずです。",
+    "頑張りすぎると、かえって逆効果です。",
+    "ほかの人より遅れている気がします。",
+    "数人の同期と、昼ごはんを食べます。",
+    "何人かの先輩に、相談してみました。",
+    "{{author:C1}}には、人の心が移ろいやすいことが分かっていました。",
+    "孔子には、自分のなすべきことが分かっていたのでしょう。",
+    "自分に足りないことが分かっているからこそ、人は学び続けます。",
+    "本当に大切なことが分かっていれば、比べずにすみます。",
+    "やるべきことが分かっているなら、あとは一歩だけです。",
+    "あなたはもう、自分が頑張ってきたことが分かっているはずです。",
+    "あなたは、自分が悪くないことが分かっています。",
+    "あなたの仕事が増えてきて、息をつく暇もありません。",
+    "私の白髪は年々増えていきます。",
+    "仲間と一緒なら、喜びは倍増します。",
 ]
 
 
@@ -335,3 +418,52 @@ def test_bad_plan_question_is_not_used(env):  # noqa: F811
     assert "勤め先" not in r.script["comment_prompt"]
     assert not any("勤め先" in u for u in llm.users)  # 比べる章の手本にも使わない
     assert any("企画の問いを使わなかった" in x for x in r.verification["viewing"]["issues"])
+
+
+def test_stat_held_after_planning_is_not_used(env):  # noqa: F811
+    """企画のあとで保留にした統計は、台本で使わず、人の確認（G6）を立てる（D-035）。"""
+    conn = connect(env.ssd_root)
+    row = dict(conn.execute("SELECT * FROM stats WHERE stat_id = 'rodo_r7_amount'").fetchone())
+    row.update(stat_id="nf_x", theme="嫉妬・比較")
+    cols = ", ".join(row)
+    with conn:
+        conn.execute(
+            f"INSERT INTO stats({cols}) VALUES ({', '.join('?' for _ in row)})", list(row.values())
+        )
+    eid = planned(env, "A", worry_id="W0001")
+    data = EpisodeData.load(conn, env.ssd_root, eid)
+    assert "nf_x" in data.stats  # 企画には付いた
+    with conn:
+        conn.execute("UPDATE stats SET status = '保留' WHERE stat_id = 'nf_x'")
+    data = EpisodeData.load(conn, env.ssd_root, eid)
+    assert "nf_x" not in data.stats and any("保留" in x for x in data.stat_issues)
+    r, _ = run(env, eid)
+    assert r.state == "script_done", r.state_msg
+    texts = [s["text"] for c in r.script["chapters"] for s in c["segments"]]
+    assert not any("nf_x" in t for t in texts)
+    assert any("統計 nf_x" in x for x in r.verification["G6"]["reasons"])
+
+
+def test_title_is_checked_when_the_opening_never_passes_g3(env):  # noqa: F811
+    """オープニングが G3 を通らないままでも、タイトル案の作り話は仮のタイトルに替える。"""
+
+    class InventedTitle(FakeScriptLLM):
+        def complete(self, system, user, schema=None):
+            out = json.loads(super().complete(system, user, schema))
+            if out["episode_title"]:
+                out["episode_title"] = "最新の研究で判明！10人中7人が悩む嫉妬"
+            return json.dumps(out, ensure_ascii=False)
+
+    class OpeningFails(FakeJudge):
+        def complete(self, system, user, schema=None):
+            out = json.loads(super().complete(system, user, schema))
+            if "sentences" in out and "（ch0-" in user:
+                for x in out["sentences"]:
+                    x["ok"], x["problem"] = False, "一節に無いことを言っている"
+            return json.dumps(out, ensure_ascii=False)
+
+    eid = planned(env, "A", worry_id="W0001")
+    r, _ = run(env, eid, writer_llm=InventedTitle(), judge_llm=OpeningFails())
+    assert r.script is not None and r.verification["G3"]["issues"]
+    assert "研究" not in r.script["title"] and r.script["title"].endswith("――古典の一節で考える")
+    assert any("仮のタイトル" in x for x in r.verification["viewing"]["issues"])

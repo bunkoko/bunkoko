@@ -19,6 +19,7 @@ import hashlib
 import re
 import sqlite3
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -69,11 +70,27 @@ EFFECTS = ("", "わずか", "小さい", "中くらい", "大きい")
 VERIFIED_FROM = ("full_text", "abstract", "press_release")
 STATUSES = ("verified", "draft")
 LICENSES = ("CC0", "CC_BY", "COPYRIGHTED")
+# 研究の一文を渡す章（古典の章には渡さない。企画と G1 の両方で使う）
+FINDING_ROLES = {"context", "research", "summary", "worry_block", "compare"}
 CLAIM_MAX = 150
+LIMITS_MAX = 150
+POPULATION_MAX = 60
+NOTE_MAX = 200  # メモ・追試のメモ（論文の文を貼らない。自分の言葉で短く）
 ID = re.compile(r"FN-[0-9A-Za-z][0-9A-Za-z-]*$")
-DATE = re.compile(r"\d{4}-\d{2}-\d{2}$")
-# 一文に書かない言い方（研究で言えることを越える）
+DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}$")  # 全角の数字は通さない（語りに全角で出る）
+DOI = re.compile(r"10\.[0-9]{4,9}/\S+$")
+DOI_PREFIX = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", re.IGNORECASE)
+# 一文にも限界にも書かない言い方（研究で言えることを越える）。限界の「必ずしも」は打ち消しなので除く
 OVERCLAIM = re.compile(r"証明|必ず|絶対|間違いなく|誰でも|すべての人|全ての人")
+# 一文にだけ書かない言い方（調べた人より広く言う・確かさを言いすぎる）
+CLAIM_OVERCLAIM = re.compile(
+    r"誰もが|例外なく|確実に|[0-9０-９]+\s*[%％]の人|科学的|医学的|明らかにな|判明"
+)
+# 原因と結果の言い方。人を割り振る実験（experiment・field_experiment）と、それをまとめた
+# メタ分析でない研究（調査・追いかけた調査・考え方・まとめ）では、関係を原因とは書かない
+CAUSAL = re.compile(r"原因|せいで|引き起こ|もたら")
+CAUSAL_DESIGNS = {"experiment", "field_experiment", "meta_analysis"}
+ASCII_WORDS = re.compile(r"[A-Za-z]")
 
 
 class FindingsError(ValueError):
@@ -122,9 +139,20 @@ class Finding:
         )
 
     def source_label(self) -> str:
-        """語りで言う出典（「ハーバード大学などの調査（2023年）」「ボリーノらの研究（2015年）」）。"""
+        """語りで言う出典（「ハーバード大学などの調査（2023年）」「ボリーノらが示した考え方（2015年）」）。
+
+        考え方・まとめ・メタ分析を「〇〇大学の」でつなぐと、大学の公式の考えや、まとめた研究が
+        全部その大学のもののように聞こえるので、「が示した」「による」でつなぐ。
+        """
         who = self.affiliation_ja or self.authors_ja
-        return f"{who}の{DESIGNS.get(self.design, '研究')}（{self.year}年）"
+        word = DESIGNS.get(self.design, "研究")
+        if self.design == "theory":
+            return f"{who}が示した{word}（{self.year}年）"
+        if self.design == "meta_analysis":
+            return f"{who}による、{word}（{self.year}年）"
+        if self.design == "review":
+            return f"{who}による{word}（{self.year}年）"
+        return f"{who}の{word}（{self.year}年）"
 
     def citation(self) -> str:
         """説明欄の書誌（著者 (年). 題. 雑誌, 巻(号), ページ. DOI）。"""
@@ -141,8 +169,13 @@ class Finding:
         return " ".join(p for p in parts if p)
 
     def text_sha(self) -> str:
-        """台本に入る文（一文・限界・出典）の指紋。企画のあとで変われば人の確認を立てる。"""
-        body = "\n".join([self.claim_ja, self.limits_ja, self.source_label()])
+        """台本と判定役に渡る文（一文・限界・出典・調べた人・効果）の指紋。
+
+        企画のあとで変われば人の確認を立てる。
+        """
+        body = "\n".join(
+            [self.claim_ja, self.limits_ja, self.source_label(), self.population_ja, self.effect_ja]
+        )
         return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
 
     def row(self) -> dict[str, Any]:
@@ -158,6 +191,17 @@ def _themes(config_dir: Path) -> set[str]:
     return set(yaml.safe_load(path.read_text("utf-8")).get("themes") or [])
 
 
+def _day(text: str, today: date) -> date | None:
+    """2026-11-05 の形の、ありうる日付（先の日付でない）。"""
+    if not DATE.match(text):
+        return None
+    try:
+        d = date.fromisoformat(text)
+    except ValueError:
+        return None
+    return d if d <= today else None
+
+
 def read_findings(config_dir: Path) -> list[Finding]:
     """config/findings.csv を読む。決まりに合わない行が1つでもあれば、全部を止める。"""
     path = config_dir / FINDINGS_FILE
@@ -171,11 +215,16 @@ def read_findings(config_dir: Path) -> list[Finding]:
             raise FindingsError(f"{path.name} の列は {','.join(COLUMNS)} にしてください")
         rows = list(reader)
     out, problems, seen = [], [], set()
+    today = date.today()
     for line, r in enumerate(rows, start=2):
         v = {c: (r.get(c) or "").strip() for c in COLUMNS}
         if not any(v.values()):
             continue
         where = f"{line}行目"
+        # 台本では「{{finding:ID}}。」と後ろに「。」が付くので、一文の終わりの「。」は外す
+        v["claim_ja"] = v["claim_ja"].rstrip("。．.").rstrip()
+        # DOI は https://doi.org/ や doi: を付けて写しがちなので、10. で始まる形にそろえる
+        v["doi"] = DOI_PREFIX.sub("", v["doi"]).strip()
         fid = v["finding_id"]
         if not ID.match(fid):
             problems.append(f"{where}：finding_id は FN- で始める（{fid}）")
@@ -187,13 +236,41 @@ def read_findings(config_dir: Path) -> list[Finding]:
             problems.append(f"{where}：themes が空")
         if known and (bad := [t for t in themes if t not in known]):
             problems.append(f"{where}：themes.yaml に無いテーマ（{'・'.join(bad)}）")
-        claim = v["claim_ja"]
+        claim, limits = v["claim_ja"], v["limits_ja"]
         if not claim:
             problems.append(f"{where}：claim_ja（研究の一文）が空")
         elif len(claim) > CLAIM_MAX:
             problems.append(f"{where}：claim_ja が長い（{len(claim)}字。{CLAIM_MAX}字まで）")
-        if m := OVERCLAIM.search(claim + v["limits_ja"]):
-            problems.append(f"{where}：「{m.group(0)}」のような言いすぎを書かない")
+        elif re.search(r"[。．！？!?]", claim):
+            problems.append(f"{where}：claim_ja は1文で書く（途中に「。」を入れない）")
+        if m := OVERCLAIM.search(claim) or CLAIM_OVERCLAIM.search(claim):
+            problems.append(f"{where}：claim_ja に「{m.group(0)}」のような言いすぎを書かない")
+        elif v["design"] not in CAUSAL_DESIGNS and (m := CAUSAL.search(claim)):
+            problems.append(
+                f"{where}：claim_ja の「{m.group(0)}」：実験でない研究は、関係を原因とは書かない"
+                "（「〜な人ほど、〜な傾向がありました」のように書く）"
+            )
+        if m := OVERCLAIM.search(limits.replace("必ずしも", "")):
+            problems.append(
+                f"{where}：limits_ja に「{m.group(0)}」を書かない"
+                "（「〜とまでは言えません」「〜かは分かっていません」のように書く）"
+            )
+        for col, text in (("claim_ja", claim), ("limits_ja", limits)):
+            if len(ASCII_WORDS.findall(text)) > len(text) * 0.3:
+                problems.append(
+                    f"{where}：{col} は自分の日本語で書く（論文の文を写さない。D-034）"
+                )
+        for col, most in (
+            ("limits_ja", LIMITS_MAX),
+            ("population_ja", POPULATION_MAX),
+            ("replication_note", NOTE_MAX),
+            ("note", NOTE_MAX),
+        ):
+            if len(v[col]) > most:
+                problems.append(
+                    f"{where}：{col} が長い（{len(v[col])}字。{most}字まで。"
+                    "論文の文を貼らず、自分の言葉で短く書く）"
+                )
         for col, allowed in (
             ("design", tuple(DESIGNS)),
             ("replication", REPLICATION),
@@ -206,16 +283,20 @@ def read_findings(config_dir: Path) -> list[Finding]:
                 problems.append(
                     f"{where}：{col} は {'・'.join(a or '空' for a in allowed)} のどれか"
                 )
-        if not re.fullmatch(r"\d{4}", v["year"]):
-            problems.append(f"{where}：year は西暦4桁")
+        if not re.fullmatch(r"[0-9]{4}", v["year"]) or not 1800 <= int(v["year"]) <= today.year:
+            problems.append(f"{where}：year は西暦4桁（半角の数字）")
         for col in ("authors", "title"):
             if not v[col]:
                 problems.append(f"{where}：{col} が空")
         if not (v["doi"] or v["url"]):
             problems.append(f"{where}：doi か url が要る")
+        if v["doi"] and not DOI.match(v["doi"]):
+            problems.append(f"{where}：doi は 10. で始まる形（10.1002/job.635 など）")
+        if v["url"] and not re.match(r"https?://\S+$", v["url"]):
+            problems.append(f"{where}：url は https:// で始まる形")
         if not (v["affiliation_ja"] or v["authors_ja"]):
             problems.append(f"{where}：affiliation_ja か authors_ja（語りで言う名前）が要る")
-        if v["replication"] in ("mixed", "not_tested") and not v["limits_ja"]:
+        if v["replication"] in ("mixed", "not_tested") and not limits:
             problems.append(f"{where}：追試がまちまち・まだの研究は limits_ja（限界）を書く")
         if v["status"] == "verified":
             if v["verified_from"] != "full_text":
@@ -225,12 +306,30 @@ def read_findings(config_dir: Path) -> list[Finding]:
                 )
             if v["replication"] == "failed":
                 problems.append(f"{where}：追試で再現しなかった研究は使わない（draft にする）")
+            if v["replication"] in ("replicated", "mixed") and not v["replication_note"]:
+                problems.append(
+                    f"{where}：replication_note（追試・メタ分析をどこで確かめたか）を書く"
+                )
             if not v["population_ja"]:
-                problems.append(f"{where}：population_ja（調べた人）が要る")
-            if not v["checked_by"] or not DATE.match(v["checked_at"]):
-                problems.append(f"{where}：checked_by と checked_at（2026-11-05 の形）が要る")
-            if not DATE.match(v["retraction_checked_at"]):
-                problems.append(f"{where}：retraction_checked_at（取り下げを確かめた日）が要る")
+                problems.append(
+                    f"{where}：population_ja（調べた人。考え方の論文なら「人を調べた研究ではない」）"
+                    "が要る"
+                )
+            checked = _day(v["checked_at"], today)
+            if not v["checked_by"] or checked is None:
+                problems.append(
+                    f"{where}：checked_by と checked_at（2026-11-05 の形。先の日付は不可）が要る"
+                )
+            retracted = _day(v["retraction_checked_at"], today)
+            if retracted is None:
+                problems.append(
+                    f"{where}：retraction_checked_at（取り下げを確かめた日。2026-11-05 の形。"
+                    "先の日付は不可）が要る"
+                )
+            elif v["year"].isdigit() and retracted.year < int(v["year"]):
+                problems.append(
+                    f"{where}：retraction_checked_at が論文の年より前（論文が出たあとに確かめる）"
+                )
         out.append(Finding(**{**v, "themes": themes}))
     if problems:
         raise FindingsError(f"{path.name} に問題があります：" + "、".join(problems))

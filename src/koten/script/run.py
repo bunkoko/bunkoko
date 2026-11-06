@@ -21,6 +21,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 
 from koten.facts.store import text_sha
+from koten.findings import FINDING_ROLES
 from koten.script import gates
 from koten.script.data import EpisodeData
 from koten.script.placeholders import Resolver
@@ -185,7 +186,10 @@ def run_script(
         offered_r = set(chapter.get("ref_ids") or []) if use_refs else set()
         allowed_r = set(used_refs) | offered_r
         offered_fn = set(chapter.get("finding_ids") or []) if use_findings else set()
-        allowed_fn = set(used_findings) | offered_fn
+        # 研究は脇役。古典の章などでは、前の章で使った研究も指せない（D-034）
+        allowed_fn = (
+            set(used_findings) | offered_fn if chapter["role"] in FINDING_ROLES else set()
+        )
         feedback: list[str] | None = None
         passed: tuple | None = None  # G1・G3 が通ったいちばん新しい版（書き直しで悪くしない）
         for attempt in range(cfg.retries + 1):
@@ -252,7 +256,17 @@ def run_script(
         found = issues1 + issues3
         drop_facts = bool(offered) and any(gates.BG in x for x in found)
         drop_refs = bool(offered_r) and any(gates.REF in x for x in found)
-        drop_fn = bool(offered_fn) and any(gates.FINDING in x for x in found)
+        drop_fn = bool(offered_fn) and (
+            any(gates.FINDING in x for x in found)
+            # 研究を使った版の「この研究では」などの言い方で止まったときも、研究を外して試す
+            or (bool(draft.chapter.get("findings")) and any(gates.EVIDENCE in x for x in found))
+        )
+        if chapter["role"] == "research" and found:
+            # 研究の章（形式A。あってもなくてもよい章）は、研究を外すと中身が無いので、
+            # G1・G3 が直らなければ章ごと外す（回は止めない。作り話の研究を残さない）
+            log(f"  {chapter['chapter_id']}：研究の章が通らないので外します")
+            viewing.append(f"{chapter['chapter_id']}：研究の章を外した（{'、'.join(found)[:80]}）")
+            continue
         if drop_facts or drop_refs or drop_fn:
             # 背景・語釈・研究のせいで通らない章は、それを外して書き直す（回を止めない。D-012）。
             # 外した版が全部通ったときだけ使い、通らなければ最初の結果のまま（悪くしない）
@@ -264,7 +278,7 @@ def run_script(
             what = "・".join(k[1] for k in kinds if k[0])
             told = "・".join(k[2] for k in kinds if k[0])
             log(f"  {chapter['chapter_id']}：{told}を外して書き直します")
-            marks = [k[3] for k in kinds if k[0]]
+            marks = [k[3] for k in kinds if k[0]] + [gates.EVIDENCE] * drop_fn
             reason = "、".join(x for x in found if any(m in x for m in marks))[:80]
             plain = attempt_chapter(chapter, not drop_facts, not drop_refs, not drop_fn)
             if not plain[1] and not plain[2]:
@@ -303,6 +317,12 @@ def run_script(
         msg = f"G1：{'、'.join(g1_issues)[:300]}"
         verification["G1"] = gates._gate(g1_issues)
         return _save(conn, episode_id, "error", msg, False, None, verification, log)
+    for draft in drafts:
+        # G3 が直らなかったオープニングは、書き直しの中でタイトル案を確かめていない。
+        # 決まりに合わなければ、悩みから作る仮のタイトルにする（確認のときに人が直す）
+        if draft.episode_title and (bad := gates.title_issues(draft.episode_title, data)):
+            viewing.append(f"仮のタイトルにした（{'、'.join(bad)}）")
+            draft.episode_title = ""
     script = writer.assemble(data, drafts)
     if bad := gates.question_issues(script["comment_prompt"], data, categories):
         # 書き直しの中で確かめられなかった問いかけ（G3 が直らなかった章のもの）。決まった問いにする
@@ -487,12 +507,14 @@ def render(script: dict[str, Any], resolver: Resolver) -> list[str]:
                 lines.append(f"  【統計】{text}")
             elif seg["kind"] == "transition":
                 lines.append(f"  【章タイトル】{text}")
-            elif seg.get("facts") or seg.get("refs"):
+            elif seg.get("facts") or seg.get("refs") or seg.get("findings"):
                 tags = []
                 if seg.get("facts"):
                     tags.append(f"背景｜{'・'.join(seg['facts'])}")
                 if seg.get("refs"):
                     tags.append(f"資料｜{'・'.join(seg['refs'])}")
+                if seg.get("findings"):
+                    tags.append(f"研究｜{'・'.join(seg['findings'])}")
                 lines.append(f"  【{'】【'.join(tags)}】{text}")
             else:
                 lines.append(f"  {text}")
@@ -519,4 +541,22 @@ def render(script: dict[str, Any], resolver: Resolver) -> list[str]:
                 lines.append(f"      画面の表記：「{r['display_text']}」（表記を改めた）")
             if r.get("reading"):
                 lines.append(f"      読み上げ：{r['reading']}")
+    fns = list(dict.fromkeys(f for ch in script["chapters"] for f in ch.get("findings", [])))
+    if fns:
+        lines.append(
+            "\n研究の一文（人が本文で確かめた文。語りが限界を落としていないか、"
+            "調べた人より広く言っていないかを見る）："
+        )
+        for fid in fns:
+            f = resolver.findings.get(fid)
+            if f is None:
+                lines.append(f"  {fid}：（使えなくなった研究）")
+                continue
+            lines.append(f"  {fid}：{f['source_label']}「{f['claim_ja']}」")
+            lines.append(f"      調べた人：{f['population_ja']}　追試：{f['replication']}")
+            if f.get("limits_ja"):
+                lines.append(f"      限界：{f['limits_ja']}")
+            if f.get("effect_ja"):
+                lines.append(f"      効果の大きさ：{f['effect_ja']}")
+            lines.append(f"      書誌：{f['citation']}")
     return lines

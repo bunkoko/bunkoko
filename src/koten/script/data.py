@@ -47,6 +47,7 @@ class EpisodeData:
     # 企画に付いた研究の一文のうち、今も使えるもの（D-034）
     findings: dict[str, dict[str, Any]] = field(default_factory=dict)
     finding_issues: list[str] = field(default_factory=list)
+    stat_issues: list[str] = field(default_factory=list)  # 企画のあとで保留・削除になった統計
 
     @classmethod
     def load(cls, conn: sqlite3.Connection, ssd_root: Path, episode_id: str) -> EpisodeData:
@@ -56,13 +57,22 @@ class EpisodeData:
         plan = json.loads(row["plan_json"])
         ids = [s["candidate_id"] for s in plan["selection"]]
         stat_ids = sorted({sid for c in plan["chapters"] for sid in c.get("stat_ids", [])})
-        stats = {}
+        stats, stat_issues = {}, []
         if stat_ids:
             marks = ",".join("?" for _ in stat_ids)
-            stats = {
+            got = {
                 r["stat_id"]: dict(r)
                 for r in conn.execute(f"SELECT * FROM stats WHERE stat_id IN ({marks})", stat_ids)
             }
+            for sid in stat_ids:
+                r = got.get(sid)
+                if r is None:
+                    stat_issues.append(f"{sid}：統計の表に無い（stats.csv から消えた）")
+                elif r.get("status"):
+                    # 企画のあとで保留にした統計（規約を確かめるまで使わない。D-035）
+                    stat_issues.append(f"{sid}：{r['status']}になった（台本では使わない）")
+                else:
+                    stats[sid] = r
         worry_ids = [w["worry_id"] for w in plan["worries"]]
         marks = ",".join("?" for _ in worry_ids)
         worries = {
@@ -135,4 +145,5 @@ class EpisodeData:
             s4_titles=s4,
             findings=findings,
             finding_issues=finding_issues,
+            stat_issues=stat_issues,
         )

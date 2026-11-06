@@ -132,14 +132,27 @@ EVIDENCE = "根拠："  # 調査・研究・数字にかかわる問題の頭
 SURVEY_CLAIM = re.compile(
     r"(?:調査|統計|データ|アンケート|調べ)(?:結果)?"
     r"(?:によると|によれば|では|でも|で[、,]|で(?:分か|わか|判明|明らか)|の結果|を見ると"
-    r"|から(?:は|も)?[、,]?(?:分か|わか|見え))"
+    r"|から(?:は|も)?[、,]?(?:分か|わか|見え)|によって|を通(?:して|じて))"
+    r"|(?:調査|統計|データ|アンケート)(?:結果)?(?:は[、,]|から[、,])"
     r"|(?:白書|報告書|[省庁]|研究所|機構|協会|財団)(?:によると|によれば)"
     # 「分かっていても」「分かっているのに」（知っていても、の意味）は除く
-    r"|ことが(?:分かって|わかって|明らかになって|示されて|知られて|確認されて|報告されて)"
-    r"(?:い(?!ても|る?のに|ながら|な[いかく]|[くき])|お)"
+    r"|ことが[、,]?(?:分かって|わかって|明らかになって|示されて|知られて|確認されて|報告されて"
+    r"|確かめられて)"
+    # 「分かっていれば」「分かっているなら」「分かっているはず」「分かっていたのでしょう」も除く
+    r"(?:い(?!ても|る?のに|ながら|な[いかく]|[くき]|れば|る(?:なら|はず|からこそ)"
+    r"|た(?:ら|の(?:でしょう|かも)|はず))|お)"
+    # 「〜ことが分かりました」「〜ことが判明しました」（研究で分かった、の言い方）
+    r"|(?<!の)ことが[、,]?(?:明らかにな[りっ]|判明|示され|確かめられ|確認され|報告され"
+    r"|(?:分か|わか)りました|(?:分か|わか)ってきま)"
+    r"|傾向が(?:見られ|みられ|認められ|示され)"
     r"|という(?:調査)?(?:結果|データ|統計)(?:が|も)(?:出て(?:い|お)|あり|あ[るっ]|示され|得られ)"
     r"|数字が示|統計的"
 )
+# 「〜ことが分かっています」の、分かっている人が同じ節にいる（「兼好には」「あなたは」）
+KNOWER = re.compile(
+    r"^(?:には|にも|[はも][、,])|(?:あなた|私|わたし|僕|ぼく|自分|彼|彼女)(?:に)?(?:は|も)"
+)
+CLAUSE_BREAK = re.compile(r"(?:が|けれど|けど|のに)[、,]|[。！？]")
 # 言い伝えの言い方。事実・語釈・解釈・研究の記号と同じ文でだけ言える（統計の隣でも言わない）。
 # 見ている人が言われたこと（「『頑張れ』と言われていませんか」「上司に『まだか』と言われています」）
 # は除く
@@ -149,12 +162,19 @@ HEARSAY = re.compile(
     r"|(?:一般に|一般的に|よく|俗に)(?:言|い)われ"
     r"(?!(?:てい)?ませんか|ていた|た|ました|る(?:人|方|一言|言葉)|ること(?:は|が)(?:あり|ない))"
     r"|と(?:され|して知られ)て(?:い|き)(?!ませんか)|とよく聞き"
+    r"|(?<!」)(?:とも|そうとも)(?:言|い)われ(?:て(?:います|おり)|ます|てきました)(?!か)"
+    r"|(?<!」)と(?:言|い)われることも(?:あります|多いです|少なくありません)"
+    r"|という説(?:が|も)(?:あります|あり、)"
+    r"|と(?:考えられ|指摘され|報告され)て(?:います|おり|きました)(?!か)"
     r"|(?<!かわい)(?:[るただ]|ない|やすい|にくい)そうです"
 )
 # 言った人が、見ている人のまわりの誰か（言い伝えではない）
+# 「上司にそう言われています」「先輩から毎日のように「まだか」と言われています」
+# 「上司からは、遅いとも言われています」のように、言った人が言い伝えの言い方のすぐ前
+# （あいだは「」の引用か、読点のあとの短い言葉だけ）にいるときだけ除く
 TOLD_BY = re.compile(
     r"(?:上司|先輩|同僚|後輩|親|母|父|家族|周り|周囲|まわり|友人|友だち|友達|相手|誰か)"
-    r"(?:から|に)(?:は|も)?"
+    r"(?:から|に)(?:は|も)?(?:、?|[、,][^。「」、,]{1,6}|[^。「」]{0,10}「[^「」]*」)$"
 )
 # 量の言い方（根拠の数が要る）。統計の段落の隣でだけ言える
 _PEOPLE = (
@@ -179,24 +199,41 @@ QUANT_CLAIM = re.compile(
 # 研究・実験・学問の話。研究の台帳（config/findings.csv）の記号と同じ文でだけ言える（D-034）
 RESEARCH_CLAIM = re.compile(
     r"(?:研究|実験|論文|学会)(?:によると|によれば|では|でも|で[、,]|の結果|が示|で分か|で明らか"
-    r"|で証明|で確かめ|結果|チーム|グループ|[がも](?:あ|示|行われ|報告|発表))"
+    r"|で証明|で確かめ|結果|チーム|グループ|[がも](?:あ|示|行われ|報告|発表)"
+    r"|は[、,]|から[、,]|によって|を通(?:して|じて))"
     r"|研究者|専門家|心理学者|脳科学者|科学者|精神科医"
     r"|(?:心理学|脳科学|行動経済学|社会心理学|神経科学|進化心理学|精神医学)"
     r"(?:では|でも|によると|によれば|の(?:研究|実験|世界|言葉|用語|知見)|で(?:いう|言う|いえば|言えば)"
     r"|には|が(?:教え|示|明らか)|的)"
     r"|(?:科学|医学|学術)的に|科学が|エビデンス|証明され|証明した|実証され|裏付けられ"
     r"|(?:大学|研究所)の(?:チーム|グループ)が|大学の調べ|大学の研究"
-    r"|[ァ-ヴー・＝]{2,}(?:効果|現象|バイアス|の法則)|欲求段階説"
+    r"|[ァ-ヴー・＝]{2,}(?:効果|現象|バイアス|の法則|理論)|欲求段階説"
+    r"|[一-龥]{2,}(?:効果|バイアス|理論)(?!上)|症候群|認知的不協和|学習性無力感|自己効力感"
+    r"|(?<![頭首])脳(?:は|が|の中|の(?:働き|仕組み|しくみ))|ホルモン|ドーパミン|セロトニン"
+    r"|オキシトシン|コルチゾール|神経伝達物質|扁桃体|前頭葉|前頭前野"
     r"|医師|医者|カウンセラー|臨床心理士|セラピスト|(?:経済|社会|教育)学者|大学教授|名誉教授"
+    r"|(?:大学|研究所)(?:によると|によれば|の(?:教授|准教授|博士|先生|研究者|発表|報告))"
+    r"|教授(?:によると|によれば|は[、,])|(?:ある|著名な|有名な)(?:学者|教授)"
+    r"|学者(?:によると|によれば)|[ァ-ヴー・＝]{2,}(?:によると|によれば)"
+    r"|論文に(?:は|も)?(?:[、,]|書|載|よ|あ|似|同じ|こんな|示)"
+)
+# 研究の記号の隣でも言わない（言いすぎ・1つの研究を「多くの研究」に広げる）
+NEVER_RESEARCH = re.compile(
+    r"(?:科学|医学|学術)的に|科学が|エビデンス|証明され|証明した|実証され|裏付けられ"
+    r"|(?:多くの|数々の|さまざまな|様々な|いくつもの|多数の|ほかの|他の)"
+    r"(?:研究|実験|論文|研究者|専門家|医師|精神科医|心理学者|科学者)"
 )
 # いつも言わない：時期は記号で入る。ほかの調査は DB に無い。国どうしの順位は答え方のくせを含む
 NEVER_EVIDENCE = re.compile(
     r"(?:最新|最近|今年|昨年|去年)の(?:調査|研究|データ|統計)"
-    r"|(?:別の|ほかの|他の|海外の|外国の)(?:民間の|国の)?(?:調査|統計|データ|アンケート|研究)"
+    r"|(?:別の|ほかの|他の|海外の|外国の)(?:民間の|国の)?(?:調査|統計|データ|アンケート|研究|論文)"
+    r"|定説|通説"
     r"|世界(?:で|の中で|でも)?(?:最も|もっとも|いちばん|一番|有数|トップ|一|最低|最高|最下位|ワースト)"
     r"[^。]{0,15}(?<=[いなの])国"
     r"|(?:日本|わが国|我が国)[^。]{0,20}世界(?:で|の中で|でも)?"
     r"(?:最も|もっとも|いちばん|一番|有数|トップ|一|最低|最高|最下位|ワースト)"
+    r"|(?:ほかの|他の|よその|欧米の|海外の)国々?(?:より|に比べ|と比べ)"
+    r"|(?:海外|外国|諸外国|欧米)(?:より|に比べ|と比べ)"
     r"|(?:先進国|主要国|OECD|ＯＥＣＤ|G7|Ｇ７|加盟国|諸外国)[^。]{0,12}"
     r"(?:最も|もっとも|いちばん|一番|最下位|最低|最高|突出|ワースト|上位|下位|トップ)"
 )
@@ -217,6 +254,12 @@ TRENDS = {
         rf"|{_MANY}{_PACE}(?:減っ|少なくなっ){_NOW}"
     ),
 }
+# 持ち主がはっきり一人の人（あなた・私）の増え方・減り方と、喜びの「倍増」は、世の中の
+# 移り変わりではないので止めない（「あなたの仕事が増えてきて」「喜びは倍増します」）
+PERSONAL_TREND = re.compile(
+    r"(?:(?:私|わたし|自分|あなた|僕|ぼく)の[一-龥ァ-ヴー]{1,6}(?:が|は|も)[、,]?"
+    rf"{_PACE}|(?:喜び|楽しさ|嬉しさ|うれしさ|幸せ|楽しみ|おいしさ)(?:は|が|も))$"
+)
 # 割合・倍・「○人に1人」・「半数」・人数（語りに直接書かない。統計は {{stat:ID}} で差し込む）
 NUMBER_CLAIM = re.compile(
     rf"[{NUM}]+(?:[.．][{NUM}]+)?\s*(?:%|％|パーセント|ポイント|割|倍)"
@@ -226,6 +269,7 @@ NUMBER_CLAIM = re.compile(
     rf"|[{NUM}{KANJI_NUM}]+\s*人\s*のうち\s*[{NUM}{KANJI_NUM}]+\s*人"
     rf"|[{NUM}{KANJI_NUM}]+\s*分の\s*[{NUM}{KANJI_NUM}]+"
     rf"|(?:[{NUM}]+|[{KANJI_NUM}]+)\s*[万千]\s*人"
+    rf"|[{NUM}]{{3,}}\s*人(?:が|も|以上|近く|を超)|(?:数|何)[十百]?[千万]\s*人"
     r"|何割|数割|倍以上|数倍|過半数|半数|大半|大多数|大部分|約半分|半分(?:の人|以上|近く)"
     r"|ほぼ全員|ほとんど全員"
 )
@@ -237,9 +281,38 @@ HEADLINE_EVIDENCE = re.compile(
     r"|[ぁ-ん](?:人|方)(?:たち)?が(?:増え|減っ)て(?:います|いる)(?!と(?:感じ|思))"
 )
 HEADLINE_KINDS = {"title", "question", "transition"}
-HEDGE_OK = re.compile(r"\{\{(?:fact|def|interp|def_src|interp_src|finding|finding_src):")
-FINDING_OK = re.compile(r"\{\{(?:finding|finding_src):")
+HEDGE_OK = re.compile(r"\{\{(?:fact|def|interp|def_src|interp_src|finding):")
+FINDING_CLAIM_ID = re.compile(r"\{\{finding:\s*([^{}\s]+)\s*\}\}")
+FINDING_SRC_ID = re.compile(r"\{\{finding_src:\s*([^{}\s]+)\s*\}\}")
+# 出典の記号のすぐあとの「〜の研究によると」「〜では」だけを、研究の言葉として通す
+FINDING_ATTR = re.compile(
+    r"\{\{finding_src:[^{}]+\}\}"
+    r"(?:の(?:研究|調査|実験|論文|分析)(?:の結果|チーム|グループ)?)?"
+    r"(?:によると|によれば|では|で[、,]|が|は)?"
+)
 PASSAGE_RUN = 3  # 一節の言葉とみなすのに、前後に一節と同じ字が続く数
+
+
+def _finding_pair(sent: str) -> bool:
+    """同じ文に、同じ研究の出典の記号と一文の記号がそろっているか。"""
+    return bool(set(FINDING_CLAIM_ID.findall(sent)) & set(FINDING_SRC_ID.findall(sent)))
+
+
+def _evidence_sentences(text: str) -> list[str]:
+    """根拠の確かめ用の文の分け方。（）の中の「。」でも切る（括弧に別の主張を入れて通さない）。"""
+    out, buf, depth = [], [], 0
+    for ch in text:
+        buf.append(ch)
+        if ch in "「『":
+            depth += 1
+        elif ch in "」』" and depth:
+            depth -= 1
+        elif ch in SENTENCE_END and depth == 0:
+            out.append("".join(buf))
+            buf = []
+    if "".join(buf).strip():
+        out.append("".join(buf))
+    return [x.strip() for x in out if x.strip()]
 
 
 def _plain(text: str) -> str:
@@ -276,7 +349,8 @@ def evidence_issues(
     段落が隣にあるかだけ（移り変わりは言えない）。語りのときだけ使う。
     passage：一節と前後の文脈。そこをそのまま引いた言葉は止めない（言葉だけが同じなら止める）。
     facts_text：段落が指す確認済みの事実の文。そこにある言葉（作者が「精神科医」など）は止めない。
-    研究・実験・学問の話は、研究の台帳の記号（{{finding:ID}}・{{finding_src:ID}}）と同じ文でだけ通す。
+    研究の言葉は、研究の台帳の出典の記号と一文の記号が同じ文にそろうときの、出典のすぐあとの
+    「〜の研究によると」「〜では」だけを通す（ほかの研究・専門家の言葉は、その文でも止める）。
     """
     out = []
     near = bool(near_stat) and kind == "narration"
@@ -285,9 +359,13 @@ def evidence_issues(
         if near and isinstance(near_stat, list)
         else set()
     )
-    for sent in split_sentences(text) if kind == "narration" else [text]:
-        bare = PLACEHOLDER.sub("", sent)
-        has_finding = bool(FINDING_OK.search(sent)) and kind == "narration"
+    for sent in _evidence_sentences(text) if kind == "narration" else [text]:
+        has_finding = kind == "narration" and _finding_pair(sent)
+        # 研究の文では、出典のすぐあとの「〜の研究によると」「〜では」だけを外して見る。
+        # ほかの研究・調査・専門家の言葉は、研究の記号の隣でも、次の文の「この研究では」でも
+        # 止める（作った結果を出典に付けない。限界は「ただ、調べたのは〜です」のように書く）
+        body = FINDING_ATTR.sub("", sent) if has_finding else sent
+        bare = PLACEHOLDER.sub("", body)
 
         def hit(m: re.Match[str], bare: str = bare) -> bool:
             return not (
@@ -300,11 +378,19 @@ def evidence_issues(
                     f"{EVIDENCE}「{m.group(0)}」：タイトル・章タイトル・問いかけでは、"
                     "研究・調査・数字・移り変わりを言わない"
                 )
+        if has_finding:
+            for m in NEVER_RESEARCH.finditer(bare):
+                if hit(m):
+                    out.append(
+                        f"{EVIDENCE}「{m.group(0)}」は研究の記号の隣でも言わない（「証明された」"
+                        "「科学的に」「多くの研究」は、1つの研究で言えることを越える）"
+                    )
         for m in RESEARCH_CLAIM.finditer(bare):
-            if not has_finding and hit(m):
+            if hit(m):
                 out.append(
-                    f"{EVIDENCE}「{m.group(0)}」：研究・実験・専門家の話は、研究の台帳の記号"
-                    "（{{finding:ID}}・{{finding_src:ID}}）と同じ文でだけ言う（作り話の研究を防ぐ）"
+                    f"{EVIDENCE}「{m.group(0)}」：研究・実験・専門家の話は、研究の台帳の記号で"
+                    "「{{finding_src:ID}}では、{{finding:ID}}。」の形でだけ言う（作り話の研究を防ぐ。"
+                    "限界は「ただ、調べたのは〜です」のように研究の言葉を使わずに書く）"
                     + (
                         "。相談先の案内（専門家に相談を、など）も書かない"
                         if re.search(r"相談|力を借り|頼", bare)
@@ -319,10 +405,16 @@ def evidence_issues(
                 )
         for direction, pattern in TRENDS.items():
             for m in pattern.finditer(bare):
-                if direction not in trends and hit(m):
+                if (
+                    direction not in trends
+                    and hit(m)
+                    and not PERSONAL_TREND.search(bare[: m.start()])
+                ):
                     out.append(
                         f"{EVIDENCE}「{m.group(0)}」のような移り変わりは、同じ調査で"
                         f"{direction}を確かめた統計（stats.csv の trend）の段落の隣でだけ言える"
+                        "（自分や身の回りのことなら「あなたの仕事が増えてきて」のように、"
+                        "誰のことかを書く）"
                     )
         for m in NUMBER_CLAIM.finditer(bare):
             if hit(m):
@@ -332,13 +424,17 @@ def evidence_issues(
                 )
         for pattern, what in ((SURVEY_CLAIM, "調査・統計の言い方"), (QUANT_CLAIM, "量の言い方")):
             for m in pattern.finditer(bare):
-                if not near and not has_finding and hit(m):
+                if re.match(r"ことが[、,]?(?:分か|わか)って", m.group(0)) and KNOWER.search(
+                    CLAUSE_BREAK.split(bare[: m.start()])[-1]
+                ):
+                    continue  # 「兼好には、〜ことが分かっていました」（研究で分かった、ではない）
+                if not near and hit(m):
                     out.append(
                         f"{EVIDENCE}「{m.group(0)}」のような{what}は、統計（{{{{stat:ID}}}}）の段落の"
-                        "すぐ前かすぐあとの段落か、研究の記号と同じ文でだけ使う（ほかでは、根拠の数を"
-                        "示せない）"
+                        "すぐ前かすぐあとの段落でだけ使う（ほかでは、根拠の数を示せない。研究の一文は"
+                        "「{{finding_src:ID}}では、{{finding:ID}}。」の形のまま書く）"
                     )
-        if (m := HEARSAY.search(bare)) and not HEDGE_OK.search(sent):
+        for m in HEARSAY.finditer(bare) if not HEDGE_OK.search(sent) else ():
             if hit(m) and not TOLD_BY.search(bare[: m.start()]):
                 out.append(
                     f"{EVIDENCE}「{m.group(0)}」は、事実・語釈・解釈・研究の記号と同じ文でだけ使う"
@@ -365,11 +461,17 @@ def finding_issues(seg: dict[str, Any], data: EpisodeData, allowed: set[str]) ->
             out.append(f"{FINDING}この章に渡していない研究 {fid} を使っている")
     if seg["kind"] == "transition" and refs:
         out.append(f"{FINDING}章タイトルに研究の記号を使わない")
-    for fid in sorted({fid for kind, fid in refs if kind == "finding"}):
-        if ("finding_src", fid) not in refs:
+    for sent in split_sentences(text):
+        claims, srcs = set(FINDING_CLAIM_ID.findall(sent)), set(FINDING_SRC_ID.findall(sent))
+        for fid in sorted(claims - srcs):
             out.append(
-                f"{FINDING}研究の一文 {fid} には、同じ段落に出典の記号"
+                f"{FINDING}研究の一文 {fid} には、同じ文に出典の記号"
                 f"（{{{{finding_src:{fid}}}}}）を置く"
+            )
+        for fid in sorted(srcs - claims):
+            out.append(
+                f"{FINDING}研究の出典 {fid} は、同じ文に一文の記号（{{{{finding:{fid}}}}}）と"
+                "一緒に使う（出典に作った結果を付けない）"
             )
     if seg["kind"] in ("narration", "transition"):
         bare = PLACEHOLDER.sub("", text)
@@ -763,6 +865,7 @@ def g6_review(data: EpisodeData, script: dict[str, Any]) -> dict[str, Any]:
     reasons += [f"背景の事実 {x}" for x in data.fact_issues]
     reasons += [f"語釈・解釈 {x}" for x in data.ref_issues]
     reasons += [f"研究の一文 {x}" for x in data.finding_issues]
+    reasons += [f"統計 {x}" for x in data.stat_issues]
     used = {r for ch in script["chapters"] for r in ch.get("refs", [])}
     for rid in sorted(used):
         r = data.refs.get(rid)
@@ -929,18 +1032,8 @@ JUDGE_SENTENCES_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "n": {"type": "integer"},
-                    "type": {
-                        "type": "string",
-                        "enum": [
-                            "passage",
-                            "background",
-                            "connective",
-                            "interpretation",
-                            "application",
-                            "question",
-                            "reference",
-                        ],
-                    },
+                    # 判定の決まり（judge_v4 の種類）と食い違わないよう、SENTENCE_TYPES から作る
+                    "type": {"type": "string", "enum": sorted(SENTENCE_TYPES)},
                     "supported_by": {"type": "array", "items": {"type": "string"}},
                     "ok": {"type": "boolean"},
                     "problem": {"type": "string"},
