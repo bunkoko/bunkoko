@@ -291,6 +291,9 @@ FINDING_ATTR = re.compile(
     r"(?:によると|によれば|では|で[、,]|が|は)?"
 )
 PASSAGE_RUN = 3  # 一節の言葉とみなすのに、前後に一節と同じ字が続く数
+# 事実の言葉（「精神科医」）が、人の説明でなく新しい主張の主語・話し手になる続き
+# （「精神科医は」「精神科医によると」「精神科医の多くは」）。そのときは事実の文でも通さない
+FACT_WORD_AS_SUBJECT = re.compile(r"[、,]?(?:[はがもの]|によ|から|に(?:言わ|聞|と))")
 
 
 def _finding_pair(sent: str) -> bool:
@@ -341,14 +344,15 @@ def evidence_issues(
     passage: str,
     near_stat: bool | list[dict[str, Any]],
     kind: str = "narration",
-    facts_text: str = "",
+    facts_text: dict[str, str] | None = None,
 ) -> list[str]:
     """調査・研究・数字の主張（R6・D-034・D-035）。kind は narration・transition・title・question。
 
     near_stat：この段落の直前・直後にある統計の段落の統計（stats 表の行）。真偽値なら、統計の
     段落が隣にあるかだけ（移り変わりは言えない）。語りのときだけ使う。
     passage：一節と前後の文脈。そこをそのまま引いた言葉は止めない（言葉だけが同じなら止める）。
-    facts_text：段落が指す確認済みの事実の文。そこにある言葉（作者が「精神科医」など）は止めない。
+    facts_text：段落が指す確認済みの事実の文（事実ID → 文）。同じ文にその事実の記号があり、
+    人の説明として使った言葉（作者が「精神科医でもありました」）は止めない。
     研究の言葉は、研究の台帳の出典の記号と一文の記号が同じ文にそろうときの、出典のすぐあとの
     「〜の研究によると」「〜では」だけを通す（ほかの研究・専門家の言葉は、その文でも止める）。
     """
@@ -367,10 +371,24 @@ def evidence_issues(
         body = FINDING_ATTR.sub("", sent) if has_finding else sent
         bare = PLACEHOLDER.sub("", body)
 
-        def hit(m: re.Match[str], bare: str = bare) -> bool:
-            return not (
-                _from_passage(bare, m, passage) or (facts_text and m.group(0) in facts_text)
+        # この文にある事実の記号の文だけを使う（段落のほかの文の事実で、専門家の話を通さない）
+        sent_facts = "\n".join((facts_text or {}).get(f, "") for f, _ in FACT_REF.findall(sent))
+
+        def hit(m: re.Match[str], bare: str = bare, sent_facts: str = sent_facts) -> bool:
+            fact_word = (
+                bool(sent_facts)
+                and m.group(0) in sent_facts
+                and not FACT_WORD_AS_SUBJECT.match(bare, m.end())
             )
+            return not (_from_passage(bare, m, passage) or fact_word)
+
+        # 一節の言葉や数は、一節の言い方のまま「」で引けば通る（言い換えると止まる）
+        tip = (
+            "。一節の言葉や数なら、一節の言い方のまま「」で引く（例：長明の言う「三分が一」。"
+            "言い換えた「三分の一」「十倍」は止まる）"
+            if passage
+            else ""
+        )
 
         if kind in HEADLINE_KINDS:
             for m in HEADLINE_EVIDENCE.finditer(bare):
@@ -396,6 +414,7 @@ def evidence_issues(
                         if re.search(r"相談|力を借り|頼", bare)
                         else ""
                     )
+                    + tip
                 )
         for m in NEVER_EVIDENCE.finditer(bare):
             if hit(m):
@@ -420,7 +439,7 @@ def evidence_issues(
             if hit(m):
                 out.append(
                     f"{EVIDENCE}割合や人数「{m.group(0)}」を直接書かない"
-                    "（統計は kind を stat にして {{stat:ID}} で出す）"
+                    "（統計は kind を stat にして {{stat:ID}} で出す）" + tip
                 )
         for pattern, what in ((SURVEY_CLAIM, "調査・統計の言い方"), (QUANT_CLAIM, "量の言い方")):
             for m in pattern.finditer(bare):
@@ -719,9 +738,9 @@ def g1_chapter(
         ] or any(n["kind"] == "stat" for n in neighbors)
         if seg["kind"] in ("narration", "transition"):
             # 段落が指す確認済みの事実の文にある言葉（作者が「精神科医」など）は止めない
-            facts_text = "\n".join(
-                data.facts[f].text_ja for f, _ in FACT_REF.findall(text) if f in data.facts
-            )
+            facts_text = {
+                f: data.facts[f].text_ja for f, _ in FACT_REF.findall(text) if f in data.facts
+            }
             issues += [
                 f"{sid}：{x}"
                 for x in evidence_issues(text, passage, near_stat, seg["kind"], facts_text)

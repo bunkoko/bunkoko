@@ -358,6 +358,28 @@ def test_fact_text_grounds_expert_words(env):  # noqa: F811
     }
     found = gates.g1_chapter(ch, data, [], allowed_facts={"F-X"}, offered_facts={"F-X"})
     assert evidence(found) == []
+    # 事実の言葉を、別の文の主語・話し手にして専門家の話を作るのは止める
+    for bad in (
+        "{{fact:F-X}}彼は精神科医でもありました。精神科医は、比べる心が心の病の始まりだと"
+        "考えています。",
+        "{{fact:F-X}}精神科医の多くは、比べる心を病気の入り口と見ています。",
+        "{{fact:F-X}}彼は精神科医でもありました。精神科医によると、比べる心は心の病の始まりです。",
+    ):
+        ch["segments"][0]["text"] = bad
+        found = gates.g1_chapter(ch, data, [], allowed_facts={"F-X"}, offered_facts={"F-X"})
+        assert evidence(found), bad
+
+
+def test_passage_words_pass_only_when_quoted():
+    """一節の数や言葉は、一節の言い方のまま「」で引けば通る。言い換えると止まり、引き方を伝える。"""
+    passage = "すべて都のうち、三分が一に及べりとぞ"
+    quoted = "長明は、都の「三分が一」が焼けたと書いています。"
+    assert gates.evidence_issues(quoted, passage, False) == []
+    (msg,) = gates.evidence_issues("長明は、都の三分の一が焼けたと書いています。", passage, False)
+    assert "「」で引く" in msg
+    passage = "科学者は自然を恋人とせよ"
+    quoted = "寅彦の言う「科学者」とは、確かめる人のことです。"
+    assert gates.evidence_issues(quoted, passage, False) == []
 
 
 def test_rewrite_keeps_the_draft_that_passed(env):  # noqa: F811
