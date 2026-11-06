@@ -223,6 +223,8 @@ def read_findings(config_dir: Path) -> list[Finding]:
         where = f"{line}行目"
         # 台本では「{{finding:ID}}。」と後ろに「。」が付くので、一文の終わりの「。」は外す
         v["claim_ja"] = v["claim_ja"].rstrip("。．.").rstrip()
+        # 限界も「ただ、この研究は、{{finding_limits:ID}}。」と差し込むので、終わりの「。」は外す
+        v["limits_ja"] = v["limits_ja"].rstrip("。．.").rstrip()
         # DOI は https://doi.org/ や doi: を付けて写しがちなので、10. で始まる形にそろえる
         v["doi"] = DOI_PREFIX.sub("", v["doi"]).strip()
         fid = v["finding_id"]
@@ -250,6 +252,8 @@ def read_findings(config_dir: Path) -> list[Finding]:
                 f"{where}：claim_ja の「{m.group(0)}」：実験でない研究は、関係を原因とは書かない"
                 "（「〜な人ほど、〜な傾向がありました」のように書く）"
             )
+        if re.search(r"[。．！？!?]", limits):
+            problems.append(f"{where}：limits_ja は1文で書く（途中に「。」を入れない）")
         if m := OVERCLAIM.search(limits.replace("必ずしも", "")):
             problems.append(
                 f"{where}：limits_ja に「{m.group(0)}」を書かない"

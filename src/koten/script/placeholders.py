@@ -15,6 +15,10 @@
 - {{def_src:<J-…>}}           その辞書（例：1891年（明治24年）の『言海』）
 - {{interp:<I-…>}}            時代の解釈（訓読・古い訳・注釈。資料のまま。「」の中に置く）
 - {{interp_src:<I-…>}}        その資料
+- {{finding:<FN-…>}}          研究の一文（人が論文の本文で確かめて書いた文）
+- {{finding_src:<FN-…>}}      その研究（例：ミシガン大学の調査（2019年））
+- {{finding_pop:<FN-…>}}      その研究で調べた人（台帳の population_ja。例：アメリカの大学生300人）
+- {{finding_limits:<FN-…>}}   その研究の限界（台帳の limits_ja）
 """
 
 from __future__ import annotations
@@ -27,10 +31,17 @@ from koten.ref.store import ref_source_label, ref_text
 
 PLACEHOLDER = re.compile(
     r"\{\{(quote|quote_ja|source|author|title|stat|worry|fact|def|def_src|interp|interp_src"
-    r"|finding|finding_src)"
+    r"|finding|finding_src|finding_pop|finding_limits)"
     r":([^{}]+?)\}\}"
 )
 REF_KINDS = {"def": "J-", "def_src": "J-", "interp": "I-", "interp_src": "I-"}
+# 研究の記号と、差し込む台帳の欄（D-034。調べた人と限界も人が論文の本文で確かめた値）
+FINDING_FIELDS = {
+    "finding": "claim_ja",
+    "finding_src": "source_label",
+    "finding_pop": "population_ja",
+    "finding_limits": "limits_ja",
+}
 ANY_BRACES = re.compile(r"\{\{[^{}]*\}\}")
 
 
@@ -131,11 +142,14 @@ class Resolver:
             if r is None or not key.startswith(REF_KINDS[kind]):
                 raise UnresolvedPlaceholder(f"{{{{{kind}:{key}}}}}：この回の企画に無い語釈・解釈")
             return ref_source_label(r) if kind.endswith("_src") else ref_text(r)
-        if kind in ("finding", "finding_src"):
+        if kind in FINDING_FIELDS:
             f = self.findings.get(key)
             if f is None:
                 raise UnresolvedPlaceholder(f"{{{{{kind}:{key}}}}}：この回の企画に無い研究")
-            return f["source_label"] if kind == "finding_src" else f["claim_ja"]
+            value = f.get(FINDING_FIELDS[kind]) or ""
+            if not value:
+                raise UnresolvedPlaceholder(f"{{{{{kind}:{key}}}}}：台帳のこの欄が空")
+            return value
         raise UnresolvedPlaceholder(f"{{{{{kind}:{key}}}}}")
 
     def resolve(self, text: str) -> str:

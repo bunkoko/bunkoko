@@ -42,7 +42,7 @@ from koten.license import is_usable
 from koten.llm import ChatLLM, fill, load_prompt, parse_json_object
 from koten.ref.store import ref_source_label, ref_text
 from koten.script.data import EpisodeData
-from koten.script.placeholders import PLACEHOLDER, Resolver
+from koten.script.placeholders import FINDING_FIELDS, PLACEHOLDER, Resolver
 from koten.textnorm import normalize_for_match
 
 QUOTED = re.compile(r"「([^「」]*)」")
@@ -284,6 +284,22 @@ HEADLINE_KINDS = {"title", "question", "transition"}
 HEDGE_OK = re.compile(r"\{\{(?:fact|def|interp|def_src|interp_src|finding):")
 FINDING_CLAIM_ID = re.compile(r"\{\{finding:\s*([^{}\s]+)\s*\}\}")
 FINDING_SRC_ID = re.compile(r"\{\{finding_src:\s*([^{}\s]+)\s*\}\}")
+# 台帳の調べた人・限界の記号（論文に書いてあることを、人が確かめて台帳に書いた文）
+FINDING_DETAIL_ID = re.compile(r"\{\{finding_(?:pop|limits):\s*([^{}\s]+)\s*\}\}")
+# 研究の文のあとで、その研究を指す言い方（「この研究では」）。調べた人・限界の記号と同じ文でだけ
+# 言える（論文に書いてあることだけを台帳から差し込む。書き手の評価を足させない。利用者 2026-11-06）
+FINDING_BACKREF = re.compile(
+    r"(?:この|その)(?:研究|調査|実験|論文|分析)(?:チーム)?"
+    r"(?:によると|によれば|では|でも|で|は|が|の)?"
+)
+# その文で、記号と「この研究では」のほかに書いてよい短いつなぎの言葉だけ
+BACKREF_REST = re.compile(
+    r"(?:ただし|ただ|なお|しかし|とはいえ|もっとも|一方で?)?"
+    r"(?:調べたのは|調べた人は|対象は|対象になったのは|対象となったのは)?"
+    r"(?:だけ|のみ)?(?:を|が)?"
+    r"(?:調べ(?:ています|ました|たもの(?:です|でした)?)|対象(?:です|でした)"
+    r"|です|でした|だけです|だけでした)?"
+)
 # 出典の記号のすぐあとの「〜の研究によると」「〜では」だけを、研究の言葉として通す
 FINDING_ATTR = re.compile(
     r"\{\{finding_src:[^{}]+\}\}"
@@ -363,12 +379,29 @@ def evidence_issues(
         if near and isinstance(near_stat, list)
         else set()
     )
+    claimed: set[str] = set()  # この段落で、出典と一文をそろえて出した研究
     for sent in _evidence_sentences(text) if kind == "narration" else [text]:
         has_finding = kind == "narration" and _finding_pair(sent)
+        if has_finding:
+            claimed |= set(FINDING_CLAIM_ID.findall(sent)) & set(FINDING_SRC_ID.findall(sent))
         # 研究の文では、出典のすぐあとの「〜の研究によると」「〜では」だけを外して見る。
-        # ほかの研究・調査・専門家の言葉は、研究の記号の隣でも、次の文の「この研究では」でも
-        # 止める（作った結果を出典に付けない。限界は「ただ、調べたのは〜です」のように書く）
+        # そのあとの「この研究では」は、台帳の調べた人・限界の記号と短いつなぎの言葉だけの文で
+        # 通す。ほかの研究・調査・専門家の言葉と、書き手の評価は止める（作った結果を付けない）
         body = FINDING_ATTR.sub("", sent) if has_finding else sent
+        backref = (
+            kind == "narration"
+            and bool(set(FINDING_DETAIL_ID.findall(sent)) & claimed)
+            and bool(FINDING_BACKREF.search(PLACEHOLDER.sub("", body)))
+        )
+        if backref:
+            rest = FINDING_BACKREF.sub("", PLACEHOLDER.sub("", body))
+            if not BACKREF_REST.fullmatch(re.sub(r"[、。，．,.！？!?\s]", "", rest)):
+                out.append(
+                    f"{EVIDENCE}「この研究では」の文は、台帳の記号（{{{{finding_pop:ID}}}}・"
+                    "{{finding_limits:ID}}）と短いつなぎの言葉だけで書く（「ただ、この研究は、"
+                    "{{finding_limits:ID}}。」。効果の大きさや自分の評価を足さない）"
+                )
+            body = FINDING_BACKREF.sub("", body)
         bare = PLACEHOLDER.sub("", body)
 
         # この文にある事実の記号の文だけを使う（段落のほかの文の事実で、専門家の話を通さない）
@@ -396,7 +429,7 @@ def evidence_issues(
                     f"{EVIDENCE}「{m.group(0)}」：タイトル・章タイトル・問いかけでは、"
                     "研究・調査・数字・移り変わりを言わない"
                 )
-        if has_finding:
+        if has_finding or backref:
             for m in NEVER_RESEARCH.finditer(bare):
                 if hit(m):
                     out.append(
@@ -408,7 +441,8 @@ def evidence_issues(
                 out.append(
                     f"{EVIDENCE}「{m.group(0)}」：研究・実験・専門家の話は、研究の台帳の記号で"
                     "「{{finding_src:ID}}では、{{finding:ID}}。」の形でだけ言う（作り話の研究を防ぐ。"
-                    "限界は「ただ、調べたのは〜です」のように研究の言葉を使わずに書く）"
+                    "「この研究では」は、そのあとの文で「ただ、この研究は、{{finding_limits:ID}}。」"
+                    "のように台帳の記号と一緒にだけ使う）"
                     + (
                         "。相談先の案内（専門家に相談を、など）も書かない"
                         if re.search(r"相談|力を借り|頼", bare)
@@ -463,7 +497,9 @@ def evidence_issues(
 
 
 FINDING = "研究："  # 研究の一文にかかわる問題の頭（研究を外して書き直すかを決めるのに使う）
-FINDING_REF = re.compile(r"\{\{(finding|finding_src):\s*([^{}\s]+)\s*\}\}")
+FINDING_REF = re.compile(
+    r"\{\{(finding|finding_src|finding_pop|finding_limits):\s*([^{}\s]+)\s*\}\}"
+)
 
 
 def finding_issues(seg: dict[str, Any], data: EpisodeData, allowed: set[str]) -> list[str]:
@@ -480,8 +516,15 @@ def finding_issues(seg: dict[str, Any], data: EpisodeData, allowed: set[str]) ->
             out.append(f"{FINDING}この章に渡していない研究 {fid} を使っている")
     if seg["kind"] == "transition" and refs:
         out.append(f"{FINDING}章タイトルに研究の記号を使わない")
+    shown: set[str] = set()  # この段落で、出典と一文をそろえて出した研究
     for sent in split_sentences(text):
         claims, srcs = set(FINDING_CLAIM_ID.findall(sent)), set(FINDING_SRC_ID.findall(sent))
+        shown |= claims & srcs
+        for fid in sorted(set(FINDING_DETAIL_ID.findall(sent)) - shown):
+            out.append(
+                f"{FINDING}研究 {fid} の調べた人・限界の記号は、同じ段落でその研究の一文"
+                f"（{{{{finding_src:{fid}}}}}では、{{{{finding:{fid}}}}}。）を出したあとに使う"
+            )
         for fid in sorted(claims - srcs):
             out.append(
                 f"{FINDING}研究の一文 {fid} には、同じ文に出典の記号"
@@ -1201,7 +1244,7 @@ class FaithfulnessJudge:
             f = data.findings.get(fid)
             if f is None:
                 return m.group(0)
-            return f"{f['source_label'] if kind == 'finding_src' else f['claim_ja']}〔{fid}〕"
+            return f"{f.get(FINDING_FIELDS[kind]) or m.group(0)}〔{fid}〕"
 
         def ref_mark(m: re.Match) -> str:
             # 語釈・解釈と、その出典から差し込んだ値にも〔ID〕の印を付ける

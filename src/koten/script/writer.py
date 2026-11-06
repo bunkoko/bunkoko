@@ -63,7 +63,8 @@ ROLE_GUIDE = {
     "compare": "AとBを比べ、どちらが正しいとは決めずに、視聴者に問いかける。",
     "research": "渡した研究の一文だけを、古典の読みを補う脇役として紹介する。1つの文に"
     "出典の記号 {{finding_src:研究ID}} と一文の記号 {{finding:研究ID}} を一緒に書き、"
-    "すぐあとの文で限界を自分の言葉で添える（「ただ、調べたのはアメリカの大学生です。」など）。"
+    "すぐあとの文で限界を添える（「ただ、この研究は、{{finding_limits:研究ID}}。」か"
+    "「ただ、この研究で調べたのは、{{finding_pop:研究ID}}です。」）。"
     "そのあと、前の章で読んだ一節に戻ってつなげる。章タイトルに研究・調査・データ・科学の"
     "言葉を使わない。",
     "summary": "この回で見た一節をふり返り、今日からできる小さな一歩を1つ示す。"
@@ -99,7 +100,9 @@ QUOTE_ONLY = re.compile(r"^\{\{quote:([^{}]+)\}\}$")
 FACT_REF = re.compile(r"\{\{fact:\s*([^{}.\s]+)\s*(?:\.[^{}]+)?\}\}")
 REF_REF = re.compile(r"\{\{(?:def|def_src|interp|interp_src):\s*([^{}\s]+)\s*\}\}")
 STAT_ONLY = re.compile(r"^\{\{stat:([^{}]+)\}\}$")
-FINDING_REF = re.compile(r"\{\{(finding|finding_src):\s*([^{}\s]+)\s*\}\}")
+FINDING_REF = re.compile(
+    r"\{\{(finding|finding_src|finding_pop|finding_limits):\s*([^{}\s]+)\s*\}\}"
+)
 
 
 @dataclass
@@ -239,17 +242,20 @@ class ScriptWriter:
             f = data.findings.get(fid)
             if f is None:
                 continue
-            extra = [f"調べた人：{f['population_ja']}"]
-            if f.get("effect_ja"):
-                extra.append(f"効果の大きさ：{f['effect_ja']}")
+            lines = [
+                f"- 研究ID：{fid}",
+                f"  出典の記号：{{{{finding_src:{fid}}}}}＝{f['source_label']}",
+                f"  一文の記号：{{{{finding:{fid}}}}}＝{f['claim_ja']}",
+            ]
+            if f.get("design") != "theory":  # 考え方の論文は人を調べていない
+                lines.append(f"  調べた人の記号：{{{{finding_pop:{fid}}}}}＝{f['population_ja']}")
             if f.get("limits_ja"):
-                extra.append(f"限界（必ず添える）：{f['limits_ja']}")
-            blocks.append(
-                f"- 研究ID：{fid}\n"
-                f"  出典の記号：{{{{finding_src:{fid}}}}}＝{f['source_label']}\n"
-                f"  一文の記号：{{{{finding:{fid}}}}}＝{f['claim_ja']}\n"
-                f"  {'、'.join(extra)}"
-            )
+                lines.append(
+                    f"  限界の記号（必ず添える）：{{{{finding_limits:{fid}}}}}＝{f['limits_ja']}"
+                )
+            if f.get("effect_ja"):
+                lines.append(f"  効果の大きさ：{f['effect_ja']}（言い切らない・大きく言わない）")
+            blocks.append("\n".join(lines))
         return "\n".join(blocks) or "（なし）"
 
     def _stats(self, data: EpisodeData, ids: list[str]) -> str:

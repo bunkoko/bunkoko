@@ -100,6 +100,7 @@ def test_read_findings_rules(tmp_path):
         ({"retraction_checked_at": "2099-01-01"}, "retraction_checked_at"),
         ({"retraction_checked_at": "2018-01-01"}, "論文の年より前"),
         ({"checked_at": "2026-02-30"}, "checked_at"),
+        ({"limits_ja": "大学生だけです。働く人は調べていません"}, "limits_ja は1文"),
     ]
     for change, word in bad_cases:
         write(tmp_path, {**GOOD, **change})
@@ -194,10 +195,32 @@ def test_g1_finding_rules(fenv):
     assert any("出典の記号" in x for x in issues("{{finding:FN-test-1}}。"))
     assert any("「ミシガン大学」を直接書いている" in x for x in issues("ミシガン大学の調べです。"))
     assert any(gates.EVIDENCE in x for x in issues("ある大学の研究では、そう分かっています。"))
-    # 限界は研究の言葉を使わずに書く（次の文の「この研究では」も止め、研究を外して書き直す）
+    # 「この研究では」は、論文に書いてあること（台帳の調べた人・限界）を記号で差し込む文でだけ
+    # 通す。書き手の評価（効果が大きかった）は止める（利用者 2026-11-06）
     first = "{{finding_src:FN-test-1}}では、{{finding:FN-test-1}}。"
-    assert issues(first + "ただ、調べたのはアメリカの大学生だけです。") == []
-    assert issues(first + "ただ、この研究では効果が大きかったそうです。")
+    for good in (
+        "ただ、この研究は、{{finding_limits:FN-test-1}}。",
+        "ただ、この研究で調べたのは、{{finding_pop:FN-test-1}}です。",
+        "この研究では、{{finding_pop:FN-test-1}}を調べています。",
+        "ただ、{{finding_limits:FN-test-1}}。",
+        "ただ、調べたのはアメリカの大学生だけです。",
+    ):
+        assert issues(first + good) == [], good
+    for bad in (
+        "ただ、この研究では効果が大きかったそうです。",
+        "ただ、この研究は、{{finding_limits:FN-test-1}}が、効果は大きかったです。",
+        "この研究では、{{finding_pop:FN-test-1}}を調べ、はっきりした差が出ました。",
+        "この研究は、{{finding_limits:FN-test-1}}が、ほかの研究でも同じ結果です。",
+        "ただ、この研究では大学生だけを調べています。",  # 調べた人も記号で差し込む
+    ):
+        assert issues(first + bad), bad
+    # 調べた人・限界の記号は、同じ段落で研究の一文を出したあとだけ
+    assert any(
+        "出したあとに使う" in x for x in issues("この研究は、{{finding_limits:FN-test-1}}。")
+    )
+    r = gates.resolver_for(data)
+    assert r.resolve("{{finding_pop:FN-test-1}}") == "アメリカの大学生300人"
+    assert r.resolve("{{finding_limits:FN-test-1}}").startswith("アメリカの大学生を調べた")
     assert issues("{{finding_src:FN-test-1}}の研究チームによると、{{finding:FN-test-1}}。") == []
     # 出典の記号に作った結果を付けない。研究の記号の隣でも言いすぎ・ほかの研究・専門家は止める
     smuggled = [
@@ -217,7 +240,7 @@ def test_g1_finding_rules(fenv):
 
 
 class FindingWriter(FakeScriptLLM):
-    """渡された研究の一文を、出典の記号と一緒に使う偽の台本作家。"""
+    """渡された研究の一文を、出典の記号と一緒に使い、限界を記号で添える偽の台本作家。"""
 
     def complete(self, system, user, schema=None):
         out = json.loads(super().complete(system, user, schema))
@@ -226,7 +249,7 @@ class FindingWriter(FakeScriptLLM):
                 {
                     "kind": "narration",
                     "text": f"{{{{finding_src:{fid}}}}}では、{{{{finding:{fid}}}}}。"
-                    "ただ、これは大学生を調べたものです。",
+                    f"ただ、この研究は、{{{{finding_limits:{fid}}}}}。",
                 }
             )
         return json.dumps(out, ensure_ascii=False)
@@ -234,8 +257,12 @@ class FindingWriter(FakeScriptLLM):
 
 def test_script_uses_findings(fenv):
     eid = planned(fenv, "A", worry_id="W0001")
-    r, _ = run(fenv, eid, writer_llm=FindingWriter())
+    llm = FindingWriter()
+    r, _ = run(fenv, eid, writer_llm=llm)
     assert r.state == "script_done", r.state_msg
+    prompt = next(u for u in llm.users if "研究ID：FN-test-1" in u)
+    assert "{{finding_limits:FN-test-1}}＝アメリカの大学生を調べた" in prompt
+    assert "{{finding_pop:FN-test-1}}＝アメリカの大学生300人" in prompt
     used = [c for c in r.script["chapters"] if c.get("findings")]
     assert used and used[0]["findings"] == ["FN-test-1"]
     seg = next(s for c in used for s in c["segments"] if s.get("findings"))
@@ -243,6 +270,12 @@ def test_script_uses_findings(fenv):
     record = r.verification["findings"]["used"]
     assert record[0]["source_label"] == "ミシガン大学の調査（2019年）"
     assert record[0]["citation"].startswith("Doe, J.")
+    # 書き手には調べた人・限界の記号と値を見せる
+    data = EpisodeData.load(connect(fenv.ssd_root), fenv.ssd_root, eid)
+    from koten.script.run import render
+
+    text = "\n".join(render(r.script, gates.resolver_for(data)))
+    assert "ただ、この研究は、アメリカの大学生を調べたもので" in text
 
 
 def test_changed_finding_needs_review(fenv, tmp_path):
