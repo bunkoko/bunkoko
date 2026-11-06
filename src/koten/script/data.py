@@ -17,9 +17,9 @@ from koten.facts.model import Fact
 from koten.facts.store import load_facts, load_sources, text_sha
 from koten.findings import load_findings
 from koten.index.build import cache_path
-from koten.ref.store import load_refs
+from koten.ref.store import load_refs, load_renderings
 from koten.ref.texts import USABLE_STATUS
-from koten.shiyaku.store import Reading, reading_for
+from koten.shiyaku.store import Reading, reading_for, usable_text
 
 
 def load_candidates(ssd_root: Path, candidate_ids: list[str]) -> dict[str, dict[str, Any]]:
@@ -28,6 +28,32 @@ def load_candidates(ssd_root: Path, candidate_ids: list[str]) -> dict[str, dict[
         return {}
     table = pq.read_table(cache_path(ssd_root), filters=[("candidate_id", "in", candidate_ids)])
     return {r["candidate_id"]: r for r in table.to_pylist()}
+
+
+def canon_source_problem(
+    conn: sqlite3.Connection, c: dict[str, Any], reading: Reading | None
+) -> str | None:
+    """古典の一節の候補（M8b）の画面の本文が、今も使えて、読みの元と合っているか。"""
+    sid = c.get("source_id") or ""
+    src = load_renderings(conn, [sid]).get(sid) if sid else None
+    if src is None:
+        return f"一節の本文 {sid or '（候補表に無い）'} が、使えない資料になった"
+    if (src.get("display_text") or src["text"]) != c["quote_text"]:
+        return f"一節の本文 {sid} が、候補を作ったあとで変わった"
+    # 電子版から取り込んだ英訳は、英訳からの訳の元（これから作るものも）のときだけ一節にできる
+    relay = reading is None or reading.kind == "relay"
+    if not usable_text(src, digital_ok=relay):
+        return f"一節の本文 {sid} が、人が確かめた形でなくなった（{src['status']}）"
+    if reading is None:
+        return None
+    if reading.kind == "pd":
+        if sid != reading.ref and not (
+            src["role"] == "original" and src["status"] == USABLE_STATUS
+        ):
+            return f"画面の一節 {sid} と、古い日本語訳 {reading.ref} が合わない"
+    elif sid != reading.source_id:
+        return f"画面の一節 {sid} と、訳の元 {reading.source_id} が違う"
+    return None
 
 
 @dataclass
@@ -140,6 +166,13 @@ class EpisodeData:
             if not c.get("passage_key"):
                 continue
             r = reading_for(conn, c["passage_key"])
+            if problem := canon_source_problem(conn, c, r):
+                # 画面の一節の本文が、台帳で使えなくなった・変わった・訳の元と違う（R2・D-024）
+                reading_issues.append(
+                    f"{cid}：{problem}"
+                    "（uv run koten canon build → koten embed → koten index build）"
+                )
+                continue
             if r is None:
                 reading_issues.append(
                     f"{cid}：一節 {c['passage_key']} の日本語がまだありません"

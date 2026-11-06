@@ -1,5 +1,6 @@
 """古い英訳（Project Gutenberg のミラー。M8b・D-037）：ミラー・ライセンス文・節の分け方・取得。"""
 
+import copy
 import shutil
 
 import httpx
@@ -201,7 +202,7 @@ def test_ref_fetch_command(conf, tmp_path, monkeypatch):
     )
     monkeypatch.setattr(cli, "_make_fetcher", lambda s, raw_dir: fetcher(raw_dir, Server()))
     sources = yaml.safe_load((conf / "sources.yaml").read_text("utf-8"))
-    sources["gutenberg"] = CONF
+    sources["gutenberg"] = copy.deepcopy(CONF)
     sources["standardebooks"] = {"raw_base": "https://raw.example/", "editions": {}}
     (conf / "sources.yaml").write_text(yaml.safe_dump(sources, allow_unicode=True), "utf-8")
     st = ["--settings", str(conf / "settings.toml")]
@@ -216,3 +217,59 @@ def test_ref_fetch_command(conf, tmp_path, monkeypatch):
     r = CliRunner().invoke(app, ["ref", "fetch", *st])
     assert r.exit_code == 1 and "ミラー" in r.output
     assert gutenberg  # モジュールを読み込めている
+
+
+def test_split_stops_instead_of_guessing():
+    toc = (
+        "CONTENTS\n\nI. Of things in our power\n\nII. Of desire\n\nTHE ENCHIRIDION\n\n"
+        "I. There are things within our power.\n\nII. Remember that desire.\n"
+    )
+    flat = GutenbergEdition("R-x", 45109, "x.txt", "enchiridion", r"^([IVXLC]+)\. ")
+    with pytest.raises(GutenbergError, match="2度出る"):  # 目次の番号を本文と取り違えない
+        split_sections(toc, flat)
+    with_start = GutenbergEdition("R-x", 45109, "x.txt", "enchiridion", r"^([IVXLC]+)\. ",
+                                  body_start=r"^THE ENCHIRIDION$")
+    units = split_sections(toc, with_start)
+    assert [u.text for u in units] == [
+        "There are things within our power.",
+        "Remember that desire.",
+    ]
+    back = ("THE FIRST BOOK\n\nI. One.\n\nII. Two.\n\nGLOSSARY\n\nL. Verus, a man.\n\n"
+            "C. Fronto, a teacher.\n")
+    with pytest.raises(GutenbergError, match="飛ぶ"):  # 用語集の頭文字を節にしない
+        split_sections(back, ED)
+    ended = GutenbergEdition(**{**ED.__dict__, "end_heading": r"^(APPENDIX|NOTES|GLOSSARY)$"})
+    assert [u.number for u in split_sections(back, ended)] == ["1.1", "1.2"]
+
+
+def test_ref_build_tightens_before_reading_sources(conf, tmp_path, monkeypatch):
+    """sources.yaml が壊れていても、厳しくなった台帳の判定は先に SSD に届く。"""
+    import koten.cli as cli
+
+    shutil.copy(DEFAULT_CONFIG_DIR / "sources.yaml", conf / "sources.yaml")
+    (tmp_path / "hdd").mkdir(exist_ok=True)
+    (conf / "settings.toml").write_text(
+        f'[paths]\nhdd_root = "{tmp_path / "hdd"}"\nssd_root = "{tmp_path / "ssd"}"\n', "utf-8"
+    )
+    monkeypatch.setattr(cli, "_make_fetcher", lambda s, raw_dir: fetcher(raw_dir, Server()))
+    sources = yaml.safe_load((conf / "sources.yaml").read_text("utf-8"))
+    sources["gutenberg"] = copy.deepcopy(CONF)
+    sources["standardebooks"] = {"raw_base": "https://raw.example/", "editions": {}}
+    (conf / "sources.yaml").write_text(yaml.safe_dump(sources, allow_unicode=True), "utf-8")
+    st = ["--settings", str(conf / "settings.toml")]
+    assert CliRunner().invoke(app, ["ref", "fetch", *st]).exit_code == 0
+    assert CliRunner().invoke(app, ["ref", "build", *st]).exit_code == 0
+    write(
+        conf,
+        [work("R-casaubon", kind="translation", title="Meditations", lang="en",
+              source="gutenberg", pub_year="1634", credit="カソーボンの英訳（1634）")],
+        [person("R-casaubon", 1, "Meric Casaubon", "translator", 1990, country="イギリス")],
+    )
+    sources["gutenberg"]["editions"]["R-casaubon"]["section_start"] = "("
+    (conf / "sources.yaml").write_text(yaml.safe_dump(sources, allow_unicode=True), "utf-8")
+    r = CliRunner().invoke(app, ["ref", "build", *st])
+    assert r.exit_code == 2 and "sources.yaml" in r.output
+    row = connect(tmp_path / "ssd").execute(
+        "SELECT license FROM ref_works WHERE ref_id = 'R-casaubon'"
+    ).fetchone()
+    assert row is None or row["license"] != "PD_JP"

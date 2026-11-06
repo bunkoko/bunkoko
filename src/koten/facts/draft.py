@@ -221,7 +221,9 @@ def draft_subject(
     if qid is None and subject.subject_type == "work":
         # 青空文庫の作品IDが Wikidata に無ければ、著者（P7311 で探す）と題名で探す
         for author in subject.authors:
-            aq = wm.find_qid(wikidata, wm.AOZORA_AUTHOR, wm.aozora_author_value(author))
+            if (value := wm.aozora_author_value(author)) is None:
+                continue  # 古典の作者は青空文庫の ID で引かない
+            aq = wm.find_qid(wikidata, wm.AOZORA_AUTHOR, value)
             if aq and (qid := wm.find_work_by_author(wikidata, aq, subject.name)):
                 break
     if qid is None:

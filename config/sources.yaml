@@ -107,7 +107,11 @@ gutenberg:
   mirror: ""
   editions: {}
     # 台帳の ref_id: {ebook: 本の番号, file: ミラーのファイル名, canon: config/canon.yaml の作品記号,
-    #   section_start: 節の始まりの正規表現（グループ1が番号）, book_heading: 巻の見出しの正規表現（任意）}
+    #   section_start: 節の始まりの正規表現（グループ1が番号）, book_heading: 巻の見出しの正規表現（任意）,
+    #   body_start: 本文の始まりの行（その前の目次・序文を捨てる。任意）,
+    #   end_heading: 付録・注・用語集の見出し（そこから先を捨てる。任意）}
+    # 節の番号が2度出る・飛ぶ・長すぎる節があると、取り込まずに止まる（当て推量で分けない）
     # 例（版の中身を見てから書く）：
     # R-casaubon-meditations: {ebook: 2680, file: 2680-0.txt, canon: meditations,
-    #   book_heading: '^THE ([A-Z]+) BOOK$', section_start: '^([IVXLC]+)\. '}
+    #   book_heading: '^THE ([A-Z]+) BOOK$', section_start: '^([IVXLC]+)\. ',
+    #   body_start: '^THE FIRST BOOK$', end_heading: '^(APPENDIX|NOTES|GLOSSARY|INDEX)$'}

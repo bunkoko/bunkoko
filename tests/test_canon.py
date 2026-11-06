@@ -13,7 +13,6 @@ from koten.canon.build import (
     coverage,
     heading,
     iter_canon,
-    reembed_path,
     works_path,
 )
 from koten.cli import app
@@ -132,8 +131,6 @@ def test_rebuild_keeps_or_remakes(kenv):
     build_refs(connect(kenv.ssd_root), kenv.cfg)
     res = canon_build(kenv, CanonLLM())
     assert res.made == 1
-    redo = json.loads(reembed_path(kenv.require_hdd()).read_text("utf-8"))
-    assert redo == ["canon:lunyu:1.1"]
 
 
 def test_only_passages_that_can_have_japanese(kenv):
@@ -169,14 +166,23 @@ def test_candidates_reach_the_search_index(kenv):
     for i, fmt in enumerate(("A", "C", "D")):  # B はこの小さな作品集では一節が足りない
         kw = {"theme": "孤独"} if fmt == "C" else {"worry_id": "W0001"}
         assert planned(kenv, fmt, when=NOW + timedelta(days=40 * i), **kw)
-    # 作り直した候補は埋め込み直し、印を消す
+    # 作り直して要旨が変わった候補は、このモデルで埋め込み直す
     rows = (kenv.cfg / "renderings.csv").read_text("utf-8").replace(ORIG, ORIG + "也")
     (kenv.cfg / "renderings.csv").write_text(rows, "utf-8")
     build_refs(connect(kenv.ssd_root), kenv.cfg)
-    canon_build(kenv)
+    llm = CanonLLM()
+    llm.complete = lambda *a, **k: json.dumps(  # 要旨が変わる
+        {"summary_ja": "新しい要旨", "themes": ["孤独"], "worries": ["一人がつらい"],
+         "quotability": 0.5, "caution": False, "caution_reason": ""}, ensure_ascii=False)
+    canon_build(kenv, llm)
     r = run_embed(hdd, adir, HashEncoder(name=MODEL), passage_prefix="passage: ")
-    assert r.embedded == 1 and not reembed_path(hdd).exists()
+    assert r.embedded == 1  # 変わった候補だけを、このモデルで埋め込み直す
     assert "canon:lunyu:1.1" in embedded_ids(emb_dir(hdd, MODEL))
+    # 別のモデルの埋め込みも、それぞれ埋め込み直す（印を取り合わない）
+    r2 = run_embed(hdd, adir, HashEncoder(name="other-model"), passage_prefix="passage: ")
+    assert r2.embedded > 1
+    r3 = run_embed(hdd, adir, HashEncoder(name=MODEL), passage_prefix="passage: ")
+    assert r3.embedded == 0
 
 
 def test_coverage(kenv):
@@ -196,3 +202,60 @@ def test_cli(kenv, settings_file, monkeypatch):
     r = CliRunner().invoke(app, ["canon", "coverage", *st])
     assert r.exit_code == 0 and "論語（lunyu）：一節 2" in r.output, r.output
     assert "古い日本語訳の無い割合 50%" in r.output
+
+
+def test_screen_text_follows_the_reading(kenv):
+    """画面の一節は読みの元と同じ本文：古い日本語訳だけならその訳、自前の訳はその訳の元。"""
+    from koten.shiyaku.flow import FlowConfig, run_flow
+    from koten.shiyaku.material import gather
+    from koten.shiyaku.store import approve, save
+    from tests.test_shiyaku import Drafter, Judge, ok_answer
+
+    rows = (kenv.cfg / "renderings.csv").read_text("utf-8").rstrip("\n")
+    rows += (
+        "\nI-shimo-1.3,lunyu:1.3,,R-shimo,translation,ja,巧みな言葉は。,,たくみなことばは,"
+        "5ページ,verified,owner,2026-10-29,"
+        "\nI-legge-1.3,lunyu:1.3,,R-legge,translation,en,Fine words.,,,Book I ch. 3,"
+        "verified,owner,2026-10-29,\n"
+    )
+    (kenv.cfg / "renderings.csv").write_text(rows, "utf-8")
+    conn = connect(kenv.ssd_root)
+    build_refs(conn, kenv.cfg)
+    m = gather(conn, load_canon(CFG), "meditations:2.p1")
+    sy = run_flow(m, Drafter("朝に自分に言え。"), Judge(ok_answer("I-long-2.p1", n=1)), PROMPTS,
+                  FlowConfig(), shiyaku_id="S-meditations-2.p1-1")
+    save(conn, sy)
+    approve(conn, sy, by="owner")
+    # 自前の訳のあとで、もっと古い英訳が入っても、画面は訳の元（Long）のまま
+    rows = (kenv.cfg / "renderings.csv").read_text("utf-8").rstrip("\n")
+    rows += ("\nI-old-2.p1,meditations:2.p1,,R-legge,translation,en,Betimes in the morning.,,,"
+             "x,verified,owner,2026-10-29,\n")
+    (kenv.cfg / "renderings.csv").write_text(rows, "utf-8")
+    build_refs(conn, kenv.cfg)
+    canon_build(kenv)
+    got = {r["candidate_id"]: r for r in iter_canon(kenv.require_hdd())}
+    assert got["canon:lunyu:1.3"]["source_id"] == "I-shimo-1.3"  # 英訳は訳の元でないので出さない
+    assert got["canon:lunyu:1.3"]["quote_lang"] == "ja"
+    assert got["canon:meditations:2.p1"]["source_id"] == "I-long-2.p1"
+
+
+def test_unchecked_numbers_show_only_the_book():
+    canon = load_canon(CFG)
+    assert heading(canon, "meditations:2.1", numbered=False) == "第2巻"
+    assert heading(canon, "lunyu:1.1", numbered=False) == ""
+
+
+def test_classic_authors_are_persons(kenv):
+    """古典の作者も人物の書誌に入る（生没年は入れない）。青空文庫にいる作者は同じ ID にできる。"""
+    from koten.canon.build import persons_path
+
+    canon = load_canon(CFG)
+    canon["hojoki"] = {**canon["hojoki"], "author_id": "aozora:person:000196"}
+    build_canon(connect(kenv.ssd_root), kenv.require_hdd(), canon, CanonLLM(), PROMPTS, VOCAB,
+                AugmentConfig())
+    people = {p["person_id"]: p for p in read_rows(persons_path(kenv.require_hdd()))}
+    assert people["canon:person:孔子"]["name"] == "孔子"
+    assert people["canon:person:孔子"]["death_date"] is None
+    works = {w["work_id"]: w for w in read_rows(works_path(kenv.require_hdd()))}
+    assert works["canon:hojoki"]["author_ids"] == ["aozora:person:000196"]
+    assert "aozora:person:000196" not in people  # 青空文庫の人物の書誌は向こうにある

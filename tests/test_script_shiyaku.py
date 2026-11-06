@@ -33,7 +33,10 @@ def add_canon_candidates(ssd):
     """候補表に古典の一節の候補を足す（検索の候補づくりは別のテスト。ここでは台本の側を見る）。"""
     rows = pq.read_table(cache_path(ssd)).to_pylist()
     base = {k: None for k in CACHE_SCHEMA.names}
-    for cid, pk, text in ((CID, "lunyu:1.1", ORIG), (PD_CID, "lunyu:1.2", "有子曰")):
+    for cid, pk, text, sid in (
+        (CID, "lunyu:1.1", ORIG, "I-orig-1.1"),
+        (PD_CID, "lunyu:1.2", "有子曰", "I-orig-1.2"),
+    ):
         rows.append(
             {
                 **base,
@@ -62,6 +65,7 @@ def add_canon_candidates(ssd):
                 "lang": "zh",
                 "passage_key": pk,
                 "quote_lang": "zh",
+                "source_id": sid,
             }
         )
     write_rows(cache_path(ssd), rows, CACHE_SCHEMA)
@@ -227,7 +231,14 @@ def test_relay_translation_cannot_say_shiyaku(cenv):
     rows = pq.read_table(cache_path(cenv.ssd_root)).to_pylist()
     for r in rows:
         if r["candidate_id"] == CID:
-            r.update(passage_key="meditations:2.p1", lang="grc", quote_lang="en")
+            r.update(
+                passage_key="meditations:2.p1",
+                lang="grc",
+                quote_lang="en",
+                source_id="I-long-2.p1",
+                quote_text="Begin the morning by saying to thyself, "
+                "I shall meet with the busy-body.",
+            )
     write_rows(cache_path(cenv.ssd_root), rows, CACHE_SCHEMA)
     use_canon(cenv, eid)
     data = EpisodeData.load(conn, cenv.ssd_root, eid)
@@ -327,3 +338,20 @@ def test_translation_words_in_titles(cenv):
     assert any("訳の表示" in x for x in gates.title_issues("試訳で読む、古い言葉", data))
     q = "AIが訳したこの一節を、あなたならどう読みますか。"
     assert any("訳の表示" in x for x in gates.question_issues(q, data, {}))
+
+
+def test_canon_text_must_stay_usable(cenv, tmp_path):
+    """画面の一節の本文の資料が使えなくなったら、台本を書かせない（R2）。"""
+    eid = planned(cenv, "A", worry_id="W0001")
+    use_canon(cenv, eid, PD_CID)
+    cfg = tmp_path / "tight"
+    cfg.mkdir()
+    ledger(cfg)
+    people = (cfg / "ref_people.csv").read_text("utf-8")
+    (cfg / "ref_people.csv").write_text(people.replace(",editor,1939", ",editor,1990"), "utf-8")
+    from koten.ref.texts import TextsError
+
+    with pytest.raises(TextsError):  # 本文の行が残っていると止まるが、SSD は先に厳しくなる
+        build_refs(connect(cenv.ssd_root), cfg)
+    r, _ = run(cenv, eid, writer_llm=CanonWriter())
+    assert r.state == "error" and "使えない資料" in r.state_msg and "canon build" in r.state_msg

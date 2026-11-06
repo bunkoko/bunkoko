@@ -41,6 +41,8 @@ ORDINALS = {
     )
 }
 ROMAN = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100}
+# 1つの節の長さの上限（自省録の長い節は3000字ほど。これを超えたら付録などが混ざったとみる）
+SECTION_MAX = 6000
 
 
 class GutenbergError(ValueError):
@@ -55,6 +57,8 @@ class GutenbergEdition:
     canon: str
     section_start: str  # 節の始まりの正規表現（グループ1が節の番号。ローマ数字か数字）
     book_heading: str = ""  # 巻の見出しの正規表現（グループ1が巻の番号か FIRST などの語）
+    body_start: str = ""  # 本文の始まりの行の正規表現（その前の目次・序文は捨てる）
+    end_heading: str = ""  # 本文の終わり（付録・注・用語集などの見出し）の正規表現
 
 
 def editions(conf: dict[str, Any]) -> dict[str, GutenbergEdition]:
@@ -64,7 +68,7 @@ def editions(conf: dict[str, Any]) -> dict[str, GutenbergEdition]:
         for key in ("ebook", "file", "canon", "section_start"):
             if not e.get(key):
                 raise GutenbergError(f"{ref_id}：gutenberg.editions に {key} が要る")
-        for key in ("section_start", "book_heading"):
+        for key in ("section_start", "book_heading", "body_start", "end_heading"):
             if e.get(key):
                 try:
                     re.compile(e[key])
@@ -77,6 +81,8 @@ def editions(conf: dict[str, Any]) -> dict[str, GutenbergEdition]:
             str(e["canon"]),
             str(e["section_start"]),
             str(e.get("book_heading") or ""),
+            str(e.get("body_start") or ""),
+            str(e.get("end_heading") or ""),
         )
     return out
 
@@ -125,8 +131,18 @@ def _number(word: str) -> int | None:
 
 
 def split_sections(text: str, ed: GutenbergEdition) -> list[Unit]:
-    """巻の見出しと節の始まりで分ける（巻.節、巻が無ければ節）。番号の読めない所は捨てる。"""
+    """巻の見出しと節の始まりで分ける（巻.節、巻が無ければ節）。
+
+    当て推量で分けない：本文の始まり（body_start）が見つからない、同じ番号が2度出る（目次など）、
+    節の番号が飛ぶ・戻る（頭文字の「L.」など）、長すぎる節（付録が混ざるなど）は止める。
+    本文の終わり（end_heading）から先は捨てる。
+    """
+    if ed.body_start:
+        if not (start := re.search(ed.body_start, text, re.M)):
+            raise GutenbergError(f"{ed.ebook}：本文の始まり（body_start）に合う行が無い")
+        text = text[start.start() :]
     book_re = re.compile(ed.book_heading, re.M) if ed.book_heading else None
+    end_re = re.compile(ed.end_heading) if ed.end_heading else None
     sec_re = re.compile(ed.section_start)
     units: list[Unit] = []
     book: int | None = None if book_re else 0
@@ -144,9 +160,11 @@ def split_sections(text: str, ed: GutenbergEdition) -> list[Unit]:
         line = " ".join(para.split())
         if not line:
             continue
+        if end_re and end_re.match(line):
+            break  # 付録・注・用語集は節に混ぜない
         if book_re and (m := book_re.match(line)):
             close()
-            book = _number(m.group(1))
+            book = _number(m.group(1)) if m.lastindex and m.group(1) else None
             continue
         m = sec_re.match(line)
         if m and book is not None and (n := _number(m.group(1))) is not None:
@@ -156,13 +174,26 @@ def split_sections(text: str, ed: GutenbergEdition) -> list[Unit]:
         elif cur is not None:
             cur[1].append(line)
     close()
+    problems: list[str] = []
     seen: set[str] = set()
-    out = []
-    for u in units:  # 同じ番号が2度出たら（目次など）、最初のものを残す
-        if u.number not in seen:
-            seen.add(u.number)
-            out.append(u)
-    return out
+    last: dict[str, int] = {}
+    for u in units:
+        if u.number in seen:
+            problems.append(f"節の番号 {u.number} が2度出る（目次など。body_start を書く）")
+        seen.add(u.number)
+        head, _, n = u.number.rpartition(".")
+        if int(n) != last.get(head, 0) + 1:
+            problems.append(
+                f"節の番号が {head + '.' if head else ''}{last.get(head, 0)} から {u.number} に飛ぶ"
+            )
+        last[head] = int(n)
+        if len(u.text) > SECTION_MAX:
+            problems.append(
+                f"節 {u.number} が長い（{len(u.text)}字。付録などが混ざる。end_heading を書く）"
+            )
+    if problems:
+        raise GutenbergError(f"{ed.ebook}：分け方を確かめてください：" + "、".join(problems[:5]))
+    return units
 
 
 def import_edition(

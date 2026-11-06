@@ -6,6 +6,7 @@ shard-NNNNN.npy（float16）と shard-NNNNN.ids.parquet（candidate_id）の組�
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -79,13 +80,21 @@ def run_embed(
             json.dumps({"model": encoder.name, "dim": encoder.dim, "augment": source}), "utf-8"
         )
 
-    from koten.canon.build import iter_canon, reembed_path
+    from koten.canon.build import iter_canon
 
     done = embedded_ids(out_dir)
-    # 作り直した古典の一節の候補は、埋め込み直す（あとから書いた埋め込みが使われる）
-    redo_path = reembed_path(hdd_root)
-    redo = set(json.loads(redo_path.read_text("utf-8"))) if redo_path.exists() else set()
-    done -= redo
+    # 古典の一節の候補は、作り直されることがある。このモデルで何から埋め込んだかを覚えておき、
+    # 違えば埋め込み直す（あとから書いた埋め込みが使われる）
+    sha_path = out_dir / "canon-sha.json"
+    made_from: dict[str, str] = json.loads(sha_path.read_text("utf-8")) if sha_path.exists() else {}
+
+    def made_sha(c: dict) -> str:
+        body = (passage_prefix + passage_text(c)).encode("utf-8")
+        return hashlib.sha256(body).hexdigest()[:16]
+
+    for c in iter_canon(hdd_root):
+        if c["candidate_id"] in done and made_from.get(c["candidate_id"]) != made_sha(c):
+            done.discard(c["candidate_id"])
     seq = len(data_files(out_dir, "shard-*.npy"))
     pending: list[dict] = []
     embedded = 0
@@ -105,6 +114,16 @@ def run_embed(
         tmp = out_dir / f"shard-{seq:05d}.tmp.npy"
         np.save(tmp, vecs.astype(np.float16))
         tmp.replace(out_dir / f"shard-{seq:05d}.npy")
+        canon = {
+            c["candidate_id"]: made_sha(c)
+            for c in pending
+            if c["candidate_id"].startswith("canon:")
+        }
+        if canon:
+            made_from.update(canon)
+            tmp_j = sha_path.with_suffix(".tmp")
+            tmp_j.write_text(json.dumps(made_from), "utf-8")
+            tmp_j.replace(sha_path)
         embedded += len(pending)
         log(f"  {embedded} 件を埋め込みました")
         pending = []
@@ -116,5 +135,4 @@ def run_embed(
         if len(pending) >= shard_size:
             flush()
     flush()
-    redo_path.unlink(missing_ok=True)
     return EmbedResult(embedded=embedded, skipped=len(done), out_dir=out_dir)

@@ -2,6 +2,8 @@
 # 訳・訓読・注釈を同じ一節に結び付けるための番号。pattern に合わない番号は読み込みで断る。
 # 章の分け方が版で違うときは、資料の台帳（ref_works.csv）の note に、どの分け方かを書く。
 # author：検索の候補（M8b。koten canon build）で使う作者の表示（無ければ空）。
+# author_id：作者が青空文庫の人物にもいれば、その ID（aozora:person:000000 の形）。書けば同じ人として
+#   数える（直近の回の作者・背景の事実）。書かなければ canon:person:<author>
 # heading：出典に出す章の見出し。番号の数字を {0}・{1} … の順に入れる（heading_p は p の付いた番号）
 works:
   lunyu:

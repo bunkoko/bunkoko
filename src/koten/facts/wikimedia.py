@@ -60,8 +60,10 @@ class Claim:
     refs: list[str] = field(default_factory=list)
 
 
-def aozora_author_value(person_id: str) -> str:
-    """aozora:person:000879 → 879（P7311 の値は0埋めしない）。"""
+def aozora_author_value(person_id: str) -> str | None:
+    """aozora:person:000879 → 879（P7311 の値は0埋めしない）。青空文庫の人物でなければ None。"""
+    if not person_id.startswith("aozora:person:"):
+        return None  # 古典の作者（canon:person:孔子 など）は、青空文庫の ID で引かない
     num = person_id.rsplit(":", 1)[-1]
     return str(int(num)) if num.isdigit() else num
 

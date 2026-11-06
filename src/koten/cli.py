@@ -2206,13 +2206,27 @@ def ref_build(settings: SettingsOpt = None) -> None:
         typer.secho(
             f"{ref_id}：{why}。この資料は使いません（台帳の ndl_access を直す）", fg="yellow"
         )
+    # 厳しくなった判定は、ほかの設定（sources.yaml など）の読み込みで止まる前に SSD に届ける
+    import copy
+
+    from koten.ref.store import restrict, tighten
+
+    early = [copy.copy(w) for w in works.values()]
+    restrict(early, limited)
+    for ref_id in tighten(conn, early):
+        typer.secho(f"{ref_id} は使えなくなりました（SSD から本文を外しました）", fg="yellow")
     if hdd is not None:
         from koten.ref import gutenberg
+        from koten.ref.standardebooks import EditionError
 
-        eds = editions(s.sources.get("standardebooks") or {})
+        try:
+            eds = editions(s.sources.get("standardebooks") or {})
+            gut = gutenberg.editions(s.sources.get("gutenberg") or {})
+        except (EditionError, gutenberg.GutenbergError) as e:
+            typer.secho(f"sources.yaml：{e}", fg="red", err=True)
+            raise typer.Exit(2) from e
         removed = forget_unusable(hdd, works, eds, set(limited))
         usable_works = {k: w for k, w in works.items() if k not in limited}
-        gut = gutenberg.editions(s.sources.get("gutenberg") or {})
         removed += gutenberg.forget_unusable_raw(hdd, usable_works, gut)
         for line in removed:
             typer.secho(f"使えない資料のものを HDD から消しました：{line}", fg="yellow")

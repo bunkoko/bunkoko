@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import sqlite3
 from collections.abc import Callable, Iterator
@@ -14,13 +13,13 @@ from typing import Any
 import pyarrow as pa
 
 from koten.augment.extract import CANDIDATES_SCHEMA, AugmentConfig
-from koten.ingest.aozora import WORKS_SCHEMA
+from koten.ingest.aozora import PERSONS_SCHEMA, WORKS_SCHEMA
 from koten.llm import ChatLLM, LLMOutputError, fill, load_prompt, parse_json_object
 from koten.parquet import read_rows, write_rows
 from koten.ref.store import renderings_for_passage
 from koten.ref.texts import USABLE_STATUS, passage_problem, passage_sort_key
 from koten.shiyaku.material import gather
-from koten.shiyaku.store import ShiyakuError, reading_for
+from koten.shiyaku.store import ShiyakuError, reading_for, single
 
 CANON_SCHEMA = pa.schema(
     list(CANDIDATES_SCHEMA)
@@ -56,13 +55,25 @@ def candidates_path(hdd_root: Path) -> Path:
     return canon_dir(hdd_root) / "candidates.parquet"
 
 
-def reembed_path(hdd_root: Path) -> Path:
-    """作り直した候補の ID（koten embed が埋め込み直して消す）。"""
-    return canon_dir(hdd_root) / "re-embed.json"
-
-
 def works_path(hdd_root: Path) -> Path:
     return hdd_root / "clean" / "canon" / "works.parquet"
+
+
+def persons_path(hdd_root: Path) -> Path:
+    return hdd_root / "clean" / "canon" / "persons.parquet"
+
+
+AOZORA_PERSON = re.compile(r"^aozora:person:\d+$")
+
+
+def author_id(w: dict[str, Any]) -> str:
+    """作者の人物 ID。青空文庫の人物がいれば、その ID（canon.yaml の author_id）を使い、同じ人を
+    1人として数える（直近の回の作者・背景の事実）。いなければ canon:person:<名前>。"""
+    given = str(w.get("author_id") or "")
+    if AOZORA_PERSON.match(given):
+        return given
+    author = w.get("author") or ""
+    return f"canon:person:{author}" if author else ""
 
 
 def iter_canon(hdd_root: Path) -> Iterator[dict[str, Any]]:
@@ -71,11 +82,17 @@ def iter_canon(hdd_root: Path) -> Iterator[dict[str, Any]]:
         yield from read_rows(path)
 
 
-def heading(canon: dict[str, dict[str, Any]], passage_key: str) -> str:
-    """出典に出す章の見出し（canon.yaml の heading。無ければ番号のまま）。"""
+def heading(canon: dict[str, dict[str, Any]], passage_key: str, *, numbered: bool = True) -> str:
+    """出典に出す章の見出し（canon.yaml の heading。無ければ番号のまま）。
+
+    numbered が False（その版の番号で、標準と合うか確かめていない）なら、巻の見出しだけにする。
+    """
     work, _, num = passage_key.partition(":")
     w = canon.get(work) or {}
-    tpl = w.get("heading_p") if ".p" in f".{num}" and w.get("heading_p") else w.get("heading")
+    if not numbered and not w.get("heading_p"):
+        return ""
+    by_para = ".p" in f".{num}" or not numbered
+    tpl = w.get("heading_p") if by_para and w.get("heading_p") else w.get("heading")
     parts = re.findall(r"\d+[ab]?", num)
     if not tpl:
         return num
@@ -109,6 +126,7 @@ class Plan:
     readings: list[str]  # LLM に見せる読み（日本語を先に）
     ready: str  # 台本で日本語を出せる理由（pd・approved・draftable）
     review_required: bool
+    numbered: bool = True  # 節の番号を見出しに出せるか（確かめていない番号なら巻だけ）
 
     def sha(self) -> str:
         body = "\n".join([self.source["text_sha"], *self.readings])
@@ -134,28 +152,27 @@ def plan_passage(
             material = gather(conn, canon, passage_key, min_versions=min_versions)
         except ShiyakuError as e:
             return f"台本で日本語を出せない（{e}）"
-    verified = [r for r in rows if r["status"] == USABLE_STATUS]
-    originals = [r for r in verified if r["role"] == "original" and r["lang"] == lang]
-    if originals:
-        source = originals[0]
-    elif material is not None:
-        source = material.source  # 外国語の訳からの訳（自省録の Long 訳など）
+    # 画面の一節は、読み（日本語）の元と同じ本文にする（表示の出典と画面の本文が食い違わない）：
+    # これから訳を作る一節は訳の元、自前の訳はその訳の元、古い日本語訳は人が確かめた原文か、
+    # 無ければその訳そのもの。ほかの外国語の訳・取り込んだだけの本文は、訳の元でなければ出さない
+    by_id = {r["rendering_id"]: r for r in rows}
+    originals = [
+        r
+        for r in rows
+        if r["role"] == "original"
+        and r["lang"] == lang
+        and r["status"] == USABLE_STATUS
+        and single(r, passage_key)
+    ]
+    if reading is None:
+        source = material.source
+    elif reading.kind == "pd":
+        source = originals[0] if originals else by_id.get(reading.ref)
     else:
-        foreign = [
-            r
-            for r in rows
-            if r["role"] == "translation"
-            and r["lang"] not in ("ja", lang)
-            and r["status"] in (USABLE_STATUS, "imported")
-        ]
-        pd = [r for r in verified if r["role"] == "translation" and r["lang"] == "ja"]
-        if foreign:
-            source = foreign[0]
-        elif pd:
-            source = pd[0]
-        else:
-            return "一節にする本文が無い"
-    texts = [reading.text] if reading is not None else []
+        source = by_id.get(reading.source_id)
+    if source is None:
+        return "一節にする本文が無い"
+    texts = [reading.text] if reading is not None and reading.ref != source["rendering_id"] else []
     texts += [
         r.get("display_text") or r["text"]
         for r in sorted(rows, key=lambda r: r["lang"] != "ja")
@@ -164,10 +181,10 @@ def plan_passage(
         and r["status"] in (USABLE_STATUS, "imported")
     ]
     ready = "draftable" if reading is None else ("pd" if reading.kind == "pd" else "approved")
-    review = any(
-        r.get("ref_source") == "ndl" for r in rows if r["rendering_id"] == source["rendering_id"]
-    )
-    return Plan(passage_key, source, source["lang"], texts[:4], ready, review)
+    review = source.get("ref_source") == "ndl"
+    # 電子版から機械で分けた Gutenberg の節の番号は、その版のもの（標準と合うか未確認）
+    numbered = not (source.get("ref_source") == "gutenberg" and source["status"] != USABLE_STATUS)
+    return Plan(passage_key, source, source["lang"], texts[:4], ready, review, numbered)
 
 
 @dataclass
@@ -218,7 +235,6 @@ def build_canon(
     vocab_set = set(vocab)
     res = CanonResult()
     rows: list[dict[str, Any]] = []
-    changed: list[str] = []
     works: dict[str, dict[str, Any]] = {}
     for key in passage_keys(conn):
         p = plan_passage(conn, canon, key, min_versions=min_versions)
@@ -250,7 +266,7 @@ def build_canon(
                 user_tpl,
                 title=w["title"],
                 author=w.get("author") or "作者不詳",
-                heading=f"「{heading(canon, key)}」",
+                heading=f"「{heading(canon, key, numbered=p.numbered)}」",
                 text=p.source.get("display_text") or p.source["text"],
                 readings="\n".join(f"- {t}" for t in p.readings) or "（なし）",
             )
@@ -277,15 +293,13 @@ def build_canon(
                 continue
             info.update(llm=llm.name, prompt_ver=prompt)
             res.made += 1
-            if prev is not None:
-                changed.append(cid)
         text = p.source.get("display_text") or p.source["text"]
         rows.append(
             {
                 "candidate_id": cid,
                 "chunk_id": "",
                 "work_id": f"canon:{work}",
-                "section": heading(canon, key),
+                "section": heading(canon, key, numbered=p.numbered),
                 "quote_text": text,
                 "quote_start": 0,
                 "quote_end": len(text),
@@ -299,13 +313,14 @@ def build_canon(
             }
         )
         author = w.get("author") or ""
+        aid = author_id(w)
         works[f"canon:{work}"] = {
             "work_id": f"canon:{work}",
             "source": "canon",
             "source_work_id": work,
             "title": w["title"],
             "subtitle": "",
-            "author_ids": [f"canon:person:{author}"] if author else [],
+            "author_ids": [aid] if aid else [],
             "author_names": [author] if author else [],
             "author_display": [author] if author else [],
             "translator_ids": [],
@@ -327,11 +342,24 @@ def build_canon(
         }
     write_rows(candidates_path(hdd_root), rows, CANON_SCHEMA)
     write_rows(works_path(hdd_root), list(works.values()), WORKS_SCHEMA)
+    # 青空文庫にいない作者（孔子など）も人物の書誌に入れる（背景の事実を人が書いて付けられる）。
+    # 生没年は入れない（自動の事実を作らない。年は人が別の資料で確かめて facts.csv に書く）
+    persons = {
+        w["author_ids"][0]: {
+            "person_id": w["author_ids"][0],
+            "name": w["author_names"][0],
+            "name_yomi": None,
+            "birth_date": None,
+            "death_date": None,
+            "nationality": "",
+            "allied": False,
+            "canonical_id": w["author_ids"][0],
+        }
+        for w in works.values()
+        if w["author_ids"] and w["author_ids"][0].startswith("canon:person:")
+    }
+    write_rows(persons_path(hdd_root), list(persons.values()), PERSONS_SCHEMA)
     gone = [cid for cid in old if cid not in {r["candidate_id"] for r in rows}]
-    if changed:
-        path = reembed_path(hdd_root)
-        before = json.loads(path.read_text("utf-8")) if path.exists() else []
-        path.write_text(json.dumps(sorted(set(before) | set(changed))), "utf-8")
     res.candidates = len(rows)
     if gone:
         log(f"  候補から外した一節 {len(gone)} 件（訳の材料が無くなったなど）")
