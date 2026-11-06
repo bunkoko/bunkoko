@@ -1586,7 +1586,12 @@ def script(
         for x in changed:
             # 企画のあとで台帳が変わった（台本は前の文で確かめた。作り直すなら --force）
             typer.secho(f"※{x}", fg="yellow")
-        for line in render(json.loads(row["script_json"]), gates.resolver_for(data)):
+        script = json.loads(row["script_json"])
+        from koten.shiyaku.store import reading_drift
+
+        for x in reading_drift(script, data.readings) + data.reading_issues:
+            typer.secho(f"※一節の日本語 {x}", fg="yellow")
+        for line in render(script, gates.resolver_for(data, script)):
             typer.echo(line)
         return
     cfg = ScriptConfig.from_settings(s.section("script"), s.section("episode"))
@@ -2498,17 +2503,19 @@ check_app = typer.Typer(
 app.add_typer(check_app, name="check")
 
 
-def _episode_holds(conn, episode: str, current) -> list:
-    """回の照合の保留（台本の文と、台本で使った自前の訳の文。M8b）。"""
+def _episode_holds(s: Settings, conn, episode: str, current) -> list:
+    """回の照合の保留（台本の文と、台本で使った自前の訳の文。訳が台本のあとで変わった回も。M8b）。"""
     import json
 
     from koten.check.store import holds, translation_holds
+    from koten.script.data import EpisodeData
 
     row = conn.execute(
         "SELECT script_json FROM episodes WHERE episode_id = ?", (episode,)
     ).fetchone()
     script = json.loads(row["script_json"]) if row and row["script_json"] else {}
-    return holds(conn, episode, current) + translation_holds(conn, script)
+    readings = EpisodeData.load(conn, s.ssd_root, episode).readings if script else {}
+    return holds(conn, episode, current) + translation_holds(conn, script, readings)
 
 
 def _episode_claims(s: Settings, episode: str, *, everything: bool = True):
@@ -2528,7 +2535,7 @@ def _episode_claims(s: Settings, episode: str, *, everything: bool = True):
         typer.secho(f"{episode} の台本がありません（koten script が先）", fg="red", err=True)
         raise typer.Exit(2)
     script = json.loads(row["script_json"])
-    resolver = gates.resolver_for(EpisodeData.load(conn, s.ssd_root, episode))
+    resolver = gates.resolver_for(EpisodeData.load(conn, s.ssd_root, episode), script)
     return conn, claims(script, resolver, everything=everything)
 
 
@@ -2611,7 +2618,7 @@ def check_list(
     held = (
         holds(conn, episode, current, shiyaku_id=shiyaku)
         if shiyaku
-        else _episode_holds(conn, episode, current)
+        else _episode_holds(s, conn, episode, current)
     )
     for h in held:
         typer.secho(f"{'承認できない' if shiyaku else '公開保留'}：{h.reason}", fg="yellow")
@@ -2758,7 +2765,7 @@ def check_run(
     held = (
         holds(conn, episode, current, shiyaku_id=shiyaku)
         if shiyaku
-        else _episode_holds(conn, episode, current)
+        else _episode_holds(s, conn, episode, current)
     )
     if held and shiyaku:
         typer.secho(f"この訳は承認できません（{len(held)}件）：", fg="yellow")
@@ -2796,7 +2803,7 @@ def check_status(
         "照合："
         + ("、".join(f"{names.get(k, k)} {v}" for k, v in sorted(counts.items())) or "まだ無し")
     )
-    held = _episode_holds(conn, episode, current)
+    held = _episode_holds(_settings(settings), conn, episode, current)
     for h in held:
         typer.secho(f"公開保留：{h.reason}", fg="yellow")
     if held:
@@ -3156,7 +3163,7 @@ def episode_list(
         except typer.Exit:
             held.add(eid)  # 台本が無くなった回は、念のため保留として出す
             continue
-        if _episode_holds(hc, eid, current):
+        if _episode_holds(s, hc, eid, current):
             held.add(eid)
     for r in rows:
         review = "　※要確認" if r["review_required"] else ""
@@ -3209,7 +3216,10 @@ def episode_visuals_cmd(
     for r in rows:
         data = EpisodeData.load(conn, s.ssd_root, r["episode_id"])
         v = episode_visuals(
-            r["episode_id"], json.loads(r["script_json"]), gates.resolver_for(data), cpm
+            r["episode_id"],
+            json.loads(r["script_json"]),
+            gates.resolver_for(data, json.loads(r["script_json"])),
+            cpm,
         )
         total = sum(v.seconds.values())
         parts = "、".join(

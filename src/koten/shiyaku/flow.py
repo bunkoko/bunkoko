@@ -74,6 +74,19 @@ class FlowConfig:
     min_versions: int = 2
 
 
+def _ask(llm: ChatLLM, system: str, user: str, schema: dict[str, Any], who: str) -> Any:
+    """AI に聞く。読めない答え（JSON でない）は3回まで聞き直し、だめなら止める（この一節だけ）。"""
+    last: Exception | None = None
+    for _ in range(3):
+        try:
+            return parse_json_object(llm.complete(system, user, schema))
+        except LLMError as e:
+            raise ShiyakuLLMError(f"{who}の AI が答えませんでした（{e}）") from e
+        except ValueError as e:  # JSONDecodeError も含む
+            last = e
+    raise ShiyakuLLMError(f"{who}の AI の答えを読めませんでした（{last}）")
+
+
 def model_of(llm: ChatLLM) -> str:
     """モデルの名前（effort などを除く）。下書きと判定役が同じモデルかを見るのに使う。"""
     return llm.name.split("@")[0]
@@ -161,11 +174,8 @@ def run_flow(
             feedback="\n".join(f"- {x}" for x in feedback) or "（なし。初めての下書き）",
             previous=text or "（なし）",
         )
-        try:
-            raw = parse_json_object(drafter.complete(d_system, user, DRAFT_SCHEMA))
-        except LLMError as e:
-            raise ShiyakuLLMError(f"下書きの AI が答えませんでした（{e}）") from e
-        text = str((raw or {}).get("text") or "").strip()
+        raw = _ask(drafter, d_system, user, DRAFT_SCHEMA, "下書き")
+        text = str((raw or {}).get("text") or "").strip() if isinstance(raw, dict) else ""
         issues = machine_issues(text, src, m.basis, s4_titles)
         answer, divided = None, []
         if issues:
@@ -173,15 +183,12 @@ def run_flow(
         else:
             sentences = split_sentences(text)
             numbered = "\n".join(f"S{n}：{t}" for n, t in enumerate(sentences, start=1))
-            try:
-                answer = parse_json_object(
-                    judge.complete(
-                        j_system, fill(j_user, **common, sentences=numbered), JUDGE_SCHEMA
-                    )
-                )
-            except LLMError as e:
-                raise ShiyakuLLMError(f"判定役の AI が答えませんでした（{e}）") from e
-            issues, divided = judge_verdict(m, sentences, answer or {})
+            answer = _ask(
+                judge, j_system, fill(j_user, **common, sentences=numbered), JUDGE_SCHEMA, "判定役"
+            )
+            if not isinstance(answer, dict):
+                raise ShiyakuLLMError("判定役の AI の答えを読めませんでした（形が違う）")
+            issues, divided = judge_verdict(m, sentences, answer)
             status = "flagged" if issues else "judged"
         if not issues:
             break

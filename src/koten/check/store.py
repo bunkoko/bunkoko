@@ -124,6 +124,21 @@ def holds(
     by_sha = {c.sha: c for c in current}
     at_key = {c.key: c for c in current}
     rows = _rows(conn, episode_id, shiyaku_id)
+    if shiyaku_id and by_sha:
+        # 訳し直しで ID が変わっても、同じ一節のほかの訳で、食い違い・本に近いと出た文と同じ文が
+        # あれば保留する（文を直さないかぎり解けない。SPEC R8）
+        marks = ",".join("?" * len(by_sha))
+        rows = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT c.* FROM checks c JOIN shiyaku s ON s.shiyaku_id = c.shiyaku_id "
+                "WHERE c.shiyaku_id != ? AND s.passage_key = "
+                "(SELECT passage_key FROM shiyaku WHERE shiyaku_id = ?) "
+                f"AND c.claim_sha IN ({marks}) ORDER BY c.check_id",
+                (shiyaku_id, shiyaku_id, *by_sha),
+            )
+            if _bad(dict(r))
+        ] + rows
     out: list[Hold] = []
     seen: set[tuple[str, str]] = set()
     for i, r in enumerate(rows):
@@ -219,17 +234,35 @@ def resolve_gone(
     return len(rows)
 
 
-def translation_holds(conn: sqlite3.Connection, script: dict[str, Any]) -> list[Hold]:
-    """台本で使った自前の訳（M8b）の、照合の保留。保留のある訳を使った回も公開しない。"""
-    from koten.check.claims import text_claims
+def translation_holds(
+    conn: sqlite3.Connection, script: dict[str, Any], readings: dict[str, Any] | None = None
+) -> list[Hold]:
+    """台本で使った自前の訳（M8b）の、照合の保留と、使えなくなった・変わった訳。
 
-    sids = {
-        seg["translation"]["ref"]
-        for ch in script.get("chapters") or []
-        for seg in ch["segments"]
-        if seg.get("translation") and seg["translation"]["ref"].startswith("S-")
-    }
+    - 書いたときの自前の訳が、承認済みでなくなった・元の本文が使えなくなった
+    - 今の一節の日本語が、書いたときの訳と違う（readings を渡したとき。書き直すまで公開しない）
+    - 書いたときの訳と今の訳の、照合の保留
+    """
+    from koten.check.claims import text_claims
+    from koten.shiyaku.store import get, pinned, reading_drift, source_problem
+
     out: list[Hold] = []
+    sids: set[str] = set()
+    for cid, tr in pinned(script).items():
+        ref = tr["ref"]
+        if ref.startswith("S-"):
+            sids.add(ref)
+            sy = get(conn, ref)
+            if sy is None or sy.status != "approved":
+                status = sy.status if sy else "無い"
+                out.append(Hold(cid, "", f"訳 {ref} が使えなくなった（{status}）", True))
+            elif (why := source_problem(conn, sy)) is not None:
+                out.append(Hold(cid, "", f"訳 {ref}：{why}", True))
+        if readings is not None and (cur := readings.get(cid)) is not None:
+            if cur.ref.startswith("S-"):
+                sids.add(cur.ref)
+    if readings is not None:
+        out += [Hold("", "", x, True) for x in reading_drift(script, readings)]
     for sid in sorted(sids):
         row = conn.execute("SELECT text FROM shiyaku WHERE shiyaku_id = ?", (sid,)).fetchone()
         if row is None:

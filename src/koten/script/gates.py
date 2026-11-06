@@ -654,7 +654,10 @@ JUDGE_SCHEMA = {
 }
 
 
-def resolver_for(data: EpisodeData) -> Resolver:
+def resolver_for(data: EpisodeData, script: dict[str, Any] | None = None) -> Resolver:
+    """script を渡すと、書いた台本の訳（translation）と今の訳が違う一節は差し込まない。"""
+    from koten.shiyaku.store import pinned
+
     worries = {wid: w["text_general"] for wid, w in data.worries.items()}
     return Resolver(
         data.candidates,
@@ -664,6 +667,7 @@ def resolver_for(data: EpisodeData) -> Resolver:
         data.refs,
         data.findings,
         data.readings,
+        pinned(script) if script else None,
     )
 
 
@@ -704,10 +708,14 @@ def _quotes(data: EpisodeData) -> list[str]:
 
 # 訳の表示（「試訳」・元の訳の出典）はコードが付ける。AI で訳したことは言わない（R5・D-024）
 TRANSLATION_WORDS = re.compile(
-    r"試訳|(?:AI|ＡＩ|人工知能)\s*(?:が|で|に|の|を使って)?\s*(?:訳|翻訳)|機械翻訳|自動翻訳|翻訳ソフト"
+    r"試訳|機械翻訳|自動翻訳|翻訳ソフト|"
+    r"(?:AI|ＡＩ|人工知能|LLM|ChatGPT|Claude|言語モデル)[^。、！？]{0,8}?"
+    r"(?:(?<!言い)訳|翻訳|日本語に)"
 )
 # 「読み方が分かれています」は、人が確かめて「分かれる」にした訳のときだけ
-DIVIDED_WORDS = re.compile(r"読み方が分かれ|読みが分かれ|解釈が分かれ|説が分かれ")
+DIVIDED_WORDS = re.compile(
+    r"(?:読み方|読み|解釈|(?<!小)説)(?:は|が|も)[^。]{0,10}?(?:分かれ|割れ|異な)|諸説"
+)
 
 
 def translation_issues(text: str, chapter: dict[str, Any], data: EpisodeData) -> list[str]:
@@ -891,6 +899,7 @@ def g1_chapter(
         issues += [
             f"{chapter['chapter_id']}：章タイトル：{x}"
             for x in evidence_issues(title, passage, False, "title")
+            + translation_issues(title, chapter, data)
         ]
     for i, seg in enumerate(segments):
         sid, text = seg["seg_id"], seg["text"]
@@ -951,9 +960,10 @@ def g1_chapter(
                 for n in names
                 if n in bare_title
             ]
+        if seg["kind"] in ("narration", "transition"):
+            issues += [f"{sid}：{x}" for x in translation_issues(text, chapter, data)]
         if seg["kind"] != "narration":
             continue
-        issues += [f"{sid}：{x}" for x in translation_issues(text, chapter, data)]
         for m in QUOTED.finditer(text):
             inner = m.group(1).strip()
             pm = PLACEHOLDER.fullmatch(inner)
@@ -1073,6 +1083,9 @@ def g6_review(data: EpisodeData, script: dict[str, Any]) -> dict[str, Any]:
     reasons += [f"語釈・解釈 {x}" for x in data.ref_issues]
     reasons += [f"研究の一文 {x}" for x in data.finding_issues]
     reasons += [f"統計 {x}" for x in data.stat_issues]
+    from koten.shiyaku.store import reading_drift
+
+    reasons += [f"一節の日本語 {x}" for x in reading_drift(script, data.readings)]
     used = {r for ch in script["chapters"] for r in ch.get("refs", [])}
     for rid in sorted(used):
         r = data.refs.get(rid)
@@ -1158,6 +1171,10 @@ def title_issues(title: str, data: EpisodeData) -> list[str]:
         if n in bare
     ]
     issues += [f"タイトル：{x}" for x in evidence_issues(title, "", False, "title")]
+    issues += [
+        f"タイトルに「{m.group(0)}」を使わない（訳の表示はコードが付ける）"
+        for m in TRANSLATION_WORDS.finditer(bare)
+    ]
     return issues
 
 
@@ -1193,6 +1210,10 @@ def question_issues(
     ]
     issues += [x.removeprefix(BG) for x in fact_leaks(text, data, "", set())]
     issues += [f"問いかけ：{x}" for x in evidence_issues(text, "", False, "question")]
+    issues += [
+        f"問いかけに「{m.group(0)}」を使わない（訳の表示はコードが付ける）"
+        for m in TRANSLATION_WORDS.finditer(bare)
+    ]
     issues += [f"問いかけに「{w}」を使わない" for w in TITLE_NG if w in bare]
     issues += [f"問いかけに「{w}」を使わない" for w in TITLE_REF_NG if w in bare]
     issues += [

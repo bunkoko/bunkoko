@@ -93,6 +93,7 @@ class Resolver:
         refs: dict[str, dict[str, Any]] | None = None,
         findings: dict[str, dict[str, Any]] | None = None,
         readings: dict[str, Any] | None = None,
+        expected: dict[str, dict[str, Any]] | None = None,
     ):
         self.candidates = candidates
         self.stats = stats
@@ -102,6 +103,8 @@ class Resolver:
         self.findings = findings or {}  # この回の企画に付いた、使える研究の一文だけ（D-034）
         # 古典の一節の日本語（候補ID → koten.shiyaku.store.Reading。M8b）
         self.readings = readings or {}
+        # 書いた台本を読むときの、書いたときの訳（候補ID → translation）。違えば差し込まない
+        self.expected = expected or {}
 
     def value(self, kind: str, key: str) -> str:
         key = key.strip()
@@ -117,6 +120,14 @@ class Resolver:
                     raise UnresolvedPlaceholder(
                         f"{{{{quote_ja:{key}}}}}：この一節の日本語がまだありません"
                         "（koten shiyaku draft → approve）"
+                    )
+                exp = self.expected.get(key)
+                if exp is not None and (
+                    exp["ref"] != r.ref or (exp.get("sha") and exp["sha"] != r.sha)
+                ):
+                    raise UnresolvedPlaceholder(
+                        f"{{{{quote_ja:{key}}}}}：台本のあとで一節の日本語が変わった"
+                        f"（{exp['ref']}→{r.ref}。koten script --force で書き直す）"
                     )
                 return r.text
             if kind == "source":

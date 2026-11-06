@@ -145,7 +145,9 @@ def test_script_uses_the_approved_translation(cenv):
     assert not schema_errors(r.script) and r.script["schema_version"] == "1.4"
     ch = next(c for c in r.script["chapters"] if c["chapter_id"] == chid)
     seg = next(s for s in ch["segments"] if s["kind"] == "quote" and CID in s["text"])
-    assert seg["translation"] == {"ref": "S-lunyu-1.1-1", "kind": "shiyaku", "label": "試訳"}
+    tr = {k: v for k, v in seg["translation"].items() if k != "sha"}
+    assert tr == {"ref": "S-lunyu-1.1-1", "kind": "shiyaku", "label": "試訳"}
+    assert seg["translation"]["sha"]  # 書いたときの訳の指紋（あとで変われば書き直す）
     assert seg["read_as"] == "modern" and seg["visual"] == {"type": "quote_card", "ref": CID}
     # 書き手には原文と日本語と表示を見せる
     prompt = next(u for u in llm.users if f"{{{{quote_ja:{CID}}}}}" in u)
@@ -187,6 +189,13 @@ def test_canon_passage_must_use_quote_ja(cenv):
         ("この一節は、機械翻訳したものです。", False, False),
         ("この一節は、読み方が分かれています。", False, False),
         ("この一節は、読み方が分かれています。", True, True),  # 人が確かめた「分かれる」
+        ("この一節は、AIによる翻訳です。", False, False),
+        ("この一節は、AIを使い日本語にしました。", False, False),
+        ("日本語は人工知能の力を借りて訳しました。", False, False),
+        ("この日本語は、ChatGPTで訳したものです。", False, False),
+        ("解釈は、人によって分かれます。", False, False),
+        ("この一節には諸説あります。", False, False),
+        ("言い訳はいりません。", False, True),
     ],
 )
 def test_translation_words(cenv, say, divided, ok):
@@ -241,3 +250,80 @@ def test_held_translation_holds_the_episode(cenv):
            checked_by="owner", shiyaku_id=sy.shiyaku_id)
     held = translation_holds(conn, r.script)
     assert held and "S-lunyu-1.1-1" in held[0].reason
+
+
+def _approve_second(s, text):
+    conn = connect(s.ssd_root)
+    m = gather(conn, load_canon(CFG), "lunyu:1.1")
+    sy = run_flow(m, Drafter(text), Judge(ok_answer("I-kun-1.1", n=2)), PROMPTS, FlowConfig(),
+                  shiyaku_id="S-lunyu-1.1-2")
+    save(conn, sy)
+    approve(conn, sy, by="owner")
+    return sy
+
+
+def test_script_is_pinned_to_its_translation(cenv):
+    """台本を書いたあとで訳が変わったら、別の訳を差し込まず、書き直すまで公開しない。"""
+    from koten.shiyaku.store import reading_drift
+    from koten.shiyaku.store import reject as reject_sy
+
+    sy = approved_shiyaku(cenv)
+    eid = planned(cenv, "A", worry_id="W0001")
+    use_canon(cenv, eid)
+    r, _ = run(cenv, eid, writer_llm=CanonWriter())
+    conn = connect(cenv.ssd_root)
+    data = EpisodeData.load(conn, cenv.ssd_root, eid)
+    assert reading_drift(r.script, data.readings) == []
+    # 新しい訳を承認すると、今の一節の日本語が変わる
+    _approve_second(cenv, "先生が言った。学んで時々おさらいするのは、楽しいことだ。")
+    data = EpisodeData.load(conn, cenv.ssd_root, eid)
+    assert reading_drift(r.script, data.readings)
+    text = "\n".join(render(r.script, gates.resolver_for(data, r.script)))
+    assert "台本のあとで一節の日本語が変わった" in text and "おさらいする" not in text
+    assert any("書き直す" in h.reason for h in translation_holds(conn, r.script, data.readings))
+    assert gates.g6_review(data, r.script)["review_required"]
+    # 書いたときの訳を使わないことにしても保留
+    reject_sy(conn, sy, note="直す")
+    assert any("使えなくなった" in h.reason for h in translation_holds(conn, r.script))
+
+
+def test_close_sentence_holds_a_redraft(cenv):
+    """照合で本に近いと出た文は、訳し直して別の ID になっても、同じ文なら承認できない（R8）。"""
+    from koten.check.store import holds
+
+    conn = connect(cenv.ssd_root)
+    m = gather(conn, load_canon(CFG), "lunyu:1.1")
+    first = run_flow(m, Drafter(GOOD), Judge(ok_answer("I-kun-1.1")), PROMPTS, FlowConfig(),
+                     shiyaku_id="S-lunyu-1.1-1")
+    save(conn, first)
+    record(conn, "", text_claims(first.shiyaku_id, first.text)[1], book_id="B-x",
+           book_label="架空の本", locator="3ページ", verdict="same", close_wording=True,
+           run_len=20, share=0.8, method="human", checked_by="owner",
+           shiyaku_id=first.shiyaku_id)
+    again = run_flow(m, Drafter(GOOD), Judge(ok_answer("I-kun-1.1")), PROMPTS, FlowConfig(),
+                     shiyaku_id="S-lunyu-1.1-2")
+    save(conn, again)
+    held = holds(conn, "", text_claims(again.shiyaku_id, again.text), shiyaku_id=again.shiyaku_id)
+    assert held
+
+
+def test_narration_may_quote_the_translation_placeholder(cenv):
+    """語りの段落の {{quote_ja:}} はスキーマで止めない（translation は一節の段落だけ）。"""
+    approved_shiyaku(cenv)
+    eid = planned(cenv, "A", worry_id="W0001")
+    use_canon(cenv, eid)
+    r, _ = run(cenv, eid, writer_llm=CanonWriter(say=f"「{{{{quote_ja:{CID}}}}}」と言います。"))
+    assert r.state == "script_done", r.state_msg
+
+
+def test_translation_words_in_titles(cenv):
+    approved_shiyaku(cenv)
+    eid = planned(cenv, "A", worry_id="W0001")
+    use_canon(cenv, eid)
+    data = EpisodeData.load(connect(cenv.ssd_root), cenv.ssd_root, eid)
+    ch = {"chapter_id": "ch3", "sources": [CID], "segments": [
+        {"seg_id": "ch3-s1", "kind": "transition", "text": "AIが訳した古典の言葉"}]}
+    assert gates.g1_chapter(ch, data, [])
+    assert any("訳の表示" in x for x in gates.title_issues("試訳で読む、古い言葉", data))
+    q = "AIが訳したこの一節を、あなたならどう読みますか。"
+    assert any("訳の表示" in x for x in gates.question_issues(q, data, {}))

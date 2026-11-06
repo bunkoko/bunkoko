@@ -372,7 +372,12 @@ class ScriptWriter:
                 if m.group(1) and (r := data.readings.get(ref)) is not None:
                     # 古典の一節の日本語。画面の表示（試訳・元の訳の出典）はコードが付ける
                     # （R5・D-024）
-                    seg["translation"] = {"ref": r.ref, "kind": r.kind, "label": r.label}
+                    seg["translation"] = {
+                        "ref": r.ref,
+                        "kind": r.kind,
+                        "label": r.label,
+                        "sha": r.sha,
+                    }
             elif kind == "stat" and (m := STAT_ONLY.match(text)):
                 seg["visual"] = {"type": "chart", "ref": m.group(1).strip()}
             else:

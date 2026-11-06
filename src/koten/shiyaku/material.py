@@ -15,9 +15,16 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
-from koten.ref.store import DIGITAL_SOURCES, ref_source_label, renderings_for_passage
-from koten.ref.texts import IMPORTED, ROLES, USABLE_STATUS, passage_problem
-from koten.shiyaku.store import SHIYAKU_LABEL, ShiyakuError, pd_translation
+from koten.ref.store import ref_source_label, renderings_for_passage
+from koten.ref.texts import ROLES, USABLE_STATUS, passage_problem
+from koten.shiyaku.store import (
+    SHIYAKU_LABEL,
+    ShiyakuError,
+    pd_in_same_book,
+    pd_translation,
+    single,
+    usable_text,
+)
 
 # 時代の解釈として下書き・判定に見せる役割（原文は元の本文として別に見せる）
 BASIS_ROLES = ("kundoku", "translation", "commentary")
@@ -35,12 +42,6 @@ class Material:
 
     def versions(self) -> int:
         return independent_versions(self.basis)
-
-
-def _usable_text(r: dict[str, Any], *, digital_ok: bool) -> bool:
-    if r["status"] == USABLE_STATUS:
-        return True
-    return digital_ok and r["status"] == IMPORTED and r.get("ref_source") in DIGITAL_SOURCES
 
 
 def independent_versions(rows: list[dict[str, Any]]) -> int:
@@ -81,16 +82,33 @@ def gather(
     work = canon[passage_key.partition(":")[0]]
     lang = work.get("lang") or "ja"
     if pd := pd_translation(conn, passage_key):
+        rng = (
+            ""
+            if single(pd, passage_key)
+            else (
+                "範囲（passage_to）で結び付けた訳なので、renderings.csv で一節ごとに分けて書き、"
+                "verified にする。"
+            )
+        )
         raise ShiyakuError(
             f"{passage_key} には保護期間の切れた日本語訳 {pd['rendering_id']}"
-            f"（{pd.get('ref_credit') or ref_source_label(pd)}）があります。"
+            f"（{pd.get('ref_credit') or ref_source_label(pd)}）があります。{rng}"
             "その訳を出典つきで使い、AI の訳は作りません（D-014）"
         )
+    if pd := pd_in_same_book(conn, passage_key):
+        raise ShiyakuError(
+            f"{passage_key} と同じ巻に、保護期間の切れた日本語訳 {pd['rendering_id']} があります。"
+            "この段落がどの節かを人が確かめ、節の番号で renderings.csv に書いてから使う（D-014）"
+        )
     rows = renderings_for_passage(conn, passage_key, verified_only=False)
+    # 一節の本文（訳の元）は、その一節だけに結び付いた行から選ぶ（範囲の行は時代の解釈として見せる）
     originals = [
         r
         for r in rows
-        if r["role"] == "original" and r["lang"] == lang and r["status"] == USABLE_STATUS
+        if r["role"] == "original"
+        and r["lang"] == lang
+        and r["status"] == USABLE_STATUS
+        and single(r, passage_key)
     ]
     if lang == "ja":
         kind = "modern"
@@ -102,13 +120,19 @@ def gather(
         source = originals[0]
     elif originals:
         kind, source = "shiyaku", originals[0]
+    elif lang == "zh":
+        raise ShiyakuError(
+            f"{passage_key}（{work['title']}）の白文が、人が確かめた形（verified）で"
+            "renderings.csv にありません。漢文は白文から訳します（英訳からは訳さない。D-037）"
+        )
     else:
         relays = [
             r
             for r in rows
             if r["role"] == "translation"
             and r["lang"] not in ("ja", lang)
-            and _usable_text(r, digital_ok=True)
+            and usable_text(r, digital_ok=True)
+            and single(r, passage_key)
         ]
         if not relays:
             raise ShiyakuError(
@@ -123,7 +147,7 @@ def gather(
         for r in rows
         if r["rendering_id"] != source["rendering_id"]
         and r["role"] in BASIS_ROLES
-        and _usable_text(r, digital_ok=True)
+        and usable_text(r, digital_ok=True)
     ]
     if kind in ("shiyaku", "modern") and independent_versions(basis) < min_versions:
         raise ShiyakuError(

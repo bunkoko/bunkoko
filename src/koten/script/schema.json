@@ -49,7 +49,8 @@
                   "properties": {
                     "ref": {"type": "string", "pattern": "^(I|S)-"},
                     "kind": {"enum": ["pd", "shiyaku", "relay", "modern"]},
-                    "label": {"type": "string"}
+                    "label": {"type": "string"},
+                    "sha": {"type": "string"}
                   }
                 },
                 "visual": {
@@ -64,7 +65,7 @@
                 {"if": {"properties": {"kind": {"const": "quote"}}},
                  "then": {"required": ["read_as"],
                           "properties": {"text": {"pattern": "^\\{\\{quote(_ja)?:[^{}]+\\}\\}$"}}}},
-                {"if": {"properties": {"text": {"pattern": "^\\{\\{quote_ja:"}}},
+                {"if": {"properties": {"kind": {"const": "quote"}, "text": {"pattern": "^\\{\\{quote_ja:"}}},
                  "then": {"required": ["translation"]}},
                 {"if": {"properties": {"kind": {"const": "stat"}}},
                  "then": {"properties": {"text": {"pattern": "^\\{\\{stat:[^{}]+\\}\\}$"}}}}

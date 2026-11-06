@@ -8,8 +8,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from koten.ref.store import load_renderings, ref_source_label, renderings_for_passage
-from koten.ref.texts import USABLE_STATUS, text_sha
+from koten.ref.store import (
+    DIGITAL_SOURCES,
+    load_renderings,
+    ref_source_label,
+    renderings_for_passage,
+)
+from koten.ref.texts import IMPORTED, USABLE_STATUS, text_sha
 
 KINDS = {
     "shiyaku": "外国語の原文からの訳（「試訳」と出す。R5）",
@@ -54,6 +59,21 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+def usable_text(r: dict[str, Any], *, digital_ok: bool) -> bool:
+    """訳の元・時代の解釈にできる本文か。
+
+    人が確かめた verified。電子版の取り込み（imported）は digital_ok のときだけ。
+    """
+    if r["status"] == USABLE_STATUS:
+        return True
+    return digital_ok and r["status"] == IMPORTED and r.get("ref_source") in DIGITAL_SOURCES
+
+
+def single(r: dict[str, Any], passage_key: str) -> bool:
+    """その一節だけに結び付いた行か（範囲 passage_to の行は、一節の本文・読みにしない）。"""
+    return r["passage_key"] == passage_key and not r.get("passage_to")
+
+
 def next_id(conn: sqlite3.Connection, passage_key: str) -> str:
     """S-<作品>-<番号>-<連番>（同じ一節の訳を作り直すたびに連番が増える）。"""
     work, _, num = passage_key.partition(":")
@@ -69,9 +89,20 @@ def next_id(conn: sqlite3.Connection, passage_key: str) -> str:
 
 
 def save(conn: sqlite3.Connection, s: Shiyaku) -> None:
+    """新しい訳を入れる。ID が使われていたら、次の番号にする（前の訳を上書きしない）。"""
+    for _ in range(20):
+        try:
+            _insert(conn, s)
+            return
+        except sqlite3.IntegrityError:
+            s.shiyaku_id = next_id(conn, s.passage_key)
+    raise ShiyakuError(f"{s.passage_key} の訳の ID を決められませんでした")
+
+
+def _insert(conn: sqlite3.Connection, s: Shiyaku) -> None:
     with conn:
         conn.execute(
-            "INSERT OR REPLACE INTO shiyaku(shiyaku_id, passage_key, kind, text, source_id, "
+            "INSERT INTO shiyaku(shiyaku_id, passage_key, kind, text, source_id, "
             "source_sha, basis_ids, label, status, issues, judge_json, divided, drafter, judge, "
             "created_at, approved_by, approved_at, note, text_sha) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -141,12 +172,25 @@ def list_shiyaku(
 
 
 def source_problem(conn: sqlite3.Connection, s: Shiyaku) -> str | None:
-    """訳した元の本文が、今も使えて、訳したときと同じか（変われば訳は使わない）。"""
-    src = load_renderings(conn, [s.source_id]).get(s.source_id)
+    """訳した元の本文と、見せた時代の解釈が、今も使えて、訳したときと同じか。
+
+    元の本文は、訳を作ったときと同じ決まり（原文は人が確かめた verified、英訳などからの訳は
+    電子版の取り込みも可）で今も使えること。時代の解釈は、見せたものが全部今も使えること
+    （1つでも使えなくなれば訳し直す）。
+    """
+    rows = load_renderings(conn, [s.source_id, *s.basis_ids])
+    src = rows.get(s.source_id)
     if src is None:
         return f"元の本文 {s.source_id} が資料の表に無いか、使えない資料になった"
     if src["text_sha"] != s.source_sha:
         return f"元の本文 {s.source_id} が、訳したあとで変わった（訳し直す）"
+    if not usable_text(src, digital_ok=s.kind == "relay"):
+        return f"元の本文 {s.source_id} が、人が確かめた形でなくなった（{src['status']}。訳し直す）"
+    gone = [b for b in s.basis_ids if b not in rows or not usable_text(rows[b], digital_ok=True)]
+    if gone:
+        return f"時代の解釈 {'・'.join(gone)} が使えなくなった（訳し直す）"
+    if s.kind == "relay" and (pd := pd_in_same_book(conn, s.passage_key)) is not None:
+        return f"同じ巻に古い日本語訳 {pd['rendering_id']} がある（D-014）"
     return None
 
 
@@ -159,10 +203,40 @@ def approved_for(conn: sqlite3.Connection, passage_key: str) -> Shiyaku | None:
 
 
 def pd_translation(conn: sqlite3.Connection, passage_key: str) -> dict[str, Any] | None:
-    """保護期間の切れた日本語訳（人が画像で確かめたもの）。あれば AI の訳は作らない（D-014）。"""
-    for r in renderings_for_passage(conn, passage_key):
-        if r["role"] == "translation" and r["lang"] == "ja" and r["status"] == USABLE_STATUS:
-            return r
+    """保護期間の切れた日本語訳（人が画像で確かめたもの）。あれば AI の訳は作らない（D-014）。
+
+    範囲（passage_to）で結び付けた訳も返す（AI の訳を止めるため）。その一節だけの訳を先に返す。
+    """
+    rows = [
+        r
+        for r in renderings_for_passage(conn, passage_key)
+        if r["role"] == "translation" and r["lang"] == "ja" and r["status"] == USABLE_STATUS
+    ]
+    rows.sort(key=lambda r: not single(r, passage_key))
+    return rows[0] if rows else None
+
+
+def pd_in_same_book(conn: sqlite3.Connection, passage_key: str) -> dict[str, Any] | None:
+    """節の番号を確かめていない段落（巻.p段落）で、同じ巻に古い日本語訳があるもの（D-014）。
+
+    段落と節は番号の付け方が違い、自動ではつながらないので、同じ巻の古い日本語訳があれば
+    AI の訳を作らない（どの節かを人が確かめて、節の番号で renderings.csv に書く）。
+    """
+    work, _, num = passage_key.partition(":")
+    book, sep, _ = num.partition(".p")
+    if not sep:
+        return None
+    keys = [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT passage_key FROM renderings WHERE passage_key LIKE ? "
+            "AND role = 'translation' AND lang = 'ja' AND status = ?",
+            (f"{work}:{book}.%", USABLE_STATUS),
+        )
+    ]
+    for k in sorted(keys):
+        if k != passage_key and (pd := pd_translation(conn, k)) is not None:
+            return pd
     return None
 
 
@@ -176,6 +250,7 @@ class Reading:
     ref: str  # I-…（pd）か S-…
     sha: str
     divided: bool = False  # 読み方が分かれる（人が承認のときに確かめた）
+    source_id: str = ""  # 訳の元の本文（pd はその訳そのもの。画面の一節と合っているかを見る）
 
     def row(self) -> dict[str, Any]:
         return {
@@ -191,12 +266,18 @@ def reading_for(conn: sqlite3.Connection, passage_key: str) -> Reading | None:
     """一節の日本語：保護期間の切れた日本語訳があればそれ（D-014）、無ければ承認済みの自前の訳。"""
     pd = pd_translation(conn, passage_key)
     if pd is not None:
+        if not single(pd, passage_key):
+            return None  # 範囲の訳は一節の日本語にしない。AI の訳でも代えない（D-014）
         text = pd.get("display_text") or pd["text"]
         label = pd.get("ref_credit") or ref_source_label(pd)
-        return Reading("pd", text, label, pd["rendering_id"], pd["text_sha"])
+        return Reading(
+            "pd", text, label, pd["rendering_id"], pd["text_sha"], False, pd["rendering_id"]
+        )
+    if pd_in_same_book(conn, passage_key) is not None:
+        return None
     s = approved_for(conn, passage_key)
     if s is not None:
-        return Reading(s.kind, s.text, s.label, s.shiyaku_id, s.text_sha, s.divided)
+        return Reading(s.kind, s.text, s.label, s.shiyaku_id, s.text_sha, s.divided, s.source_id)
     return None
 
 
@@ -224,17 +305,66 @@ def approve(
             "今の本との照合で、食い違いか言い回しが近い文があります（訳し直す。SPEC R8）："
             + "、".join(holds)
         )
-    s.status = "approved"
-    s.approved_by = by
-    s.approved_at = _now()
-    s.divided = divided
+    _update(
+        conn,
+        s,
+        status="approved",
+        approved_by=by,
+        approved_at=_now(),
+        divided=int(divided),
+        note=note or s.note or None,
+    )
+    s.status, s.approved_by, s.divided = "approved", by, divided
     s.note = note or s.note
-    save(conn, s)
 
 
 def reject(conn: sqlite3.Connection, s: Shiyaku, *, note: str) -> None:
     if s.status == "rejected":
         return
-    s.status = "rejected"
-    s.note = note or s.note
-    save(conn, s)
+    _update(conn, s, status="rejected", note=note or s.note or None)
+    s.status, s.note = "rejected", note or s.note
+
+
+def _update(conn: sqlite3.Connection, s: Shiyaku, **cols: Any) -> None:
+    """読んだときと同じ状態・同じ文の訳だけを書き換える（ほかの窓で変わっていたら止める）。"""
+    sets = ", ".join(f"{k} = ?" for k in cols)
+    with conn:
+        cur = conn.execute(
+            f"UPDATE shiyaku SET {sets} WHERE shiyaku_id = ? AND status = ? AND text_sha = ?",
+            (*cols.values(), s.shiyaku_id, s.status, s.text_sha),
+        )
+    if cur.rowcount == 0:
+        raise ShiyakuError(
+            f"{s.shiyaku_id} が、読んだあとで変わりました（koten shiyaku show で読み直す）"
+        )
+
+
+def pinned(script: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """台本が書かれたときの、古典の一節の日本語（候補ID → 段落の translation）。"""
+    out = {}
+    for ch in script.get("chapters") or []:
+        for seg in ch.get("segments") or []:
+            if seg.get("kind") == "quote" and seg.get("translation"):
+                out[seg["visual"]["ref"]] = seg["translation"]
+    return out
+
+
+def reading_drift(script: dict[str, Any], readings: dict[str, Reading]) -> list[str]:
+    """台本を書いたあとで、一節の日本語（訳）が変わった・使えなくなったもの。
+
+    台本は書いたときの訳で確かめてある。訳が変われば表示（試訳・出典）も合わなくなるので、
+    書き直すまで公開しない（koten script --force）。
+    """
+    out = []
+    for cid, tr in pinned(script).items():
+        cur = readings.get(cid)
+        if cur is None:
+            out.append(
+                f"{cid}：台本の訳 {tr['ref']} が使えなくなった（koten script --force で書き直す）"
+            )
+        elif cur.ref != tr["ref"] or (tr.get("sha") and cur.sha != tr["sha"]):
+            out.append(
+                f"{cid}：一節の日本語が台本のあとで変わった（台本 {tr['ref']}・今 {cur.ref}。"
+                "koten script --force で書き直す）"
+            )
+    return out

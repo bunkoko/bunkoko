@@ -375,3 +375,101 @@ def test_cli_flow(senv, settings_file, monkeypatch):
     assert reading_for(connect(senv.ssd_root), "lunyu:1.1").ref == "S-lunyu-1.1-1"
     r = runner.invoke(app, ["shiyaku", "list", "--status", "approved", *base])
     assert "S-lunyu-1.1-1" in r.output and "「試訳」と表示" in r.output
+
+
+def test_source_and_basis_must_stay_usable(senv, tmp_path):
+    conn = senv.conn
+    m = gather(conn, senv.canon, "lunyu:1.1")
+    sy = run_flow(m, Drafter(GOOD), Judge(ok_answer("I-kun-1.1")), PROMPTS, FlowConfig(),
+                  shiyaku_id="S-lunyu-1.1-1")
+    save(conn, sy)
+    approve(conn, sy, by="owner")
+    assert approved_for(conn, "lunyu:1.1") is not None
+    cfg = tmp_path / "c5"
+    cfg.mkdir()
+    ledger(cfg)
+    rows = (cfg / "renderings.csv").read_text("utf-8").splitlines()
+    rows = [r.replace(",verified,owner,2026-10-29", ",transcribed,,") if "I-orig-1.1" in r
+            else r for r in rows]
+    (cfg / "renderings.csv").write_text("\n".join(rows) + "\n", "utf-8")
+    build_refs(conn, cfg)
+    assert approved_for(conn, "lunyu:1.1") is None  # 原文が確かめ済みでなくなった
+    ledger(cfg)
+    rows = (cfg / "renderings.csv").read_text("utf-8").splitlines()
+    (cfg / "renderings.csv").write_text(
+        "\n".join(r for r in rows if "I-kun-1.1" not in r) + "\n", "utf-8"
+    )
+    build_refs(conn, cfg)
+    assert approved_for(conn, "lunyu:1.1") is None  # 見せた時代の解釈が無くなった
+
+
+def test_kanbun_is_not_relayed_and_ranges_are_not_readings(settings_file, tmp_path):
+    s = load_settings(settings_file)
+    cfg = tmp_path / "c6"
+    cfg.mkdir()
+    ledger(cfg)
+    rows = (cfg / "renderings.csv").read_text("utf-8").splitlines()
+    rows = [r for r in rows if "I-orig-1.1" not in r]
+    # 範囲で結び付けた古い日本語訳（1.3〜1.5）
+    rows.append("I-shimo-1.3,lunyu:1.3,lunyu:1.5,R-shimo,translation,ja,三章分の訳。,,さんしょうぶんのやく,"
+                "4ページ,verified,owner,2026-10-29,")
+    (cfg / "renderings.csv").write_text("\n".join(rows) + "\n", "utf-8")
+    conn = connect(s.ssd_root)
+    build_refs(conn, cfg)
+    canon = load_canon(DEFAULT_CONFIG_DIR)
+    with pytest.raises(ShiyakuError, match="白文"):  # 論語は英訳から訳さない（D-037）
+        gather(conn, canon, "lunyu:1.1")
+    assert reading_for(conn, "lunyu:1.4") is None  # 範囲の訳は一節の日本語にしない
+    with pytest.raises(ShiyakuError, match="範囲"):
+        gather(conn, canon, "lunyu:1.4")
+
+
+def test_pd_in_the_same_book_blocks_paragraphs(settings_file, tmp_path):
+    """段落（2.p1）は、同じ巻に古い日本語訳（2.1）があれば AI の訳を作らない（D-014）。"""
+    s = load_settings(settings_file)
+    cfg = tmp_path / "c7"
+    cfg.mkdir()
+    ledger(cfg)
+    rows = (cfg / "renderings.csv").read_text("utf-8").rstrip("\n")
+    rows += ("\nI-jp-2.1,meditations:2.1,,R-shimo,translation,ja,朝にはこう言え。,,"
+             "あさにはこういえ,9ページ,verified,owner,2026-10-29,\n")
+    (cfg / "renderings.csv").write_text(rows, "utf-8")
+    conn = connect(s.ssd_root)
+    build_refs(conn, cfg)
+    with pytest.raises(ShiyakuError, match="同じ巻"):
+        gather(conn, load_canon(DEFAULT_CONFIG_DIR), "meditations:2.p1")
+    assert reading_for(conn, "meditations:2.p1") is None
+    assert reading_for(conn, "meditations:2.1").kind == "pd"
+
+
+def test_unreadable_answers_stop_only_that_passage(senv, settings_file, monkeypatch):
+    class Mumbling(Judge):
+        def complete(self, system, user, schema=None):
+            return "判定できませんでした。"
+
+    m = gather(senv.conn, senv.canon, "lunyu:1.1")
+    with pytest.raises(ShiyakuLLMError, match="読めませんでした"):
+        run_flow(m, Drafter(GOOD), Mumbling(ok_answer()), PROMPTS, FlowConfig(), shiyaku_id="S-x")
+    calls = iter([Drafter(GOOD), Mumbling(ok_answer())])
+    monkeypatch.setattr("koten.llm.make_llm", lambda conf, model=None: next(calls))
+    r = CliRunner().invoke(app, ["shiyaku", "draft", "--passage", "lunyu:1.1", "--passage",
+                                 "hojoki:1", "--settings", str(settings_file)])
+    assert r.exit_code == 1 and isinstance(r.exception, SystemExit), r.output
+    assert "hojoki:1" in r.output  # 次の一節も試す
+
+
+def test_saves_never_overwrite(senv):
+    conn = senv.conn
+    m = gather(conn, senv.canon, "lunyu:1.1")
+    a = run_flow(m, Drafter(GOOD), Judge(ok_answer("I-kun-1.1")), PROMPTS, FlowConfig(),
+                 shiyaku_id="S-lunyu-1.1-1")
+    b = run_flow(m, Drafter(GOOD + "うん。"), Judge(ok_answer("I-kun-1.1", n=3)), PROMPTS,
+                 FlowConfig(), shiyaku_id="S-lunyu-1.1-1")
+    save(conn, a)
+    approve(conn, get(conn, a.shiyaku_id), by="owner")
+    save(conn, b)  # 同じ ID で作っていても、次の番号になる（承認済みを上書きしない）
+    assert b.shiyaku_id == "S-lunyu-1.1-2" and get(conn, a.shiyaku_id).status == "approved"
+    stale = get(conn, b.shiyaku_id)
+    reject(conn, get(conn, b.shiyaku_id), note="x")
+    with pytest.raises(ShiyakuError, match="読んだあとで変わりました"):
+        approve(conn, stale, by="owner")
