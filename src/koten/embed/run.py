@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from itertools import chain
 from pathlib import Path
 
 import numpy as np
@@ -78,7 +79,13 @@ def run_embed(
             json.dumps({"model": encoder.name, "dim": encoder.dim, "augment": source}), "utf-8"
         )
 
+    from koten.canon.build import iter_canon, reembed_path
+
     done = embedded_ids(out_dir)
+    # 作り直した古典の一節の候補は、埋め込み直す（あとから書いた埋め込みが使われる）
+    redo_path = reembed_path(hdd_root)
+    redo = set(json.loads(redo_path.read_text("utf-8"))) if redo_path.exists() else set()
+    done -= redo
     seq = len(data_files(out_dir, "shard-*.npy"))
     pending: list[dict] = []
     embedded = 0
@@ -102,11 +109,12 @@ def run_embed(
         log(f"  {embedded} 件を埋め込みました")
         pending = []
 
-    for c in iter_candidates(augment_dir):
+    for c in chain(iter_candidates(augment_dir), iter_canon(hdd_root)):
         if c["candidate_id"] in done:
             continue
         pending.append(c)
         if len(pending) >= shard_size:
             flush()
     flush()
+    redo_path.unlink(missing_ok=True)
     return EmbedResult(embedded=embedded, skipped=len(done), out_dir=out_dir)

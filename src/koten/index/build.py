@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from datetime import UTC, datetime
+from itertools import chain
 from pathlib import Path
 
 import numpy as np
@@ -77,9 +78,11 @@ def build_index(
     ids, vecs = load_embeddings(emb_dir(hdd_root, model))
     row_of = {cid: i for i, cid in enumerate(ids)}
 
+    from koten.canon.build import iter_canon
+
     cache: list[dict] = []
     dropped_license = missing_emb = 0
-    for c in iter_candidates(augment_dir):
+    for c in chain(iter_candidates(augment_dir), iter_canon(hdd_root)):
         w = works.get(c["work_id"])
         if w is None or not is_usable(w["license"]):
             dropped_license += 1  # R1：使用可でない作品の候補は検索に出さない
@@ -87,7 +90,10 @@ def build_index(
         if c["candidate_id"] not in row_of:
             missing_emb += 1
             continue
-        cache.append({**c, **{n: w.get(n) for n, _ in WORK_FIELDS}})
+        row = {**c, **{n: w.get(n) for n, _ in WORK_FIELDS}}
+        # 古典の一節（M8b）は、NDL の資料の本文なら候補ごとに要確認にする
+        row["review_required"] = bool(w.get("review_required")) or bool(c.get("review_required"))
+        cache.append(row)
     log(f"候補 {len(cache)} 件（権利で除外 {dropped_license}、埋め込み未作成 {missing_emb}）")
 
     order = [row_of[c["candidate_id"]] for c in cache]

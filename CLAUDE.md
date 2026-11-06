@@ -54,4 +54,5 @@
 - uv run koten ref attach --episode E… --chapter ch2 --id I-…（確かめ済みの時代の解釈・語釈を企画の章に付ける。--remove で外す）。悩みの言葉の語釈は企画が自動で付ける
 - uv run koten check list --episode E… → check run --episode E… --claim C5 --book B-… --page 23ページ（本の該当箇所を貼り付けて Ctrl-D。手元の AI で判定だけを残す）→ check status（公開の保留）
 - uv run koten shiyaku draft --passage lunyu:1.1（古典の一節の訳を Opus が下書きし、コードと Sonnet の判定役が確かめる。古い日本語訳がある一節は作らない。D-014・D-037）→ shiyaku show --id S-… で読む → shiyaku approve --id S-…（台本で使える）。今の本との照合は任意：check list --shiyaku S-… → check run --shiyaku S-… --claim T1 …
+- uv run koten canon build（資料の本文がある古典の一節を検索の候補にする。手元の Ollama。続けて embed → index build）／ canon coverage（古い日本語訳の無い一節の割合）
 - uv run koten ref ndl-snapshot --ref R-… --koma all（国会図書館の資料を一度だけまとめて取る。マニフェストで公開範囲を確かめ、3秒あけて取る。一度だけ取る使い方は継続的な利用に当たらないと判断した（D-003）。手順は docs/ref_sources.md）

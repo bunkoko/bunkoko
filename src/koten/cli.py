@@ -3025,6 +3025,76 @@ def shiyaku_reject(
     typer.echo(f"{sy.shiyaku_id} を使わないことにしました")
 
 
+canon_app = typer.Typer(
+    no_args_is_help=True,
+    help="古典の一節（論語の章・自省録の段落など）を、悩みの検索の候補にする（M8b）",
+)
+app.add_typer(canon_app, name="canon")
+
+
+@canon_app.command("build")
+def canon_build(settings: SettingsOpt = None) -> None:
+    """資料の本文がある一節から、検索の候補を作る（手元の Ollama が要旨・テーマ・悩みを書く）。
+
+    台本で日本語を出せる一節（古い日本語訳・承認済みの訳がある、または訳の材料がそろっている）
+    だけを候補にする。続けて koten embed → koten index build で検索に入る。
+    """
+    from koten.augment.extract import AugmentConfig, load_themes
+    from koten.canon.build import build_canon
+    from koten.db import connect
+    from koten.llm import make_llm
+    from koten.ref.texts import load_canon
+
+    s = _settings(settings)
+    hdd = _hdd(s)
+    conn = connect(s.ssd_root)
+    cfg = AugmentConfig.from_settings(s.section("augment"))
+    res = build_canon(
+        conn,
+        hdd,
+        load_canon(s.config_dir),
+        make_llm(s.section("llm.augment")),
+        s.config_dir.parent / "prompts",
+        load_themes(s.config_dir),
+        cfg,
+        prompt=s.section("canon").get("prompt", "canon_augment_v1"),
+        min_versions=int(s.section("shiyaku").get("min_versions", 2)),
+        log=typer.echo,
+    )
+    typer.echo(
+        f"古典の一節の候補 {res.candidates} 件（新しく作った {res.made}・前のまま {res.kept}・"
+        f"作れなかった {len(res.failed)}・候補にしない {len(res.skipped)}）"
+    )
+    for key, why in list(res.skipped.items())[:20]:
+        typer.echo(f"  候補にしない：{key}（{why[:80]}）")
+    typer.echo("続けて：uv run koten embed && uv run koten index build")
+    if res.failed:
+        raise typer.Exit(1)
+
+
+@canon_app.command("coverage")
+def canon_coverage(settings: SettingsOpt = None) -> None:
+    """作品ごとに、古い日本語訳がある一節と、自前の訳が要る一節を数える（D-023 の見積もり）。"""
+    from koten.canon.build import coverage
+    from koten.db import connect
+    from koten.ref.texts import load_canon
+
+    s = _settings(settings)
+    rows = coverage(
+        connect(s.ssd_root),
+        load_canon(s.config_dir),
+        min_versions=int(s.section("shiyaku").get("min_versions", 2)),
+    )
+    if not rows:
+        typer.echo("資料の本文がある一節がありません（koten ref build）")
+    for c in rows:
+        typer.echo(
+            f"{c.title}（{c.work}）：一節 {c.passages}　古い日本語訳あり {c.pd}・"
+            f"承認済みの訳 {c.approved}・訳を作れる {c.draftable}・材料が足りない {c.missing}"
+            f"　古い日本語訳の無い割合 {c.without_pd:.0%}"
+        )
+
+
 episode_app = typer.Typer(no_args_is_help=True, help="回（episodes）")
 app.add_typer(episode_app, name="episode")
 

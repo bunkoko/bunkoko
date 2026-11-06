@@ -1,10 +1,14 @@
 # 古典の作品と、一節の通し番号（passage_key = <作品記号>:<番号>）の付け方（M8a）
 # 訳・訓読・注釈を同じ一節に結び付けるための番号。pattern に合わない番号は読み込みで断る。
 # 章の分け方が版で違うときは、資料の台帳（ref_works.csv）の note に、どの分け方かを書く。
+# author：検索の候補（M8b。koten canon build）で使う作者の表示（無ければ空）。
+# heading：出典に出す章の見出し。番号の数字を {0}・{1} … の順に入れる（heading_p は p の付いた番号）
 works:
   lunyu:
     title: 論語
     lang: zh
+    author: 孔子
+    heading: 第{0}篇 第{1}章
     # Legge の英訳（Standard Ebooks 版の chapter-篇-章）と同じ分け方。朱熹『論語集注』の
     # 章立てとされる（要確認）。郷党篇などは本によって分け方が違うので、ほかの本の章は人が対応づける
     numbering: 篇.章（学而第一の第1章 = 1.1。Legge の分け方）
@@ -12,42 +16,56 @@ works:
   mengzi:
     title: 孟子
     lang: zh
+    author: 孟子
     numbering: 篇.上下.章（梁恵王上の第1章 = 1a.1）
     pattern: '^\d+[ab]\.\d+$'
   laozi:
     title: 老子
     lang: zh
+    author: 老子
+    heading: 第{0}章
     numbering: 章（81章）
     pattern: '^\d+$'
   hyakunin:
     title: 百人一首
     lang: ja
+    author: ""
+    heading: 第{0}番
     numbering: 歌番号（1〜100）
     pattern: '^\d+$'
   tsurezure:
     title: 徒然草
     lang: ja
+    author: 兼好
+    heading: 第{0}段
     numbering: 段（序段は0）
     pattern: '^\d+$'
   hojoki:
     title: 方丈記
     lang: ja
+    author: 鴨長明
     numbering: 段（自分たちで分ける。分け方は台帳の note に書く）
     pattern: '^\d+$'
   meditations:
     title: 自省録
     lang: grc
+    author: マルクス・アウレリウス
+    heading: 第{0}巻 第{1}節
+    heading_p: 第{0}巻
     # 節の番号が確かめられていない段落は「巻.p段落」（Long 訳の Standard Ebooks 版の段落の順）。
     # 段落と節は一致しない（第11巻など）。画面では、節の番号を確かめたものだけ節まで出す
     numbering: 巻.節（第2巻の第1節 = 2.1）。節が未確認の段落は 巻.p段落（2.p3）
     pattern: '^\d+\.p?\d+$'
   enchiridion:
-    title: 提要（エピクテトス）
+    title: 提要
     lang: grc
+    author: エピクテトス
+    heading: 第{0}章
     numbering: 章
     pattern: '^\d+$'
   hamlet:
     title: ハムレット
     lang: en
+    author: シェイクスピア
     numbering: 幕.場.台詞の順番（行番号は版で違うので、底本での台詞の順番）
     pattern: '^\d+\.\d+\.\d+$'

@@ -34,6 +34,9 @@ retries = 2
 batch_size = 200              # この件数ごとに HDD へまとめて書く
 context_chars = 200
 
+[canon]                       # 古典の一節を検索の候補にする（koten canon build。M8b）。LLM は llm.augment
+prompt = "canon_augment_v1"   # prompts/<prompt>.md
+
 [llm.check]                   # 今の本（著作権あり）での照合（SPEC R8・D-017）。手元の Ollama だけ（クラウド不可）
 provider = "ollama"
 endpoint = "http://127.0.0.1:11434"
