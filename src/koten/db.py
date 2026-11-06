@@ -3,7 +3,7 @@
 悩み（worries）・統計（stats）・回（episodes）・使用履歴（usage）・検索文の控え（query_cache）。
 背景の事実（facts・fact_sources・fact_usage）と、その元になる人物・作品の書誌（persons・works_meta）。
 資料の台帳（ref_works）と、時代の解釈（renderings）・昔の辞書の語釈（dict_entries）。
-今の本（S4）での照合の判定（checks。本の文は持たない）。
+今の本（S4）での照合の判定（checks。本の文は持たない）。自前の訳（shiyaku。M8b）。
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import re
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -244,7 +244,8 @@ CREATE TABLE IF NOT EXISTS checks (
     method TEXT NOT NULL,                -- ollama:モデル名 / human
     checked_by TEXT NOT NULL,
     checked_at TEXT NOT NULL,
-    note TEXT                            -- 自分の言葉で60字まで（本の文は書かない）
+    note TEXT,                           -- 自分の言葉で60字まで（本の文は書かない）
+    shiyaku_id TEXT                      -- 自前の訳の照合のとき（episode_id は空。M8b）
 );
 CREATE INDEX IF NOT EXISTS checks_episode ON checks(episode_id);
 
@@ -252,6 +253,33 @@ CREATE INDEX IF NOT EXISTS checks_episode ON checks(episode_id);
 CREATE TABLE IF NOT EXISTS s4_titles (
     title TEXT PRIMARY KEY
 );
+
+-- 自前の訳（M8b。koten shiyaku）。AI の下書き → コードの確かめ → 判定役（下書きと別の LLM。
+-- D-023）→ 人の承認。台本で使えるのは approved だけ。今の本（S4）の文は入れない
+CREATE TABLE IF NOT EXISTS shiyaku (
+    shiyaku_id TEXT PRIMARY KEY,         -- S-lunyu-1.1-1
+    passage_key TEXT NOT NULL,           -- lunyu:1.1 など（config/canon.yaml）
+    kind TEXT NOT NULL,                  -- shiyaku（外国語の原文から。「試訳」と出す）
+                                         -- relay（保護期間の切れた外国語の訳から。出典だけ。D-024）
+                                         -- modern（日本の古文を今の言葉に。表示なし。D-023）
+    text TEXT NOT NULL,                  -- 自前の日本語の訳
+    source_id TEXT NOT NULL,             -- 訳した元の本文（renderings の I-…）
+    source_sha TEXT NOT NULL,            -- そのときの元の本文の指紋（変わったら使わない）
+    basis_ids TEXT NOT NULL,             -- JSON 配列。下書きと判定に見せた時代の解釈（I-…）
+    label TEXT NOT NULL,                 -- 画面と説明欄の表示（試訳 / ロングの英訳（1862）/ 空）
+    status TEXT NOT NULL,                -- draft / flagged / judged / approved / rejected
+    issues TEXT NOT NULL,                -- JSON 配列。コードの確かめと判定役の問題
+    judge_json TEXT,                     -- 判定役の1文ずつの答え
+    divided INTEGER NOT NULL DEFAULT 0,  -- 読み方が分かれる（人が承認のときに確かめた）
+    drafter TEXT NOT NULL,
+    judge TEXT,
+    created_at TEXT NOT NULL,
+    approved_by TEXT,
+    approved_at TEXT,
+    note TEXT,
+    text_sha TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS shiyaku_passage ON shiyaku(passage_key);
 
 -- 国会図書館のマニフェストで見た公開範囲（koten ref ndl-snapshot。HDD が無くても ref build が見る）
 CREATE TABLE IF NOT EXISTS ndl_checks (
@@ -277,6 +305,7 @@ def connect(ssd_root: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
     _add_missing_columns(conn, "stats", {"trend": "TEXT", "trend_note": "TEXT", "status": "TEXT"})
+    _add_missing_columns(conn, "checks", {"shiyaku_id": "TEXT"})
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)", (SCHEMA_VERSION,)
     )

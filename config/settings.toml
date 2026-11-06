@@ -82,6 +82,28 @@ draft_prompt = "facts_draft_v1"
 max_facts = 8                 # 1人（1作品）あたりの下書きの数
 wikitext_max_chars = 30000    # AI に渡すウィキペディアの wikitext の長さの上限
 
+[llm.shiyaku]                 # 自前の訳の下書き（koten shiyaku draft。M8b）。見せるのは原文と時代の解釈だけ
+provider = "claude_cli"
+command = "claude"
+model = "opus"
+effort = "xhigh"
+extra_args = ["--safe-mode"]
+timeout_sec = 1200
+
+[llm.shiyaku_judge]           # 自前の訳の判定役。下書きとは別のモデルにする（D-023。利用者 2026-11-06）
+provider = "claude_cli"
+command = "claude"
+model = "sonnet"
+effort = "high"
+extra_args = ["--safe-mode"]
+timeout_sec = 1200
+
+[shiyaku]                     # docs/shiyaku.md・D-014・D-023・D-024
+draft_prompt = "shiyaku_draft_v1"
+judge_prompt = "shiyaku_judge_v1"
+retries = 2                   # コードの確かめと判定役で書き直す回数
+min_versions = 2              # 漢文・古文の訳に要る、互いに独立した時代の解釈の数
+
 [llm.worries]                 # 悩みの正規化（件数が少ないので augment と同じローカルLLMを使う）
 provider = "ollama"
 endpoint = "http://127.0.0.1:11434"

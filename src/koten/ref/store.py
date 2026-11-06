@@ -203,7 +203,8 @@ def _usable_join(table: str) -> str:
         f"SELECT t.*, w.title AS ref_title, w.volume AS ref_volume, w.edition AS ref_edition, "
         f"w.pub_year AS ref_pub_year, w.credit AS ref_credit, w.license AS license, "
         f"w.kind AS ref_kind, w.pid AS ref_pid, w.url AS ref_url, w.tradition AS ref_tradition, "
-        f"w.source AS ref_source, w.first_pub_year AS ref_first_pub_year "
+        f"w.source AS ref_source, w.first_pub_year AS ref_first_pub_year, "
+        f"w.based_on AS ref_based_on "
         f"FROM {table} t JOIN ref_works w ON w.ref_id = t.ref_id "
         f"WHERE w.license IN ('PD_JP', 'CC0', 'CC_BY')"
     )

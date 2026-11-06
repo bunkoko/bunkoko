@@ -74,3 +74,23 @@ def claims(script: dict[str, Any], resolver: Resolver, *, everything: bool = Fal
                     )
                 )
     return out
+
+
+def text_claims(owner_id: str, text: str) -> list[Claim]:
+    """自前の訳（M8b）の文を、番号つきで並べる（番号は T1…、記録の ID は S-…#1）。
+
+    訳は全部が自分たちの言葉なので、言い回しの近さは文全体で数える。
+    """
+    return [
+        Claim(
+            number=f"T{k}",
+            key=f"{owner_id}#{k}",
+            chapter_id="",
+            role="shiyaku",
+            text=sent,
+            context=text,
+            sha=sha(sent),
+            own=sent,
+        )
+        for k, sent in enumerate(split_sentences(text), start=1)
+    ]

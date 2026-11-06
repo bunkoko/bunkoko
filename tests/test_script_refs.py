@@ -362,6 +362,7 @@ def test_ref_attach_command(env, settings_file):
     after = next(c for c in plan_of(env, eid)["chapters"] if c["chapter_id"] == ch["chapter_id"])
     assert after["ref_ids"] == [INTERP] and after["target_sec"] == before + 25
     assert INTERP in plan_of(env, eid)["refs"]
+    assert plan_of(env, eid)["schema_version"] == "1.3"  # 付けても企画の版を下げない
     # 確かめ中のものは付けられない
     r = CliRunner().invoke(
         app,

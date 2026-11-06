@@ -5,6 +5,8 @@
 - 内容が食い違う（differs）か、台本の文が本の言い回しに近いなら、その回の公開を保留する
 - 保留は、その文を直してから同じ本でもう一度照合し、same か not_covered になれば解ける。
   文が台本から消えたときは、koten check resolve で理由を書いて解く
+- 自前の訳（M8b）も、訳の文ごとに照合できる（任意。利用者 2026-11-06）。記録は episode_id を
+  空にし、shiyaku_id に訳の ID を入れる。保留のある訳は承認できず、使った回も保留する
 """
 
 from __future__ import annotations
@@ -44,17 +46,21 @@ def record(
     checked_by: str,
     note: str = "",
     now: datetime | None = None,
+    shiyaku_id: str | None = None,
 ) -> int:
+    """判定を1つ残す。自前の訳の照合のときは episode_id を空にし、shiyaku_id を渡す。"""
     if len(note) > NOTE_MAX:
         raise ValueError(f"メモは{NOTE_MAX}字まで（本の文を書かない）")
+    if bool(episode_id) == bool(shiyaku_id):
+        raise ValueError("回の ID か自前の訳の ID の、どちらか1つを渡す")
     with conn:
         cur = conn.execute(
             "INSERT INTO checks(episode_id, claim_key, claim_sha, claim_text, book_id, "
             "book_label, locator, verdict, close_wording, run_len, share, method, checked_by, "
-            "checked_at, note) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "checked_at, note, shiyaku_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                episode_id,
+                episode_id or "",
                 claim.key,
                 claim.sha,
                 claim.text,
@@ -69,19 +75,25 @@ def record(
                 checked_by,
                 (now or datetime.now(UTC)).isoformat(timespec="seconds"),
                 note or None,
+                shiyaku_id,
             ),
         )
     return int(cur.lastrowid)
 
 
-def latest(conn: sqlite3.Connection, episode_id: str) -> dict[tuple[str, str], dict[str, Any]]:
+def _rows(conn: sqlite3.Connection, episode_id: str, shiyaku_id: str | None) -> list[dict]:
+    if shiyaku_id:
+        sql, arg = "SELECT * FROM checks WHERE shiyaku_id = ? ORDER BY check_id", shiyaku_id
+    else:
+        sql, arg = "SELECT * FROM checks WHERE episode_id = ? ORDER BY check_id", episode_id
+    return [dict(r) for r in conn.execute(sql, (arg,))]
+
+
+def latest(
+    conn: sqlite3.Connection, episode_id: str, *, shiyaku_id: str | None = None
+) -> dict[tuple[str, str], dict[str, Any]]:
     """文と本の組ごとの、いちばん新しい判定。"""
-    out: dict[tuple[str, str], dict[str, Any]] = {}
-    for r in conn.execute(
-        "SELECT * FROM checks WHERE episode_id = ? ORDER BY check_id", (episode_id,)
-    ):
-        out[(r["claim_key"], r["book_id"])] = dict(r)
-    return out
+    return {(r["claim_key"], r["book_id"]): r for r in _rows(conn, episode_id, shiyaku_id)}
 
 
 def _bad(r: dict[str, Any]) -> bool:
@@ -94,7 +106,13 @@ def _good(r: dict[str, Any]) -> bool:
     return r["verdict"] in ("same", "not_covered") and not r["close_wording"]
 
 
-def holds(conn: sqlite3.Connection, episode_id: str, current: list[Claim]) -> list[Hold]:
+def holds(
+    conn: sqlite3.Connection,
+    episode_id: str,
+    current: list[Claim],
+    *,
+    shiyaku_id: str | None = None,
+) -> list[Hold]:
     """公開を保留する理由（空なら保留しない）。
 
     current は今の台本の全部の文（claims(..., everything=True)）。保留は文の中身（指紋）に付く：
@@ -105,12 +123,7 @@ def holds(conn: sqlite3.Connection, episode_id: str, current: list[Claim]) -> li
     """
     by_sha = {c.sha: c for c in current}
     at_key = {c.key: c for c in current}
-    rows = [
-        dict(r)
-        for r in conn.execute(
-            "SELECT * FROM checks WHERE episode_id = ? ORDER BY check_id", (episode_id,)
-        )
-    ]
+    rows = _rows(conn, episode_id, shiyaku_id)
     out: list[Hold] = []
     seen: set[tuple[str, str]] = set()
     for i, r in enumerate(rows):

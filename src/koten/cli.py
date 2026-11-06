@@ -2355,7 +2355,9 @@ def ref_attach(
     ch["target_sec"] = int(ch["target_sec"] + (sum(after) - sum(before)) / 2)
     plan["target_total_sec"] = sum(c["target_sec"] for c in plan["chapters"])
     plan["refs"] = ref_shas(conn, [r for c in plan["chapters"] for r in c.get("ref_ids", [])])
-    plan["schema_version"] = "1.2"
+    # 語釈・解釈が入るのは 1.2 から。それより新しい版の企画は、版を下げない
+    if plan.get("schema_version", "1.0") < "1.2":
+        plan["schema_version"] = "1.2"
     with conn:
         conn.execute(
             "UPDATE episodes SET plan_json = ? WHERE episode_id = ?",
@@ -2495,6 +2497,32 @@ def _episode_claims(s: Settings, episode: str, *, everything: bool = True):
     return conn, claims(script, resolver, everything=everything)
 
 
+def _shiyaku_claims(s: Settings, shiyaku_id: str):
+    """自前の訳と、その文の一覧（M8b）。訳が無ければ止める。"""
+    from koten.check.claims import text_claims
+    from koten.db import connect
+    from koten.shiyaku.store import get
+
+    conn = connect(s.ssd_root)
+    sy = get(conn, shiyaku_id)
+    if sy is None:
+        typer.secho(f"{shiyaku_id} という訳はありません（koten shiyaku list）", fg="red", err=True)
+        raise typer.Exit(2)
+    return conn, text_claims(shiyaku_id, sy.text)
+
+
+def _check_target(s: Settings, episode: str | None, shiyaku: str | None, *, everything=True):
+    """照合の相手：回の台本の文か、自前の訳の文。（conn, 文の一覧, 回の ID, 訳の ID）"""
+    if bool(episode) == bool(shiyaku):
+        typer.secho("--episode か --shiyaku の、どちらか1つを付けてください", fg="red", err=True)
+        raise typer.Exit(2)
+    if shiyaku:
+        conn, current = _shiyaku_claims(s, shiyaku)
+        return conn, current, "", shiyaku
+    conn, current = _episode_claims(s, episode, everything=everything)
+    return conn, current, episode, None
+
+
 def _books(s: Settings):
     from koten.check.books import BooksError, read_books
 
@@ -2519,20 +2547,23 @@ def check_books(settings: SettingsOpt = None) -> None:
 
 @check_app.command("list")
 def check_list(
-    episode: Annotated[str, typer.Option(help="回の ID")],
+    episode: Annotated[str | None, typer.Option(help="回の ID")] = None,
+    shiyaku: Annotated[
+        str | None, typer.Option(help="自前の訳の ID（S-…。koten shiyaku list）")
+    ] = None,
     everything: Annotated[
         bool, typer.Option("--all", help="一節の無い章の文も出す（オープニングなど）")
     ] = False,
     settings: SettingsOpt = None,
 ) -> None:
-    """照合する台本の文（主張）を番号つきで出す。照合した文には判定を付ける。"""
+    """照合する台本の文（主張）か、自前の訳の文を番号つきで出す。照合した文には判定を付ける。"""
     from koten.check.compare import VERDICTS
     from koten.check.store import holds, latest
 
     s = _settings(settings)
-    conn, current = _episode_claims(s, episode)
-    done = latest(conn, episode)
-    shown = current if everything else _focus(s, episode)
+    conn, current, episode, shiyaku = _check_target(s, episode, shiyaku)
+    done = latest(conn, episode, shiyaku_id=shiyaku)
+    shown = current if everything or shiyaku else _focus(s, episode)
     for c in shown:
         typer.echo(f"{c.number}（{c.key}・{c.role}）{c.text}")
         for (key, book_id), r in done.items():
@@ -2542,8 +2573,8 @@ def check_list(
             close = "・言い回しが近い" if r["close_wording"] else ""
             old = "" if r["claim_sha"] == c.sha else "（照合のあと文が変わった）"
             typer.echo(f"    {book_id} {r['locator']}：{label}{close}{old}")
-    for h in holds(conn, episode, current):
-        typer.secho(f"公開保留：{h.reason}", fg="yellow")
+    for h in holds(conn, episode, current, shiyaku_id=shiyaku):
+        typer.secho(f"{'承認できない' if shiyaku else '公開保留'}：{h.reason}", fg="yellow")
 
 
 def _focus(s: Settings, episode: str):
@@ -2552,8 +2583,7 @@ def _focus(s: Settings, episode: str):
 
 @check_app.command("run")
 def check_run(
-    episode: Annotated[str, typer.Option(help="回の ID")],
-    claim: Annotated[str, typer.Option(help="文の番号（koten check list の C…）")],
+    claim: Annotated[str, typer.Option(help="文の番号（koten check list の C… か T…）")],
     book: Annotated[str, typer.Option(help="本の ID（config/ref_books.csv の B-…）")],
     page: Annotated[str, typer.Option(help="本の中の場所（例：23ページ）")],
     verdict: Annotated[
@@ -2572,9 +2602,13 @@ def check_run(
     keep_clipboard: Annotated[
         bool, typer.Option(help="照合のあと Mac のクリップボードを空にしない")
     ] = False,
+    episode: Annotated[str | None, typer.Option(help="回の ID")] = None,
+    shiyaku: Annotated[
+        str | None, typer.Option(help="自前の訳の ID（S-…。訳の文を照合するとき。M8b）")
+    ] = None,
     settings: SettingsOpt = None,
 ) -> None:
-    """台本の1文を、今の本の該当箇所と照らし合わせ、判定だけを残す。
+    """台本か自前の訳の1文を、今の本の該当箇所と照らし合わせ、判定だけを残す。
 
     本の該当箇所は、このあと貼り付けて Ctrl-D で終える（画面には出さない）。
     pbpaste | uv run koten check run … のようにパイプでも渡せる。
@@ -2591,7 +2625,7 @@ def check_run(
     if book not in books:
         typer.secho(f"{book} は台帳（config/ref_books.csv）にありません", fg="red", err=True)
         raise typer.Exit(2)
-    conn, current = _episode_claims(s, episode)
+    conn, current, episode, shiyaku = _check_target(s, episode, shiyaku)
     target = next((c for c in current if c.number == claim), None)
     if target is None:
         typer.secho(
@@ -2620,7 +2654,7 @@ def check_run(
                 err=True,
             )
             raise typer.Exit(2)
-        typer.echo(f"台本の文：{target.text}")
+        typer.echo(f"{'訳' if shiyaku else '台本'}の文：{target.text}")
         typer.echo(
             f"{books[book].label()} {page} の該当箇所を貼り付け、最後に Ctrl-D を押してください"
             "（画面には出しません。手元の AI にだけ渡し、保存しません）："
@@ -2669,6 +2703,7 @@ def check_run(
             method=method,
             checked_by=checker,
             note=note,
+            shiyaku_id=shiyaku,
         )
     except ValueError as e:
         typer.secho(str(e), fg="red", err=True)
@@ -2680,8 +2715,16 @@ def check_run(
         typer.echo(
             f"    言い回し：共通する最長の並び {run_len}字・4字の並びの {share:.0%} が本にある"
         )
-    held = holds(conn, episode, current)
-    if held:
+    held = holds(conn, episode, current, shiyaku_id=shiyaku)
+    if held and shiyaku:
+        typer.secho(f"この訳は承認できません（{len(held)}件）：", fg="yellow")
+        for h in held:
+            typer.echo(f"  {h.reason}")
+        typer.echo(
+            "本の言い回しを使わず、原文と時代の解釈から訳し直してください"
+            "（koten shiyaku draft）。新しい訳を同じ本でもう一度照合します"
+        )
+    elif held:
         typer.secho(f"この回は公開を保留します（{len(held)}件）：", fg="yellow")
         for h in held:
             typer.echo(f"  {h.reason}")
@@ -2736,6 +2779,228 @@ def check_resolve(
         typer.secho(str(e), fg="red", err=True)
         raise typer.Exit(2) from e
     typer.echo(f"{key} の保留を解きました（{n}件）")
+
+
+shiyaku_app = typer.Typer(
+    no_args_is_help=True,
+    help="自前の訳（M8b）：古典の一節を AI が下書きし、判定役と人が確かめる",
+)
+app.add_typer(shiyaku_app, name="shiyaku")
+
+SHIYAKU_STATUS = {
+    "draft": "下書き（コードの確かめが通らない）",
+    "flagged": "判定役が止めた（人が読んで決める）",
+    "judged": "判定役を通った（人の承認待ち）",
+    "approved": "承認済み（台本で使える）",
+    "rejected": "使わない",
+}
+
+
+def _shiyaku_or_exit(conn, shiyaku_id: str):
+    from koten.shiyaku.store import get
+
+    sy = get(conn, shiyaku_id)
+    if sy is None:
+        typer.secho(f"{shiyaku_id} という訳はありません（koten shiyaku list）", fg="red", err=True)
+        raise typer.Exit(2)
+    return sy
+
+
+@shiyaku_app.command("draft")
+def shiyaku_draft(
+    passage: Annotated[
+        list[str], typer.Option(help="一節の番号（例：lunyu:1.1。何度でも付けられる）")
+    ],
+    settings: SettingsOpt = None,
+) -> None:
+    """一節の訳を AI が下書きし、コードの確かめと判定役（別のモデル）に通す。承認は人がする。
+
+    保護期間の切れた日本語訳がある一節は作らない（D-014）。
+    """
+    from koten.db import connect
+    from koten.llm import make_llm
+    from koten.ref.texts import load_canon
+    from koten.shiyaku.flow import FlowConfig, ShiyakuLLMError, explain_kind, run_flow
+    from koten.shiyaku.material import gather
+    from koten.shiyaku.store import ShiyakuError, next_id, save
+
+    s = _settings(settings)
+    conn = connect(s.ssd_root)
+    canon = load_canon(s.config_dir)
+    conf = s.section("shiyaku")
+    cfg = FlowConfig(**{k: v for k, v in conf.items() if k in FlowConfig.__dataclass_fields__})
+    s4 = [r[0] for r in conn.execute("SELECT title FROM s4_titles")]
+    drafter = make_llm(s.section("llm.shiyaku"))
+    judge = make_llm(s.section("llm.shiyaku_judge"))
+    failed = 0
+    for key in passage:
+        try:
+            m = gather(conn, canon, key, min_versions=cfg.min_versions)
+        except ShiyakuError as e:
+            typer.secho(f"{key}：{e}", fg="red", err=True)
+            failed += 1
+            continue
+        typer.echo(
+            f"{key}（{m.title}）：{explain_kind(m.kind)}。元は {m.source['rendering_id']}、"
+            f"時代の解釈 {len(m.basis)}件（独立した版 {m.versions()}つ）"
+        )
+        try:
+            sy = run_flow(
+                m,
+                drafter,
+                judge,
+                s.config_dir.parent / "prompts",
+                cfg,
+                shiyaku_id=next_id(conn, key),
+                s4_titles=s4,
+                log=typer.echo,
+            )
+        except ShiyakuLLMError as e:
+            typer.secho(f"{key}：{e}", fg="red", err=True)
+            failed += 1
+            continue
+        save(conn, sy)
+        typer.echo(f"  {sy.shiyaku_id}：{SHIYAKU_STATUS[sy.status]}")
+        typer.echo(f"  {sy.text}")
+        for x in sy.issues:
+            typer.secho(f"  ・{x}", fg="yellow")
+        if sy.status in ("judged", "flagged"):
+            typer.echo(f"  読んで決める：uv run koten shiyaku show --id {sy.shiyaku_id}")
+    if failed:
+        raise typer.Exit(1)
+
+
+@shiyaku_app.command("list")
+def shiyaku_list(
+    status: Annotated[str | None, typer.Option(help="状態で絞る（judged など）")] = None,
+    passage: Annotated[str | None, typer.Option(help="一節の番号で絞る")] = None,
+    settings: SettingsOpt = None,
+) -> None:
+    """自前の訳を、状態と一緒に出す。"""
+    from koten.db import connect
+    from koten.shiyaku.store import list_shiyaku
+
+    conn = connect(_settings(settings).ssd_root)
+    rows = list_shiyaku(conn, status=status, passage_key=passage)
+    if not rows:
+        typer.echo("自前の訳はまだありません（koten shiyaku draft）")
+    for sy in rows:
+        label = f"「{sy.label}」と表示" if sy.label else "表示なし"
+        typer.echo(f"{sy.shiyaku_id} {sy.passage_key} {SHIYAKU_STATUS[sy.status]}（{label}）")
+        typer.echo(f"    {sy.text[:60]}{'…' if len(sy.text) > 60 else ''}")
+
+
+@shiyaku_app.command("show")
+def shiyaku_show(
+    id: Annotated[str, typer.Option("--id", help="訳の ID（S-…）")],
+    settings: SettingsOpt = None,
+) -> None:
+    """訳を、元の本文・時代の解釈・判定役の答えと並べて読む（承認の前に読む）。"""
+    from koten.check.store import holds
+    from koten.db import connect
+    from koten.ref.store import load_renderings
+    from koten.shiyaku.flow import explain_kind
+    from koten.shiyaku.material import describe
+    from koten.shiyaku.store import source_problem
+
+    s = _settings(settings)
+    conn = connect(s.ssd_root)
+    sy = _shiyaku_or_exit(conn, id)
+    typer.echo(f"{sy.shiyaku_id}（{sy.passage_key}）：{SHIYAKU_STATUS[sy.status]}")
+    typer.echo(f"種類：{explain_kind(sy.kind)}")
+    typer.echo(f"画面と説明欄の表示：{sy.label or '（なし）'}")
+    rows = load_renderings(conn, [sy.source_id, *sy.basis_ids])
+    src = rows.get(sy.source_id)
+    typer.echo(f"\n元の本文（{describe(src) if src else sy.source_id}）：")
+    typer.echo(f"  {(src or {}).get('text', '（使えなくなった）')}")
+    if problem := source_problem(conn, sy):
+        typer.secho(f"  ※{problem}", fg="red")
+    typer.echo("\n時代の解釈：")
+    for rid in sy.basis_ids:
+        r = rows.get(rid)
+        typer.echo(f"  {describe(r) if r else rid}")
+        typer.echo(f"    {r['text'] if r else '（使えなくなった）'}")
+    typer.echo("\n訳：")
+    sentences = {x.get("n"): x for x in sy.judge_json or []}
+    from koten.script.gates import split_sentences
+
+    for n, sent in enumerate(split_sentences(sy.text), start=1):
+        x = sentences.get(n) or {}
+        mark = {"supported": "○", "divided": "△", "unsupported": "×"}.get(x.get("verdict"), " ")
+        sup = "・".join(x.get("supported_by") or [])
+        typer.echo(f"  {mark} T{n} {sent}" + (f"（{sup}）" if sup else ""))
+        if x.get("problem"):
+            typer.secho(f"      {x['problem']}", fg="yellow")
+    for x in sy.issues:
+        typer.secho(f"・{x}", fg="yellow")
+    from koten.check.claims import text_claims
+
+    held = holds(conn, "", text_claims(sy.shiyaku_id, sy.text), shiyaku_id=sy.shiyaku_id)
+    for h in held:
+        typer.secho(f"今の本との照合：{h.reason}", fg="red")
+    if sy.judge:
+        typer.echo(f"\n下書き：{sy.drafter}　判定役：{sy.judge}")
+    if sy.status in ("judged", "flagged"):
+        extra = (
+            " --note 判定役の指摘を読んで、問題ないと判断した理由"
+            if sy.status == "flagged"
+            else ""
+        )
+        typer.echo(f"\n承認する：uv run koten shiyaku approve --id {sy.shiyaku_id}{extra}")
+        typer.echo(
+            f"今の本で照合する（任意）：uv run koten check list --shiyaku {sy.shiyaku_id}"
+        )
+
+
+@shiyaku_app.command("approve")
+def shiyaku_approve(
+    id: Annotated[str, typer.Option("--id", help="訳の ID（S-…）")],
+    divided: Annotated[
+        bool,
+        typer.Option(
+            "--divided", help="読み方が分かれる一節だと確かめた（語りで言えるようになる）"
+        ),
+    ] = False,
+    note: Annotated[str, typer.Option(help="メモ（判定役が止めた訳を承認するときは理由）")] = "",
+    by: Annotated[
+        str | None, typer.Option(help="承認した人（既定は KOTEN_CHECKER か owner）")
+    ] = None,
+    settings: SettingsOpt = None,
+) -> None:
+    """訳を読んで承認する（台本で使えるようになる）。"""
+    from koten.check.claims import text_claims
+    from koten.check.store import holds
+    from koten.db import connect
+    from koten.shiyaku.store import ShiyakuError, approve
+
+    conn = connect(_settings(settings).ssd_root)
+    sy = _shiyaku_or_exit(conn, id)
+    held = holds(conn, "", text_claims(sy.shiyaku_id, sy.text), shiyaku_id=sy.shiyaku_id)
+    checker = by or os.environ.get("KOTEN_CHECKER", "").strip() or "owner"
+    try:
+        approve(
+            conn, sy, by=checker, divided=divided, note=note, holds=[h.reason for h in held]
+        )
+    except ShiyakuError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
+    typer.echo(f"{sy.shiyaku_id} を承認しました（{sy.passage_key} の台本で使えます）")
+
+
+@shiyaku_app.command("reject")
+def shiyaku_reject(
+    id: Annotated[str, typer.Option("--id", help="訳の ID（S-…）")],
+    note: Annotated[str, typer.Option(help="使わない理由")],
+    settings: SettingsOpt = None,
+) -> None:
+    """訳を使わないことにする（承認済みのものも外せる。外した訳を使った回は人の確認へ）。"""
+    from koten.db import connect
+    from koten.shiyaku.store import reject
+
+    conn = connect(_settings(settings).ssd_root)
+    sy = _shiyaku_or_exit(conn, id)
+    reject(conn, sy, note=note)
+    typer.echo(f"{sy.shiyaku_id} を使わないことにしました")
 
 
 episode_app = typer.Typer(no_args_is_help=True, help="回（episodes）")
