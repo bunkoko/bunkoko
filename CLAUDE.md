@@ -50,7 +50,7 @@
 - uv run koten findings build（config/findings.csv の研究の一文を SSD に入れる。書き方は docs/findings.md）／ findings list
 - uv run koten ref check（config/ref_works.csv・ref_people.csv の資料を、関わった人全員の没年・団体名義・版・NDL の公開範囲で1冊ずつ判定する。書き込みはしない）
 - uv run koten ref build（台帳と、人が確かめた時代の解釈 renderings.csv・昔の辞書 dict_entries.csv から SSD の表を作り直す）→ ref show --word 普通 ／ --passage lunyu:1.1（手順は docs/ref_sources.md）
-- uv run koten ref fetch（台帳で使えると判定された古い英訳を Standard Ebooks から net.py で取り、一節ごとに分けて HDD に置く）→ ref build
+- uv run koten ref fetch（台帳で使えると判定された古い英訳を Standard Ebooks と Project Gutenberg のミラー（sources.yaml の gutenberg.mirror）から net.py で取り、一節ごとに分けて HDD に置く）→ ref build
 - uv run koten ref attach --episode E… --chapter ch2 --id I-…（確かめ済みの時代の解釈・語釈を企画の章に付ける。--remove で外す）。悩みの言葉の語釈は企画が自動で付ける
 - uv run koten check list --episode E… → check run --episode E… --claim C5 --book B-… --page 23ページ（本の該当箇所を貼り付けて Ctrl-D。手元の AI で判定だけを残す）→ check status（公開の保留）
 - uv run koten shiyaku draft --passage lunyu:1.1（古典の一節の訳を Opus が下書きし、コードと Sonnet の判定役が確かめる。古い日本語訳がある一節は作らない。D-014・D-037）→ shiyaku show --id S-… で読む → shiyaku approve --id S-…（台本で使える）。今の本との照合は任意：check list --shiyaku S-… → check run --shiyaku S-… --claim T1 …

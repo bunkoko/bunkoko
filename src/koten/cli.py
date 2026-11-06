@@ -2202,8 +2202,14 @@ def ref_build(settings: SettingsOpt = None) -> None:
             f"{ref_id}：{why}。この資料は使いません（台帳の ndl_access を直す）", fg="yellow"
         )
     if hdd is not None:
+        from koten.ref import gutenberg
+
         eds = editions(s.sources.get("standardebooks") or {})
-        for line in forget_unusable(hdd, works, eds, set(limited)):
+        removed = forget_unusable(hdd, works, eds, set(limited))
+        usable_works = {k: w for k, w in works.items() if k not in limited}
+        gut = gutenberg.editions(s.sources.get("gutenberg") or {})
+        removed += gutenberg.forget_unusable_raw(hdd, usable_works, gut)
+        for line in removed:
             typer.secho(f"使えない資料のものを HDD から消しました：{line}", fg="yellow")
         imported = load_imported(hdd)
     from koten.check.books import BooksError
@@ -2230,26 +2236,36 @@ def ref_fetch(
     ] = None,
     settings: SettingsOpt = None,
 ) -> None:
-    """古い英訳（Standard Ebooks）を net.py で取り、一節ごとに分けて HDD に置く。"""
+    """古い英訳（Standard Ebooks・Project Gutenberg のミラー）を net.py で取り、一節ごとに分けて
+    HDD に置く。"""
     import httpx
 
+    from koten.ref import gutenberg
     from koten.ref.standardebooks import EditionError, editions, import_edition
 
     s = _settings(settings)
     hdd = _hdd(s)
     conf = s.sources.get("standardebooks") or {}
-    eds = editions(conf)
+    gconf = s.sources.get("gutenberg") or {}
+    try:
+        eds = editions(conf)
+        geds = gutenberg.editions(gconf)
+    except (EditionError, gutenberg.GutenbergError) as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
     works = {w.ref_id: w for w in _registry(s)}
-    targets = ref or list(eds)
-    unknown = [t for t in targets if t not in eds]
+    targets = ref or [*eds, *geds]
+    unknown = [t for t in targets if t not in eds and t not in geds]
     if unknown:
         typer.secho(
-            f"sources.yaml の standardebooks.editions に無い ref_id：{'、'.join(unknown)}",
+            "sources.yaml の standardebooks.editions にも gutenberg.editions にも無い ref_id："
+            + "、".join(unknown),
             fg="red",
             err=True,
         )
         raise typer.Exit(2)
     fetcher = None
+    gfetcher = None
     failed = False
     for ref_id in targets:
         work = works.get(ref_id)
@@ -2269,10 +2285,16 @@ def ref_fetch(
             )
             failed = True
             continue
-        fetcher = fetcher or _make_fetcher(s, hdd / "raw" / "standardebooks")
         try:
-            r = import_edition(hdd, conf, eds[ref_id], work, fetcher, log=typer.echo)
-        except (EditionError, httpx.HTTPError) as e:
+            if ref_id in geds:
+                gfetcher = gfetcher or _make_fetcher(s, hdd / "raw" / "gutenberg")
+                r = gutenberg.import_edition(
+                    hdd, gconf, geds[ref_id], work, gfetcher, log=typer.echo
+                )
+            else:
+                fetcher = fetcher or _make_fetcher(s, hdd / "raw" / "standardebooks")
+                r = import_edition(hdd, conf, eds[ref_id], work, fetcher, log=typer.echo)
+        except (EditionError, gutenberg.GutenbergError, httpx.HTTPError) as e:
             typer.secho(f"{ref_id}：{e}", fg="red", err=True)
             failed = True
             continue

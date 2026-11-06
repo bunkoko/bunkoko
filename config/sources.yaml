@@ -99,3 +99,15 @@ standardebooks:
     R-long-meditations: {repo: marcus-aurelius_meditations_george-long, canon: meditations, split: meditations}
     R-legge-analects: {repo: confucius_analects_james-legge, canon: lunyu, split: analects}
 
+# 古い英訳（Project Gutenberg。M8b・D-037）。本体のサイト（www.gutenberg.org）からは取らない（robot の方針）。
+# mirror には、公式のミラーの一覧（gutenberg.org/MIRRORS.ALL。要確認）から選んだミラーの URL を書く。
+# 取る前に、資料の台帳（config/ref_works.csv）でその ref_id が使える（PD_JP）と判定されている必要がある
+# （source は gutenberg）。「Project Gutenberg」の名前は D-004 を確かめるまで画面・説明欄に出さない
+gutenberg:
+  mirror: ""
+  editions: {}
+    # 台帳の ref_id: {ebook: 本の番号, file: ミラーのファイル名, canon: config/canon.yaml の作品記号,
+    #   section_start: 節の始まりの正規表現（グループ1が番号）, book_heading: 巻の見出しの正規表現（任意）}
+    # 例（版の中身を見てから書く）：
+    # R-casaubon-meditations: {ebook: 2680, file: 2680-0.txt, canon: meditations,
+    #   book_heading: '^THE ([A-Z]+) BOOK$', section_start: '^([IVXLC]+)\. '}

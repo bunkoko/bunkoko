@@ -223,7 +223,7 @@ koten-videos/
 **Project Gutenberg**
 
 - 本体サイトは人の閲覧用で、プログラムからの取得はミラーを使う方針（[公式方針](https://www.gutenberg.org/policy/robot_access.html)、[解説](https://docs.ropensci.org/gutenbergr)）。カタログ（pg_catalog.csv）で対象を選び、本文はミラーか自前の rsync コピーから取る。
-- 本文前後の「*** START OF THE PROJECT GUTENBERG EBOOK」「*** END」の外側を除去する。
+- 本文前後の「*** START OF THE PROJECT GUTENBERG EBOOK」「*** END」の外側を除去する。取得は sources.yaml の gutenberg.mirror に書いたミラーから net.py で1冊ずつ（本体のサイトは断る）。節の番号はその版のもの（M8b。docs/shiyaku.md）。
 - 原著者と訳者の没年がともに1967年以前で、R4に当たらなければ PD_JP とする（例：古い英訳のストア派の著作）。
 - 「Project Gutenberg」の名前を動画の売り文句に使わない（商標。出典として記すことの可否は要確認）。
 - 古い英訳から日本語にした文は、画面と説明欄に元の訳の出典（例：ロングの英訳（1862））を示し、「試訳」とは書かない（R5・D-024）。英訳の文は説明欄に載せてもよい（任意）。

@@ -287,7 +287,7 @@ def test_ref_fetch_command(conf, tmp_path, monkeypatch):
     r = CliRunner().invoke(app, ["ref", "show", "--passage", "lunyu:1.2", "--all", *st])
     assert "The pupil said" in r.output and "[imported]" in r.output
     r = CliRunner().invoke(app, ["ref", "fetch", "--ref", "R-none", *st])
-    assert r.exit_code == 2 and "standardebooks.editions に無い" in r.output
+    assert r.exit_code == 2 and "gutenberg.editions にも無い" in r.output
 
 
 def test_build_without_hdd_keeps_imported_rows(conf, tmp_path):
