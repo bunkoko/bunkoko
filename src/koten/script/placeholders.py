@@ -4,6 +4,7 @@
 音声化・画面づくりの前に、DB の値で機械的に置き換える。これで引用文は必ず原文と一致する。
 
 - {{quote:<candidate_id>}}   一節の原文
+- {{quote_ja:<candidate_id>}} 古典の一節の日本語（古い日本語訳か、承認済みの自前の訳。M8b）
 - {{source:<candidate_id>}}  著者『作品名』（訳者訳）章（画面・語りで出典を言うとき）
 - {{author:<candidate_id>}}  著者名
 - {{title:<candidate_id>}}   『作品名』
@@ -91,6 +92,7 @@ class Resolver:
         facts: dict[str, Any] | None = None,
         refs: dict[str, dict[str, Any]] | None = None,
         findings: dict[str, dict[str, Any]] | None = None,
+        readings: dict[str, Any] | None = None,
     ):
         self.candidates = candidates
         self.stats = stats
@@ -98,6 +100,8 @@ class Resolver:
         self.facts = facts or {}  # この回の企画に付いた、使える事実だけ（koten.facts.model.Fact）
         self.refs = refs or {}  # この回の企画に付いた、確かめ済みの語釈・解釈だけ
         self.findings = findings or {}  # この回の企画に付いた、使える研究の一文だけ（D-034）
+        # 古典の一節の日本語（候補ID → koten.shiyaku.store.Reading。M8b）
+        self.readings = readings or {}
 
     def value(self, kind: str, key: str) -> str:
         key = key.strip()
@@ -108,8 +112,13 @@ class Resolver:
             if kind == "quote":
                 return c["quote_text"]
             if kind == "quote_ja":
-                # 外国語の一節の自前訳（M8 で候補表に持たせる）。まだ無いので解決できない
-                raise UnresolvedPlaceholder(f"{{{{quote_ja:{key}}}}}：自前訳がまだありません")
+                r = self.readings.get(key)
+                if r is None:
+                    raise UnresolvedPlaceholder(
+                        f"{{{{quote_ja:{key}}}}}：この一節の日本語がまだありません"
+                        "（koten shiyaku draft → approve）"
+                    )
+                return r.text
             if kind == "source":
                 return format_source(c)
             if kind == "author":

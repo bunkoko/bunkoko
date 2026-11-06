@@ -2476,6 +2476,19 @@ check_app = typer.Typer(
 app.add_typer(check_app, name="check")
 
 
+def _episode_holds(conn, episode: str, current) -> list:
+    """回の照合の保留（台本の文と、台本で使った自前の訳の文。M8b）。"""
+    import json
+
+    from koten.check.store import holds, translation_holds
+
+    row = conn.execute(
+        "SELECT script_json FROM episodes WHERE episode_id = ?", (episode,)
+    ).fetchone()
+    script = json.loads(row["script_json"]) if row and row["script_json"] else {}
+    return holds(conn, episode, current) + translation_holds(conn, script)
+
+
 def _episode_claims(s: Settings, episode: str, *, everything: bool = True):
     """回の台本と、その文（主張）の一覧。台本が無ければ止める。"""
     import json
@@ -2573,7 +2586,12 @@ def check_list(
             close = "・言い回しが近い" if r["close_wording"] else ""
             old = "" if r["claim_sha"] == c.sha else "（照合のあと文が変わった）"
             typer.echo(f"    {book_id} {r['locator']}：{label}{close}{old}")
-    for h in holds(conn, episode, current, shiyaku_id=shiyaku):
+    held = (
+        holds(conn, episode, current, shiyaku_id=shiyaku)
+        if shiyaku
+        else _episode_holds(conn, episode, current)
+    )
+    for h in held:
         typer.secho(f"{'承認できない' if shiyaku else '公開保留'}：{h.reason}", fg="yellow")
 
 
@@ -2715,7 +2733,11 @@ def check_run(
         typer.echo(
             f"    言い回し：共通する最長の並び {run_len}字・4字の並びの {share:.0%} が本にある"
         )
-    held = holds(conn, episode, current, shiyaku_id=shiyaku)
+    held = (
+        holds(conn, episode, current, shiyaku_id=shiyaku)
+        if shiyaku
+        else _episode_holds(conn, episode, current)
+    )
     if held and shiyaku:
         typer.secho(f"この訳は承認できません（{len(held)}件）：", fg="yellow")
         for h in held:
@@ -2743,7 +2765,7 @@ def check_status(
 ) -> None:
     """照合の判定の数と、公開を保留する理由を出す（保留があれば終了コード 1）。"""
     from koten.check.compare import VERDICTS
-    from koten.check.store import holds, summary
+    from koten.check.store import summary
 
     conn, current = _episode_claims(_settings(settings), episode)
     counts = summary(conn, episode)
@@ -2752,7 +2774,7 @@ def check_status(
         "照合："
         + ("、".join(f"{names.get(k, k)} {v}" for k, v in sorted(counts.items())) or "まだ無し")
     )
-    held = holds(conn, episode, current)
+    held = _episode_holds(conn, episode, current)
     for h in held:
         typer.secho(f"公開保留：{h.reason}", fg="yellow")
     if held:
@@ -3027,17 +3049,22 @@ def episode_list(
             "SELECT DISTINCT episode_id FROM checks WHERE verdict = 'differs' OR close_wording = 1"
         )
     }
+    if conn.execute(
+        "SELECT 1 FROM checks WHERE shiyaku_id IS NOT NULL AND (verdict = 'differs' "
+        "OR close_wording = 1) LIMIT 1"
+    ).fetchone():
+        # 保留のある訳を使った回があるかもしれない（台本のある回だけを見る）
+        maybe |= {r["episode_id"] for r in rows if r["script_json"]}
     s = _settings(settings)
     held = set()
     for eid in maybe & {r["episode_id"] for r in rows}:
-        from koten.check.store import holds
 
         try:
             hc, current = _episode_claims(s, eid)
         except typer.Exit:
             held.add(eid)  # 台本が無くなった回は、念のため保留として出す
             continue
-        if holds(hc, eid, current):
+        if _episode_holds(hc, eid, current):
             held.add(eid)
     for r in rows:
         review = "　※要確認" if r["review_required"] else ""

@@ -656,7 +656,15 @@ JUDGE_SCHEMA = {
 
 def resolver_for(data: EpisodeData) -> Resolver:
     worries = {wid: w["text_general"] for wid, w in data.worries.items()}
-    return Resolver(data.candidates, data.stats, worries, data.facts, data.refs, data.findings)
+    return Resolver(
+        data.candidates,
+        data.stats,
+        worries,
+        data.facts,
+        data.refs,
+        data.findings,
+        data.readings,
+    )
 
 
 def _gate(issues: list[str], **extra: Any) -> dict[str, Any]:
@@ -678,13 +686,51 @@ def _names(data: EpisodeData) -> set[str]:
 
 
 def _passage_text(chapter: dict[str, Any], data: EpisodeData) -> str:
-    """その章の一節と前後の文脈（ここに出てくる語は、語りで使っても直書きとみなさない）。"""
+    """その章の一節・その日本語・前後の文脈（ここの語は、語りで使っても直書きとみなさない）。"""
     ids = chapter.get("sources") or []
     return "\n".join(
         f"{data.candidates[c]['quote_text']}\n{data.candidates[c].get('context_text') or ''}"
+        + (f"\n{data.readings[c].text}" if c in data.readings else "")
         for c in ids
         if c in data.candidates
     )
+
+
+def _quotes(data: EpisodeData) -> list[str]:
+    """語りの「」で引いてよい本文（一節・古典の一節の日本語）。"""
+    out = [normalize_for_match(c["quote_text"]) for c in data.candidates.values()]
+    return out + [normalize_for_match(r.text) for r in data.readings.values()]
+
+
+# 訳の表示（「試訳」・元の訳の出典）はコードが付ける。AI で訳したことは言わない（R5・D-024）
+TRANSLATION_WORDS = re.compile(
+    r"試訳|(?:AI|ＡＩ|人工知能)\s*(?:が|で|に|の|を使って)?\s*(?:訳|翻訳)|機械翻訳|自動翻訳|翻訳ソフト"
+)
+# 「読み方が分かれています」は、人が確かめて「分かれる」にした訳のときだけ
+DIVIDED_WORDS = re.compile(r"読み方が分かれ|読みが分かれ|解釈が分かれ|説が分かれ")
+
+
+def translation_issues(text: str, chapter: dict[str, Any], data: EpisodeData) -> list[str]:
+    """古典の一節の日本語（M8b）にかかわる語りの決まり（段落1つ分）。"""
+    ids = [c for c in chapter.get("sources") or [] if c in data.readings]
+    kinds = {data.readings[c].kind for c in ids}
+    out = []
+    bare = PLACEHOLDER.sub("", text)
+    for m in TRANSLATION_WORDS.finditer(bare):
+        if m.group(0) == "試訳" and "shiyaku" in kinds:
+            continue  # 原文から自前で訳した一節の章なら「当チャンネルの試訳です」と言える
+        out.append(
+            f"「{m.group(0)}」：訳の表示（試訳・元の訳の出典）はコードが画面に付ける。語りで"
+            "訳した方法を言わない（原文から自前で訳した一節の章だけ「試訳」と言える）"
+        )
+    if (m := DIVIDED_WORDS.search(bare)) and not (
+        any(data.readings[c].divided for c in ids) or REF_REF.search(text)
+    ):
+        out.append(
+            f"「{m.group(0)}」は、読み方が分かれると人が確かめた一節か、時代の解釈の記号と"
+            "一緒のときだけ言う"
+        )
+    return out
 
 
 def fact_leaks(text: str, data: EpisodeData, passage: str, facts: set[str]) -> list[str]:
@@ -762,7 +808,7 @@ def ref_issues(text: str, data: EpisodeData, offered: set[str], kind: str) -> li
         for c in data.candidates.values()
     )
     titles = {r["ref_title"] for r in data.refs.values() if len(r["ref_title"]) >= 2}
-    quotes = [normalize_for_match(c["quote_text"]) for c in data.candidates.values()]
+    quotes = _quotes(data)
     quotes += [normalize_for_match(w["text_general"]) for w in data.worries.values()]
     for sent in split_sentences(text) if kind == "narration" else [text]:
         sent_bare = PLACEHOLDER.sub("", sent)
@@ -829,7 +875,7 @@ def g1_chapter(
     allowed_r = offered_r if allowed_refs is None else allowed_refs
     passage = _passage_text(chapter, data)
     issues = [f"{chapter['chapter_id']}：{x}" for x in shape_issues]
-    quotes = [normalize_for_match(c["quote_text"]) for c in data.candidates.values()]
+    quotes = _quotes(data)
     worries = [normalize_for_match(w["text_general"]) for w in data.worries.values()]
     names = _names(data)
     stat_values = [
@@ -907,10 +953,11 @@ def g1_chapter(
             ]
         if seg["kind"] != "narration":
             continue
+        issues += [f"{sid}：{x}" for x in translation_issues(text, chapter, data)]
         for m in QUOTED.finditer(text):
             inner = m.group(1).strip()
             pm = PLACEHOLDER.fullmatch(inner)
-            if pm and pm.group(1) in ("quote", "worry", "def", "interp"):
+            if pm and pm.group(1) in ("quote", "quote_ja", "worry", "def", "interp"):
                 continue
             norm = normalize_for_match(inner)
             if len(norm) <= SHORT_QUOTE_MAX:
@@ -940,8 +987,12 @@ def g2_license(data: EpisodeData) -> dict[str, Any]:
             continue
         if not is_usable(c["license"]):
             issues.append(f"{s['candidate_id']}：ライセンス {c['license']} は使えない（R1）")
-        if (c.get("lang") or "ja") != "ja":
-            issues.append(f"{s['candidate_id']}：外国語の一節には自前訳が要る（R5。M8 で対応）")
+        if c.get("passage_key"):
+            # 古典の一節（M8b）：古い日本語訳か、承認済みの自前の訳が要る（R5・D-014）
+            if s["candidate_id"] not in data.readings:
+                issues += [x for x in data.reading_issues if x.startswith(s["candidate_id"])]
+        elif (c.get("lang") or "ja") != "ja":
+            issues.append(f"{s['candidate_id']}：外国語の一節には訳が要る（R5）")
     return _gate(issues)
 
 
@@ -1005,10 +1056,19 @@ def g6_review(data: EpisodeData, script: dict[str, Any]) -> dict[str, Any]:
     for cid, c in data.candidates.items():
         if c.get("review_required"):
             reasons.append(f"{cid}：要確認のソース（NDL など）")
-    for ch in script["chapters"]:
-        for seg in ch["segments"]:
-            if seg["text"].startswith("{{quote_ja:"):
-                reasons.append(f"{seg['seg_id']}：自前の日本語訳を含む（原文か元の訳と照らす）")
+    used_ja = {
+        seg["visual"]["ref"]
+        for ch in script["chapters"]
+        for seg in ch["segments"]
+        if seg["kind"] == "quote" and seg["text"].startswith("{{quote_ja:")
+    }
+    for cid in sorted(used_ja):
+        r = data.readings.get(cid)
+        if r is None:
+            reasons.append(f"{cid}：一節の日本語が使えなくなった（訳を確かめ直す）")
+        elif r.kind != "pd":
+            shown = f"「{r.label}」と表示" if r.label else "表示なし"
+            reasons.append(f"{cid}：自前の訳 {r.ref} を含む（{shown}。原文・元の訳と照らす）")
     reasons += [f"背景の事実 {x}" for x in data.fact_issues]
     reasons += [f"語釈・解釈 {x}" for x in data.ref_issues]
     reasons += [f"研究の一文 {x}" for x in data.finding_issues]
@@ -1234,13 +1294,19 @@ class FaithfulnessJudge:
         from koten.script.placeholders import format_source
 
         ids = chapter.get("sources") or [s["candidate_id"] for s in data.plan["selection"]]
-        return "\n".join(
-            f"- 出典：{format_source(data.candidates[c])}\n"
-            f"  一節：{data.candidates[c]['quote_text']}\n"
-            f"  前後の文脈：{data.candidates[c]['context_text']}"
-            for c in ids
-            if c in data.candidates
-        )
+
+        def one(c: str) -> str:
+            block = (
+                f"- 出典：{format_source(data.candidates[c])}\n"
+                f"  一節：{data.candidates[c]['quote_text']}\n"
+                f"  前後の文脈：{data.candidates[c]['context_text']}"
+            )
+            if (r := data.readings.get(c)) is not None:
+                # 古典の一節の日本語（M8b）。語りの解説は、原文とこの日本語から言える範囲か
+                block += f"\n  一節の日本語（{r.label or '今の言葉にしたもの'}）：{r.text}"
+            return block
+
+        return "\n".join(one(c) for c in ids if c in data.candidates)
 
     def judge(
         self,

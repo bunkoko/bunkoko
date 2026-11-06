@@ -19,6 +19,7 @@ from koten.findings import load_findings
 from koten.index.build import cache_path
 from koten.ref.store import load_refs
 from koten.ref.texts import USABLE_STATUS
+from koten.shiyaku.store import Reading, reading_for
 
 
 def load_candidates(ssd_root: Path, candidate_ids: list[str]) -> dict[str, dict[str, Any]]:
@@ -48,6 +49,9 @@ class EpisodeData:
     findings: dict[str, dict[str, Any]] = field(default_factory=dict)
     finding_issues: list[str] = field(default_factory=list)
     stat_issues: list[str] = field(default_factory=list)  # 企画のあとで保留・削除になった統計
+    # 古典の一節（passage_key のある候補）の日本語：古い日本語訳か、承認済みの自前の訳（M8b）
+    readings: dict[str, Reading] = field(default_factory=dict)
+    reading_issues: list[str] = field(default_factory=list)
 
     @classmethod
     def load(cls, conn: sqlite3.Connection, ssd_root: Path, episode_id: str) -> EpisodeData:
@@ -130,10 +134,23 @@ class EpisodeData:
                         f"{fid}：企画のあとで研究の一文が変わった（今の文を使う）"
                     )
                 findings[fid] = f
+        candidates = load_candidates(ssd_root, ids)
+        readings, reading_issues = {}, []
+        for cid, c in candidates.items():
+            if not c.get("passage_key"):
+                continue
+            r = reading_for(conn, c["passage_key"])
+            if r is None:
+                reading_issues.append(
+                    f"{cid}：一節 {c['passage_key']} の日本語がまだありません"
+                    f"（uv run koten shiyaku draft --passage {c['passage_key']} → 読んで approve）"
+                )
+            else:
+                readings[cid] = r
         return cls(
             episode_id,
             plan,
-            load_candidates(ssd_root, ids),
+            candidates,
             stats,
             worries,
             facts=facts,
@@ -146,4 +163,6 @@ class EpisodeData:
             findings=findings,
             finding_issues=finding_issues,
             stat_issues=stat_issues,
+            readings=readings,
+            reading_issues=reading_issues,
         )

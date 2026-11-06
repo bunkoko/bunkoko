@@ -194,7 +194,7 @@ def test_script_quotes_definition_with_source(env):
     judge = RefJudge()
     r, logs = run(env, eid, writer_llm=RefWriter(), judge_llm=judge)
     assert r.state == "script_done", r.state_msg
-    assert not schema_errors(r.script) and r.script["schema_version"] == "1.3"
+    assert not schema_errors(r.script) and r.script["schema_version"] == "1.4"
     context = next(c for c in r.script["chapters"] if c["role"] == "context")
     assert context["refs"] == [DEF]
     seg = next(s for s in context["segments"] if s.get("refs"))

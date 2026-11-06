@@ -486,7 +486,7 @@ yet → planned → script_done → voice_done → image_done → composed → r
 - kind は narration（地の文）、quote（引用）、stat（統計）、transition（章の区切り）の4つ。quote と stat の text はプレースホルダだけを入れる。
 - read_as は original（原文を読む）か modern（現代語訳を読み、画面は原文）。旧字旧仮名と外国語は modern にする。
 - visual.type は photo、quote_card、title_card、chart、author_card、page_image の6つ。
-- 外国語の一節は、candidates 側に自前訳を持ち `{{quote_ja:<candidate_id>}}` で差し込む。画面には、原文から自前で訳したものなら「試訳」、保護期間の切れた訳（英訳など）から日本語にしたものなら元の訳の出典を自動で付ける（R5・D-024）。
+- 古典の一節（候補に passage_key がある。論語・自省録・方丈記など）は、一節の段落を `{{quote_ja:<candidate_id>}}` にし、画面には原文、読み上げは日本語にする（M8b）。日本語は、保護期間の切れた日本語訳（人が画像で確かめた renderings）があればそれ（D-014）、無ければ人が承認した自前の訳（shiyaku 表。`koten shiyaku`）。段落の translation に訳の ID・種類（pd・shiyaku・relay・modern）・表示を入れ、画面の表示はコードが付ける：原文から自前で訳したものは「試訳」、保護期間の切れた外国語の訳から訳したものは元の訳の出典（「ロングの英訳（1862）」）、古文を今の言葉にしたものと古い日本語訳は表示なし（古い日本語訳は出典を出す）（R5・D-023・D-024）。語りでは「試訳」を原文から訳した一節の章でだけ言え、AI で訳したことは言わない（G1）。日本語が無い一節は G2 で止める。自前の訳を使った回は G6 で人の確認へ。台本の版は 1.4
 - timings・ad_break_candidates_sec・verification は後段が埋める。台本を書くLLMは触らない。
 - 説明欄・チャプター・字幕は publish_kit が timings から作るので、台本JSONには持たない。
 

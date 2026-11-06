@@ -175,6 +175,16 @@ class Reading:
     label: str  # 画面と説明欄の表示（コードが付ける）
     ref: str  # I-…（pd）か S-…
     sha: str
+    divided: bool = False  # 読み方が分かれる（人が承認のときに確かめた）
+
+    def row(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "ref": self.ref,
+            "label": self.label,
+            "sha": self.sha,
+            "divided": self.divided,
+        }
 
 
 def reading_for(conn: sqlite3.Connection, passage_key: str) -> Reading | None:
@@ -186,7 +196,7 @@ def reading_for(conn: sqlite3.Connection, passage_key: str) -> Reading | None:
         return Reading("pd", text, label, pd["rendering_id"], pd["text_sha"])
     s = approved_for(conn, passage_key)
     if s is not None:
-        return Reading(s.kind, s.text, s.label, s.shiyaku_id, s.text_sha)
+        return Reading(s.kind, s.text, s.label, s.shiyaku_id, s.text_sha, s.divided)
     return None
 
 

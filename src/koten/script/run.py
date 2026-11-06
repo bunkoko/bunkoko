@@ -345,6 +345,7 @@ def run_script(
     verification["facts"] = facts_record(script, data)
     verification["refs"] = refs_record(script, data)
     verification["findings"] = findings_record(script, data)
+    verification["readings"] = readings_record(script, data)
     review = bool(script["review_required"] or verification["G6"]["review_required"] or g3_issues)
     script["review_required"] = review
     script["verification"] = {
@@ -361,6 +362,23 @@ def run_script(
         return _save(conn, episode_id, "error", msg, review, script, verification, log)
     msg = gates.summarize(verification)
     return _save(conn, episode_id, "script_done", msg, review, script, verification, log)
+
+
+def readings_record(script: dict[str, Any], data: EpisodeData) -> dict[str, Any]:
+    """台本で使った古典の一節の日本語（M8b）：訳の ID・種類・表示・指紋。
+
+    説明欄の「試訳」の明記や、元の訳の出典に使う（M6）。
+    """
+    used = {}
+    for ch in script["chapters"]:
+        for seg in ch["segments"]:
+            if seg["kind"] == "quote" and seg.get("translation"):
+                cid = seg["visual"]["ref"]
+                r = data.readings.get(cid)
+                if r is not None:
+                    pk = data.candidates.get(cid, {}).get("passage_key")
+                    used[cid] = {**r.row(), "passage_key": pk}
+    return {"used": used}
 
 
 def findings_record(script: dict[str, Any], data: EpisodeData) -> dict[str, Any]:
@@ -498,7 +516,16 @@ def render(script: dict[str, Any], resolver: Resolver) -> list[str]:
                 text = resolver.resolve(seg["text"])
             except KeyError as e:
                 text = f"{seg['text']}  ※解決できない：{e}"
-            if seg["kind"] == "quote":
+            if seg["kind"] == "quote" and seg.get("translation"):
+                # 古典の一節（M8b）：画面は原文、読み上げは日本語。表示はコードが付ける
+                tr = seg["translation"]
+                shown = f"表示：{tr['label']}" if tr["label"] else "表示なし"
+                head = f"一節｜画面は原文・読みは日本語｜{shown}｜{tr['ref']}"
+                lines.append(f"  【{head}】「{text}」")
+                c = resolver.candidates.get(seg["visual"]["ref"])
+                if c is not None:
+                    lines.append(f"      原文：{c['quote_text']}")
+            elif seg["kind"] == "quote":
                 how = (
                     "原文を読む" if seg.get("read_as") == "original" else "画面は原文・読みは現代語"
                 )

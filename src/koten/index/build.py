@@ -42,7 +42,11 @@ WORK_FIELDS = [
     ("base_book", pa.string()),
     ("url", pa.string()),
 ]
-CACHE_SCHEMA = pa.schema(list(CANDIDATES_SCHEMA) + [pa.field(n, t) for n, t in WORK_FIELDS])
+# 古典の一節の候補（M8b）だけが持つ列：一節の番号と、quote_text の言葉（論語の白文なら zh）
+CANON_FIELDS = [("passage_key", pa.string()), ("quote_lang", pa.string())]
+CACHE_SCHEMA = pa.schema(
+    list(CANDIDATES_SCHEMA) + [pa.field(n, t) for n, t in WORK_FIELDS + CANON_FIELDS]
+)
 
 
 def cache_path(ssd_root: Path) -> Path:

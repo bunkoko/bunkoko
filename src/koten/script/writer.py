@@ -22,9 +22,9 @@ from koten.llm import ChatLLM, fill, load_prompt, parse_json_object
 from koten.ref.store import ref_source_label, ref_text
 from koten.script.data import EpisodeData
 
-SCRIPT_SCHEMA_VERSION = (
-    "1.3"  # 1.3：段落と章の findings、画面 finding_card。1.2：refs・ref_card。1.1：facts
-)
+# 1.4：古典の一節の日本語（{{quote_ja:}}）の段落に translation（訳の ID・種類・表示）。
+# 1.3：段落と章の findings、画面 finding_card。1.2：refs・ref_card。1.1：facts
+SCRIPT_SCHEMA_VERSION = "1.4"
 
 ROLE_NAMES = {
     "opening": "オープニング",
@@ -97,7 +97,7 @@ CHAPTER_SCHEMA = {
     "additionalProperties": False,
 }
 
-QUOTE_ONLY = re.compile(r"^\{\{quote:([^{}]+)\}\}$")
+QUOTE_ONLY = re.compile(r"^\{\{quote(_ja)?:([^{}]+)\}\}$")
 FACT_REF = re.compile(r"\{\{fact:\s*([^{}.\s]+)\s*(?:\.[^{}]+)?\}\}")
 REF_REF = re.compile(r"\{\{(?:def|def_src|interp|interp_src):\s*([^{}\s]+)\s*\}\}")
 STAT_ONLY = re.compile(r"^\{\{stat:([^{}]+)\}\}$")
@@ -162,14 +162,30 @@ class ScriptWriter:
             c = data.candidates[cid]
             sel = reasons.get(cid, {})
             side = f"（{sel['side']}の側）" if sel.get("side") else ""
-            blocks.append(
+            block = (
                 f"- 候補ID：{cid}{side}\n"
                 f"  出典の記号：{{{{source:{cid}}}}}\n"
                 f"  当てはめる悩み：{sel.get('worry_id', '')}\n"
                 f"  選んだ理由：{sel.get('reason', '')}\n"
-                f"  一節：{c['quote_text']}\n"
-                f"  前後の文脈：{c['context_text']}"
             )
+            r = data.readings.get(cid)
+            if c.get("passage_key") and r is not None:
+                # 古典の一節（M8b）：画面に原文、読み上げは日本語。表示はコードが付ける
+                shown = f"「{r.label}」と出る" if r.label else "何も出ない"
+                block += (
+                    f"  一節の原文（画面に出す）：{c['quote_text']}\n"
+                    f"  一節の日本語（読み上げる。一節の段落は {{{{quote_ja:{cid}}}}} と書く）："
+                    f"{r.text}\n"
+                    f"  画面の表示：{shown}（コードが付ける。語りで「試訳」「訳」と書かない）"
+                    + (
+                        "\n  この一節は読み方が分かれる（語りで一方に決めつけない）"
+                        if r.divided
+                        else ""
+                    )
+                )
+            else:
+                block += f"  一節：{c['quote_text']}\n  前後の文脈：{c['context_text']}"
+            blocks.append(block)
         return "\n".join(blocks)
 
     def _works(self, data: EpisodeData) -> str:
@@ -350,9 +366,13 @@ class ScriptWriter:
                 continue
             seg: dict[str, Any] = {"kind": kind, "text": text}
             if kind == "quote" and (m := QUOTE_ONLY.match(text)):
-                ref = m.group(1).strip()
+                ref = m.group(2).strip()
                 seg["visual"] = {"type": "quote_card", "ref": ref}
                 seg["read_as"] = read_as(data.candidates.get(ref, {}))
+                if m.group(1) and (r := data.readings.get(ref)) is not None:
+                    # 古典の一節の日本語。画面の表示（試訳・元の訳の出典）はコードが付ける
+                    # （R5・D-024）
+                    seg["translation"] = {"ref": r.ref, "kind": r.kind, "label": r.label}
             elif kind == "stat" and (m := STAT_ONLY.match(text)):
                 seg["visual"] = {"type": "chart", "ref": m.group(1).strip()}
             else:
@@ -391,6 +411,7 @@ class ScriptWriter:
                         "facts",
                         "refs",
                         "findings",
+                        "translation",
                     )
                     if k in seg
                 }
@@ -421,12 +442,21 @@ class ScriptWriter:
             text = str(s.get("text") or "").strip()
             if s.get("kind") == "quote":
                 m = QUOTE_ONLY.match(text)
+                cid = m.group(2).strip() if m else ""
+                canon = bool(data.candidates.get(cid, {}).get("passage_key"))
                 if not m:
                     issues.append(f"一節の段落に記号以外が書かれている：{text[:30]}")
-                elif m.group(1).strip() not in want:
-                    issues.append(f"この章に割り当てていない一節：{m.group(1)}")
+                elif cid not in want:
+                    issues.append(f"この章に割り当てていない一節：{cid}")
+                elif canon and not m.group(1):
+                    issues.append(
+                        f"古典の一節 {cid} は、日本語の記号 {{{{quote_ja:{cid}}}}} で出す"
+                        "（画面には原文、読み上げは日本語）"
+                    )
+                elif m.group(1) and not canon:
+                    issues.append(f"一節 {cid} は {{{{quote:{cid}}}}} で出す（日本語の作品）")
                 else:
-                    got.append(m.group(1).strip())
+                    got.append(cid)
             elif s.get("kind") == "stat":
                 m = STAT_ONLY.match(text)
                 if not m:

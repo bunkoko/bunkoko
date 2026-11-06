@@ -217,3 +217,23 @@ def resolve_gone(
                 ),
             )
     return len(rows)
+
+
+def translation_holds(conn: sqlite3.Connection, script: dict[str, Any]) -> list[Hold]:
+    """台本で使った自前の訳（M8b）の、照合の保留。保留のある訳を使った回も公開しない。"""
+    from koten.check.claims import text_claims
+
+    sids = {
+        seg["translation"]["ref"]
+        for ch in script.get("chapters") or []
+        for seg in ch["segments"]
+        if seg.get("translation") and seg["translation"]["ref"].startswith("S-")
+    }
+    out: list[Hold] = []
+    for sid in sorted(sids):
+        row = conn.execute("SELECT text FROM shiyaku WHERE shiyaku_id = ?", (sid,)).fetchone()
+        if row is None:
+            continue
+        for h in holds(conn, "", text_claims(sid, row["text"]), shiyaku_id=sid):
+            out.append(Hold(h.claim_key, h.book_id, f"訳 {sid} の {h.reason}", h.text_changed))
+    return out
