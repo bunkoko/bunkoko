@@ -1239,6 +1239,212 @@ def manual_test(args) -> None:
     print(f"保存先: {out / 'manual.md'}")
 
 
+# --------------------------------------------------------------------------- 向こう N 日で上がる確率の順位（docs/chance.md）
+def spct(x: float, digits: int = 1) -> str:
+    return f"{x:+.{digits}%}" if x is not None and np.isfinite(x) else "–"
+
+
+def pts(x: float) -> str:
+    """割合の差（ポイント）。"""
+    return f"{x * 100:+.1f} ポイント" if x is not None and np.isfinite(x) else "–"
+
+
+def stock_names(data: Path) -> dict[str, str]:
+    f = data / "universe_jp.csv"
+    return pd.read_csv(f).set_index("ticker")["name"].to_dict() if f.exists() else {}
+
+
+def rank_past(C, r: dict) -> dict:
+    """過去の当たり具合（帯ごとの表・ブライアスコア・読んでよいか・毎日の上位 10）。"""
+    h = C.halves(r["prob"].index)
+    cal = {k: C.calibration(r["prob"], r["up"], r["ret"], m) for k, m in h.items()}
+    scores = {k: C.brier(r["prob"], r["up"], r["info"], m) for k, m in h.items()}
+    ok, why = C.readable(cal, scores)
+    return {"cal": cal, "scores": scores, "readable": ok, "why": why, "hits": C.hit_rates(r["prob"], r["up"], r["tradable"])}
+
+
+def rank_past_text(say, C, past: dict, days: int) -> None:
+    cal = past["cal"]
+    say("### 確率の帯ごと（答えの分かる行。2010〜。どの年も、その年より前だけで学んだ部品の数字）")
+    say("")
+    say(f"| AI の確率 | 行の割合 | AI の確率の平均 | 実際に上がった割合 | 前半（〜2017） | 後半（2018〜） | {days} 日の値動きの平均 |")
+    say("|---|---|---|---|---|---|---|")
+    for i, label in enumerate(C.BIN_LABELS):
+        a, b1, b2 = cal["全期間"].loc[i], cal["前半"].loc[i], cal["後半"].loc[i]
+        if a["rows"] == 0:
+            continue
+        say(f"| {label} | {pct(a['share'])}（{int(a['rows']):,} 行） | {pct(a['prob'])} | **{pct(a['up'])}** | {pct(b1['up'])} | {pct(b2['up'])} | "
+            f"{spct(a['ret'], 2)} |")
+    say("")
+    s = past["scores"]
+    say("- ブライアスコア（確率と答えの差の 2 乗の平均。小さいほど良い）: " + "、".join(
+        f"{k} AI {s[k][0]:.4f}・学習の期間に上がった割合を言うだけ {s[k][1]:.4f}" for k in ("前半", "後半")))
+    if past["readable"]:
+        say("- **確率は「そのまま読んでよい」の線（docs/chance.md 4 章）を満たした**（前半・後半とも、行の 1% 以上の帯で差 3 ポイント以内、"
+            "ブライアスコアも小さい）")
+    else:
+        say("- **確率は目安。「実際に上がった割合」の列を読む**（docs/chance.md 4 章の線を満たさない: " + "／".join(past["why"][:6])
+            + (" ほか" if len(past["why"]) > 6 else "") + "）")
+    say("")
+    hits = past["hits"]
+    say(f"### 毎日の上位 {C.TOP} 銘柄が {days} 日で上がった割合（全銘柄との比べ）")
+    say("")
+    say(f"| 年 | 上位 {C.TOP} | 全銘柄 | 差 |")
+    say("|---|---|---|---|")
+    if len(hits):
+        by = hits.groupby(hits.index.year).mean()
+        for y, row in by.iterrows():
+            say(f"| {y} | {pct(row['top'])} | {pct(row['all'])} | {pts(row['top'] - row['all'])} |")
+        a = hits.mean()
+        say(f"| **全期間** | **{pct(a['top'])}** | **{pct(a['all'])}** | **{pts(a['top'] - a['all'])}** |")
+    say("")
+
+
+def cmd_rank(args) -> Path:
+    """向こう N 営業日で上がる確率の順位（既定）か、RK5・RK20 の判定（--test）。"""
+    from cfdbot.agents import chance as C
+    from cfdbot.agents import live as L
+
+    if args.test:
+        return rank_test(args)
+    days = int(args.days)
+    if not 1 <= days <= C.MAX_DAYS:
+        sys.exit(f"--days は 1〜{C.MAX_DAYS} 営業日")
+    data = Path(args.data)
+    open_, close = prices(data)
+    names = stock_names(data)
+    print(f"向こう {days} 営業日で上がる確率を計算する（2010 年から毎年学び直す。5〜10 分）…", flush=True)
+    r = C.probabilities(open_, close, days, log=lambda s: print(s, flush=True))
+    day = C.latest_day(r["prob"])
+    if day is None:
+        sys.exit("確率を付けられる日が無い（値段が 2010 年より前から要る）")
+    past = rank_past(C, r)
+    table = C.ranking(r["prob"], day, past["cal"]["全期間"], names)
+    cal_days = L.calendar(close.index, day)
+    buy, sell = L.bday_add(cal_days, day, C.DELAY), L.bday_add(cal_days, day, C.DELAY + days)
+    info = r["info"].get(day.year, {})
+    lines: list[str] = []
+
+    def say(s: str = "") -> None:
+        print(s, flush=True)
+        lines.append(s)
+
+    say(f"# 向こう {days} 営業日で上がる確率の順位（docs/chance.md）")
+    say(f"作成: {datetime.now():%Y-%m-%d %H:%M}　データ: 日本株 {close.shape[1]} 銘柄、{close.index[0]:%Y-%m-%d}〜{close.index[-1]:%Y-%m-%d}")
+    say("")
+    say(f"- 決めた日: **{day:%Y-%m-%d}**（この日の 13:30 までの値動きで計算）。**次の営業日（{buy:%m-%d} ごろ）の引けで買い、{days} 営業日後"
+        f"（{sell:%m-%d} ごろ）の引けで売ったとき、値段が上がっている確率**（日付は祝日を数えない目安）")
+    if info:
+        say(f"- 今年の部品: {info['train_end']:%Y-%m-%d} までの {info['n_train']:,} 行で学んだ（今年の答えは見ていない）")
+    allp = table["prob"]
+    base = past["cal"]["全期間"]
+    base_up = float((base["up"] * base["rows"]).sum() / max(base["rows"].sum(), 1))
+    say(f"- 全銘柄の平均 {pct(allp.mean())}。50% を超える銘柄 {int((allp > 0.5).sum())}/{len(allp)}。"
+        f"2010 年から {days} 日で上がった割合（全銘柄・全部の日）は {pct(base_up)}")
+    if days in C.JUDGED:
+        key, trials = C.JUDGED[days]
+        say(f"- 判定: {key}（docs/chance.md 3 章。`./cfd agents rank --test` で 1 回だけ計算し、8 章に記録する。試した数 {trials}）")
+    else:
+        say(f"- この日数（{days} 日）は判定しない参考の表（判定するのは 5 日と 20 日だけ。docs/chance.md 2 章）")
+    say("- " + ("確率はそのまま読んでよい（2 章）" if past["readable"] else "確率は目安。横の「過去に同じ帯で実際に上がった割合」を読む（2 章）"))
+    say("")
+    say(f"## 1. 上がる確率の上位 {min(args.top, len(table))} 銘柄（{len(table)} 銘柄から）")
+    say("")
+    say(f"| 順位 | 銘柄 | 番号 | 上がる確率 | 過去に同じ帯で実際に上がった割合（行の数） | その帯の {days} 日の値動きの平均 |")
+    say("|---|---|---|---|---|---|")
+    for row in table.head(args.top).itertuples():
+        say(f"| {row.rank} | {row.name} | {str(row.ticker).replace('.T', '')} | **{pct(row.prob)}** | {pct(row.past_up)}（{row.bin}、{row.past_rows:,}） | "
+            f"{spct(row.past_ret, 2)} |")
+    say("")
+    say(f"- 下位まで見るなら `--top {len(table)}`。日数を変えるなら `--days 20` など（1〜{C.MAX_DAYS}）")
+    say("")
+    say("## 2. 過去の当たり具合")
+    say("")
+    rank_past_text(say, C, past, days)
+    say("## 3. 読み方・限界（docs/chance.md 6 章）")
+    say("")
+    say(f"- 1 銘柄の {days} 日は、ほとんどが市場全体の動きと偶然。確率 58% でも 4 割は下がる。上位と全体の差が見えるのは 10 銘柄以上の束")
+    say("- 今の TOPIX500 の銘柄だけ（生存者バイアス）。過去の「上がった割合」は、実際より良く出やすい")
+    say("- 配当・税金・S 株の受付の時刻・受注停止は入れていない")
+    say("- M2（`./cfd agents manual` の手で買う候補）は「全銘柄の中での順位」を当てる別の AI。入力は同じだが、答えが違う（こちらは上がるか下がるか）")
+    say("- 判定（RK5・RK20）が「使えそう」になるまでは、検証中の AI の数字で、勧めではない。買うなら余剰資金の中で、金額の上限を先に決める")
+    out = Path(args.out) / datetime.now().strftime("%Y%m%d-%H%M")
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"rank_{days}.md"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    table.to_csv(out / f"rank_{days}.csv", index=False, float_format="%.5f")
+    print("")
+    print(f"保存先: {path}（全銘柄の表は rank_{days}.csv）")
+    return path
+
+
+def rank_test(args) -> Path:
+    """RK5・RK20 の判定（docs/chance.md 3 章）と、確率をそのまま読んでよいか（4 章）。1 回だけ。"""
+    from cfdbot.agents import chance as C
+
+    from cfdbot import stocks_short as H
+
+    open_, close = prices(Path(args.data))
+    _, x = H.features(open_, close)
+    lines: list[str] = []
+    res, pasts = {}, {}
+    for days, (key, trials) in C.JUDGED.items():
+        print(f"{key}: 向こう {days} 営業日の確率（2010 年から毎年学び直す）と、偶然との比べ {args.placebo} 回…", flush=True)
+        r = C.probabilities(open_, close, days, log=lambda s: print(s, flush=True), x=x)
+        res[key] = C.evaluate(r["prob"], open_, close, days, trials, placebo=args.placebo)
+        pasts[key] = (days, rank_past(C, r))
+
+    def say(s: str = "") -> None:
+        print(s, flush=True)
+        lines.append(s)
+
+    a0, a1 = next(iter(res.values()))["period"]
+    say("# 上がる確率の上位 10 銘柄を持つ形の判定（RK5・RK20）")
+    say(f"作成: {datetime.now():%Y-%m-%d %H:%M}　判定の条件: docs/chance.md 3・4 章（結果を見る前に決めたもの）")
+    say(f"データ: 日本株 {close.shape[1]} 銘柄、{a0:%Y-%m}〜{a1:%Y-%m}（後半 {C.SPLIT[:4]}〜）。毎日、確率の上位 {C.TOP} 銘柄を次の営業日の引けで買い、"
+        f"N 営業日持つ（N 組を重ねる）。コスト 往復 {pct(C.COST, 2)}。差 = 持っている株 − 全銘柄の平均 − 入れ替えた割合 × コスト")
+    say("")
+    say("## 1. 判定")
+    say("")
+    say("| 記号 | 形 | 差（年率） | 前半 | 後半 | t 値（全期間） | t 値（後半） | 基準 | 偶然より良い割合 | 判定 |")
+    say("|---|---|---|---|---|---|---|---|---|---|")
+    for days, (key, _) in C.JUDGED.items():
+        v = res[key]
+        say(f"| {key} | 上位 {C.TOP} を {days} 日持つ | {pct(v['mean'] * 12)} | {pct(v['mean1'] * 12)} | {pct(v['mean2'] * 12)} | {f2(v['t'])} | "
+            f"{f2(v['t2'])} | {f2(v['threshold'])} | {pct(v['placebo'], 0)} | **{v['verdict']}** |")
+    say("")
+    for days, (key, trials) in C.JUDGED.items():
+        v = res[key]
+        yr = v["by_year"]
+        say(f"- {key}: コストを引く前 年 {pct(v['gross_ann'])}、1 日に入れ替える割合 {pct(v['turnover'], 1)}、コストを引いた後 年 {pct(v['net_ann'])}"
+            f"（試した数 {trials}）")
+        say("  - 年ごとの d: " + "、".join(f"{y}: {x:+.1%}" for y, x in yr.items()) + f"（マイナスの年 {int((yr < 0).sum())}/{len(yr)}）")
+    say("")
+    say("## 2. 確率をそのまま読んでよいか（docs/chance.md 4 章。試した数に入れない）")
+    say("")
+    say("| 日数 | 結果 |")
+    say("|---|---|")
+    for key, (days, past) in pasts.items():
+        say(f"| {days} 日 | {'**そのまま読んでよい**' if past['readable'] else '**目安（実際に上がった割合の列を読む）**'} |")
+    say("")
+    for key, (days, past) in pasts.items():
+        say(f"### {days} 日（{key}）")
+        say("")
+        rank_past_text(say, C, past, days)
+    say("## 3. 限界（docs/chance.md 6 章）")
+    say("")
+    say("- 今の TOPIX500 の銘柄だけ（生存者バイアス）。下がった株・小さい株を買う側に寄るほど、過去の成績が良く出やすい")
+    say("- 20 日は持つ期間の重なりが大きい（t 値は月ごとに足してから）。税金・配当・S 株の受付の時刻は入れていない")
+    say("- この計算は 1 回だけ。結果は docs/chance.md 8 章に書き、条件を変えて試し直さない")
+    out = Path(args.out) / datetime.now().strftime("%Y%m%d-%H%M")
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / "rank_test.md"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("")
+    print(f"保存先: {path}")
+    return path
+
+
 # --------------------------------------------------------------------------- J7 決算発表をまたいで持つ（docs/earnings_premium.md）
 def cmd_premium(args) -> None:
     """3 章の過去の検証（--test。使っていない決算だけ）か、4 章の先の記録の途中経過（既定）。"""
@@ -1889,7 +2095,7 @@ def cmd_schedule(args) -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("command", choices=["collect", "ir", "select", "decide", "evaluate", "run", "status", "schedule", "earnings", "extra",
-                                        "check", "orders", "manual", "premium", "shap"])
+                                        "check", "orders", "manual", "premium", "shap", "rank"])
     p.add_argument("--fetch", action="store_true", help="extra: 先に出来高・終値・株式分割を Yahoo から取る（1 秒に 1 社。取得済みは飛ばす）")
     p.add_argument("--reuse", action="store_true", help="extra: 入力を足した銘柄選定の点数が書いてあれば、学び直さずに使う")
     p.add_argument("--off", action="store_true", help="schedule: 自動実行を外す")
@@ -1903,7 +2109,7 @@ def main() -> None:
     p.add_argument("--out", default="output/agents")
     p.add_argument("--backfill", action="store_true", help="collect: 過去の開示を 1 社ずつ取る（初回）")
     p.add_argument("--force", action="store_true", help="collect --backfill: 取得済みの会社も取り直す")
-    p.add_argument("--days", type=int, default=5, help="collect: さかのぼる日数（公式ページ）")
+    p.add_argument("--days", type=int, default=5, help="collect: さかのぼる日数（公式ページ）。rank: 何営業日先に上がる確率か（1〜60。判定するのは 5 と 20）")
     p.add_argument("--no-embed", action="store_true", help="collect: 埋め込みをしない")
     p.add_argument("--prices", action="store_true", help="run: 先に値段を取り直す")
     p.add_argument("--placebo", type=int, default=300)
@@ -1928,12 +2134,13 @@ def main() -> None:
     p.add_argument("--notify-test", action="store_true", help="orders: 知らせの試し（設定ができているか）")
     p.add_argument("--years", type=int, default=5, help="shap: 直近の何年分の部品を見るか（docs/agents.md 14 章）")
     p.add_argument("--sample", type=int, default=3000, help="shap: 1 年あたり何行をくじで選ぶか")
-    p.add_argument("--test", action="store_true", help="manual・premium: 過去の検証（docs/agents.md 13.2・docs/earnings_premium.md 3 章。数分）")
+    p.add_argument("--test", action="store_true", help="manual・premium・rank: 過去の検証（docs/agents.md 13.2・docs/earnings_premium.md 3 章・docs/chance.md 3 章。数分）")
+    p.add_argument("--top", type=int, default=20, help="rank: 何銘柄を表に出すか")
     p.add_argument("--exclude", help="orders --setup: 予行演習の外ですでに持っている株（例 7203,6758。空にするなら \"\"）")
     args = p.parse_args()
     {"collect": cmd_collect, "ir": cmd_ir, "select": cmd_select, "decide": cmd_decide, "evaluate": cmd_evaluate,
      "run": cmd_run, "status": cmd_status, "schedule": cmd_schedule, "earnings": cmd_earnings, "extra": cmd_extra,
-     "check": cmd_check, "orders": cmd_orders, "manual": cmd_manual, "premium": cmd_premium, "shap": cmd_shap}[args.command](args)
+     "check": cmd_check, "orders": cmd_orders, "manual": cmd_manual, "premium": cmd_premium, "shap": cmd_shap, "rank": cmd_rank}[args.command](args)
 
 
 if __name__ == "__main__":
