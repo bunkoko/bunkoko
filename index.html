@@ -48,11 +48,14 @@
     <!-- STEP 2 -->
     <section class="panel hidden" id="step2">
       <h2><span class="num">2</span>カードの4隅を合わせる</h2>
-      <p class="hint">4つの丸いハンドルをドラッグしてカードの<strong>角</strong>に合わせてください。
+      <p class="hint">画像を読み込むと、カードの4隅を自動で検出します。ずれている場合は、4つの丸いハンドルをドラッグしてカードの<strong>角</strong>に合わせてください。
         カードの角は丸いので、<strong>点線（辺の延長線）がカードの4辺にぴったり重なる</strong>ように合わせるのがコツです。
         ドラッグ中は拡大鏡が表示されます。</p>
+      <p class="status hidden" id="cornerStatus"></p>
       <div class="canvas-wrap"><canvas id="cornerCanvas" aria-label="カードの4隅の指定"></canvas></div>
       <div class="toolbar">
+        <button class="btn" id="detectCorners" type="button">4隅を自動検出</button>
+        <button class="btn" id="snapCorners" type="button" title="手動で大まかに合わせた隅を、近くのカードの辺にぴったり合わせます">辺に吸着</button>
         <button class="btn" id="resetCorners" type="button">隅をリセット</button>
         <button class="btn primary" id="doMeasure" type="button">遠近補正して測定 ▼</button>
       </div>
@@ -100,6 +103,7 @@
   </footer>
 
   <script src="geometry.js"></script>
+  <script src="detect.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -66,6 +66,16 @@ body {
   font-size: .9rem;
 }
 
+.status {
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: .9rem;
+  background: rgba(0, 229, 255, .08);
+  border: 1px solid rgba(0, 229, 255, .4);
+  color: var(--text);
+}
+.status.bad { background: rgba(251, 191, 36, .12); border-color: rgba(251, 191, 36, .5); color: var(--warn); }
+
 .drop {
   border: 2px dashed #3a4260;
   border-radius: var(--radius);

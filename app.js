@@ -313,6 +313,58 @@
     return [[x0, y0], [x0 + w, y0], [x0 + w, y0 + h], [x0, y0 + h]];
   }
 
+  function setCornerStatus(text, bad) {
+    const el = $('cornerStatus');
+    el.textContent = text;
+    el.classList.toggle('bad', !!bad);
+    el.classList.toggle('hidden', !text);
+  }
+
+  // 重い処理の前に「処理中」の表示を描画させる
+  const nextFrame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+
+  async function detectCorners() {
+    if (!state.src) return false;
+    setCornerStatus('カードの4隅を検出中…');
+    await nextFrame();
+    const size = CARD_SIZES[state.size];
+    let res = null;
+    try {
+      res = CardDetect.detect(state.src, state.srcData, size.w / size.h);
+    } catch (err) {
+      console.error(err);
+    }
+    if (!res) {
+      setCornerStatus('4隅を自動検出できませんでした。ハンドルを手動でカードの角に合わせてください（大まかに合わせて「辺に吸着」を押すと精密に合わせられます）。', true);
+      return false;
+    }
+    state.corners = res.corners;
+    state.activeCorner = 0;
+    markStale();
+    cornerViewer.render();
+    setCornerStatus(res.refined
+      ? '4隅を自動検出しました。ずれている場合はハンドルで調整してください。'
+      : '4隅をおおまかに検出しました（精密化はできませんでした）。拡大鏡で確認して調整してください。');
+    return true;
+  }
+
+  async function snapCorners() {
+    if (!state.src) return;
+    setCornerStatus('辺に吸着中…');
+    await nextFrame();
+    // 画面上で約12px以内のずれを探索
+    const w = Math.max(6, 12 / cornerViewer.T.s);
+    const res = CardDetect.refine(state.srcData, state.corners, w);
+    if (!res) {
+      setCornerStatus('近くにカードの辺が見つかりませんでした。ハンドルをもう少し角に近づけてから試してください。', true);
+      return;
+    }
+    state.corners = res;
+    markStale();
+    cornerViewer.render();
+    setCornerStatus('隅をカードの辺に合わせました。');
+  }
+
   function markStale() {
     if (state.rect) $('staleWarn').classList.remove('hidden');
   }
@@ -331,11 +383,11 @@
       return false;
     }
     const d = Geo.dist;
-    // 横長に写っている場合は縦向きになるよう回転
-    if (d(q[0], q[1]) + d(q[3], q[2]) > d(q[0], q[3]) + d(q[1], q[2])) q.push(q.shift());
+    const size = CARD_SIZES[state.size];
+    // 横向きに写っている場合は縦向きになるよう回転(遠近を考慮して判定)
+    if (CardDetect.isLandscape(q, state.src.width, state.src.height, size.w / size.h)) q.push(q.shift());
     for (let i = 0; i < state.rot % 4; i++) q.push(q.shift());
 
-    const size = CARD_SIZES[state.size];
     const estW = Math.max(
       d(q[0], q[1]), d(q[3], q[2]),
       Math.max(d(q[0], q[3]), d(q[1], q[2])) * size.w / size.h,
@@ -664,14 +716,16 @@
     $('step4').classList.add('hidden');
     $('staleWarn').classList.add('hidden');
     $('cornerWarn').classList.add('hidden');
+    setCornerStatus('');
     cornerViewer.fit();
     $('step2').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return detectCorners();
   }
 
   function loadURL(url) {
     return new Promise((resolve, reject) => {
       const img = new Image();
-      img.onload = () => { loadImageSource(img); resolve(); };
+      img.onload = () => { resolve(loadImageSource(img)); };
       img.onerror = () => reject(new Error('画像を読み込めませんでした'));
       img.src = url;
     });
@@ -730,8 +784,12 @@
     if (state.rect) runMeasure();
   });
 
+  $('detectCorners').addEventListener('click', detectCorners);
+  $('snapCorners').addEventListener('click', snapCorners);
+
   $('resetCorners').addEventListener('click', () => {
     if (!state.src) return;
+    setCornerStatus('');
     state.corners = defaultCorners();
     markStale();
     cornerViewer.render();
@@ -828,6 +886,8 @@
   window.CenteringApp = {
     state,
     loadURL,
+    detectCorners,
+    snapCorners,
     runMeasure,
     measure,
     setCorners: (c) => { state.corners = c.map((p) => p.slice()); cornerViewer.render(); },
