@@ -1445,7 +1445,7 @@ def eval_label(
     """
     from pathlib import Path
 
-    from koten.eval.retrieval import label_rows
+    from koten.eval.retrieval import label_rows, with_quote_marked
 
     path = Path(file)
     if not path.exists():
@@ -1458,6 +1458,8 @@ def eval_label(
         section = f" {r['section']}" if r["section"] else ""
         typer.echo(f"『{r['title']}』（{r['authors']}）{section}")
         typer.echo(f"「{r['quote_text']}」")
+        if around := with_quote_marked(r["context_text"], r["quote_text"]):
+            typer.echo(f"  前後の文：{around}")
         if r["summary_ja"]:
             typer.echo(f"  要旨（AI の手がかり。読み違いもある）：{r['summary_ja']}")
         try:
@@ -1527,7 +1529,7 @@ def eval_grade(
             Path(file),
             llm,
             s.config_dir.parent / "prompts",
-            s.section("eval").get("grader_prompt", "grader_v1"),
+            s.section("eval").get("grader_prompt", "grader_v2"),
             redo=redo,
             worry_ids=set(worry) if worry else None,
             log=typer.echo,

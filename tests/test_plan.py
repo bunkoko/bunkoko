@@ -271,7 +271,14 @@ def test_eval_export_and_evaluate(tmp_path):
     from koten.eval.retrieval import read_rows, write_eval
 
     rows = {
-        c: {"title": "t", "author_names": ["甲"], "section": "", "quote_text": c, "summary_ja": c}
+        c: {
+            "title": "t",
+            "author_names": ["甲"],
+            "section": "",
+            "quote_text": c,
+            "summary_ja": c,
+            "context_text": f"前{c}後",
+        }
         for c in "abcd"
     }
     worries = [{"worry_id": "W1", "text_general": "悩み"}]
@@ -285,6 +292,7 @@ def test_eval_export_and_evaluate(tmp_path):
     total, judged = export_pool(path, worries, run, rows.__getitem__, [good, bad])
     assert (total, judged) == (4, 0)
     graded = read_rows(path)
+    assert {r["candidate_id"]: r["context_text"] for r in graded}["a"] == "前a後"  # 前後の文も書く
     for r in graded:
         r["grade"] = "1" if r["candidate_id"] == "a" else "0"
         r["llm_grade"] = "1"
@@ -315,6 +323,7 @@ def test_eval_label_in_the_terminal(tmp_path):
             "section": "",
             "quote_text": f"一節{c}",
             "summary_ja": "",
+            "context_text": f"その前の文。\n一節{c}そのあとの文。",
             "grade": g,
             "llm_grade": "1",
             "llm_reason": "",
@@ -329,6 +338,7 @@ def test_eval_label_in_the_terminal(tmp_path):
     )
     assert r.exit_code == 0, r.output
     assert "悩み W1：悩みW1" in r.output and "「一節a」" in r.output and "1/2" in r.output
+    assert "前後の文：その前の文。 【一節a】そのあとの文。" in r.output  # 一節を【】で示す
     assert "llm" not in r.output.lower()  # LLM の点は見せない
     assert "今回 1 行に点を付けました（点の無い行 残り 1）" in r.output
     assert [x["grade"] for x in read_rows(path)] == ["1", "1", "", ""]

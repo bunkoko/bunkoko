@@ -152,7 +152,7 @@ def test_grade_file_batches_per_worry_and_resumes(tmp_path):
     assert (r.graded, r.skipped, r.missing) == (3, 1, [])
     rows = {x["candidate_id"]: x for x in read_rows(path)}
     assert [rows[c]["llm_grade"] for c in ("y1", "n1", "y2", "n2")] == ["1", "0", "1", "1"]
-    assert rows["y1"]["llm_grader"] == "fake-grader/grader_v1" and rows["y1"]["llm_reason"]
+    assert rows["y1"]["llm_grader"] == "fake-grader/grader_v2" and rows["y1"]["llm_reason"]
     assert read_eval(path, "llm_grade") == {"W1": {"y1": 1, "n1": 0}, "W2": {"y2": 1, "n2": 1}}
     again = FakeGrader()
     assert grade_file(path, again, PROMPTS).graded == 0 and again.calls == 0
@@ -236,3 +236,25 @@ def test_settings_use_opus_xhigh_for_script_and_judge():
     for role in ("script", "judge"):
         conf = s.section(f"llm.{role}")
         assert (conf["provider"], conf["model"], conf["effort"]) == ("claude_cli", "opus", "xhigh")
+
+
+def test_grader_sees_the_context():
+    """v2 の判定役には、人と同じく一節の前後の文も見せる（無い行では出さない）。"""
+    from koten.eval.grader import _items_text
+    from koten.llm import load_prompt
+
+    base = {
+        "title": "t",
+        "authors": "甲",
+        "section": "",
+        "quote_text": "一節",
+        "summary_ja": "要旨",
+    }
+    rows = [
+        {**base, "candidate_id": "a", "context_text": "前の文。一節。後の文。"},
+        {**base, "candidate_id": "b", "context_text": ""},
+    ]
+    text = _items_text(rows)
+    assert "context：前の文。一節。後の文。" in text and text.count("context：") == 1
+    system, _ = load_prompt(PROMPTS, "grader_v2")
+    assert "前後の文（context）" in system and "true にしない" in system

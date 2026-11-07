@@ -34,6 +34,7 @@ EVAL_COLUMNS = [
     "section",
     "quote_text",
     "summary_ja",
+    "context_text",  # 一節の前後（原文で前後200字ずつ。判断しやすいように）
     "grade",
     "llm_grade",
     "llm_reason",
@@ -119,6 +120,15 @@ def read_eval(path: Path, column: str = "grade") -> dict[str, dict[str, int]]:
     return out
 
 
+def with_quote_marked(context: str, quote: str) -> str:
+    """前後の文の中の一節を【】で囲む。前後の文が無ければ空。改行は詰める。"""
+    if not context:
+        return ""
+    i = context.find(quote) if quote else -1
+    text = context if i < 0 else f"{context[:i]}【{quote}】{context[i + len(quote) :]}"
+    return " ".join(text.split())
+
+
 # 全角で打っても受け付ける
 ANSWERS = {"1": "1", "１": "1", "0": "0", "０": "0", "": "", "q": None, "ｑ": None, "Q": None}
 
@@ -199,6 +209,7 @@ def export_pool(
                     "section": r["section"] or "",
                     "quote_text": r["quote_text"],
                     "summary_ja": r["summary_ja"],
+                    "context_text": r.get("context_text") or "",
                     **{
                         c: existing.get((w["worry_id"], cid), {}).get(c) or "" for c in KEEP_COLUMNS
                     },

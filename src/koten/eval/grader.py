@@ -50,7 +50,8 @@ def _items_text(rows: list[dict[str, str]]) -> str:
         f"- candidate_id: {r['candidate_id']}\n"
         f"  作品：{r['title']}（{r['authors']}）{r['section']}\n"
         f"  quote：{r['quote_text']}\n"
-        f"  summary：{r['summary_ja']}"
+        + (f"  context：{r['context_text']}\n" if r.get("context_text") else "")
+        + f"  summary：{r['summary_ja']}"
         for r in rows
     )
 
@@ -59,7 +60,7 @@ def grade_file(
     path: Path,
     llm: ChatLLM,
     prompts_dir: Path,
-    prompt: str = "grader_v1",
+    prompt: str = "grader_v2",
     *,
     redo: bool = False,
     worry_ids: set[str] | None = None,
