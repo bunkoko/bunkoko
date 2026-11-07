@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>検索の評価</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@500&display=swap" rel="stylesheet">
+<style>
+/* 1枚ずつ読んで親指で答える：上に悩みと進み具合、真ん中に一節、下に同じ大きさの2つのボタン */
+:root {
+  --paper: #f4f5f2;
+  --card: #ffffff;
+  --ink: #1f2420;
+  --muted: #5d665f;
+  --rule: #d9ddd6;
+  --accent: #2e5d4b;
+  --no: #6b4e4a;
+  --mark: #f3e2a9;
+  --font-quote: "Noto Serif JP", "Hiragino Mincho ProN", "Yu Mincho", serif;
+  --font-body: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #161a17; --card: #1f2420; --ink: #e8ece6; --muted: #a3ada5;
+    --rule: #343b35; --accent: #6fb595; --no: #c99a92; --mark: #5a4b1f;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #161a17; --card: #1f2420; --ink: #e8ece6; --muted: #a3ada5;
+  --rule: #343b35; --accent: #6fb595; --no: #c99a92; --mark: #5a4b1f;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--paper); color: var(--ink); font-family: var(--font-body);
+  font-size: 16px; line-height: 1.7;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+}
+header {
+  position: sticky; top: 0; z-index: 2; background: var(--paper);
+  border-bottom: 1px solid var(--rule); padding: 10px 16px; display: grid; gap: 6px;
+}
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+h1 { font-size: 15px; margin: 0; font-weight: 600; }
+.pill {
+  font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--rule);
+  color: var(--muted);
+}
+.pill.ok { color: var(--accent); border-color: var(--accent); }
+.pill.ng { color: var(--no); border-color: var(--no); }
+select {
+  width: 100%; font: inherit; font-size: 15px; padding: 6px 8px; border-radius: 8px;
+  border: 1px solid var(--rule); background: var(--card); color: var(--ink);
+}
+.bar { height: 4px; background: var(--rule); border-radius: 2px; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--accent); width: 0; }
+.count { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+main { max-width: 680px; margin: 0 auto; padding: 14px 16px 170px; display: grid; gap: 14px; }
+.worry { font-weight: 700; font-size: 17px; text-wrap: balance; }
+.worry small { display: block; font-weight: 400; font-size: 12px; color: var(--muted); }
+.card {
+  background: var(--card); border: 1px solid var(--rule); border-radius: 12px; padding: 16px;
+  display: grid; gap: 16px;
+}
+.work { font-size: 14px; color: var(--muted); }
+.quote {
+  font-family: var(--font-quote); font-size: 19px; line-height: 1.9; margin: 0;
+  border-left: 3px solid var(--accent); padding-left: 12px;
+}
+.label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 2px; }
+.context { font-size: 15px; margin: 0; }
+.context mark { background: var(--mark); color: inherit; padding: 0 1px; }
+.summary { font-size: 14px; color: var(--muted); margin: 0; }
+.state { font-size: 13px; color: var(--muted); }
+details { font-size: 14px; color: var(--muted); }
+details summary { cursor: pointer; }
+.actions {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 3; background: var(--paper);
+  border-top: 1px solid var(--rule);
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+  display: grid; gap: 8px;
+}
+.actions .main, .actions .sub { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-width: 680px; width: 100%; margin: 0 auto; }
+button {
+  font: inherit; border-radius: 12px; border: 1px solid var(--rule); background: var(--card);
+  color: var(--ink); padding: 10px; cursor: pointer;
+}
+button:focus-visible, select:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+button:disabled { opacity: .45; cursor: default; }
+.yes, .no { font-size: 18px; font-weight: 700; padding: 16px 10px; color: #fff; border: 0; }
+.yes { background: var(--accent); }
+.no { background: var(--no); }
+:root[data-theme="dark"] .yes, :root[data-theme="dark"] .no { color: #111; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .yes, :root:not([data-theme="light"]) .no { color: #111; } }
+.chosen { outline: 3px solid var(--ink); outline-offset: 2px; }
+.done { text-align: center; display: grid; gap: 10px; padding: 24px 8px; }
+.sample { font-size: 13px; color: var(--no); }
+@media (prefers-reduced-motion: no-preference) { .bar > i { transition: width .2s; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="row">
+    <h1>検索の評価</h1>
+    <span id="save" class="pill">保存先に接続中…</span>
+    <span id="sample" class="sample" hidden>見本の一節です（本番の評価セットではありません）</span>
+  </div>
+  <label for="worry" class="count" id="overall"></label>
+  <select id="worry"></select>
+  <div class="bar"><i id="bar"></i></div>
+</header>
+<main id="main"></main>
+<div class="actions">
+  <div class="main">
+    <button class="no" id="no" type="button">合わない</button>
+    <button class="yes" id="yes" type="button">合う</button>
+  </div>
+  <div class="sub">
+    <button id="back" type="button">戻る</button>
+    <button id="skip" type="button">飛ばす</button>
+  </div>
+</div>
+<script>
+const ITEMS = /*__ITEMS__*/[];
+const SAMPLE = /*__SAMPLE__*/false;
+
+const $ = (id) => document.getElementById(id);
+const local = {};   // スマホで付けた点 {キー: "1"|"0"}（データベースから）
+let db = null, dbState = "wait", filter = "", cur = -1, loaded = false, picked = false;
+const history = [], skipped = new Set();
+let writing = Promise.resolve();
+
+const grade = (it) => local[it.k] ?? it.g ?? "";
+const worries = [...new Map(ITEMS.map((it) => [it.w, it.wt])).entries()];
+const inFilter = () => ITEMS.map((it, i) => i).filter((i) => !filter || ITEMS[i].w === filter);
+
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") e.className = v; else e.setAttribute(k, v);
+  }
+  for (const kid of kids) if (kid != null) e.append(kid);
+  return e;
+}
+
+function nextUngraded(from) {
+  const list = inFilter();
+  const start = Math.max(0, list.indexOf(from) + 1);
+  const order = [...list.slice(start), ...list.slice(0, start)];
+  return order.find((i) => !grade(ITEMS[i]) && !skipped.has(i))
+      ?? order.find((i) => !grade(ITEMS[i]))
+      ?? -1;
+}
+
+function renderSelect() {
+  const sel = $("worry");
+  const keep = sel.value;
+  sel.replaceChildren(el("option", { value: "" }, "すべての悩み"));
+  for (const [w, text] of worries) {
+    const its = ITEMS.filter((it) => it.w === w);
+    const n = its.filter((it) => grade(it)).length;
+    sel.append(el("option", { value: w }, `${w}（${n}/${its.length}）${text}`));
+  }
+  sel.value = keep || filter;
+}
+
+function renderCounts() {
+  const all = ITEMS.filter((it) => grade(it)).length;
+  const list = inFilter();
+  const n = list.filter((i) => grade(ITEMS[i])).length;
+  $("overall").textContent =
+    `${filter ? "この悩み" : "全体"} ${n}/${list.length} 行・全体 ${all}/${ITEMS.length} 行に点があります`;
+  $("bar").style.width = list.length ? `${(n / list.length) * 100}%` : "0";
+}
+
+function contextNode(c, q) {
+  const p = el("p", { class: "context" });
+  const at = q ? c.indexOf(q) : -1;
+  if (at < 0) { p.append(c); return p; }
+  p.append(c.slice(0, at), el("mark", {}, q), c.slice(at + q.length));
+  return p;
+}
+
+function render() {
+  renderSelect(); renderCounts();
+  const main = $("main");
+  const can = dbState === "ok";
+  if (cur < 0) {
+    const left = ITEMS.filter((it) => !grade(it)).length;
+    main.replaceChildren(el("div", { class: "card done" },
+      el("p", { class: "worry" }, filter ? "この悩みは全部に点を付けました" : "全部の行に点を付けました"),
+      el("p", {}, left ? `ほかの悩みに、点の無い行が ${left} あります。上の一覧から選べます。`
+                       : "おつかれさまでした。"),
+      el("p", { class: "summary" }, "付け終わったら、Claude のこの会話で「スマホの点を取り込んで」と伝えてください。"),
+    ));
+    for (const id of ["yes", "no", "skip"]) $(id).disabled = true;
+    $("back").disabled = !history.length;
+    return;
+  }
+  const it = ITEMS[cur];
+  const g = grade(it);
+  const kids = [
+    el("p", { class: "worry" }, el("small", {}, `悩み ${it.w}`), it.wt),
+  ];
+  const card = el("div", { class: "card" },
+    el("div", { class: "work" }, `『${it.t}』（${it.a}）${it.s ? " " + it.s : ""}`),
+    el("p", { class: "quote" }, `「${it.q}」`),
+  );
+  if (it.c) card.append(el("div", {}, el("span", { class: "label" }, "前後の文（一節は色付き）"), contextNode(it.c, it.q)));
+  if (it.m) card.append(el("div", {}, el("span", { class: "label" }, "要旨（AI が書いた手がかり。読み違いもあります）"), el("p", { class: "summary" }, it.m)));
+  kids.push(card);
+  kids.push(el("p", { class: "state" }, g ? `この行の点：${g === "1" ? "合う" : "合わない"}（押し直すと変えられます）` : "まだ点がありません"));
+  kids.push(el("details", {},
+    el("summary", {}, "判断の目安"),
+    el("p", {}, "この悩みを抱える人に、共感・別の見方・前へ進むヒントのどれかを与え、動画でこの悩みと結び付けて紹介できるなら「合う」。言葉が似ているだけなら「合わない」。"),
+    el("p", {}, "判定するのは一節そのものです。前後の文は、だれがどんな場面で言っているかを確かめるためだけに使い、前後の文にだけ合うことが書いてあるときは「合わない」。迷ったら「合わない」。"),
+  ));
+  main.replaceChildren(...kids);
+  $("yes").classList.toggle("chosen", g === "1");
+  $("no").classList.toggle("chosen", g === "0");
+  $("yes").disabled = $("no").disabled = !can;
+  $("skip").disabled = false;
+  $("back").disabled = !history.length;
+  window.scrollTo(0, 0);
+}
+
+function setSave(text, cls) {
+  const s = $("save");
+  s.textContent = text; s.className = "pill" + (cls ? " " + cls : "");
+}
+
+function answer(g) {
+  if (cur < 0 || dbState !== "ok") return;
+  const it = ITEMS[cur];
+  if (grade(it) !== g) {
+    local[it.k] = g;
+    setSave("保存中…");
+    writing = writing.then(() => db.doc("grades/" + it.k).set({ k: it.k, w: it.w, g, at: Date.now() }))
+      .then(() => setSave("保存しました", "ok"))
+      .catch(() => {
+        // 保存できなかった行は点の無い行に戻す（あとでもう一度出る）
+        if (local[it.k] === g) delete local[it.k];
+        setSave("保存できなかった行があります。その行はあとでもう一度出ます", "ng");
+        render();
+      });
+  }
+  history.push(cur);
+  skipped.delete(cur);
+  cur = nextUngraded(cur);
+  render();
+}
+
+function docsOf(snap) {
+  if (!snap) return [];
+  let list = Array.isArray(snap) ? snap : (snap.docs || snap.documents || snap.items || snap.results || []);
+  if (!Array.isArray(list)) list = Object.values(list);
+  return list.map((d) => {
+    const data = typeof d.data === "function" ? d.data() : (d.data !== undefined ? d.data : d);
+    return { id: (data && data.k) || d.id || (typeof d.path === "string" ? d.path.split("/").pop() : ""), data };
+  });
+}
+
+function applyGrades(snap) {
+  for (const { id, data } of docsOf(snap)) {
+    if (id && data && (data.g === "1" || data.g === "0")) local[id] = data.g;
+  }
+  if (!loaded) {
+    // 初めて読んだときだけ、点の無い行のある最初の悩みから始める（あとの更新では今の行のまま）
+    loaded = true;
+    if (!history.length && !picked) {
+      filter = firstOpenWorry();
+      cur = nextUngraded(-1);
+    }
+  }
+  render();
+}
+
+$("yes").addEventListener("click", () => answer("1"));
+$("no").addEventListener("click", () => answer("0"));
+$("skip").addEventListener("click", () => {
+  if (cur < 0) return;
+  skipped.add(cur); history.push(cur); cur = nextUngraded(cur); render();
+});
+$("back").addEventListener("click", () => {
+  if (!history.length) return;
+  cur = history.pop(); render();
+});
+$("worry").addEventListener("change", (e) => {
+  filter = e.target.value; picked = true; history.length = 0; skipped.clear();
+  cur = nextUngraded(-1); render();
+});
+
+function firstOpenWorry() {
+  return (worries.find(([w]) => ITEMS.some((it) => it.w === w && !grade(it))) || [""])[0];
+}
+
+$("sample").hidden = !SAMPLE;
+filter = firstOpenWorry();
+cur = nextUngraded(-1);
+render();
+
+const timer = setTimeout(() => {
+  if (dbState === "wait") { dbState = "none"; setSave("保存できません：Claude にサインインして開いてください", "ng"); render(); }
+}, 10000);
+(async () => {
+  try {
+    db = window.claude && window.claude.use ? await window.claude.use("db") : null;
+  } catch (e) { db = null; }
+  clearTimeout(timer);
+  if (!db) {
+    dbState = "none"; setSave("保存できません：Claude にサインインして開いてください", "ng"); render(); return;
+  }
+  dbState = "ok"; setSave("保存できます", "ok");
+  const col = db.collection("grades");
+  try {
+    if (typeof col.onSnapshot === "function") {
+      col.onSnapshot(applyGrades, () => setSave("点を読めませんでした（付けた点は保存されます）", "ng"));
+    } else if (typeof col.get === "function") {
+      applyGrades(await col.get());
+    }
+  } catch (e) {
+    setSave("点を読めませんでした（付けた点は保存されます）", "ng");
+  }
+  render();
+})();
+</script>
+</body>
+</html>

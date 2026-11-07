@@ -41,6 +41,7 @@
 - uv run koten plan --worry W0001 --format A --dry-run（--format を省くと形式を、--worry を省くと優先度の高い悩みを自動で選ぶ。形式C は --theme 孤独）
 - uv run koten eval export → uv run koten eval label（ターミナルで1行ずつ 1/0 を付ける。--worries 5 で上から5件の悩みだけ。表計算ソフトなら tests/eval/retrieval.csv の grade 列）
 - uv run koten eval grade（Claude Code の Haiku が llm_grade 列を埋める）→ uv run koten eval agreement
+- スマホで点を付けるとき：Mac で eval export → tests/eval/retrieval.csv を GitHub に入れる → Claude が uv run koten eval page でページを作り、アーティファクト「検索の評価」に載せる → 人がスマホで押す → Claude がページのデータベースの grades を読んで JSON にし、uv run koten eval merge --from その JSON で grade 列に書いて GitHub に入れる（docs/decisions.md 2026-11-08）
 - uv run koten eval retrieval（--by llm で LLM の点を使う。--rerank-model でリランカーを1つずつ足して比べる。export にも同じ指定をして、上に上がった一節にも点を付ける）
 - uv run koten plan --worry W0001 --format A（保存）→ uv run koten script --episode E20261101-01 → --show で読む
 - uv run koten episode list ／ uv run koten episode discard --episode <ID>（試しの回を取り消す）

@@ -717,3 +717,11 @@ uv run koten chunk aozora
 - 評価セット（tests/eval/retrieval.csv）に context_text の列を足した。`koten eval export` をし直すと入る（付けた点は残る）。`koten eval label` は前後の文を、一節を【】で囲んで見せる。Excel が無い Mac 向けに足した、ターミナルで1行ずつ点を付けるコマンド。
 - 人と判定役が同じものを見て付けるように、Haiku の判定役にも前後の文を渡す grader_v2 にした（settings.toml の eval.grader_prompt）。判定するのは一節そのもので、前後の文にだけ合うことが書いてあっても true にしない。
 
+### 2026-11-08 検索の評価をスマホで付ける（koten eval page・merge）
+
+- 利用者の希望：根気のいる作業なので、スマホでも簡単に評価したい。
+- Claude のアプリで開けるページ（アーティファクト「検索の評価」、所有者だけが見られる。slug e0fe266b-355c-4376-8546-bb85bec3e065）に、1枚ずつ一節を出し、「合う／合わない」を押す。戻る・飛ばす・悩みの選び直しができる。前後の文は一節に色を付けて見せ、判断の目安（grader_v2 と同じ）も開ける。
+- データの流れ：Mac で `koten eval export` → tests/eval/retrieval.csv を GitHub に入れる → Claude が `koten eval page` でページ（data/eval-page.html。Git には入れない）を作って載せ直す → 押した点はページのデータベース（grades/<キー>、所有者と編集者だけが読み書き）に残る → Claude が grades を読んで JSON にし、`koten eval merge --from` で grade 列に書いて GitHub に入れる → Mac で取り込み、`koten eval grade`・`agreement`・`retrieval` に進む。キーは悩みと一節の組から作る（W0001-<sha1 の12字>）。
+- ページに入れるのは、悩み・作品名・著者・一節・前後の文・要旨と、すでに付いた人の点だけ。LLM の点と理由は入れない（人の点が引きずられないように）。一節は保護期間の切れた作品のもの（索引は権利で使えるものだけ）で、今の本（S4）や有料の論文の本文は評価セットに無い。本文で script を閉じられないよう、< > & は \u で書く。
+- ページの点とCSVの点が違えば、ページの点（新しいほう）にする。評価セットに無いキーの点（見本の行など）は読まない。
+

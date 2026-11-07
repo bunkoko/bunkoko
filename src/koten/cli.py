@@ -1475,6 +1475,62 @@ def eval_label(
     typer.echo(f"\n今回 {done} 行に点を付けました（点の無い行 残り {left}）。保存済みです")
 
 
+@eval_app.command("page")
+def eval_page(
+    file: Annotated[str, typer.Option(help="評価セット")] = "tests/eval/retrieval.csv",
+    out: Annotated[str, typer.Option(help="書き出すページ（HTML）")] = "data/eval-page.html",
+    sample: Annotated[bool, typer.Option(help="見本の行だと画面に出す")] = False,
+) -> None:
+    """評価セットを、スマホで点を付けるページ（HTML）にする。Claude がアーティファクトとして載せる。
+
+    LLM の点と理由はページに入れない。押した点はページのデータベースに残り、Claude が
+    koten eval merge で grade 列に書き戻す。
+    """
+    from pathlib import Path
+
+    from koten.eval.phone import build_page
+    from koten.eval.retrieval import read_rows
+
+    src = Path(file)
+    if not src.exists():
+        _require_input(src, "eval export")
+    rows = read_rows(src)
+    dest = Path(out)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(build_page(rows, sample=sample), "utf-8")
+    worries = len({r["worry_id"] for r in rows})
+    typer.echo(f"{dest} に、悩み {worries} 件・{len(rows)} 行のページを書きました")
+
+
+@eval_app.command("merge")
+def eval_merge(
+    source: Annotated[str, typer.Option("--from", help='ページの点（{キー: "1" か "0"} の JSON）')],
+    file: Annotated[str, typer.Option(help="評価セット")] = "tests/eval/retrieval.csv",
+) -> None:
+    """スマホのページで付けた点を、評価セットの grade 列に書く（ページの点を新しい点とする）。"""
+    import json
+    from pathlib import Path
+
+    from koten.eval.phone import merge_grades
+
+    src, path = Path(source), Path(file)
+    for p in (src, path):
+        if not p.exists():
+            typer.secho(f"{p} がありません", fg="red", err=True)
+            raise typer.Exit(2)
+    grades = json.loads(src.read_text("utf-8"))
+    if not isinstance(grades, dict):
+        typer.secho(f"{src} は {{キー: 点}} の形ではありません", fg="red", err=True)
+        raise typer.Exit(2)
+    changed, matched, unknown = merge_grades(path, grades)
+    typer.echo(f"ページの点 {matched} 件を読み、{changed} 行の grade を書きました（{file}）")
+    if unknown:
+        typer.secho(
+            f"評価セットに無い行の点 {len(unknown)} 件は読みませんでした（見本の行など）",
+            fg="yellow",
+        )
+
+
 @eval_app.command("retrieval")
 def eval_retrieval(
     file: Annotated[str, typer.Option(help="点を付けた評価セット")] = "tests/eval/retrieval.csv",
