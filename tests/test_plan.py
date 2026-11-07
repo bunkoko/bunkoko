@@ -116,6 +116,56 @@ def test_plan_b(env):
     assert len(set(_works(plan))) == 1 and plan["work_id"] == _works(plan)[0]
     assert 4 <= len(plan["selection"]) <= 6
     assert len({w["worry_id"] for w in plan["worries"]}) >= 3
+    # 回の悩みは、一節を当てはめた悩みだけ（使わない悩みを30日の間隔で止めない）
+    used = {s["worry_id"] for s in plan["selection"]}
+    assert [w["worry_id"] for w in plan["worries"]] == [
+        w for w in [w["worry_id"] for w in plan["worries"]] if w in used
+    ]
+    assert {w["worry_id"] for w in plan["worries"]} == used
+    assert plan["worries"][0]["worry_id"] == "W0001"
+
+
+def test_plan_b_keeps_only_used_worries(env, monkeypatch):
+    """5つの悩みのうち3つにだけ一節を当てはめたら、残りは回にも使用日にも入れない。"""
+    import json
+
+    from koten.worries.master import load_theme_weights, ranked_worries
+
+    p = make_planner(env)
+    seen: list[str] = []
+    # この小さな表では同じテーマの悩みが2つしかないので、テーマを問わず4つまで足す
+    ranked = ranked_worries(p.conn, load_theme_weights(DEFAULT_CONFIG_DIR), 90)
+    monkeypatch.setattr(
+        p,
+        "_worries_with_themes",
+        lambda themes, *, exclude, limit, first=None: [
+            w for w in ranked if w["worry_id"] not in exclude
+        ][:limit],
+    )
+
+    def select(fmt, worries, shortlist, rules, check, fallback):
+        ids = [w["worry_id"] for w in worries]
+        seen.extend(ids)
+        assert "W0001 は必ず使う" in rules and ids[0] == "W0001" and len(ids) >= 4
+        assert check([{**f, "worry_id": ids[1 + i % 3]} for i, f in enumerate(fallback)]) == (
+            "最初の悩み"
+        )
+        picks = [{**f, "worry_id": ids[i % 3]} for i, f in enumerate(fallback)]
+        assert check(picks) is None
+        return picks, "", True
+
+    monkeypatch.setattr(p, "llm_select", select)
+    plan = p.plan("B", worry_id="W0001", now=NOW)
+    assert [w["worry_id"] for w in plan["worries"]] == seen[:3]
+    episode_id = p.save(plan, now=NOW)
+    row = p.conn.execute(
+        "SELECT worry_ids FROM episodes WHERE episode_id = ?", (episode_id,)
+    ).fetchone()
+    assert json.loads(row[0]) == seen[:3]
+    unused = p.conn.execute(
+        "SELECT last_used_at FROM worries WHERE worry_id = ?", (seen[3],)
+    ).fetchone()
+    assert unused[0] is None
 
 
 def test_plan_c(env):

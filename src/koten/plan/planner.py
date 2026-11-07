@@ -352,7 +352,7 @@ class Planner:
             used = {p["worry_id"] for p in picks}
             if not used <= {w["worry_id"] for w in worries} or len(used) < 3:
                 return "悩みの数"
-            return None
+            return None if worry["worry_id"] in used else "最初の悩み"
 
         fallback = [
             self._auto_pick(s, worries[i % len(worries)]["worry_id"])
@@ -361,10 +361,13 @@ class Planner:
         rules = (
             f"- 『{title}』の一節から{lo}〜{hi}個を選ぶ。\n"
             "- それぞれの一節を、悩み一覧のどれか1つに当てはめ、worry_id に書く。"
-            "3つ以上の悩みを使う。\n"
+            f"3つ以上の悩みを使い、{worry['worry_id']} は必ず使う。\n"
             "- 作品の流れが分かる順（本の中の順）に並べる。"
         )
         picks, _, by_llm = self.llm_select("B", worries, shortlist, rules, check, fallback)
+        # 一節を当てはめなかった悩みは回に入れない（使ったことにして30日の間隔で止めないように）
+        used = {p["worry_id"] for p in picks}
+        worries = [w for w in worries if w["worry_id"] in used]
         self._index_rows(shortlist)
         groups = _group_by(picks, "worry_id")
         plan = self._chapters("B", groups, worries, themes=q.themes)
