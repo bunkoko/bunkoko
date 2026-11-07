@@ -300,6 +300,51 @@ def test_eval_export_and_evaluate(tmp_path):
     assert {r["candidate_id"] for r in read_rows(path)} == set("abcd")
 
 
+def test_eval_label_in_the_terminal(tmp_path):
+    """Excel が無くても、ターミナルで1行ずつ点を付けられる。答えるたびに保存し、q でやめられる。"""
+    from koten.eval.retrieval import read_rows, write_eval
+
+    path = tmp_path / "eval.csv"
+    rows = [
+        {
+            "worry_id": w,
+            "worry_text": f"悩み{w}",
+            "candidate_id": c,
+            "title": "t",
+            "authors": "甲",
+            "section": "",
+            "quote_text": f"一節{c}",
+            "summary_ja": "",
+            "grade": g,
+            "llm_grade": "1",
+            "llm_reason": "",
+            "llm_grader": "",
+        }
+        for w, c, g in [("W1", "a", ""), ("W1", "b", "1"), ("W1", "c", ""), ("W2", "d", "")]
+    ]
+    write_eval(path, rows)
+    # 全角の１・読めない答え（もう一度尋ねる）・飛ばす・やめる。W2 は --worries 1 で尋ねない
+    r = CliRunner().invoke(
+        app, ["eval", "label", "--file", str(path), "--worries", "1"], input="１\nx\n\nq\n"
+    )
+    assert r.exit_code == 0, r.output
+    assert "悩み W1：悩みW1" in r.output and "「一節a」" in r.output and "1/2" in r.output
+    assert "llm" not in r.output.lower()  # LLM の点は見せない
+    assert "今回 1 行に点を付けました（点の無い行 残り 1）" in r.output
+    assert [x["grade"] for x in read_rows(path)] == ["1", "1", "", ""]
+    # 続きから。--worry で1つの悩みだけ
+    r = CliRunner().invoke(
+        app, ["eval", "label", "--file", str(path), "--worry", "W2"], input="0\n"
+    )
+    assert r.exit_code == 0 and "1/1" in r.output, r.output
+    assert [x["grade"] for x in read_rows(path)] == ["1", "1", "", "0"]
+    # 入力が終わったら（Ctrl-D）やめる
+    r = CliRunner().invoke(app, ["eval", "label", "--file", str(path)], input="")
+    assert r.exit_code == 0 and "今回 0 行" in r.output, r.output
+    missing = CliRunner().invoke(app, ["eval", "label", "--file", str(tmp_path / "none.csv")])
+    assert missing.exit_code == 2 and "eval export" in missing.output
+
+
 def test_cli_retrieve_and_plan(env, settings_file, monkeypatch):
     with settings_file.open("a", encoding="utf-8") as f:
         f.write('\n[bm25]\ntokenizer = "bigram"\n')

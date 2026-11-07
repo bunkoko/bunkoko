@@ -119,6 +119,43 @@ def read_eval(path: Path, column: str = "grade") -> dict[str, dict[str, int]]:
     return out
 
 
+# 全角で打っても受け付ける
+ANSWERS = {"1": "1", "１": "1", "0": "0", "０": "0", "": "", "q": None, "ｑ": None, "Q": None}
+
+
+def label_rows(
+    path: Path,
+    ask: Callable[[dict[str, str], int, int], str],
+    *,
+    worries: int | None = None,
+    worry_id: str | None = None,
+) -> tuple[int, int]:
+    """grade が空の行を1行ずつ尋ね、答えるたびに CSV に保存する（途中でやめても残る）。
+
+    ask は「1」「0」・空（飛ばす）・「q」（やめる）を返す。worries は上から何件の悩みまで。
+    LLM の点（llm_grade）は見せない（人の点が引きずられないように）。
+    戻り値は（今回付けた数, まだ点の無い行の数）。
+    """
+    rows = read_rows(path)
+    order = list(dict.fromkeys(r["worry_id"] for r in rows))
+    chosen = set([worry_id] if worry_id else order[:worries] if worries else order)
+    todo = [
+        i for i, r in enumerate(rows) if r["worry_id"] in chosen and parse_grade(r["grade"]) is None
+    ]
+    done = 0
+    for n, i in enumerate(todo, start=1):
+        while (answer := ANSWERS.get(ask(rows[i], n, len(todo)).strip(), "?")) == "?":
+            pass  # 読めない答えは、もう一度尋ねる
+        if answer is None:
+            break
+        if answer:
+            rows[i]["grade"] = answer
+            write_eval(path, rows)
+            done += 1
+    left = sum(1 for r in rows if r["worry_id"] in chosen and parse_grade(r["grade"]) is None)
+    return done, left
+
+
 Run = Callable[[str, EvalConfig, int], list[str]]  # (worry_id, やり方, 件数) → 候補IDの順位
 
 

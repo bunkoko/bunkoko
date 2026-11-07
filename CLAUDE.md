@@ -39,7 +39,7 @@
 - uv run koten worries list（優先度順）／ --status blocked など
 - uv run koten retrieve --worry W0001 --explain
 - uv run koten plan --worry W0001 --format A --dry-run（--format を省くと形式を、--worry を省くと優先度の高い悩みを自動で選ぶ。形式C は --theme 孤独）
-- uv run koten eval export → tests/eval/retrieval.csv の grade 列に 1/0（人）
+- uv run koten eval export → uv run koten eval label（ターミナルで1行ずつ 1/0 を付ける。--worries 5 で上から5件の悩みだけ。表計算ソフトなら tests/eval/retrieval.csv の grade 列）
 - uv run koten eval grade（Claude Code の Haiku が llm_grade 列を埋める）→ uv run koten eval agreement
 - uv run koten eval retrieval（--by llm で LLM の点を使う。--rerank-model でリランカーを1つずつ足して比べる。export にも同じ指定をして、上に上がった一節にも点を付ける）
 - uv run koten plan --worry W0001 --format A（保存）→ uv run koten script --episode E20261101-01 → --show で読む

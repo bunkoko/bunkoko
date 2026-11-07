@@ -1425,7 +1425,52 @@ def eval_export(
     typer.echo(
         f"{out} に {len(worries)} 件の悩み・{total} 行を書きました（点が付いている行 {judged}）"
     )
-    typer.echo("grade 列に 1＝合う、0＝合わない を付けて保存してください")
+    typer.echo(
+        "点は uv run koten eval label で1行ずつ付けられます"
+        "（表計算ソフトなら grade 列に 1＝合う、0＝合わない）"
+    )
+
+
+@eval_app.command("label")
+def eval_label(
+    file: Annotated[str, typer.Option(help="点を付ける評価セット")] = "tests/eval/retrieval.csv",
+    worries: Annotated[
+        int | None, typer.Option(help="上から何件の悩みに付けるか（省くと全部）")
+    ] = None,
+    worry: Annotated[str | None, typer.Option(help="この悩みだけに付ける（例：W0001）")] = None,
+) -> None:
+    """評価セットに、ターミナルで1行ずつ点を付ける（1＝合う、0＝合わない）。
+
+    点がまだ無い行だけを尋ね、答えるたびに保存する。q でやめても、続きは次に同じコマンドで。
+    """
+    from pathlib import Path
+
+    from koten.eval.retrieval import label_rows
+
+    path = Path(file)
+    if not path.exists():
+        typer.secho(f"{file} がありません。先に uv run koten eval export", fg="red", err=True)
+        raise typer.Exit(2)
+
+    def ask(r: dict[str, str], n: int, total: int) -> str:
+        typer.echo(f"\n──── {n}/{total} ────")
+        typer.secho(f"悩み {r['worry_id']}：{r['worry_text']}", bold=True)
+        section = f" {r['section']}" if r["section"] else ""
+        typer.echo(f"『{r['title']}』（{r['authors']}）{section}")
+        typer.echo(f"「{r['quote_text']}」")
+        if r["summary_ja"]:
+            typer.echo(f"  要旨（AI の手がかり。読み違いもある）：{r['summary_ja']}")
+        try:
+            return typer.prompt(
+                "1＝合う　0＝合わない　Enter＝飛ばす　q＝やめる",
+                default="",
+                show_default=False,
+            )
+        except typer.Abort:
+            return "q"
+
+    done, left = label_rows(path, ask, worries=worries, worry_id=worry)
+    typer.echo(f"\n今回 {done} 行に点を付けました（点の無い行 残り {left}）。保存済みです")
 
 
 @eval_app.command("retrieval")
