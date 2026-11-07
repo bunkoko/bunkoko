@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>カード センタリング測定ツール（ポケカ対応）</title>
+  <meta name="description" content="トレーディングカードのセンタリング（ふちの左右・上下の比率）を測定するツール。斜めから撮った写真も遠近補正して測定できます。画像はブラウザ内だけで処理されます。">
+  <meta name="theme-color" content="#1b2030">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site-header">
+    <h1>カード センタリング測定</h1>
+    <p class="lead">斜めから撮った写真も<strong>遠近補正</strong>して、カードのふちの左右・上下の比率を測ります。<br>
+      画像はお使いのブラウザ内だけで処理され、サーバーには送信されません。</p>
+  </header>
+
+  <main>
+    <!-- STEP 1 -->
+    <section class="panel" id="step1">
+      <h2><span class="num">1</span>画像を選ぶ</h2>
+      <div class="drop" id="dropZone">
+        <label class="btn primary file-btn">
+          写真を選択・撮影
+          <input type="file" id="fileInput" accept="image/*">
+        </label>
+        <p class="hint">ここにドラッグ&ドロップ、または貼り付け（Ctrl+V / ⌘V）もできます</p>
+      </div>
+      <div class="row">
+        <label for="cardSize">カードサイズ</label>
+        <select id="cardSize">
+          <option value="std" selected>63×88mm（ポケモンカード・MTG など）</option>
+          <option value="ygo">59×86mm（遊戯王OCG など）</option>
+        </select>
+      </div>
+      <details class="tips">
+        <summary>きれいに測るための撮影のコツ</summary>
+        <ul>
+          <li>カードとは色が違う、無地の背景（黒やグレーなど）の上に置くと縁を検出しやすくなります。</li>
+          <li>照明の映り込み（テカリ）が縁にかからないようにしてください。</li>
+          <li>近づきすぎると広角レンズの歪みが出ます。少し離れてズームで撮るのがおすすめです。</li>
+          <li>斜めからでも補正できますが、正面に近いほど精度が上がります。</li>
+          <li>反ったカードや、スリーブ・ローダー越しの撮影は誤差が出やすくなります。</li>
+        </ul>
+      </details>
+    </section>
+
+    <!-- STEP 2 -->
+    <section class="panel hidden" id="step2">
+      <h2><span class="num">2</span>カードの4隅を合わせる</h2>
+      <p class="hint">4つの丸いハンドルをドラッグしてカードの<strong>角</strong>に合わせてください。
+        カードの角は丸いので、<strong>点線（辺の延長線）がカードの4辺にぴったり重なる</strong>ように合わせるのがコツです。
+        ドラッグ中は拡大鏡が表示されます。</p>
+      <div class="canvas-wrap"><canvas id="cornerCanvas" aria-label="カードの4隅の指定"></canvas></div>
+      <div class="toolbar">
+        <button class="btn" id="resetCorners" type="button">隅をリセット</button>
+        <button class="btn primary" id="doMeasure" type="button">遠近補正して測定 ▼</button>
+      </div>
+      <p class="warn hidden" id="cornerWarn"></p>
+    </section>
+
+    <!-- STEP 3 -->
+    <section class="panel hidden" id="step3">
+      <h2><span class="num">3</span>ふちの線を合わせる</h2>
+      <p class="hint">遠近補正した画像に、自動検出した線を表示しています。ずれている場合はドラッグで調整してください。<br>
+        <span class="swatch outer"></span>水色＝カードの外側の縁
+        <span class="swatch inner"></span>ピンク＝ふち（枠）の内側</p>
+      <p class="warn hidden" id="staleWarn">4隅が変更されました。もう一度「遠近補正して測定」を押すと反映されます。</p>
+      <div class="canvas-wrap"><canvas id="measureCanvas" aria-label="ふちの線の調整"></canvas></div>
+      <div class="toolbar">
+        <button class="btn" id="autoDetect" type="button">線を自動検出</button>
+        <button class="btn" id="rotate" type="button">90°回転</button>
+        <button class="btn" id="saveImage" type="button">結果画像を保存</button>
+      </div>
+      <div class="nudge">
+        <label for="lineSelect">微調整</label>
+        <select id="lineSelect"></select>
+        <button class="btn small" type="button" data-nudge="-0.5" aria-label="マイナス方向へ移動">◀ / ▲</button>
+        <button class="btn small" type="button" data-nudge="0.5" aria-label="プラス方向へ移動">▶ / ▼</button>
+      </div>
+      <p class="hint small">PCでは、選択中の線を矢印キーで動かせます（Shift で大きく移動）。</p>
+    </section>
+
+    <!-- RESULT -->
+    <section class="panel hidden" id="step4">
+      <h2><span class="num">4</span>測定結果</h2>
+      <div class="row">
+        <span>面：</span>
+        <label class="radio"><input type="radio" name="side" value="front" checked> 表面</label>
+        <label class="radio"><input type="radio" name="side" value="back"> 裏面</label>
+      </div>
+      <div id="results"></div>
+      <p class="disclaimer">※ グレードは公開されているPSAのセンタリング基準（表面 10: 55/45、9: 60/40、8: 65/35、7: 70/30、6: 80/20 ／ 裏面 10: 75/25、9以下: 90/10）に当てはめた目安です。
+        実際の鑑定はセンタリング以外（角・エッジ・表面の状態）も評価され、基準も変更されることがあります。</p>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>非公式のファンメイドツールです。株式会社ポケモン・任天堂・各鑑定会社とは関係ありません。</p>
+  </footer>
+
+  <script src="geometry.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
