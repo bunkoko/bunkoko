@@ -238,6 +238,6 @@ def filter_report(index: HotIndex, flt: Filter) -> dict[str, int]:
         out["直近の回で使った作品"] = int((base & ~index.mask(only)).sum())
     if flt.exclude_author_ids:
         only = Filter(exclude_caution=False, exclude_author_ids=flt.exclude_author_ids)
-        out["直近の回で使った著者"] = int((base & ~index.mask(only)).sum())
+        out["直近の回で使った人（著者か訳者）"] = int((base & ~index.mask(only)).sum())
     out["検索の対象"] = int(index.mask(flt).sum())
     return out

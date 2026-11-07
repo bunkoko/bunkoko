@@ -245,7 +245,7 @@ def test_shortage_raises(env):
                 "VALUES (?, 'B', '[]', 'planned')",
                 (f"E0-{i}",),
             )
-    with pytest.raises(PlanError, match="別々の作品"):
+    with pytest.raises(PlanError, match="別々の人"):
         p.plan("A", worry_id="W0003", now=NOW)
 
 
@@ -335,3 +335,128 @@ def test_cli_retrieve_and_plan(env, settings_file, monkeypatch):
     assert r.exit_code == 0, r.output
     assert re.match(r"E\d{8}-\d{2} 形式D", r.output)
     assert "悩み W0001：" not in r.output
+
+
+def _rewrite_cache(s, change):
+    """候補表の行を書き換えて索引を読み直せるようにする（訳者・別名の試し用）。"""
+    import pyarrow.parquet as pq
+
+    from koten.index.build import cache_path
+
+    path = cache_path(s.ssd_root)
+    table = pq.read_table(path)
+    rows = table.to_pylist()
+    change(rows)
+    pq.write_table(type(table).from_pylist(rows, schema=table.schema), path)
+    return rows
+
+
+def _two_people(rows):
+    """別々の作品・別々の著者の2行。"""
+    first = next(r for r in rows if r["author_ids"])
+    second = next(
+        r
+        for r in rows
+        if r["author_ids"]
+        and r["work_id"] != first["work_id"]
+        and not set(r["author_ids"]) & set(first["author_ids"])
+    )
+    return first, second
+
+
+def test_one_person_once_per_episode(env, monkeypatch):
+    """1回の中で同じ人は1度だけ（形式A・C）。訳者として出る人も、別名も同じ人とみる。"""
+    from types import SimpleNamespace
+
+    picked: dict[str, tuple] = {}
+
+    def setup(rows):
+        first, second = _two_people(rows)
+        for r in rows:
+            if r["work_id"] == first["work_id"]:
+                r["translator_ids"] = [second["author_ids"][0]]  # first の訳者が second の著者
+        picked["ids"] = (first["candidate_id"], second["candidate_id"])
+        picked["author"] = second["author_ids"][0]
+
+    _rewrite_cache(env, setup)
+    p = make_planner(env)
+    a, b = ({"candidate_id": cid} for cid in picked["ids"])
+    assert picked["author"] in p.people(p._row(a))
+    assert p._same_person([a, b])
+    rows = [SimpleNamespace(row=p._row(a)), SimpleNamespace(row=p._row(b))]
+    assert p.diverse(rows, 5, key="person") == rows[:1]
+    assert p.diverse(rows, 5, key="work") == rows
+
+    seen: dict[str, object] = {}
+
+    def select(fmt, worries, shortlist, rules, check, fallback):
+        seen[fmt] = check
+        seen[fmt + "_worries"] = [w["worry_id"] for w in worries]
+        assert "別々の人（著者か訳者）" in rules
+        people = [x for s in shortlist for x in p.people(s.row)]
+        if fmt == "A":  # A の候補は、はじめから別々の人
+            assert len(people) == len(set(people))
+        return fallback, "", False
+
+    monkeypatch.setattr(p, "llm_select", select)
+    p.plan("A", worry_id="W0001", now=NOW)
+    p.plan("C", theme="孤独", now=NOW)
+    others = [
+        {"candidate_id": cid}
+        for cid in p.index.ids
+        if not set(p.people(p.index.rows[p.index.ids.index(cid)]))
+        & (set(p.people(p._row(a))) | set(p.people(p._row(b))))
+    ]
+    distinct = []
+    for o in others:
+        if not any(set(p.people(p._row(o))) & set(p.people(p._row(d))) for d in distinct):
+            distinct.append(o)
+    assert seen["A"]([a, b, *distinct[:2]]) == "同じ人"
+    assert seen["A"]([a, *distinct[:3]]) is None
+    ws = seen["C_worries"]
+    c_of = lambda xs: [  # noqa: E731
+        {**x, "worry_id": w} for x, w in zip(xs, [ws[0], ws[1], ws[2], ws[2]], strict=True)
+    ]
+    assert seen["C"](c_of([a, b, *distinct[:2]])) == "同じ人"
+    assert seen["C"](c_of([a, *distinct[:3]])) is None
+
+
+def test_people_interval_counts_translators_and_aliases(env):
+    """使った人（著者と訳者）は、別名も含めて次の回から間隔をあける。"""
+    from koten.index.search import Filter
+
+    plan = make_planner(env).plan("A", worry_id="W0001", now=NOW)
+    used = {a for x in plan["selection"] for a in x["author_ids"]}
+    head = plan["selection"][0]["author_ids"][0]  # この回で使う著者
+    holder: dict[str, str] = {}
+
+    def setup(rows):
+        # この回で使わない作品の訳者を、この回の著者の別名にする
+        other = next(r for r in rows if r["author_ids"] and not set(r["author_ids"]) & used)
+        holder["work"] = other["work_id"]
+        for r in rows:
+            if r["work_id"] == other["work_id"]:
+                r["translator_ids"] = ["aozora:person:999001"]
+
+    _rewrite_cache(env, setup)
+    p = make_planner(env)
+    with p.conn:
+        p.conn.executemany(
+            "INSERT INTO persons(person_id, canonical_id, name) VALUES (?, ?, '別名')",
+            [("aozora:person:999001", head), ("aozora:person:999002", "aozora:person:999003")],
+        )
+    row = next(r for r in p.index.rows if r["work_id"] == holder["work"])
+    assert head in p.people(row) and "aozora:person:999001" not in p.people(row)
+    rows_of_other = [i for i, r in enumerate(p.index.rows) if r["work_id"] == holder["work"]]
+    assert p.base_filter().exclude_author_ids == []  # まだどの回も無い
+
+    plan["selection"][1]["translator_ids"] = ["aozora:person:999002"]  # 訳者も別名で
+    p.save(plan, now=NOW)
+    recorded = {r[0] for r in p.conn.execute("SELECT author_id FROM usage WHERE role = 'main'")}
+    assert "aozora:person:999003" in recorded  # 訳者も、代表の ID で記録する
+    assert "aozora:person:999002" not in recorded
+    excluded = set(make_planner(env).base_filter().exclude_author_ids)
+    assert {head, "aozora:person:999001", "aozora:person:999002"} <= excluded
+    assert p.index.mask(Filter(exclude_caution=False))[rows_of_other].all()
+    only = Filter(exclude_caution=False, exclude_author_ids=sorted(excluded))
+    assert not p.index.mask(only)[rows_of_other].any()  # 訳者が間隔の内の人なので外れる

@@ -28,7 +28,7 @@ class Filter:
 
     exclude_caution: bool = True  # caution の一節は自動選択しない
     exclude_work_ids: Collection[str] = ()  # 直近の回で主役にした作品
-    exclude_author_ids: Collection[str] = ()  # 直近の回で主役にした著者
+    exclude_author_ids: Collection[str] = ()  # 直近の回で主役にした人（著者か訳者）
     only_work_ids: Collection[str] | None = None  # 形式B（1冊を読む）
     themes_any: Collection[str] | None = None  # どれかのテーマを持つもの
     allow_review_required: bool = True  # NDL 由来など、人の確認が要るもの
@@ -60,7 +60,10 @@ class HotIndex:
         self._caution = np.array([bool(r["caution"]) for r in self.rows], dtype=bool)
         self._review = np.array([bool(r["review_required"]) for r in self.rows], dtype=bool)
         self._by_work = self._group(lambda r: [r["work_id"]])
-        self._by_author = self._group(lambda r: r.get("author_ids") or [])
+        # 人（著者と訳者）ごと。訳書の一節は訳者の文章でもあるので、訳者でも間隔をあける
+        self._by_author = self._group(
+            lambda r: [*(r.get("author_ids") or []), *(r.get("translator_ids") or [])]
+        )
         self._by_theme = self._group(lambda r: r["themes"] or [])
 
     def __len__(self) -> int:

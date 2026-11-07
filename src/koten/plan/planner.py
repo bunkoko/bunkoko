@@ -113,11 +113,21 @@ class Planner:
         ).fetchall()
         return [r[0] for r in rows]
 
+    def _with_aliases(self, person_ids: list[str]) -> list[str]:
+        """代表の ID に、同じ人の別名の ID を足す（索引は別名の ID のまま持つため）。"""
+        if not person_ids:
+            return []
+        canon = self._canonical()
+        heads = {canon.get(p, p) for p in person_ids}
+        return sorted(set(person_ids) | heads | {p for p, c in canon.items() if c in heads})
+
     def base_filter(self, **kw: Any) -> Filter:
         return Filter(
             exclude_caution=True,
             exclude_work_ids=self._recent("work_id", self.cfg.work_episodes),
-            exclude_author_ids=self._recent("author_id", self.cfg.author_episodes),
+            exclude_author_ids=self._with_aliases(
+                self._recent("author_id", self.cfg.author_episodes)
+            ),
             **kw,
         )
 
@@ -192,25 +202,60 @@ class Planner:
 
     # --- 選択 ---------------------------------------------------------------
 
-    @staticmethod
-    def diverse(items: list[Scored], n: int, *, key: str | None, per_key: int = 1) -> list[Scored]:
-        """MMR の考え方で、上から順に、同じ作品（か著者）が per_key 件を超えないように拾う。"""
+    def diverse(
+        self, items: list[Scored], n: int, *, key: str | None, per_key: int = 1
+    ) -> list[Scored]:
+        """MMR の考え方で、上から順に、同じ作品（か著者・人）が per_key 件を超えないように拾う。
+
+        key="person" は、著者と訳者のだれか1人でも重なれば同じとみる（別名は1人にまとめる）。
+        """
         out: list[Scored] = []
         counts: dict[str, int] = {}
         for s in items:
-            k = None
+            keys: list[str] = []
             if key == "work":
-                k = s.row["work_id"]
+                keys = [s.row["work_id"]]
             elif key == "author":
-                k = "・".join(s.row.get("author_ids") or [s.row["work_id"]])
-            if k is not None and counts.get(k, 0) >= per_key:
+                keys = ["・".join(s.row.get("author_ids") or [s.row["work_id"]])]
+            elif key == "person":
+                keys = self.people(s.row)
+            if any(counts.get(k, 0) >= per_key for k in keys):
                 continue
-            if k is not None:
+            for k in keys:
                 counts[k] = counts.get(k, 0) + 1
             out.append(s)
             if len(out) >= n:
                 break
         return out
+
+    def _canonical(self) -> dict[str, str]:
+        if not hasattr(self, "_canon"):
+            self._canon = {
+                r[0]: r[1] for r in self.conn.execute("SELECT person_id, canonical_id FROM persons")
+            }
+        return self._canon
+
+    def people(self, row: dict[str, Any]) -> list[str]:
+        """一節の人：著者と訳者（訳書の一節は訳者の文章でもある）。別名は代表の ID にまとめる。
+
+        著者の分からない作品は、作品の ID を1人とみる。
+        """
+        canon = self._canonical()
+        out: list[str] = []
+        for pid in [*(row.get("author_ids") or []), *(row.get("translator_ids") or [])]:
+            c = canon.get(pid, pid)
+            if c not in out:
+                out.append(c)
+        return out or [row["work_id"]]
+
+    def _same_person(self, picks: list[dict[str, Any]]) -> bool:
+        seen: set[str] = set()
+        for p in picks:
+            ids = set(self.people(self._row(p)))
+            if ids & seen:
+                return True
+            seen |= ids
+        return False
 
     def llm_select(
         self,
@@ -297,19 +342,23 @@ class Planner:
         lo, hi = self._passages_range("A")
         q = self.queries(worry)
         ranked = self.search(q, self.base_filter())
-        shortlist = self.diverse(ranked, self.cfg.shortlist, key="work")
+        shortlist = self.diverse(ranked, self.cfg.shortlist, key="person")
         if len(shortlist) < lo:
-            raise PlanError(f"別々の作品の候補が{len(shortlist)}つしかありません（{lo}つ必要）")
+            raise PlanError(
+                f"別々の人（著者か訳者）の候補が{len(shortlist)}つしかありません（{lo}つ必要）"
+            )
 
         def check(picks: list[dict[str, Any]]) -> str | None:
             works = [self._row(p)["work_id"] for p in picks]
             if not lo <= len(picks) <= hi:
                 return "数"
-            return "作品の重複" if len(set(works)) != len(works) else None
+            if len(set(works)) != len(works):
+                return "作品の重複"
+            return "同じ人" if self._same_person(picks) else None
 
         fallback = [self._auto_pick(s, worry["worry_id"]) for s in shortlist[: min(hi, 5)]]
         rules = (
-            f"- {lo}〜{hi}個を選ぶ。すべて別々の作品から選ぶ。\n"
+            f"- {lo}〜{hi}個を選ぶ。すべて別々の作品・別々の人（著者か訳者）から選ぶ。\n"
             "- 悩みの理解が深まる順（共感 → 見方を変える → 前へ進む）に並べる。"
         )
         picks, _, by_llm = self.llm_select("A", [worry], shortlist, rules, check, fallback)
@@ -395,21 +444,23 @@ class Planner:
             raise PlanError(f"テーマ「{theme}」の悩みが{len(worries)}つしかありません（3つ必要）")
 
         shortlist: list[Scored] = []
-        used_works: set[str] = set()
+        used_people: set[str] = set()
         queries = []
         per_worry: dict[str, list[Scored]] = {}
         for w in worries:
             q = self.queries(w)
             queries.append(q)
             ranked = [
-                s for s in self.search(q, self.base_filter()) if s.row["work_id"] not in used_works
+                s
+                for s in self.search(q, self.base_filter())
+                if not set(self.people(s.row)) & used_people
             ]
-            picks = self.diverse(ranked, 4, key="work")
+            picks = self.diverse(ranked, 4, key="person")
             per_worry[w["worry_id"]] = picks
             for s in picks:
                 if s.candidate_id not in {x.candidate_id for x in shortlist}:
                     shortlist.append(s)
-            used_works.update(s.row["work_id"] for s in picks[:2])
+            used_people.update(x for s in picks[:2] for x in self.people(s.row))
         if any(not v for v in per_worry.values()):
             raise PlanError("一節が見つからない悩みがあります")
 
@@ -417,6 +468,8 @@ class Planner:
             works = [self._row(p)["work_id"] for p in picks]
             if not lo <= len(picks) <= hi or len(set(works)) != len(works):
                 return "数か作品の重複"
+            if self._same_person(picks):
+                return "同じ人"
             counts = _group_by(picks, "worry_id")
             if {p[0]["worry_id"] for p in counts} != {w["worry_id"] for w in worries}:
                 return "悩みの割り当て"
@@ -431,14 +484,15 @@ class Planner:
                 if len(fallback) >= goal:
                     break
                 s = next(
-                    (s for s in per_worry[w["worry_id"]] if s.row["work_id"] not in taken), None
+                    (s for s in per_worry[w["worry_id"]] if not set(self.people(s.row)) & taken),
+                    None,
                 )
                 if s is not None:
                     fallback.append(self._auto_pick(s, w["worry_id"]))
-                    taken.add(s.row["work_id"])
+                    taken.update(self.people(s.row))
         rules = (
             f"- 3つの悩みそれぞれに1〜2個ずつ、合わせて{lo}〜{hi}個を選び、worry_id に"
-            "当てはめる悩みを書く。\n- すべて別々の作品から選ぶ。"
+            "当てはめる悩みを書く。\n- すべて別々の作品・別々の人（著者か訳者）から選ぶ。"
         )
         picks, _, by_llm = self.llm_select("C", worries, shortlist, rules, check, fallback)
         self._index_rows(shortlist)
@@ -638,6 +692,7 @@ class Planner:
                     **p,
                     "work_id": row["work_id"],
                     "author_ids": row.get("author_ids") or [],
+                    "translator_ids": row.get("translator_ids") or [],
                     "title": row["title"],
                     "authors": row["author_names"],
                     "review_required": bool(row["review_required"]),
@@ -704,7 +759,10 @@ class Planner:
                 ),
             )
             for s in plan["selection"]:
-                for author in s["author_ids"] or [None]:
+                # 再使用の間隔は人（著者と訳者）で数える。別名は代表の ID にまとめる
+                canon = self._canonical()
+                ids = [*(s["author_ids"] or []), *(s.get("translator_ids") or [])]
+                for author in dict.fromkeys(canon.get(i, i) for i in ids) or [None]:
                     self.conn.execute(
                         "INSERT INTO usage(episode_id, candidate_id, work_id, author_id, role) "
                         "VALUES (?, ?, ?, ?, 'main')",
