@@ -1459,9 +1459,9 @@ def eval_label(
         typer.echo(f"『{r['title']}』（{r['authors']}）{section}")
         typer.echo(f"「{r['quote_text']}」")
         if around := with_quote_marked(r["context_text"], r["quote_text"]):
-            typer.echo(f"  前後の文：{around}")
+            typer.echo(f"\n前後の文：{around}")  # 一節と前後の文のあいだは1行空ける
         if r["summary_ja"]:
-            typer.echo(f"  要旨（AI の手がかり。読み違いもある）：{r['summary_ja']}")
+            typer.echo(f"\n要旨（AI の手がかり。読み違いもある）：{r['summary_ja']}")
         try:
             return typer.prompt(
                 "1＝合う　0＝合わない　Enter＝飛ばす　q＝やめる",

@@ -338,7 +338,7 @@ def test_eval_label_in_the_terminal(tmp_path):
     )
     assert r.exit_code == 0, r.output
     assert "悩み W1：悩みW1" in r.output and "「一節a」" in r.output and "1/2" in r.output
-    assert "前後の文：その前の文。 【一節a】そのあとの文。" in r.output  # 一節を【】で示す
+    assert "「一節a」\n\n前後の文：その前の文。 【一節a】そのあとの文。" in r.output  # 1行空ける
     assert "llm" not in r.output.lower()  # LLM の点は見せない
     assert "今回 1 行に点を付けました（点の無い行 残り 1）" in r.output
     assert [x["grade"] for x in read_rows(path)] == ["1", "1", "", ""]
