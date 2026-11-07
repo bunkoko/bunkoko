@@ -226,6 +226,22 @@ def test_run_augment_logs_total(hdd_with_chunks):
     assert "今回 3 チャンク" in logs[0]
 
 
+def test_pending_ignores_records_of_vanished_chunks(hdd_with_chunks):
+    """作り直しで今は無いチャンクの処理済みの記録は、今回の件数から引かない（100% を超えない）。"""
+    from koten.augment.extract import count_pending
+
+    _, hdd = hdd_with_chunks
+    n = len(_all_chunks(hdd))
+    run_augment(hdd, PROMPTS, VOCAB, FakeLLM(), AugmentConfig(batch_size=2), limit=2)
+    out = hdd / "augment/fake-llm/augment_v1"
+    stale = {"aozora:999999/c0001", "aozora:999999/c0002", "aozora:999999/c0003"}
+    done = done_chunk_ids(out) | stale
+    assert count_pending(hdd, done) == n - 2
+    logs = []
+    run_augment(hdd, PROMPTS, VOCAB, FakeLLM(), AugmentConfig(), log=logs.append)
+    assert f"今回 {n - 2} チャンク" in logs[0]
+
+
 def test_forget_works_and_changed_list(hdd_with_chunks, settings_file):
     """正規化で本文が変わった作品の付加情報を取り除き、作り直せるようにする。"""
     import json as _json

@@ -271,6 +271,15 @@ def test_cli_retrieve_and_plan(env, settings_file, monkeypatch):
         assert f"形式{fmt}" in r.output and "（保存していません）" in r.output
     r = CliRunner().invoke(app, ["plan", "--worry", "W0001", *st])
     assert r.exit_code == 0 and r.output.startswith("E")
+    # 同じ悩みは30日の間隔に当たる。試しの回なら取り消すか --force で作れると案内する
+    r = CliRunner().invoke(app, ["plan", "--worry", "W0001", "--format", "A", "--dry-run", *st])
+    assert r.exit_code == 2 and "30日" in r.output
+    assert "koten episode discard" in r.output and "--force" in r.output
+    assert "後回し" not in r.output  # 何も記録しないので「後回しにします」とは言わない
+    r = CliRunner().invoke(
+        app, ["plan", "--worry", "W0001", "--format", "A", "--dry-run", "--force", *st]
+    )
+    assert r.exit_code == 0, r.output
     # 悩みを省くと優先度の順に試す（使ったばかりの W0001 は優先度が下がる）
     r = CliRunner().invoke(app, ["plan", "--format", "D", *st])
     assert r.exit_code == 0, r.output

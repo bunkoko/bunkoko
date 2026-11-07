@@ -51,6 +51,10 @@ class PlanError(RuntimeError):
     """企画を作れない（候補が足りない・再使用間隔に当たる など）。その悩みは後回しにする。"""
 
 
+class WorryIntervalError(PlanError):
+    """同じクラスタの悩みを、間隔（worry_cluster_days）の内の回で使っている。"""
+
+
 @dataclass
 class PlanConfig:
     query_prompt: str = "query_v1"
@@ -130,7 +134,7 @@ class Planner:
                     "SELECT cluster_id FROM worries WHERE worry_id = ?", (wid,)
                 ).fetchone()
                 if wid == worry["worry_id"] or (other and other["cluster_id"] == cluster):
-                    raise PlanError(
+                    raise WorryIntervalError(
                         f"{worry['worry_id']} と同じクラスタの悩みを{self.cfg.worry_cluster_days}日"
                         f"以内の回（{r['episode_id']}）で使っています"
                     )

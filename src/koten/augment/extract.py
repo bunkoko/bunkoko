@@ -257,6 +257,22 @@ def count_chunks(hdd_root: Path) -> int:
     )
 
 
+def count_pending(hdd_root: Path, done: set[str]) -> int:
+    """まだ処理していないチャンクの数（チャンクの ID の列だけを読む）。
+
+    総数から処理済みの数を引くと、作り直しで今は無いチャンクの記録まで処理済みに数え、
+    今回の件数が少なく出る（100% を超える）。
+    """
+    return sum(
+        sum(
+            1
+            for cid in pq.read_table(p, columns=["chunk_id"]).column(0).to_pylist()
+            if cid not in done
+        )
+        for p in data_files(hdd_root / "chunks", "*.parquet")
+    )
+
+
 def progress_line(processed: int, todo: int, candidates: int, elapsed_sec: float) -> str:
     """「何件中何件・何%・残り約何時間」の1行。"""
     pct = processed / todo * 100 if todo else 100.0
@@ -359,7 +375,7 @@ def run_augment(
     done = done_chunk_ids(out_dir)
     works, texts = _works_and_texts(hdd_root)
     result = AugmentResult(skipped=len(done), out_dir=out_dir)
-    todo = max(count_chunks(hdd_root) - len(done), 0)
+    todo = count_pending(hdd_root, done)
     if limit is not None:
         todo = min(todo, limit)
     log(f"出力先：{out_dir}（処理済み {len(done)} チャンクは飛ばします。今回 {todo} チャンク）")

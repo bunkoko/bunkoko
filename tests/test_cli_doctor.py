@@ -37,6 +37,18 @@ def test_doctor_with_services_up(settings_file, monkeypatch):
     assert checks["HDD"].status == doctor.OK
 
 
+def test_doctor_lists_the_translation_models():
+    """M8b の下書き役と判定役も出す（判定役が別のモデルかを始める前に確かめられる）。"""
+    names = {
+        c.name
+        for c in doctor.run_checks(
+            load_settings(),
+            httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(404))),
+        )
+    }
+    assert {"LLM（shiyaku）", "LLM（shiyaku_judge）"} <= names
+
+
 def test_hdd_missing_stops_ingest(tmp_path, settings_file, monkeypatch):
     monkeypatch.setenv("KOTEN_CONTACT", "me@example.org")
     text = settings_file.read_text().replace(str(tmp_path / "hdd"), str(tmp_path / "nohdd"))

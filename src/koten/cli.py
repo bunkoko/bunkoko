@@ -1272,7 +1272,7 @@ def plan(
     """
     import json
 
-    from koten.plan.planner import PlanError
+    from koten.plan.planner import PlanError, WorryIntervalError
     from koten.worries.master import WorriesConfig, load_theme_weights, ranked_worries
 
     s = _settings(settings)
@@ -1285,20 +1285,27 @@ def plan(
         ranked = ranked_worries(p.conn, load_theme_weights(s.config_dir), wcfg.novelty_days)
         worry_ids = [w["worry_id"] for w in ranked[:AUTO_PLAN_WORRIES]]
     result = None
+    interval_hit = False
     for wid in worry_ids:
         for fmt in formats:
             try:
                 result = p.plan(fmt, worry_id=wid, theme=theme, work_id=work, force=force)
                 break
             except PlanError as e:
+                interval_hit |= isinstance(e, WorryIntervalError)
                 typer.echo(f"  {wid + '：' if auto else ''}形式{fmt} は作れません：{e}")
         if result is not None:
             break
     if result is None:
-        msg = "企画を作れませんでした。この悩みは後回しにします"
+        msg = "企画を作れませんでした"
         if auto:
             msg = f"優先度の上位{len(worry_ids)}件の悩みで、企画を作れませんでした"
         typer.secho(msg, fg="red", err=True)
+        if interval_hit and not auto:
+            typer.echo(
+                "  試しの回で使った悩みなら、koten episode discard でその回を取り消すか、"
+                "--force で間隔を無視できます"
+            )
         raise typer.Exit(2)
     if not dry_run:
         result["episode_id"] = p.save(result)
@@ -3007,14 +3014,10 @@ def shiyaku_show(
         typer.echo(f"\n下書き：{sy.drafter}　判定役：{sy.judge}")
     if sy.status in ("judged", "flagged"):
         extra = (
-            " --note 判定役の指摘を読んで、問題ないと判断した理由"
-            if sy.status == "flagged"
-            else ""
+            " --note 判定役の指摘を読んで、問題ないと判断した理由" if sy.status == "flagged" else ""
         )
         typer.echo(f"\n承認する：uv run koten shiyaku approve --id {sy.shiyaku_id}{extra}")
-        typer.echo(
-            f"今の本で照合する（任意）：uv run koten check list --shiyaku {sy.shiyaku_id}"
-        )
+        typer.echo(f"今の本で照合する（任意）：uv run koten check list --shiyaku {sy.shiyaku_id}")
 
 
 @shiyaku_app.command("approve")
@@ -3043,9 +3046,7 @@ def shiyaku_approve(
     held = holds(conn, "", text_claims(sy.shiyaku_id, sy.text), shiyaku_id=sy.shiyaku_id)
     checker = by or os.environ.get("KOTEN_CHECKER", "").strip() or "owner"
     try:
-        approve(
-            conn, sy, by=checker, divided=divided, note=note, holds=[h.reason for h in held]
-        )
+        approve(conn, sy, by=checker, divided=divided, note=note, holds=[h.reason for h in held])
     except ShiyakuError as e:
         typer.secho(str(e), fg="red", err=True)
         raise typer.Exit(2) from e
@@ -3171,7 +3172,6 @@ def episode_list(
     s = _settings(settings)
     held = set()
     for eid in maybe & {r["episode_id"] for r in rows}:
-
         try:
             hc, current = _episode_claims(s, eid)
         except typer.Exit:

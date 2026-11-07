@@ -149,6 +149,11 @@ def run_checks(s: Settings, client: httpx.Client | None = None) -> list[Check]:
         check_llm(s, "script", client),
         check_llm(s, "judge", client),
         check_llm(s, "grader", client),
+        *(
+            check_llm(s, role, client)
+            for role in ("shiyaku", "shiyaku_judge")
+            if s.section(f"llm.{role}")
+        ),
         check_embed(s),
         check_ffmpeg(),
     ]
