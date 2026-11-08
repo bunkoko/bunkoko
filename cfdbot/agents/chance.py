@@ -16,6 +16,8 @@ from .. import stocks as S
 from .. import stocks_short as H
 
 JUDGED = {5: ("RK5", 89), 20: ("RK20", 90)}    # 事前登録した日数 → 記号・試した数（docs/chance.md 3 章）
+RESULT = {5: ("使えない", "2026-11-08", "コストの後 年 −2.8%、t −1.58"),   # 1 回だけ計算した判定（docs/chance.md 8 章）。
+          20: ("使えない", "2026-11-08", "コストの後 年 +0.2%、t 0.08")}   # 書いてあれば rank --test は動かさない
 TOP, DELAY, MAX_DAYS = 10, 1, 60
 COST = H.COST                                   # 往復 0.10%
 START, SPLIT = "2010-01-01", "2018-01-01"

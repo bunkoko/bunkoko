@@ -132,20 +132,30 @@ def test_rank_command_writes_the_table_and_the_test_writes_both_verdicts(tmp_pat
     text = path.read_text(encoding="utf-8")
     assert "決めた日: **2019-12-27**" in text and "12-30 ごろ）の引けで買い、5 営業日後（01-06 ごろ）" in text
     assert "## 1. 上がる確率の上位 7 銘柄（60 銘柄から）" in text and "| 1 | 会社" in text and "| 8 |" not in text
-    assert "判定: RK5" in text and "毎日の上位 10 銘柄が 5 日で上がった割合" in text and "| **全期間** |" in text
+    assert "**判定: RK5 は「使えない」**（2026-11-08 に 1 回だけ計算した" in text and "買う銘柄を選ぶ道具にはしない" in text
+    assert "毎日の上位 10 銘柄が 5 日で上がった割合" in text and "| **全期間** |" in text
     table = pd.read_csv(path.parent / "rank_5.csv")
     assert len(table) == 60 and table["prob"].is_monotonic_decreasing and table["prob"].between(0, 1).all()
 
     monkeypatch.setattr("sys.argv", ["agents.py", "rank", *base, "--days", "3"])
     mod.main()
-    assert "判定しない参考の表" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "判定しない参考の表" in out and "判定した 5 日・20 日は、どちらも「使えない」" in out
     monkeypatch.setattr("sys.argv", ["agents.py", "rank", *base, "--days", "61"])
     with pytest.raises(SystemExit):
         mod.main()
 
     monkeypatch.setattr("sys.argv", ["agents.py", "rank", *base, "--test", "--placebo", "5"])
+    with pytest.raises(SystemExit, match="もう 1 回計算してある（2026-11-08"):    # 判定は 1 回だけ（記録済み）
+        mod.main()
+    monkeypatch.setattr(C, "RESULT", {})                                            # 記録する前の形で 1 回だけ動かす
     mod.main()
     out = capsys.readouterr().out
     text = Path(out.split("保存先: ")[-1].strip()).read_text(encoding="utf-8")
     assert "| RK5 | 上位 10 を 5 日持つ |" in text and "| RK20 | 上位 10 を 20 日持つ |" in text
     assert "| 2.49 |" in text and "### 20 日（RK20）" in text and "（試した数 90）" in text
+    with pytest.raises(SystemExit, match="rank_test.md"):                           # 書き写す前でも、報告があれば動かさない
+        mod.main()
+    monkeypatch.setattr("sys.argv", ["agents.py", "rank", *base, "--days", "5"])
+    mod.main()
+    assert "判定: RK5（docs/chance.md 3 章" in capsys.readouterr().out

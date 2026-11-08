@@ -1341,11 +1341,17 @@ def cmd_rank(args) -> Path:
     base_up = float((base["up"] * base["rows"]).sum() / max(base["rows"].sum(), 1))
     say(f"- 全銘柄の平均 {pct(allp.mean())}。50% を超える銘柄 {int((allp > 0.5).sum())}/{len(allp)}。"
         f"2010 年から {days} 日で上がった割合（全銘柄・全部の日）は {pct(base_up)}")
-    if days in C.JUDGED:
+    if days in C.JUDGED and days in C.RESULT:
+        key, (verdict, when, nums) = C.JUDGED[days][0], C.RESULT[days]
+        say(f"- **判定: {key} は「{verdict}」**（{when} に 1 回だけ計算した。docs/chance.md 8 章）。この表の上位 10 を買って {days} 日持つ形は、"
+            f"過去に全銘柄の平均に勝てなかった（{nums}）")
+    elif days in C.JUDGED:
         key, trials = C.JUDGED[days]
         say(f"- 判定: {key}（docs/chance.md 3 章。`./cfd agents rank --test` で 1 回だけ計算し、8 章に記録する。試した数 {trials}）")
     else:
         say(f"- この日数（{days} 日）は判定しない参考の表（判定するのは 5 日と 20 日だけ。docs/chance.md 2 章）")
+        if C.RESULT:
+            say("- 判定した 5 日・20 日は、どちらも「" + "・".join(sorted({v[0] for v in C.RESULT.values()})) + "」（docs/chance.md 8 章）")
     say("- " + ("確率はそのまま読んでよい（2 章）" if past["readable"] else "確率は目安。横の「過去に同じ帯で実際に上がった割合」を読む（2 章）"))
     say("")
     say(f"## 1. 上がる確率の上位 {min(args.top, len(table))} 銘柄（{len(table)} 銘柄から）")
@@ -1367,7 +1373,11 @@ def cmd_rank(args) -> Path:
     say("- 今の TOPIX500 の銘柄だけ（生存者バイアス）。過去の「上がった割合」は、実際より良く出やすい")
     say("- 配当・税金・S 株の受付の時刻・受注停止は入れていない")
     say("- M2（`./cfd agents manual` の手で買う候補）は「全銘柄の中での順位」を当てる別の AI。入力は同じだが、答えが違う（こちらは上がるか下がるか）")
-    say("- 判定（RK5・RK20）が「使えそう」になるまでは、検証中の AI の数字で、勧めではない。買うなら余剰資金の中で、金額の上限を先に決める")
+    if len(C.RESULT) == len(C.JUDGED) and all(v[0] == "使えない" for v in C.RESULT.values()):
+        say("- **判定（RK5・RK20）は「使えない」。この表は見るためのもので、買う銘柄を選ぶ道具にはしない。**"
+            "順位で選ぶなら M2（`./cfd agents manual`。まだ判断できない）")
+    else:
+        say("- 判定（RK5・RK20）が「使えそう」になるまでは、検証中の AI の数字で、勧めではない。買うなら余剰資金の中で、金額の上限を先に決める")
     out = Path(args.out) / datetime.now().strftime("%Y%m%d-%H%M")
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"rank_{days}.md"
@@ -1380,10 +1390,13 @@ def cmd_rank(args) -> Path:
 
 def rank_test(args) -> Path:
     """RK5・RK20 の判定（docs/chance.md 3 章）と、確率をそのまま読んでよいか（4 章）。1 回だけ。"""
+    from cfdbot import stocks_short as H
     from cfdbot.agents import chance as C
 
-    from cfdbot import stocks_short as H
-
+    done = sorted(Path(args.out).glob("*/rank_test.md"))
+    if C.RESULT or done:
+        when = "・".join(sorted({v[1] for v in C.RESULT.values()})) if C.RESULT else str(done[-1])
+        sys.exit(f"判定はもう 1 回計算してある（{when}。docs/chance.md 8 章）。1 回だけの決まり（3 章）なので、動かし直さない")
     open_, close = prices(Path(args.data))
     _, x = H.features(open_, close)
     lines: list[str] = []
