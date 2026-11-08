@@ -22,7 +22,8 @@ TRIALS = 91
 START, SPLIT = "2010-01-01", "2018-01-01"
 PLACEBO = 300
 RESIDUAL_INPUTS = [f"{p}_{k}" for p in ("night", "day", "ret") for k in H.WINDOWS] + ["gap", "day_prev"]   # 作り替える 14 個
-RESULT: dict = {}            # 1 回だけ計算した判定（15.5 に書いたら、ここにも書いて動かし直せないようにする）
+RESULT: dict = {"date": "2026-11-08", "verdict": "使えない",          # 1 回だけ計算した判定（docs/agents.md 15.5）。
+                "detail": "M2r − M2 年 −2.0%、t −1.71、偶然より良い割合 9%"}   # 書いてあれば residual は動かさない
 
 
 # --------------------------------------------------------------------------- ベータと残り

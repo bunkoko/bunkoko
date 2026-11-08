@@ -144,6 +144,9 @@ def test_residual_command_writes_the_report_once(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(H, "GBM_PARAMS", FAST)
     argv = ["agents.py", "residual", "--root", str(tmp_path / "agents"), "--data", str(data), "--out", str(tmp_path / "out"), "--placebo", "5"]
     monkeypatch.setattr("sys.argv", argv)
+    with pytest.raises(SystemExit, match="もう 1 回計算してある（2026-11-08"):        # 判定は記録済み
+        mod.main()
+    monkeypatch.setattr(R, "RESULT", {})                                              # 記録する前の形で 1 回だけ動かす
     mod.main()
     out = capsys.readouterr().out
     path = Path(out.split("保存先: ")[-1].split("（")[0].strip())
