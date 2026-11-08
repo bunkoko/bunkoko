@@ -138,7 +138,8 @@ case "$cmd" in
            manual = 今週の手で買う候補（M2 を週 1 回・10 銘柄・1 日遅れにした形。--test で過去の検証。docs/agents.md 13 章）、
            premium = 決算発表をまたいで持つ（J7）の先の記録（--test で過去の検証。docs/earnings_premium.md）、
            shap = M2 と決算の数字の IR 評価 AI（E2）の SHAP 値・bee swarm の図（見るためだけ。数分。docs/agents.md 14 章）、
-           rank = 向こう N 営業日で上がる確率の順位（--days 5 など 1〜60。--top で銘柄の数。--test で RK5・RK20 の判定を 1 回だけ。docs/chance.md）
+           rank = 向こう N 営業日で上がる確率の順位（--days 5 など 1〜60。--top で銘柄の数。判定 RK5・RK20 は 2026-11-08 に済み（使えない）。docs/chance.md）、
+           residual = M2 を「その株だけの動き」（ベータと業種の分を引く）で学び直して比べる M2r（1 回だけ。15〜30 分。docs/agents.md 15 章）
   ml       59 市場をまとめて学ぶ機械学習でポジションを決めると良くなるかを検証（universe の後。10〜40 分）
   leadlag  先行指標（原油・為替・金利など）で日米の業種・個別株を予測できるかを検証（初回は --fetch。30〜60 分）
   intraday 5 分足〜1 時間足の短い売買を、小さいコストで候補探し → 実際のコストで確認（--source mt5 で data/ の M5）

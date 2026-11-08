@@ -1458,6 +1458,87 @@ def rank_test(args) -> Path:
     return path
 
 
+# --------------------------------------------------------------------------- M2 を「その株だけの動き」で学び直す（M2r。docs/agents.md 15 章）
+def cmd_residual(args) -> Path:
+    """M2r − M2 の判定（15.3）を 1 回だけ。"""
+    from cfdbot.agents import residual as R
+
+    done = sorted(Path(args.out).glob("*/residual.md"))
+    if R.RESULT or done:
+        when = R.RESULT.get("date") if R.RESULT else str(done[-1])
+        sys.exit(f"判定はもう 1 回計算してある（{when}。docs/agents.md 15.5）。1 回だけの決まり（15.3）なので、動かし直さない")
+    data = Path(args.data)
+    uni = data / "universe_jp.csv"
+    if not uni.exists():
+        sys.exit(f"{uni} が無い（業種の区分が要る）。先に ./cfd stocks --fetch を実行する")
+    sector = pd.read_csv(uni).set_index("ticker")["sector"]
+    open_, close = prices(data)
+    print("M2 と M2r を、2010 年から毎年学び直す（2 回。偶然との比べ 300 回を足して 15〜30 分）…", flush=True)
+    sc = R.scores(open_, close, sector, log=lambda s: print(s, flush=True))
+    print(f"判定（偶然との比べ {args.placebo} 回）…", flush=True)
+    v = R.evaluate(sc["base"], sc["new"], open_, close, sc["beta"], sc["y_raw"], sc["y_res"], placebo=args.placebo)
+    g = pd.Series(sc["group"]).value_counts()
+    lines: list[str] = []
+
+    def say(s: str = "") -> None:
+        print(s, flush=True)
+        lines.append(s)
+
+    a0, a1 = v["period"]
+    say("# M2 を「その株だけの動き」で学び直す（M2r）")
+    say(f"作成: {datetime.now():%Y-%m-%d %H:%M}　判定の条件: docs/agents.md 15.3（結果を見る前に決めたもの）")
+    say(f"データ: 日本株 {close.shape[1]} 銘柄、{a0:%Y-%m}〜{a1:%Y-%m}（後半 {R.SPLIT[:4]}〜）。業種 {int((~g.index.str.startswith('?')).sum())} 区分"
+        f"（5 社以上の業種 {int(((g >= R.MIN_GROUP) & ~g.index.str.startswith('?')).sum())}、業種の分からない株 {int(g[g.index.str.startswith('?')].sum())}）。"
+        f"その株だけの動き = 値動き − ベータ × 市場 − 同じ業種の平均。成績は どちらも 上位 10% を引けで買い 5 日持つ形の「持っている株 − 全銘柄の平均 − 入れ替えた割合 × 0.10%」")
+    say("")
+    say("## 1. 判定")
+    say("")
+    say("| 記号 | 差（M2r − M2、年率） | 前半 | 後半 | t 値（全期間） | t 値（後半） | 基準 | 偶然より良い割合 | 判定 |")
+    say("|---|---|---|---|---|---|---|---|---|")
+    say(f"| M2r | {spct(v['mean'] * 12)} | {spct(v['mean1'] * 12)} | {spct(v['mean2'] * 12)} | {f2(v['t'])} | {f2(v['t2'])} | {f2(v['threshold'])} | "
+        f"{pct(v['placebo'], 0)} | **{v['verdict']}** |")
+    say("")
+    yr = v["by_year"]
+    say("- 年ごとの差: " + "、".join(f"{y}: {x:+.1%}" for y, x in yr.items()) + f"（マイナスの年 {int((yr < 0).sum())}/{len(yr)}）")
+    say(f"- コストを引く前の差: 年 {spct(v['real_gross'])}（試した数 {R.TRIALS}）")
+    say("")
+    say("## 2. 参考（判定しない・試した数に入れない）")
+    say("")
+    say("| 版 | コストの前（年率） | コストの後 | コストの後・後半（2018〜） | 1 日に入れ替える割合 | 選んだ株のベータの平均 |")
+    say("|---|---|---|---|---|---|")
+    for key, label in (("base", "M2（今の作り方）"), ("new", "M2r（その株だけの動き）")):
+        o = v[key]
+        say(f"| {label} | {spct(o['gross'])} | {spct(o['net'])} | {spct(o['net_late'])} | {pct(o['turnover'], 1)} | {f2(v['beta'][key])} |")
+    say("")
+    say(f"- 全銘柄のベータの平均 {f2(v['beta']['all'])}（ベータ = 市場が 1% 動いたときに、その株がふつう何 % 動くか）")
+    w = v["weekly"]
+    say(f"- 手で買う形（週 1 回・10 銘柄・1 日遅れ。M2b と同じ）: M2 年 {spct(w['base'])}、M2r 年 {spct(w['new'])}、差 {spct(w['diff'])}（後半 {spct(w['late'])}）")
+    say("")
+    ic = pd.DataFrame(v["ic"]).dropna(how="all")
+    say("| 年 | M2 × そのままの順位 | M2r × そのままの順位 | M2 × その株だけの順位 | M2r × その株だけの順位 |")
+    say("|---|---|---|---|---|")
+    for y, row in ic.iterrows():
+        say(f"| {y} | {row['base_raw']:+.3f} | {row['new_raw']:+.3f} | {row['base_res']:+.3f} | {row['new_res']:+.3f} |")
+    m_ = ic.mean()
+    say(f"| **平均** | **{m_['base_raw']:+.3f}** | **{m_['new_raw']:+.3f}** | **{m_['base_res']:+.3f}** | **{m_['new_res']:+.3f}** |")
+    say("")
+    say("- 相関は「点数と、実際のこれから 5 日の順位」を日ごとに計算して年ごとに平均したもの（0.02〜0.05 でも、毎日多くの銘柄で積み重なると差になる）")
+    say("")
+    say("## 3. 限界（docs/agents.md 15.4）")
+    say("")
+    say("- 今の TOPIX500 の銘柄と今の業種の区分だけ（生存者バイアス）。2026-10-15 に「M2 に入力を足す研究は J-Quants で確かめるまで止める」と決めていた中で、利用者の依頼で 1 回だけ試した")
+    say("- 株ごとの季節（決算の前後・株主優待の権利日）は差し引いていない。ベータは過去 250 日の 1 つの値")
+    say("- 「使えそう」でも、毎日の M2・台帳・手で買う候補はすぐには替えない（15.3）。この計算は 1 回だけ。結果は 15.5 に書く")
+    out = Path(args.out) / datetime.now().strftime("%Y%m%d-%H%M")
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / "residual.md"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    sc["new"].dropna(how="all").to_csv(out / "residual_scores.csv.gz", float_format="%.5f")
+    print("")
+    print(f"保存先: {path}（M2r の点数は residual_scores.csv.gz）")
+    return path
+
+
 # --------------------------------------------------------------------------- J7 決算発表をまたいで持つ（docs/earnings_premium.md）
 def cmd_premium(args) -> None:
     """3 章の過去の検証（--test。使っていない決算だけ）か、4 章の先の記録の途中経過（既定）。"""
@@ -2108,7 +2189,7 @@ def cmd_schedule(args) -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("command", choices=["collect", "ir", "select", "decide", "evaluate", "run", "status", "schedule", "earnings", "extra",
-                                        "check", "orders", "manual", "premium", "shap", "rank"])
+                                        "check", "orders", "manual", "premium", "shap", "rank", "residual"])
     p.add_argument("--fetch", action="store_true", help="extra: 先に出来高・終値・株式分割を Yahoo から取る（1 秒に 1 社。取得済みは飛ばす）")
     p.add_argument("--reuse", action="store_true", help="extra: 入力を足した銘柄選定の点数が書いてあれば、学び直さずに使う")
     p.add_argument("--off", action="store_true", help="schedule: 自動実行を外す")
@@ -2153,7 +2234,7 @@ def main() -> None:
     args = p.parse_args()
     {"collect": cmd_collect, "ir": cmd_ir, "select": cmd_select, "decide": cmd_decide, "evaluate": cmd_evaluate,
      "run": cmd_run, "status": cmd_status, "schedule": cmd_schedule, "earnings": cmd_earnings, "extra": cmd_extra,
-     "check": cmd_check, "orders": cmd_orders, "manual": cmd_manual, "premium": cmd_premium, "shap": cmd_shap, "rank": cmd_rank}[args.command](args)
+     "check": cmd_check, "orders": cmd_orders, "manual": cmd_manual, "premium": cmd_premium, "shap": cmd_shap, "rank": cmd_rank, "residual": cmd_residual}[args.command](args)
 
 
 if __name__ == "__main__":
