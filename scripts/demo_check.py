@@ -2,7 +2,7 @@
 
 毎週の確認（docs/operations.md 12 章）で、MT5 から書き出して ./cfd data の後に:
 
-    ./cfd demo-check --start 2026-10-06 --equity 10000000
+    ./cfd demo-check --start 2026-10-07 --equity 10000000
 
 - --start: その口座で EA が判断した最初の足の日付（Python の再現もこの日から。./cfd replay と同じ）
 - --count-from: 直した後の確かめ直しで、条件を数え始める日（Python の再現は --start から続ける）

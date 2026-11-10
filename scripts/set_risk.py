@@ -49,7 +49,7 @@ def main() -> None:
     print(f"  資金 {acc.equity:,.0f} 円 / 1回の損失 {acc.base_risk:.1%} / 同時に持てる合計 {acc.max_total_risk:.1%} / "
           + " / ".join(f"{k} {v:.1%}" for k, v in acc.cluster_max_risk.items())
           + f" / 最大の下落での停止 {acc.max_drawdown_halt:.0%}")
-    print("次: ./cfd preset config/baselines/turtle55_d1.json（EA のプリセットを作って MT5 に置く）")
+    print("次: ./cfd preset config/baselines/turtle55_d1_ext.json（EA のプリセットを作って MT5 に置く。今の構成＝行き過ぎの回避入り）")
 
 
 if __name__ == "__main__":

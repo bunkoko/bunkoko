@@ -229,24 +229,25 @@ Mac 版 MT5 のフォルダは `~/Library/Application Support/…/drive_c/…` �
 さらに外部データの検証（[cross_asset.md](cross_asset.md) 6 章）で、「直近 20 日ですでに大きく動いた向き（ふだんの 1.5 倍超）には
 入らない」が先物 20 年・フィリップ 5 年・使っていない 3 市場のすべてで効いたので、**今の構成は
 `config/baselines/turtle55_d1_ext.json`**（資金 100 万円・1 回の損失 1.5%: シャープ 0.80・年率 6.4%・最大DD 9.0%・最悪の月 −2.6%）。
-以下のコマンドの `turtle55_d1` は `turtle55_d1_ext` に読み替える。
+以下のコマンドは、今の構成 `turtle55_d1_ext` で書いてある（2026-11-10 に書き直した。それまでは `turtle55_d1` と書いて「読み替える」としていた）。
 
 1. 資金と 1 回の損失ごとの成績を比べる
    ```bash
-   ./cfd table --final config/baselines/turtle55_d1.json --start 2021-06-01
+   ./cfd table --final config/baselines/turtle55_d1_ext.json --start 2021-06-01
    ```
    最大DD が停止（25%）より十分小さく、最悪の月を受け入れられる組み合わせを選ぶ
-   （2026-10 の結果では資金 100 万円なら 1 回の損失 1.5%: シャープ 0.65・最大DD 14%）
+   （2026-10 の結果では資金 100 万円なら 1 回の損失 1.5%: 行き過ぎの回避なしの `turtle55_d1` でシャープ 0.65・最大DD 14%、今の構成で 0.80・9.0%）
 2. 選んだ値を保存する（合計・グループの上限も同じ比率で上がる）
    ```bash
    ./cfd risk 0.015 --equity 1000000
    ```
 3. EA のプリセットを作って MT5 に置く（手順 9 の 1. の代わり）
    ```bash
-   ./cfd preset config/baselines/turtle55_d1.json
+   ./cfd preset config/baselines/turtle55_d1_ext.json
    ```
-   以降の手順 9〜16 は、`output/train/<日時>/final.json` を `output/live/turtle55_d1/final.json` に読み替える
-   （`./cfd ea` の代わりに `./cfd preset config/baselines/turtle55_d1.json`、本番開始時は `--risk-scale 0.5` を付ける）
+   以降の手順 9〜16 は、`output/train/<日時>/final.json` を `output/live/turtle55_d1_ext/final.json` に読み替える
+   （`./cfd ea` の代わりに `./cfd preset config/baselines/turtle55_d1_ext.json`、本番開始時は `--risk-scale 0.5` を付ける。
+   **`./cfd ea` は使わない**: 学習結果の構成（基準に届かなかった）を置き、以降の replay もその構成に替わってしまう）
 
 ## 9. プリセットを置き、EA と Python を突き合わせる（ターミナル → ストラテジーテスター）
 
@@ -254,7 +255,7 @@ Mac 版 MT5 のフォルダは `~/Library/Application Support/…/drive_c/…` �
    ```bash
    ./cfd ea
    ```
-   （最新の学習結果を使う。）最後に出る **「チャートと EA の対応」表** を控える（プリセット名・チャートの銘柄・時間足・magic・指標の件数）。
+   （最新の学習結果を使う。**今の構成では使わない**: 代わりに 8b の 3 の `./cfd preset config/baselines/turtle55_d1_ext.json`。2026-11-10 の注）最後に出る **「チャートと EA の対応」表** を控える（プリセット名・チャートの銘柄・時間足・magic・指標の件数）。
    プリセットには戦略のパラメータに加えて magic・リスク倍率・指標の日時まで入っているので、**手で直す項目は無い**
 2. **MT5**: 表示 → ストラテジーテスター → 「設定」タブ
 
@@ -271,7 +272,7 @@ Mac 版 MT5 のフォルダは `~/Library/Application Support/…/drive_c/…` �
 4. 表の全行（銘柄）について 2〜3 を繰り返す（テスターの銘柄・時間足とプリセットを替えて「スタート」）
 5. 終わったら **ターミナル**: 記録を取り込んで全銘柄をまとめて比べる
    ```bash
-   ./cfd compare output/train/<日時>/final.json      # 定番ルールなら output/live/turtle55_d1/final.json
+   ./cfd compare output/train/<日時>/final.json      # 定番ルール（今の構成）なら output/live/turtle55_d1_ext/final.json
    ```
 6. 最後の「まとめ」が全銘柄「一致」になれば OK。差分が出たら出力をそのまま送ってください
 
@@ -455,17 +456,17 @@ Mac 版 MT5 のフォルダは `~/Library/Application Support/…/drive_c/…` �
    `./cfd preset config/baselines/turtle55_d1_ext.json`（`--risk-scale` なし = 1 回の損失 2%）でプリセットを作り直して読み込み、移し直す
 4. **全停止した場合**（高値から 40% 下落で新規停止。2026-10-23 に 25% から変えると決めた）: 通知が来る。原因を確認し、再開すると決めたら、
    `config/local.toml` の `[account]` に `peak_since = "2027-03-06"`（再開する日）を書き、週末に
-   `./cfd ea …` でプリセットを作り直して読み込み、移し直す。それより前の高値を DD の基準にしなくなる
+   `./cfd preset config/baselines/turtle55_d1_ext.json`（`--risk-scale` は今の値）でプリセットを作り直して読み込み、移し直す。それより前の高値を DD の基準にしなくなる
    （VPS では停止の記録を直接消せないため、この方法で基準を測り直す。以後もこの値は消さずに残す）
 
 ## 16. 毎月の運用（週末に 45 分）
 
 1. **MT5（Mac）**: `CfdExportBars` を実行（手順 5）→ **ターミナル**: `./cfd data` → 注意が増えていないか
 2. 指標カレンダー（`config/events.csv`）を **4 か月先まで** 追加
-3. `./cfd train` → `report.md` の判定と本番用の構成を、前回と比べる
+3. （学習は使っていないので飛ばす。2026-10-04 に基準に届かず、決めたルール `turtle55_d1_ext` で動かしている。`./cfd train` は動かさない）
 4. 問題なければプリセットを作り直す（`--risk-scale` は今の値）
    ```bash
-   ./cfd ea --risk-scale 0.5
+   ./cfd preset config/baselines/turtle55_d1_ext.json --risk-scale 0.5
    ```
    ⚠ が出たら（指標カレンダーの残りが少ない等）直してから進む
 5. **MT5（本口座）**: 各チャートを右クリック → エキスパートアドバイザ → 設定 →「読み込み」→ 新しいプリセット → OK。
