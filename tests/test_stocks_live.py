@@ -142,6 +142,83 @@ def test_stop_rules_drawdown_mistakes_unsold_and_missing_prices():
     assert "E1 の帳が閉じた" in L.stop_checks(cfg, (0, 300_000), [], {}, close, cal, TODAY, "閉じる（250 日）")[0]
 
 
+def test_held_stock_missing_from_the_price_table_counts_as_no_price_and_nothing_crashes():
+    """2026-11-10（総点検 A7）: 持っている株の列が値段の表に無い日（一覧から外れた・上場廃止・取り直しで落ちた）も、落ちずに決まり 3.3 を確かめる。"""
+    idx = _index()
+    cal = L.calendar(idx, TODAY)
+    cfg = {"equity_jpy": 300_000, "mode": "dry", "deadline": "13:50"}
+    now = TODAY + pd.Timedelta(hours=13, minutes=10)
+    full = pd.DataFrame({"A": 1000.0, "B": 2000.0}, index=idx)
+    lots = {"A": L.Lot("A", 3, idx[-6], idx[-6], 3_300.0, due=TODAY),                      # 売る日は今日
+            "B": L.Lot("B", 2, idx[-3], idx[-3], 4_000.0, due=L.bday_add(cal, idx[-3], 5))}
+    no_ev = pd.DataFrame(columns=["date", "ticker", "side", "shares", "price", "fee"])
+
+    for close in (full.drop(columns="A"), full.iloc[:-1].drop(columns="A")):               # 列が無い（今日の行がまだ無い日も同じ）
+        hits = L.stop_checks(cfg, (0, 300_000), [], lots, close, cal, TODAY, None)        # 前はここで TypeError になり、一覧も知らせも出なかった
+        assert len(hits) == 1 and hits[0].startswith("A の値段が表に無い") and "2 営業日続けて無いのと同じ" in hits[0]
+        assert "利用者に相談する" in hits[0]                                              # 日数を渡さない呼び方は、安全な側（当たる）
+        one = L.gap_days(pd.DataFrame(columns=L.GAP_COLUMNS), lots, close, cal, TODAY)     # 記録が無い = 今日が 1 日目
+        assert one == {"A": 1} and L.stop_checks(cfg, (0, 300_000), [], lots, close, cal, TODAY, None, gap_n=one) == []   # 1 日だけでは止めない（3.3 は 2 営業日続けて）
+        watch = L.price_watch(lots, close, TODAY, one)
+        assert len(watch) == 1 and watch[0].startswith("A の値段が今日は表に無い（確かめられた範囲で 1 営業日目。2 営業日続けて無ければ止める")
+        day = L.price_day(close, TODAY)                                                   # 数え始めは、値段の表の最後の行の日（開いた日ではない）
+        assert day == close.index[-1] and L.no_price_today(lots, close, TODAY) == ["A"]
+        d1, d2, d3 = (L.bday_add(cal, day, -k) for k in (1, 2, 3))
+        seen = pd.DataFrame({"date": [d1, d3], "ticker": ["A", "A"]})                      # 前の営業日も無かった（その前は 1 日あいている）
+        two = L.gap_days(seen, lots, close, cal, TODAY)
+        hits = L.stop_checks(cfg, (0, 300_000), [], lots, close, cal, TODAY, None, gap_n=two)
+        assert two == {"A": 2} and len(hits) == 1 and hits[0].startswith("A の値段が表に無い（2 営業日続けて無い。") and "利用者に相談する" in hits[0]
+        assert L.price_watch(lots, close, TODAY, two) == []
+        assert L.gap_days(seen.iloc[1:], lots, close, cal, TODAY) == {"A": 1}              # 前の営業日の記録が無ければ、数え直し
+        assert L.gap_days(pd.DataFrame({"date": [d1, d2], "ticker": ["A", "A"]}), lots, close, cal, TODAY) == {"A": 3}
+        assert L.gap_days(pd.DataFrame({"date": [day], "ticker": ["A"]}), lots, close, cal, TODAY) == {"A": 1}   # 同じ表のまま開き直しても増えない
+        assert L.price_gap(close, "A", TODAY) == L.NO_PRICE and L.price_gap(close, "B", TODAY) is None
+        assert L.valued_at_cost(lots, close) == ["A"]
+        assert L.cash_and_equity(300_000, no_ev, lots, close) == (300_000, 300_000 + 3_300 + 2 * 2000.0)   # 値段の無い株は買った値段で
+        rows = L.make_plan(TODAY, now, cfg, _e1([]), "x", close, cal, lots, 300_000, None)
+        assert [(r["ticker"], r["side"], r["shares"]) for r in rows] == [("A", "売り", 3)]   # 売りの予定は一覧に残る
+        assert rows[0]["note"].startswith("値段が表に無い（Claude の値段の記録に、この株の値段が無い")
+        assert rows[0]["note"].endswith("空運転なので、することは無い")                        # 読むのは利用者。空運転では SBI に持っていない株
+        real = L.make_plan(TODAY, now, {**cfg, "mode": "real"}, _e1([]), "x", close, cal, lots, 300_000, None)
+        assert real[0]["note"].endswith("SBI の画面で売れるかを見て、結果を Claude に伝える")    # 本物では、することを書く
+        text = L.notice_text(rows, cfg, now)[1]
+        assert "売り A 3 株（値段が表に無い" in text                                       # 知らせにも、値段が無いことが出る
+
+    part = full.copy()
+    part["A"] = 900.0
+    part.loc[idx[-1]:, "A"] = np.nan                                                      # 列はあるが、最後の 1 日だけ無い → まだ当たらない
+    assert L.price_gap(part, "A", TODAY) is None and L.stop_checks(cfg, (0, 300_000), [], lots, part, cal, TODAY, None) == []
+    assert L.no_price_today(lots, part, TODAY) == ["A"]                                   # 値が空の日も書き留める（次の日に列が消えたら、続けて数える）
+    assert L.price_day(pd.DataFrame(), TODAY) is None and L.no_price_today(lots, pd.DataFrame(), TODAY) == []
+    part.loc[idx[-2]:, "A"] = np.nan                                                      # 2 営業日続けて無い → 当たる（今までどおりの文）
+    assert L.price_gap(part, "A", TODAY) == "値段が 2 営業日続けて無い"
+    assert "売買停止・上場廃止の恐れ" in L.stop_checks(cfg, (0, 300_000), [], lots, part, cal, TODAY, None)[0]
+    assert L.cash_and_equity(300_000, no_ev, lots, part)[1] == 300_000 + 3 * 900.0 + 2 * 2000.0   # 最後に分かっている終値で数える
+    assert L.valued_at_cost(lots, part) == []
+    late = pd.DataFrame(L.make_plan(TODAY, now, cfg, None, None, part, cal, {"A": L.Lot("A", 3, idx[-9], idx[-9], 3_300.0, due=idx[-2])},
+                                    300_000, None))
+    assert late["note"].iloc[0].startswith("売りの遅れ 1 日目（5 日を超えたら止める）。値段が 2 営業日続けて無い")
+    assert L.price_gap(full.iloc[:-1], "A", TODAY) is None                                # 今日の行がまだ無いだけなら当たらない
+
+    fills = pd.DataFrame([{"id": "1", "recorded_at": "1", "mode": "real", "date": idx[-8], "ticker": "A", "side": "買い", "shares": 3, "price": 0.0,
+                           "fee_yen": 0.0, "status": "不成立", "at": "引け"}])
+    for empty in (pd.DataFrame(), full.iloc[:0], pd.DataFrame(index=idx)):                # 値段の表が空でも落ちない（どの株も「表に無い」）
+        hits = L.stop_checks(cfg, (0, 300_000), [], lots, empty, L.calendar(empty.index, TODAY), TODAY, None)
+        assert len(hits) == 2 and all("値段が表に無い" in h for h in hits)
+        assert L.cash_and_equity(300_000, no_ev, lots, empty) == (300_000, 300_000 + 3_300 + 4_000)
+        rows = pd.DataFrame(L.make_plan(TODAY, now, cfg, _e1(["C"]), "x", empty, cal, lots, 300_000, None)).set_index("ticker")
+        assert rows.loc["A", "side"] == "売り" and rows.loc["C", "note"] == "前の営業日の値段が無い"
+        rt = L.round_trips(fills, pd.DataFrame(columns=L.PLAN_COLUMNS), pd.DataFrame(columns=L.REF_COLUMNS), empty, cal)
+        assert rt["status"].tolist() == ["不成立"] and not rt["done"].iloc[0]
+
+    plan = pd.DataFrame([{"mode": "dry", "date": idx[-6], "ticker": "A", "side": "買い", "shares": 3, "prev_close": 1100.0},
+                         {"mode": "dry", "date": TODAY, "ticker": "A", "side": "売り", "shares": 3, "prev_close": np.nan}])
+    ev = L.events("dry", plan, pd.DataFrame(), full.drop(columns="A"))                    # 空運転の売り: 値段が表に無ければ、買った値段で売ったとみなす
+    assert ev["price"].tolist() == [1100.0, 1100.0]                                       # 前は値段なしで、売りの代金が 0 円と数えられた
+    assert L.cash_and_equity(300_000, ev, L.open_lots(ev, plan, pd.DataFrame(), "dry", cal), full.drop(columns="A")) == (300_000, 300_000)
+    assert L.events("dry", plan, pd.DataFrame(), full)["price"].tolist() == [1100.0, 1000.0]   # 値段があれば、その日の終値（今までどおり）
+
+
 def test_orders_command_dry_run_then_real_with_mistakes_and_stop(tmp_path, capsys):
     idx, cols, _ = _prices(tmp_path)
     mod = _script()
@@ -494,6 +571,118 @@ def test_live_early_writes_the_plan_notifies_and_checks_against_the_ledger(tmp_p
     assert len(sent) == 2 and "違いました" in sent[1][1] and cols[2] in sent[1][1]
 
 
+def _drop_column(tmp_path, ticker):
+    """値段の取り直しで、この株の列だけが表から落ちた（Yahoo の 1 銘柄だけの不調・上場廃止・一覧から外れた）。"""
+    for name in ("jp_close.csv", "jp_open.csv"):
+        path = tmp_path / "stocks" / name
+        pd.read_csv(path, index_col=0, parse_dates=True).drop(columns=ticker).to_csv(path)
+
+
+def test_orders_command_keeps_working_when_a_held_stock_vanishes_from_the_price_table(tmp_path, capsys):
+    """2026-11-10（総点検 A7）: 空運転で持っている株の列が消えても、コマンドは落ちず、売りの予定が一覧に出て、資産の数字も狂わない。"""
+    idx, cols, close = _prices(tmp_path)
+    mod = _script()
+    mod.cmd_orders(_ns(tmp_path, setup=True, equity=300_000, deadline="13:50"))
+    files = L.LiveFiles(tmp_path / "agents" / "live")
+    d0, mid, gone, other = idx[-6], idx[-3], cols[3], cols[5]
+    _ledger_extra(tmp_path, {d0: [gone], mid: [other], TODAY: []})
+    mod.cmd_orders(_ns(tmp_path, now=f"{d0:%Y-%m-%d} 13:10"))                            # 空運転で買う（売る日は 5 営業日後の今日）
+    plan = files.plan()
+    b0 = plan[plan["side"] == "買い"].iloc[0]
+    assert b0["ticker"] == gone and b0["due"] == TODAY and b0["shares"] > 0
+    cost0 = int(b0["shares"]) * float(b0["prev_close"])
+
+    _drop_column(tmp_path, gone)
+    capsys.readouterr()
+    mod.cmd_orders(_ns(tmp_path, now=f"{mid:%Y-%m-%d} 13:10"))                           # 売る日の前（前は TypeError で止まった）
+    out = capsys.readouterr().out
+    assert "本物なら止める" not in out and not files.stop_path.exists()                       # 1 日目は止めない（3.3 は「2 営業日続けて無い」）
+    assert f"（まだ止めない。見ておくこと）: {gone} の値段が今日は表に無い（確かめられた範囲で 1 営業日目。2 営業日続けて無ければ止める" in out
+    gaps = files.gaps()
+    assert gaps["ticker"].tolist() == [gone] and gaps["date"].tolist() == [mid]             # 無かった日を書き留める（同じ日は 1 行だけ）
+    assert "記録上の資産 300,000 円" in out and f"現金 {300_000 - cost0:,.0f} 円、持っている株 1 銘柄（うち {gone} は値段が表に無いので、買った値段で数えた）" in out
+    plan = files.plan()
+    b1 = plan[(plan["side"] == "買い") & (plan["date"] == mid)].iloc[0]                    # その日の買いの一覧も作れている
+    assert b1["ticker"] == other
+    cost1 = int(b1["shares"]) * float(b1["prev_close"])
+    worth = 300_000 - cost1 + int(b1["shares"]) * float(close[other].iloc[-1])            # 消えた株は買った値段で（差し引き 0）、残りは最新の終値で
+
+    mod.cmd_orders(_ns(tmp_path, report=True, now=f"{mid:%Y-%m-%d} 16:00"))              # 様子（--report）も落ちない
+    text = next((tmp_path / "out" / "live").glob("*.md")).read_text(encoding="utf-8")
+    assert "止める決まりに当たっているもの: 無し" in text and "。**値段が表に無い**）" in text
+    assert f"まだ止めないが、見ておくこと: {gone} の値段が今日は表に無い（確かめられた範囲で 1 営業日目" in text
+    assert f"（{gone} は値段が表に無いので、買った値段で数えた）" in text
+    assert len(files.gaps()) == 1                                                           # --report は書き留めない
+
+    capsys.readouterr()
+    mod.cmd_orders(_ns(tmp_path, now=f"{idx[-2]:%Y-%m-%d} 13:10"))                       # 次の営業日も無い → 2 営業日続けて無い（空運転なので置かない）
+    out = capsys.readouterr().out
+    assert f"（空運転なので STOP は置かない。本物なら止める）: {gone} の値段が表に無い（2 営業日続けて無い。" in out
+    assert not files.stop_path.exists() and files.gaps()["date"].tolist() == [mid, idx[-2]]
+    mod.cmd_orders(_ns(tmp_path, now=f"{idx[-2]:%Y-%m-%d} 14:00"))
+    assert len(files.gaps()) == 2                                                           # 同じ日にもう一度開いても増えない
+
+    capsys.readouterr()
+    mod.cmd_orders(_ns(tmp_path))                                                         # 売る日: 売りの行が一覧に出る
+    out = capsys.readouterr().out
+    today_rows = files.plan()
+    today_rows = today_rows[today_rows["date"] == TODAY]
+    assert today_rows["side"].tolist() == ["売り"] and today_rows["ticker"].iloc[0] == gone
+    assert int(today_rows["shares"].iloc[0]) == int(b0["shares"]) and today_rows["note"].iloc[0].startswith("値段が表に無い（Claude の値段の記録に")
+    assert f"本物なら止める）: {gone} の値段が表に無い（3 営業日続けて無い。" in out
+    assert "## 売る（5 営業日たった株）" in out and f"- {gone} 会社{gone[:4]} **{int(b0['shares'])} 株**（値段が表に無い" in out
+    assert f"記録上の資産 {worth:,.0f} 円" in out and f"現金 {300_000 - cost0 - cost1:,.0f} 円、持っている株 2 銘柄（うち {gone} は" in out
+
+    capsys.readouterr()
+    mod.cmd_orders(_ns(tmp_path, now=f"{TODAY:%Y-%m-%d} 15:40"))                         # 売った後: 売りの代金は買った値段で数える（前は 0 円）
+    out = capsys.readouterr().out
+    assert "今日の一覧は" in out and "値段が表に無いので" not in out and "本物なら止める" not in out
+    assert f"現金 {300_000 - cost1:,.0f} 円、持っている株 1 銘柄" in out and f"記録上の資産 {worth:,.0f} 円" in out
+
+
+def test_auto_run_lists_the_sell_notifies_and_places_stop_when_a_held_stock_has_no_prices(tmp_path, monkeypatch, capsys):
+    """2026-11-10（総点検 A7）: 本物で持っている株の列が 2 営業日続けて無い日の 13:05 の自動実行。先に作る一覧が作れて、知らせが出て、決まり 3.3 のとおり STOP が置かれる。"""
+    from cfdbot import notify as N
+
+    idx, cols, _ = _prices(tmp_path)
+    gone = cols[7]
+    pd.DataFrame({"ticker": cols, "name": [f"会社{c[:4]}" for c in cols], "sector": "x"}).to_csv(tmp_path / "stocks" / "universe_jp.csv", index=False)
+    root = tmp_path / "agents"
+    root.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"date": [TODAY] * 2, "ticker": cols[:2], "fc_rev": [0.2, 0.06], "kind": 5}).to_csv(root / "revisions_recent.csv", index=False)
+    files = L.LiveFiles(root / "live")
+    files.save_config({"equity_jpy": 300_000, "mode": "real", "started": f"{idx[-8]:%Y-%m-%d}", "deadline": "13:50", "exclude": []})
+    files.append(files.fills_path, [{"id": "1", "recorded_at": "x", "mode": "real", "date": idx[-6], "ticker": gone, "side": "買い", "shares": 4,
+                                     "price": 2000.0, "fee_yen": 0.0, "status": "約定", "at": "引け"}], L.FILL_COLUMNS)   # 売る日は今日
+    _drop_column(tmp_path, gone)
+    files.append(files.gaps_path, [{"date": idx[-2], "ticker": gone}], L.GAP_COLUMNS)     # 前の営業日も、この株の列は表に無かった
+    conf = tmp_path / "notify.json"
+    conf.write_text('{"channels": [{"type": "imessage", "to": "me@example.com"}]}', encoding="utf-8")
+    monkeypatch.setattr(N, "NOTIFY_FILE", conf)
+    sent = []
+    monkeypatch.setattr(N, "notify", lambda title, text, **kw: sent.append((title, text)) or [("imessage", True, "送った")])
+    mod = _script()
+    for name in ("cmd_numbers", "cmd_collect", "cmd_ir", "cmd_select", "cmd_decide", "cmd_evaluate"):
+        monkeypatch.setattr(mod, name, lambda a: None)
+    mod.cmd_run(_ns(tmp_path, prices=False, now=f"{TODAY:%Y-%m-%d} 13:08"))
+    out = capsys.readouterr().out
+    assert "作れなかった" not in out and "確かめができなかった" not in out and "自動実行: E1 の一覧と注文の一覧" in out
+    assert files.stop_path.exists() and f"{gone} の値段が表に無い（2 営業日続けて無い。" in files.stop_reason() and "利用者に相談する" in files.stop_reason()
+    plan = files.plan()
+    sell = plan[plan["side"] == "売り"]
+    assert sell["ticker"].tolist() == [gone] and int(sell["shares"].iloc[0]) == 4 and sell["note"].iloc[0].startswith("値段が表に無い")
+    skip = plan[plan["side"] == "買わない"]
+    assert set(skip["ticker"]) == set(cols[:2]) and skip["note"].str.startswith("STOP").all()   # STOP: 新しく買わない。持っている株は予定の日に売る
+    assert len(sent) == 1 and sent[0][0].startswith("株の予行演習（止まりました）") and f"売り {gone[:4]} 4 株（値段が表に無い" in sent[0][1]
+    assert sent[0][1].startswith(f"止める決まりに当たったので、新しく買うのを止めました（STOP）: {gone[:4]} の値段が表に無い")   # 止まった理由が知らせの頭に出る
+    assert "利用者に相談する" not in sent[0][1].split("\n")[0] and "値段を取る銘柄の一覧から外れた" in sent[0][1]            # 読む本人あての言い方にする
+    assert "記録上の資産 300,000 円" in out and f"（うち {gone} は値段が表に無いので、買った値段で数えた）" in out
+
+    mod.cmd_orders(_ns(tmp_path, report=True, now=f"{TODAY:%Y-%m-%d} 16:00"))            # 本物の様子（c* の章も通る）
+    text = next((tmp_path / "out" / "live").glob("*.md")).read_text(encoding="utf-8")
+    assert f"止める決まりに当たっているもの: {gone} の値段が表に無い" in text and "出した買いの注文 1 回" in text
+
+
 def test_notify_test_works_before_setup_and_sends_nothing_without_settings(tmp_path, monkeypatch, capsys):
     from cfdbot import notify as N
 
@@ -576,3 +765,92 @@ def test_fetch_daily_says_why_when_yahoo_returns_nothing(monkeypatch):
     monkeypatch.setattr(M.time, "sleep", lambda s: None)
     with pytest.raises(RuntimeError, match="Yahoo から値段が取れない（7203.T からの 2 銘柄。3 回試した）"):
         M.fetch_daily(["7203.T", "6758.T"], "2000-01-01")                             # 前は KeyError: 'Dividends' で落ちた
+
+
+def test_one_day_without_prices_does_not_stop_but_two_business_days_do_and_the_stop_is_notified(tmp_path, monkeypatch, capsys):
+    """2026-11-10（総点検 A7 の点検で）: 決まり 3.3 は「2 営業日続けて無い」。本物で、1 日だけ値段を取れなかった日は止めずに知らせ、
+    次の営業日も無ければ STOP を置く。STOP を置いた日は、出す注文が無くても iPhone に理由を知らせる。値段が戻れば数え直す。"""
+    from cfdbot import notify as N
+
+    conf = tmp_path / "notify.json"
+    conf.write_text('{"channels": [{"type": "imessage", "to": "me@example.com"}]}', encoding="utf-8")
+    monkeypatch.setattr(N, "NOTIFY_FILE", conf)
+    sent = []
+    monkeypatch.setattr(N, "notify", lambda title, text, **kw: sent.append((title, text)) or [("imessage", True, "送った")])
+    mod = _script()
+
+    def start(base):
+        idx, cols, _ = _prices(base)
+        files = L.LiveFiles(base / "agents" / "live")
+        files.save_config({"equity_jpy": 300_000, "mode": "real", "started": f"{idx[-8]:%Y-%m-%d}", "deadline": "13:50", "exclude": []})
+        files.append(files.fills_path, [{"id": "1", "recorded_at": "x", "mode": "real", "date": idx[-3], "ticker": cols[7], "side": "買い", "shares": 4,
+                                         "price": 2000.0, "fee_yen": 0.0, "status": "約定", "at": "引け"}], L.FILL_COLUMNS)   # 売る日はまだ先
+        return idx, cols[7], files
+
+    def table(base, upto=None, drop=None, blank=None):
+        """値段の表を書き直す: upto の日まで／drop の列を落とす／blank の日のその列を空にする。"""
+        for name in ("jp_close.csv", "jp_open.csv"):
+            d = pd.read_csv(pd.io.common.StringIO(full[name]), index_col=0, parse_dates=True)
+            d = d.loc[:upto] if upto is not None else d
+            if blank is not None:
+                d.loc[blank[0], blank[1]] = np.nan
+            (d.drop(columns=drop) if drop else d).to_csv(base / "stocks" / name)
+
+    idx, gone, files = start(tmp_path / "a")
+    full = {name: (tmp_path / "a" / "stocks" / name).read_text(encoding="utf-8") for name in ("jp_close.csv", "jp_open.csv")}
+    table(tmp_path / "a", upto=idx[-2], drop=gone)
+    mod.cmd_orders(_ns(tmp_path / "a", now=f"{idx[-2]:%Y-%m-%d} 13:10"))                 # 1 日目: 止めない・知らせも送らない（注文が無い）
+    out = capsys.readouterr().out
+    assert not files.stop_path.exists() and sent == [] and "STOP を置いた" not in out
+    assert f"（まだ止めない。見ておくこと）: {gone} の値段が今日は表に無い（確かめられた範囲で 1 営業日目" in out
+    mod.cmd_orders(_ns(tmp_path / "a", now=f"{TODAY:%Y-%m-%d} 09:00"))                   # 値段を取り直さないまま次の日に開いても、数は増えない
+    out = capsys.readouterr().out
+    assert not files.stop_path.exists() and sent == [] and "確かめられた範囲で 1 営業日目" in out
+    assert files.gaps()["date"].tolist() == [idx[-2]]                                    # 書き留める日は、値段の表の最後の行の日
+    table(tmp_path / "a", drop=gone)
+    mod.cmd_orders(_ns(tmp_path / "a"))                                                  # 取り直しても無い（次の営業日）: STOP を置き、注文が無くても知らせる
+    out = capsys.readouterr().out
+    assert f"**止める決まりに当たったので STOP を置いた**: {gone} の値段が表に無い（2 営業日続けて無い。" in out
+    assert files.stop_path.exists() and len(sent) == 1 and sent[0][0] == f"株の予行演習（止まりました）{TODAY:%m/%d}"
+    assert "新しく買うのを止めました（STOP）" in sent[0][1] and "Claude に「予行演習の様子は？」と聞いてください" in sent[0][1]
+    mod.cmd_orders(_ns(tmp_path / "a", now=f"{TODAY:%Y-%m-%d} 14:00"))                   # もう一度開いても、知らせは 1 回だけ
+    out = capsys.readouterr().out
+    assert len(sent) == 1 and f"止める決まりに当たっているもの（STOP はもうある）: {gone} の値段が表に無い" in out
+
+    sent.clear()
+    idx, gone, files = start(tmp_path / "d")                                             # 値が空の日の次の営業日に、列ごと消えた: 続けて 2 営業日と数える
+    table(tmp_path / "d", upto=idx[-2], blank=(idx[-2], gone))
+    mod.cmd_orders(_ns(tmp_path / "d", now=f"{idx[-2]:%Y-%m-%d} 13:10"))
+    out = capsys.readouterr().out
+    assert "表に無い" not in out and not files.stop_path.exists() and files.gaps()["date"].tolist() == [idx[-2]]
+    table(tmp_path / "d", drop=gone)
+    mod.cmd_orders(_ns(tmp_path / "d"))
+    assert files.stop_path.exists() and "2 営業日続けて無い" in files.stop_reason() and len(sent) == 1
+
+    sent.clear()
+    idx, gone, files = start(tmp_path / "b")                                             # 1 日だけ取れなかった（次の営業日に値段が戻る）
+    table(tmp_path / "b", upto=idx[-2], drop=gone)
+    mod.cmd_orders(_ns(tmp_path / "b", now=f"{idx[-2]:%Y-%m-%d} 13:10"))
+    table(tmp_path / "b")
+    capsys.readouterr()
+    mod.cmd_orders(_ns(tmp_path / "b"))
+    out = capsys.readouterr().out
+    assert not files.stop_path.exists() and sent == [] and "表に無い" not in out and len(files.gaps()) == 1
+
+    idx, gone, files = start(tmp_path / "c")                                             # 値段の表が見出しだけ（1 行も無い）: 売る日を数えられないので止まる
+    for name in ("jp_close.csv", "jp_open.csv"):
+        path = tmp_path / "c" / "stocks" / name
+        pd.read_csv(path, index_col=0, parse_dates=True).iloc[:0].to_csv(path)
+    with pytest.raises(SystemExit, match="1 行も無い"):
+        mod.cmd_orders(_ns(tmp_path / "c"))
+    for name in ("jp_close.csv", "jp_open.csv"):                                         # 書きかけで 0 バイトになったファイルでも、同じ案内で止まる
+        (tmp_path / "c" / "stocks" / name).write_text("", encoding="utf-8")
+    with pytest.raises(SystemExit, match="1 行も無い"):
+        mod.cmd_orders(_ns(tmp_path / "c"))
+    empty = pd.DataFrame(columns=[gone], index=pd.DatetimeIndex([]))
+    r = mod.orders_today(mod.paths(str(tmp_path / "c" / "agents")), files, files.config(), empty, L.calendar(empty.index, TODAY),
+                         TODAY + pd.Timedelta(hours=13, minutes=10))
+    out = capsys.readouterr().out
+    assert r["rows"] == [] and not r["written"] and r["stop_placed"] is None and "**値段の表が空**" in out
+    assert not files.stop_path.exists() and not files.plan_path.exists() and sent == []   # 一覧も STOP も書かない（前は売りの行が消え、STOP が置かれた）
+

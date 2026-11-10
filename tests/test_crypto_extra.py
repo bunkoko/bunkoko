@@ -7,8 +7,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from cfdbot.crypto import (EXTRA, LOG_COLUMNS, PaperStore, extra_available, extra_judge, paper_extra_report,
-                           paper_extra_run, parse_symbols, symbols_url)
+from cfdbot.crypto import (EXTRA, LOG_COLUMNS, PaperStore, ann_sharpe, extra_available, extra_judge, paper_extra_report,
+                           paper_extra_run, parse_symbols, price_vol, same_risk, symbol_returns, symbols_url)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -113,6 +113,39 @@ def test_extra_report_waits_for_250_days_and_drops_wide_spreads(tmp_path):
     assert info["groups"]["wide"] == ["DOGE_JPY"]                  # 往復 1% → 組から外す（下げている通貨でも）
     assert info["groups"]["extra"] > 0 and "満たす" in info["verdict"]
     assert any("ドージコイン" in ln for ln in lines) and any("外した" in ln for ln in lines)
+
+
+def test_extra_report_scores_through_flat_stretches(tmp_path):
+    """建玉なしが長く続いた後（記録の初めから 20 日以上・途中で 61 日以上）に建てても、組のシャープが計算できる
+    （2026-11-10 の直し。直す前は、次に建てた日が「0 で割る」になって組のシャープが出ず、中身に関係なく「満たさない」に落ちた）。"""
+    warm, n = 100, 300                                             # 記録の前からある日足と、他の通貨を記録した日数
+    pos = np.ones(n)
+    pos[:25] = 0                                                   # 初めの 25 日と、途中の 70 日は建玉なし
+    pos[100:170] = 0
+    for case, drift, word in ((0, 0.004, "先の記録でも条件を満たす"), (1, -0.004, "先の記録では条件を満たさない")):
+        st = PaperStore(tmp_path / str(case))
+        bars = {sym: _bars("2025-06-01 21:00", warm + n, seed, drift=d)
+                for sym, seed, d in (("BTC_JPY", 11, 0.0), ("ETH_JPY", 12, 0.0), ("BCH_JPY", 13, drift), ("XRP_JPY", 14, drift))}
+        logs = {}
+        for sym, b in bars.items():
+            st.save_klines(sym, b)
+            if sym in EXTRA:
+                logs[sym] = [dict(r, position=p) for r, p in zip(_rows(sym, b.iloc[warm:], 1), pos)]
+            else:                                                  # BTC・ETH は 50 日前から記録（建玉なしを 30 日はさむ）
+                logs[sym] = [dict(r, position=0 if 60 <= i < 90 else 1) for i, r in enumerate(_rows(sym, b.iloc[warm - 50:], 1))]
+            st.append_log(logs[sym], extra=sym in EXTRA)
+        info = paper_extra_report(st, now=bars["BCH_JPY"]["time"].iloc[-1])[1]
+        g = info["groups"]
+        assert all(np.isfinite(g[k]) for k in ("btc_eth", "extra", "both")) and g["days"] == n
+        assert (g["extra"] > 0) == (drift > 0) and word in info["verdict"]
+        # 組の数字は same_risk そのもの。BTC・ETH の組は他の通貨の記録の始まりから数え、変動はそれより前の日足も使って出す
+        start = bars["BCH_JPY"]["time"].iloc[warm]
+        vols = {sym: price_vol(b) for sym, b in bars.items()}
+        rets = {sym: symbol_returns(pd.DataFrame(logs[sym]), b, 0.002 if sym in EXTRA else 0.001)[0] for sym, b in bars.items()}
+        a = same_risk({sym: rets[sym][rets[sym].index >= start] for sym in ("BTC_JPY", "ETH_JPY")}, vols)
+        x = same_risk({sym: rets[sym] for sym in ("BCH_JPY", "XRP_JPY")}, vols)
+        assert len(a) == n and len(x) == n and a.index[0] == start and x.index[0] == start
+        assert abs(g["btc_eth"] - ann_sharpe(a)) < 1e-9 and abs(g["extra"] - ann_sharpe(x)) < 1e-9
 
 
 def _daily(seed, mu, sd=0.02, start="2019-02-01", end="2026-10-01"):

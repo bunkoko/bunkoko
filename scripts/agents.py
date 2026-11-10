@@ -1037,8 +1037,8 @@ def live_early(args) -> bool:
     cal = L.calendar(close.index, now.normalize())
     r = orders_today(p, files, cfg, close, cal, now, e1_override=e1, decided_override=f"{now:%Y-%m-%d %H:%M:%S}",
                      source="先に作った E1 の一覧", say=lambda s: print(s, flush=True), data=Path(args.data))
-    if r["written"]:
-        send_notice(files, cfg, r["rows"], now)
+    if r["written"] or r["stop_placed"]:
+        send_notice(files, cfg, r["rows"], now, stop_placed=r["stop_placed"])
     return True
 
 
@@ -1060,8 +1060,8 @@ def live_after_decide(args) -> None:
     if not len(done):
         cal = L.calendar(close.index, today)
         r = orders_today(p, files, cfg, close, cal, now, say=lambda s: print(s, flush=True), data=Path(args.data))
-        if r["written"]:
-            send_notice(files, cfg, r["rows"], now)
+        if r["written"] or r["stop_placed"]:
+            send_notice(files, cfg, r["rows"], now, stop_placed=r["stop_placed"])
         return
     diff = e1_mismatch(p, done, today)
     if diff:
@@ -1867,7 +1867,12 @@ def cmd_orders(args) -> None:
     cfg = files.config()
     if cfg is None:
         sys.exit("予行演習の設定がまだ無い。始めると決めたら: ./cfd agents orders --setup --equity 300000（docs/stocks_live.md 3.1・9 章）")
-    _, close = prices(Path(args.data))
+    try:
+        _, close = prices(Path(args.data))
+    except pd.errors.EmptyDataError:                      # 書きかけで 0 バイトになったファイル
+        close = pd.DataFrame()
+    if not len(close.index):
+        sys.exit("値段の表（jp_close.csv）に 1 行も無い。売る日を数えられないので止める。値段を取り直してから（./cfd agents run --prices）")
     cal = L.calendar(close.index, today)
     if args.void:
         if str(args.void) not in set(files.fills(include_voided=True)["id"].astype(str)):
@@ -1888,8 +1893,8 @@ def cmd_orders(args) -> None:
         return
 
     r = orders_today(p, files, cfg, close, cal, now, sells_only=args.sells_only, data=Path(args.data))
-    if args.notify:
-        send_notice(files, cfg, r["rows"], now, force=True)
+    if args.notify or r["stop_placed"]:
+        send_notice(files, cfg, r["rows"], now, force=True, stop_placed=r["stop_placed"])
 
 
 def orders_today(p: dict, files, cfg: dict, close: pd.DataFrame, cal, now: pd.Timestamp, e1_override: pd.DataFrame | None = None,
@@ -1915,21 +1920,34 @@ def orders_today(p: dict, files, cfg: dict, close: pd.DataFrame, cal, now: pd.Ti
     lots = L.open_lots(ev, plan, fills, mode, cal)
     label = "本物" if mode == "real" else "空運転（注文は出さない）"
     out(f"# 今日（{today:%Y-%m-%d}）の株の注文（予行演習・{label}）\n")
-    res = {"rows": [], "written": False, "judged": False, "lines": lines}
+    res = {"rows": [], "written": False, "judged": False, "lines": lines, "stop_placed": None}
     if today.weekday() >= 5:
         out("今日は土日。注文は無い")
+        return res
+    if not len(close.index):          # 値段の表に 1 行も無い: 営業日を数えられず、売る日がずれる。一覧も止める決まりも数えない
+        out("**値段の表が空**（1 行も無い）。売る日を数えられないので、今日の一覧は作らない。値段を取り直してからもう一度（./cfd agents run --prices）")
         return res
     stop = files.stop_reason()
     cash, equity = L.cash_and_equity(float(cfg["equity_jpy"]), ev, lots, close)
     errs = L.mistakes(mode, plan, fills, lots, cal, today)
     rt = L.round_trips(fills, plan, files.refs(), close, cal) if mode == "real" else None
-    hits = L.stop_checks(cfg, (cash, equity), errs, lots, close, cal, today, e1_closed_reason(p, close, data), rt)
+    gaps, pday = files.gaps(), L.price_day(close, today)   # 持っている株の値段が無かった日を書き留める（3.3 の「2 営業日続けて」を数えるため。追記だけ）
+    files.append(files.gaps_path, [{"date": pday, "ticker": t} for t in L.no_price_today(lots, close, today)   # 日は「値段の表の最後の行の日」
+                                   if not (len(gaps) and ((gaps["date"] == pday) & (gaps["ticker"] == t)).any())], L.GAP_COLUMNS)
+    gap_n = L.gap_days(files.gaps(), lots, close, cal, today)
+    hits = L.stop_checks(cfg, (cash, equity), errs, lots, close, cal, today, e1_closed_reason(p, close, data), rt, gap_n)
     if hits and mode == "real" and not stop:
         files.place_stop("・".join(hits), now)
         stop = files.stop_reason()
+        res["stop_placed"] = "・".join(hits)
         out("**止める決まりに当たったので STOP を置いた**: " + "・".join(hits) + "\n")
     elif hits and mode != "real":
         out("（空運転なので STOP は置かない。本物なら止める）: " + "・".join(hits) + "\n")
+    elif hits:
+        out("止める決まりに当たっているもの（STOP はもうある）: " + "・".join(hits) + "\n")
+    watch = L.price_watch(lots, close, today, gap_n)
+    if watch:
+        out("（まだ止めない。見ておくこと）: " + "・".join(watch) + "\n")
     if stop:
         out(f"**STOP がある**（{stop}）。新しく買わない。持っている株は予定の日に売る。消すのは利用者がはっきり頼んだときだけ\n")
     done = plan[(plan["mode"] == mode) & (plan["date"] == today)] if len(plan) else plan
@@ -1957,8 +1975,9 @@ def orders_today(p: dict, files, cfg: dict, close: pd.DataFrame, cal, now: pd.Ti
         show_rows(rows, cfg, now, out)
         res.update(rows=rows, written=bool(judged or sells_only), judged=judged)
     x = float(cfg["equity_jpy"])
+    at_cost = L.valued_at_cost(lots, close)
     out(f"\n記録上の資産 {equity:,.0f} 円（入れた金額 {x:,.0f} 円の {equity / x:.1%}。{L.DD_STOP:.0%} を下回ったら止める）、現金 {cash:,.0f} 円、"
-        f"持っている株 {len(lots)} 銘柄")
+        f"持っている株 {len(lots)} 銘柄" + (f"（うち {'・'.join(at_cost)} は値段が表に無いので、買った値段で数えた）" if at_cost else ""))
     rec = L.recent_mistakes(errs, cal, today)
     if rec:
         out(f"直近 {L.ERR_WINDOW} 営業日の誤り {len(rec)} 回（{L.ERR_MAX} 回で止める）: " + "、".join(f"{d:%m-%d} {t}" for d, t in rec))
@@ -1972,8 +1991,9 @@ def notify_send(files, title: str, text: str) -> list[tuple[str, bool, str]]:
     return N.notify(title, text, record=files.root / "notify.log")
 
 
-def send_notice(files, cfg: dict, rows, now: pd.Timestamp, force: bool = False) -> None:
-    """今日の一覧を iPhone に知らせる。注文の無い日は、設定で send_empty が true のときだけ（force なら送る）。"""
+def send_notice(files, cfg: dict, rows, now: pd.Timestamp, force: bool = False, stop_placed: str | None = None) -> None:
+    """今日の一覧を iPhone に知らせる。注文の無い日は、設定で send_empty が true のときだけ（force なら送る）。
+    stop_placed（今 STOP を置いた理由）があれば、注文が無くても送り、本文の頭に理由を書く。"""
     from cfdbot import notify as N
     from cfdbot.agents import live as L
 
@@ -1982,7 +2002,12 @@ def send_notice(files, cfg: dict, rows, now: pd.Timestamp, force: bool = False) 
         print(f"知らせ: {why}", flush=True)
         return
     title, text, has = L.notice_text(rows, cfg, now)
-    if not (has or force or settings.get("send_empty")):
+    if stop_placed:
+        title = f"株の予行演習（止まりました）{now:%m/%d}"
+        why = stop_placed.replace("。利用者に相談する", "").replace(".T ", " ").replace("一覧から外れた", "値段を取る銘柄の一覧から外れた")
+        text = (f"止める決まりに当たったので、新しく買うのを止めました（STOP）: {why}\n"
+                "持っている株は予定の日に売ります。Claude に「予行演習の様子は？」と聞いてください\n" + text)
+    if not (has or force or stop_placed or settings.get("send_empty")):
         print("知らせ: 今日は出す注文が無いので送らない（send_empty が false）", flush=True)
         return
     for kind, ok, detail in N.notify(title, text, settings=settings, record=files.root / "notify.log"):
@@ -2101,19 +2126,27 @@ def orders_report(args, p: dict, files, cfg: dict, plan, fills, ev, lots: dict, 
     if days:
         say(f"- 先に作った E1 の一覧と台帳の E1 の帳が違った日: {len(bad)} 日（{len(days)} 日のうち）" + ("".join(f" {d:%m-%d}" for d in bad)))
     cash, equity = L.cash_and_equity(x, ev, lots, close)
-    say(f"- 記録上の資産 {equity:,.0f} 円（{equity / x:.1%}。{L.DD_STOP:.0%} を下回ったら止める）、現金 {cash:,.0f} 円")
+    at_cost = L.valued_at_cost(lots, close)
+    say(f"- 記録上の資産 {equity:,.0f} 円（{equity / x:.1%}。{L.DD_STOP:.0%} を下回ったら止める）、現金 {cash:,.0f} 円"
+        + (f"（{'・'.join(at_cost)} は値段が表に無いので、買った値段で数えた）" if at_cost else ""))
     errs = L.mistakes(mode, plan, fills, lots, cal, today)
     rec = L.recent_mistakes(errs, cal, today)
     say(f"- 直近 {L.ERR_WINDOW} 営業日の誤り {len(rec)} 回（{L.ERR_MAX} 回で止める）" + ("".join(f"\n  - {d:%m-%d} {t}" for d, t in rec)))
+    gap_n = L.gap_days(files.gaps(), lots, close, cal, today)
     hits = L.stop_checks(cfg, (cash, equity), errs, lots, close, cal, today, e1_closed_reason(p, close, Path(args.data)),
-                         L.round_trips(fills, plan, files.refs(), close, cal) if mode == "real" else None)
+                         L.round_trips(fills, plan, files.refs(), close, cal) if mode == "real" else None, gap_n)
     say("- 止める決まりに当たっているもの: " + ("・".join(hits) if hits else "無し"))
+    watch = L.price_watch(lots, close, today, gap_n)
+    if watch:
+        say("- まだ止めないが、見ておくこと: " + "・".join(watch))
     say("\n## 2. 持っている株\n")
     if not lots:
         say("- 無し")
     for lot in sorted(lots.values(), key=lambda v: v.due):
         late = L.bdays_after(cal, lot.due, today)
-        say(f"- {lot.ticker} {lot.shares} 株（{lot.buy_date:%m-%d} に買った。売る日 {lot.due:%m-%d}" + (f"、{late} 営業日遅れ" if late else "") + "）")
+        gap = L.price_gap(close, lot.ticker, today)
+        say(f"- {lot.ticker} {lot.shares} 株（{lot.buy_date:%m-%d} に買った。売る日 {lot.due:%m-%d}" + (f"、{late} 営業日遅れ" if late else "")
+            + (f"。**{gap}**" if gap else "") + "）")
     say("\n## 3. 空運転の進み具合（本物に切り替える条件。docs/stocks_live.md 4.5）\n")
     st = L.dry_run_status(plan, cfg)
     say(f"- 空運転の日 {st['days']} 日（{L.DRY_MIN_DAYS} 日以上）、E1 の行 {st['e1_rows']} 行（{L.DRY_MIN_ROWS} 行以上。{st['e1_days']} 日分）")

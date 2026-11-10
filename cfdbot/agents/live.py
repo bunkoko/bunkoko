@@ -51,6 +51,7 @@ PLAN_COLUMNS = ["written_at", "mode", "date", "ticker", "name", "side", "form", 
                 "reason", "decided_at", "margin_min", "note", "source"]
 FILL_COLUMNS = ["id", "recorded_at", "mode", "date", "ticker", "side", "shares", "price", "fee_yen", "status", "at", "error", "voids", "memo"]
 REF_COLUMNS = ["date", "ticker", "open", "close", "fetched_at", "source"]
+GAP_COLUMNS = ["date", "ticker"]
 E1_SIDES = ("買い", "買わない", "延長")    # E1 の行から作った行（空運転で数える）
 
 
@@ -78,6 +79,13 @@ class LiveFiles:
     @property
     def stop_path(self) -> Path:
         return self.root / "STOP"
+
+    @property
+    def gaps_path(self) -> Path:
+        return self.root / "price_gaps.csv"     # 持っている株の列が値段の表に無かった日（追記だけ。続けて何営業日かを数える）
+
+    def gaps(self) -> pd.DataFrame:
+        return self._read(self.gaps_path, GAP_COLUMNS)
 
     def config(self) -> dict | None:
         return json.loads(self.config_path.read_text(encoding="utf-8")) if self.config_path.exists() else None
@@ -168,7 +176,8 @@ class Lot:
 
 
 def events(mode: str, plan: pd.DataFrame, fills: pd.DataFrame, close: pd.DataFrame) -> pd.DataFrame:
-    """売り買いの出来事（date / ticker / side / shares / price / fee）。本物は fills.csv の約定、空運転は plan.csv の買い・売り（前の終値で約定したとみなす）。"""
+    """売り買いの出来事（date / ticker / side / shares / price / fee）。本物は fills.csv の約定、空運転は plan.csv の買い・売り（前の終値で約定したとみなす）。
+    空運転の売りは、その日までの最後の終値で。値段が表に無い株は、買った値段で。"""
     cols = ["date", "ticker", "side", "shares", "price", "fee"]
     if mode == "real":
         f = fills[(fills["mode"] == "real") & (fills["status"] == "約定")] if len(fills) else fills
@@ -181,9 +190,17 @@ def events(mode: str, plan: pd.DataFrame, fills: pd.DataFrame, close: pd.DataFra
     if not len(p):
         return pd.DataFrame(columns=cols)
     px = []
+    buys = p[p["side"] == "買い"]
     for r in p.itertuples():
+        if r.side == "買い":
+            px.append(float(r.prev_close))
+            continue
         c = close[r.ticker].loc[:r.date].dropna() if r.ticker in close else pd.Series(dtype=float)
-        px.append(float(r.prev_close) if r.side == "買い" or c.empty else float(c.iloc[-1]))
+        if len(c):
+            px.append(float(c.iloc[-1]))
+        else:   # 値段が表に無い株の売り: 最後に分かっている値段（空運転で買った値段）で売ったとみなす。前は値段なしになり、代金が 0 円と数えられていた
+            b = buys[(buys["ticker"] == r.ticker) & (buys["date"] <= r.date)]
+            px.append(float(b["prev_close"].iloc[-1]) if len(b) else float("nan"))
     return pd.DataFrame({"date": pd.to_datetime(p["date"]), "ticker": p["ticker"].astype(str), "side": p["side"],
                          "shares": p["shares"].astype(int), "price": px, "fee": 0.0})[cols]
 
@@ -221,8 +238,14 @@ def open_lots(ev: pd.DataFrame, plan: pd.DataFrame, fills: pd.DataFrame, mode: s
     return lots
 
 
+def valued_at_cost(lots: dict[str, Lot], close: pd.DataFrame) -> list[str]:
+    """持っている株のうち、値段の表に 1 日も値が無い株（列が無い・全部空）。記録上の資産では、買った値段で数える。"""
+    return sorted(t for t in lots if t not in close or not close[t].notna().any())
+
+
 def cash_and_equity(equity_jpy: float, ev: pd.DataFrame, lots: dict[str, Lot], close: pd.DataFrame) -> tuple[float, float]:
-    """記録上の現金と資産（現金＋持っている株を最新の終値で。値段が無ければ買った値段で）。"""
+    """記録上の現金と資産（現金＋持っている株を最新の終値で。最後の日の値が無ければ、最後に分かっている終値で。
+    値段の表に 1 日も値が無い株（列が無い）は、買った値段で。その株は stop_checks の「値段が無い」で別に止める）。"""
     buy = ev[ev["side"] == "買い"]
     sell = ev[ev["side"] == "売り"]
     cash = equity_jpy - float((buy["shares"] * buy["price"] + buy["fee"]).sum()) + float((sell["shares"] * sell["price"] - sell["fee"]).sum())
@@ -231,6 +254,66 @@ def cash_and_equity(equity_jpy: float, ev: pd.DataFrame, lots: dict[str, Lot], c
         c = close[lot.ticker].dropna() if lot.ticker in close else pd.Series(dtype=float)
         held += lot.shares * float(c.iloc[-1]) if len(c) else lot.cost
     return cash, cash + held
+
+
+NO_PRICE = "値段が表に無い"
+
+
+def price_gap(close: pd.DataFrame, ticker: str, today: pd.Timestamp) -> str | None:
+    """持っている株の値段が無いときの様子（3.3）。値段があれば None。
+
+    「値段が表に無い」: 値段の表にその銘柄の列が無い（どの日の値段も無い。一覧から外れた・上場廃止・値段の取り直しで落ちた）。
+    「値段が N 営業日続けて無い」: 列はあるが、今日までの最後の N 営業日の値が無い。
+    """
+    if ticker not in close or not len(close.index):
+        return NO_PRICE
+    c = close[ticker]
+    tail = c.loc[c.index <= today].tail(PRICE_GAP_DAYS)
+    return f"値段が {PRICE_GAP_DAYS} 営業日続けて無い" if len(tail) == PRICE_GAP_DAYS and tail.isna().all() else None
+
+
+def price_day(close: pd.DataFrame, today: pd.Timestamp) -> pd.Timestamp | None:
+    """値段の表の、今日までの最後の行の日（値段を最後に取りにいった営業日）。表が空なら None。"""
+    idx = close.index[close.index <= pd.Timestamp(today).normalize()] if len(close.index) else close.index
+    return pd.Timestamp(idx[-1]).normalize() if len(idx) else None
+
+
+def no_price_today(lots: dict[str, Lot], close: pd.DataFrame, today: pd.Timestamp) -> list[str]:
+    """持っている株のうち、値段の表の最後の行の日に値段が無い株（列ごと無い・その日の値が空）。price_gaps.csv に書き留める分。"""
+    day = price_day(close, today)
+    if day is None:
+        return []
+    return sorted(t for t in lots if t not in close or pd.isna(close[t].loc[:day].iloc[-1]))
+
+
+def gap_days(gaps: pd.DataFrame, lots: dict[str, Lot], close: pd.DataFrame, cal: pd.DatetimeIndex, today: pd.Timestamp) -> dict[str, int]:
+    """持っている株のうち値段の表に列が無い株が、何営業日続けて値段が無いか（値段の表の最後の行の日を 1 と数える）。
+
+    日は「値段の表の行の日」で数える（一覧を開いた日ではない。表を取り直さずに次の日に開いても、祝日・週末に開いても増えない）。
+    その前の日の分は、その日に書き留めた記録（price_gaps.csv。列が無かった日と、列はあるが値が空だった日）で数える。
+    記録の無い日は「値段があった」とみなす（1 日だけ値段を取れなかった日に、決まり 3.3 の「2 営業日続けて」より早く止めないため）。
+    """
+    seen = set(zip(pd.to_datetime(gaps["date"]).dt.normalize(), gaps["ticker"].astype(str))) if len(gaps) else set()
+    start = price_day(close, today)
+    out: dict[str, int] = {}
+    for t in lots:
+        if t in close or start is None:
+            continue
+        n, day = 1, start
+        while True:
+            prev = bday_add(cal, day, -1)
+            if prev >= day or (prev, t) not in seen:
+                break
+            n, day = n + 1, prev
+        out[t] = n
+    return out
+
+
+def price_watch(lots: dict[str, Lot], close: pd.DataFrame, today: pd.Timestamp, gap_n: dict[str, int]) -> list[str]:
+    """まだ止める決まりには当たらないが、見ておくこと（持っている株の列が値段の表に無い。確かめられた範囲で 1 営業日目）。"""
+    return [f"{t} の値段が今日は表に無い（確かめられた範囲で {gap_n.get(t, 1)} 営業日目。{PRICE_GAP_DAYS} 営業日続けて無ければ止める。"
+            "値段を取れなかっただけか、売買停止・上場廃止かを確かめる）"
+            for t in sorted(lots) if price_gap(close, t, today) == NO_PRICE and gap_n.get(t, 1) < PRICE_GAP_DAYS]
 
 
 # --------------------------------------------------------------------------- 誤り・止める決まり
@@ -281,8 +364,9 @@ def early_cost(rt: pd.DataFrame | None) -> str | None:
 
 
 def stop_checks(cfg: dict, cash_equity: tuple[float, float], errs: list, lots: dict[str, Lot], close: pd.DataFrame,
-                cal: pd.DatetimeIndex, today: pd.Timestamp, e1_closed: str | None, rt: pd.DataFrame | None = None) -> list[str]:
-    """止める決まり（3.3）に当たったものの理由。"""
+                cal: pd.DatetimeIndex, today: pd.Timestamp, e1_closed: str | None, rt: pd.DataFrame | None = None,
+                gap_n: dict[str, int] | None = None) -> list[str]:
+    """止める決まり（3.3）に当たったものの理由。gap_n は gap_days（列が表に無い株が、何営業日続けて無いか）。"""
     x = float(cfg["equity_jpy"])
     out = []
     early = early_cost(rt)
@@ -297,9 +381,14 @@ def stop_checks(cfg: dict, cash_equity: tuple[float, float], errs: list, lots: d
         late = bdays_after(cal, lot.due, today) if lot.due is not None else 0
         if late > SELL_RETRY_MAX:
             out.append(f"{lot.ticker} が予定の日（{lot.due:%m-%d}）から {late} 営業日売れていない（{SELL_RETRY_MAX} 営業日まで）。利用者に相談する")
-        c = close[lot.ticker] if lot.ticker in close else pd.Series(dtype=float)
-        tail = c.loc[c.index <= today].tail(PRICE_GAP_DAYS)
-        if len(tail) == PRICE_GAP_DAYS and tail.isna().all():
+        gap = price_gap(close, lot.ticker, today)
+        if gap == NO_PRICE:                                       # 列ごと無い（前はここで落ちていた）。続けて無い営業日を数えて、決まりの日数で当てる
+            n = PRICE_GAP_DAYS if gap_n is None else gap_n.get(lot.ticker, 1)   # 数えた記録を渡さない呼び方は、安全な側（当たる）
+            if n >= PRICE_GAP_DAYS:
+                out.append(f"{lot.ticker} の値段が表に無い（{n} 営業日続けて無い。" if gap_n is not None else
+                           f"{lot.ticker} の値段が表に無い（どの日も無いので、{PRICE_GAP_DAYS} 営業日続けて無いのと同じに数える。")
+                out[-1] += "一覧から外れた・上場廃止・値段を取れなかった恐れ）。利用者に相談する"
+        elif gap:
             out.append(f"{lot.ticker} の値段が {PRICE_GAP_DAYS} 営業日続けて無い（売買停止・上場廃止の恐れ）。利用者に相談する")
     if e1_closed:
         out.append(f"E1 の帳が閉じた（{e1_closed}。docs/agents.md 12.3）")
@@ -355,7 +444,7 @@ def make_plan(today: pd.Timestamp, now: pd.Timestamp, cfg: dict, e1_today: pd.Da
     day_budget = daily_budget(x)
     dl = deadline_ts(cfg, today)
     margin = (dl - now).total_seconds() / 60 if dl is not None else np.nan
-    before = close.loc[close.index < today]
+    before = close.loc[close.index < today] if len(close.index) else close   # 値段の表が空でも落ちない（買いは「値段が無い」で見送る）
     prev = before.iloc[-1] if len(before) else pd.Series(dtype=float)
     e1 = e1_today if e1_today is not None else pd.DataFrame(columns=["ticker", "name", "reason"])
     e1 = e1.drop_duplicates("ticker")
@@ -375,8 +464,11 @@ def make_plan(today: pd.Timestamp, now: pd.Timestamp, cfg: dict, e1_today: pd.Da
                 note=f"前の予定 {lot.due:%m-%d}")
         elif lot.due is not None and lot.due <= today:
             late = bdays_after(cal, lot.due, today)
-            row(t, "売り", lot.shares, due=lot.due, reason="5 営業日たった",
-                note=f"売りの遅れ {late} 日目（{SELL_RETRY_MAX} 日を超えたら止める）" if late else "")
+            gap = price_gap(close, t, today)                     # 値段が無い株も、売りの行は出す（決まりは「予定の日に売る」）。分かるように書き添える
+            notes = [f"売りの遅れ {late} 日目（{SELL_RETRY_MAX} 日を超えたら止める）" if late else "",
+                     (f"{gap}（Claude の値段の記録に、この株の値段が無い。売買停止・上場廃止か、値段を取れなかっただけ）。"
+                      + ("SBI の画面で売れるかを見て、結果を Claude に伝える" if cfg.get("mode") == "real" else "空運転なので、することは無い")) if gap else ""]
+            row(t, "売り", lot.shares, due=lot.due, reason="5 営業日たった", note="。".join(n for n in notes if n))
     cand = sorted(set(e1["ticker"]) - set(lots))
     reasons = dict(zip(e1["ticker"], e1["reason"]))
     exclude = {str(t).strip().upper() if "." in str(t) else f"{str(t).strip().upper()}.T" for t in cfg.get("exclude", [])}
@@ -522,7 +614,7 @@ def round_trips(fills: pd.DataFrame, plan: pd.DataFrame, refs: pd.DataFrame, clo
             if b.ticker in cc and b.date in cc.index:
                 rec["limit_up"] = bool(cc.at[b.date, b.ticker] >= LIMIT_UP_DAY)
             end = bday_add(cal, b.date, HOLD)
-            if b.ticker in close and end <= close.index[-1] and b.date in close.index:
+            if b.ticker in close and len(close.index) and end <= close.index[-1] and b.date in close.index:
                 w = cc.loc[(cc.index > b.date) & (cc.index <= end)]
                 rec["m"] = float((1 + w[b.ticker]).prod() - 1 - ((1 + w).prod() - 1).mean())   # 株 − 全銘柄の平均（5 日）
                 rec["done"] = np.isfinite(rec["m"])

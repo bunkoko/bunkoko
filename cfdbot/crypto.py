@@ -31,6 +31,7 @@ LOG_COLUMNS = ["logged_at", "symbol", "bar_time", "close", "position", "qty", "b
 STRATEGY = ("donchian", {"entry_period": 55, "exit_period": 20, "trend_ema": 0, "buffer_atr": 0.0,
                          "max_extension": 1.5, "extension_period": 20})     # turtle55_d1_ext.json と同じ
 MIN_DAYS, MAX_GAP_DAYS, MAX_SPREAD = 250, 30, 0.002
+RISK_WINDOW, RISK_MIN_DAYS = 60, 20    # 同じリスクにそろえる変動を見る窓（日）と、最低限要る日数
 # 他の通貨（docs/crypto.md 9 章）。GMO の取引所（レバレッジ）で扱う通貨のうち BTC・ETH 以外の 9 つ（組は固定）。
 # 新しい 6 通貨の記号の綴りは推測を含むので、毎回 /public/v1/symbols の実物の一覧と照らし、無い記号は飛ばして知らせる
 EXTRA = {   # 記号: (通貨, 名前, 数え始め（扱いの始まりの翌日）, Yahoo)
@@ -350,7 +351,7 @@ def paper_extra_run(store: PaperStore, get: Callable[[str], tuple[int, bytes]] =
 def symbol_returns(log: pd.DataFrame, klines: pd.DataFrame, cost: float = VENUE.cost) -> tuple[pd.Series, int]:
     """記録した向き × 翌日の終値の変化（コスト込み）。戻り値の 2 つ目は記録の無かった日の数。"""
     k = klines.set_index("time")["close"].astype(float)
-    g = log.sort_values("bar_time").drop_duplicates("bar_time", keep="first").set_index("bar_time")
+    g = log.sort_values("bar_time", kind="stable").drop_duplicates("bar_time", keep="first").set_index("bar_time")   # 同じ足が 2 行あれば先に書いた方
     if g.empty:
         return pd.Series(dtype=float), 0
     days = k.index[(k.index >= g.index[0]) & (k.index <= k.index[-1])]
@@ -364,6 +365,84 @@ def symbol_returns(log: pd.DataFrame, klines: pd.DataFrame, cost: float = VENUE.
     return r, gaps
 
 
+def paper_equity(store: PaperStore, start: float = 1_000_000.0) -> pd.Series:
+    """記録上の資産（円）の推移。記録した向き × 数量 × 終値の変化から、保有コストと向きを変えた分のスプレッドを引く。
+    数量は記録した時の資金（paper_run の equity）で決めたものなので、start にはその資金を渡す。
+    記録がまだ無ければ空を返す。記録があるのに計算できない（日足が無い・向きと数量が読めない）ときは ValueError を出す
+    （少額の本番を止める判断に使うので、計算できないことを「下落なし」と見なさない）。"""
+    pnl = []
+    log = store.load_log()
+    for sym in SYMBOLS:
+        g = log[log["symbol"] == sym]
+        if g.empty:
+            continue
+        k = store.load_klines(sym).set_index("time")["close"].astype(float)
+        # 同じ日が 2 行あれば新しい方、日付の順に並べる。終値の欠けた足は前の終値のまま（その値動きは次の足で数える）
+        k = k[~k.index.duplicated(keep="last")].sort_index()
+        k = k.where(np.isfinite(k)).ffill().dropna()               # 数字でない終値（NaN・無限大）も、欠けた足と同じに扱う
+        g = g[g["bar_time"].notna()].sort_values("bar_time", kind="stable").drop_duplicates("bar_time", keep="first").set_index("bar_time")
+        q = (g["position"] * g["qty"]).astype(float)
+        q = q[np.isfinite(q)]                                       # 向き・数量の読めない行は、記録の無い日と同じに扱う
+        if q.empty:
+            raise ValueError(f"{sym} の記録の向き・数量が読めない")
+        days = k.index[k.index >= q.index[0]]
+        if len(days) == 0:
+            raise ValueError(f"{sym} の記録（{q.index[0]:%Y-%m-%d}〜）に当たる日足が無い")
+        q = q.reindex(days, method="ffill").fillna(0.0)             # 記録の無い日は前のまま
+        spread = g["spread_pct"].astype(float).dropna().reindex(days, method="ffill").fillna(VENUE.cost)
+        c = k.reindex(days)
+        prev = q.shift(1).fillna(0.0)
+        r = prev * c.diff().fillna(0.0) - prev.abs() * c.shift(1).fillna(c) * FINANCING_DAY \
+            - (q - prev).abs() * c * spread / 2
+        if not np.isfinite(r.to_numpy(float)).all():
+            raise ValueError(f"{sym} の記録上の損益に、数字でない値が混じる")
+        pnl.append(r.rename(sym))
+    if not pnl:
+        return pd.Series(dtype=float)
+    return start + pd.concat(pnl, axis=1).sort_index().fillna(0.0).sum(axis=1).cumsum()   # fillna は、その通貨の記録がまだ無い日の分だけ
+
+
+def drawdown(equity: pd.Series) -> float:
+    """最高値からの今の下落（割合。0 以上）。空なら 0。数字でない値が混じって計算できないときは NaN を返す
+    （呼ぶ側は NaN を「下落なし」と見なさない）。"""
+    if equity.empty:
+        return 0.0
+    v = equity.to_numpy(float)
+    if not np.isfinite(v).all():
+        return float("nan")
+    peak = float(v.max())
+    return max(0.0, 1.0 - float(v[-1]) / peak) if peak > 0 else 1.0
+
+
+def price_vol(klines: pd.DataFrame) -> pd.Series:
+    """その通貨の値段の、日ごとの変化率のばらつき（直近 60 日・最低 20 日。その日より前の値動きだけを使う）。
+    同じリスクにそろえる物差し。建玉の有無と関係なく決まる。出せない日（前の足が 21 本に満たない・0）は NaN。"""
+    k = klines.set_index("time")["close"].astype(float)
+    k = k[~k.index.duplicated(keep="last")].sort_index()
+    roll = k.pct_change(fill_method=None).rolling(RISK_WINDOW, min_periods=RISK_MIN_DAYS)
+    # 窓の中の値動きが全部同じ（値が止まっている）なら、ばらつきは 0。pandas の std は計算の誤差で 0 の代わりに
+    # ごく小さい正の数（1e-9 ほど）を返すことがあり、それで割ると成績が桁違いに膨らむので、最大と最小で確かめて外す
+    vol = roll.std().where(roll.max() > roll.min()).shift(1)
+    return vol.where(np.isfinite(vol) & (vol > 0))
+
+
+def same_risk(rets: dict[str, pd.Series], vols: dict[str, pd.Series]) -> pd.Series:
+    """通貨ごとの日ごとの成績を、その通貨の値段の変動（price_vol）で割ってから平均する（6 章・9.2 のまとめ）。
+    成績そのもののばらつきでは割らない: 建玉なしが続くと 0 になり、次に建てた日が 0 で割る形になって採点が壊れた
+    （2026-11-10 の直し）。変動の出せない日は、その通貨のその日を数えない。"""
+    if not rets:
+        return pd.Series(dtype=float)
+    df = pd.DataFrame(rets)
+    vol = pd.DataFrame({s: vols[s].reindex(df.index) for s in df.columns})
+    out = (df / vol).mean(axis=1, skipna=True)
+    return out[np.isfinite(out)]              # 数えられない日（NaN）と、念のため無限大を落とす
+
+
+def ann_sharpe(r: pd.Series) -> float:
+    r = r.dropna()
+    return float(r.mean() / r.std() * np.sqrt(365)) if len(r) > 30 and r.std() > 0 else float("nan")
+
+
 def paper_report(store: PaperStore, now: pd.Timestamp | None = None) -> tuple[list[str], dict]:
     now = now or pd.Timestamp.now(tz="UTC")
     log = store.load_log()
@@ -371,15 +450,16 @@ def paper_report(store: PaperStore, now: pd.Timestamp | None = None) -> tuple[li
     if log.empty:
         lines.append("- まだ記録が無い（./cfd crypto paper）")
         return lines, {}
-    rets, info = {}, {}
+    rets, vols, info = {}, {}, {}
     lines.append("\n| 銘柄 | 記録した日 | 向きを変えた回数 | 買い／売り／なしの日 | スプレッド 中央値 | シャープ | 記録の無い日 |")
     lines.append("|---|---|---|---|---|---|---|")
     for sym in SYMBOLS:
         g = log[log["symbol"] == sym]
         if g.empty:
             continue
-        r, gaps = symbol_returns(g, store.load_klines(sym))
-        rets[sym] = r
+        k = store.load_klines(sym)
+        r, gaps = symbol_returns(g, k)
+        rets[sym], vols[sym] = r, price_vol(k)
         pos = g.sort_values("bar_time")["position"]
         changes = int((pos.diff().fillna(pos.iloc[0]) != 0).sum())
         sp = float(g["spread_pct"].median())
@@ -391,14 +471,12 @@ def paper_report(store: PaperStore, now: pd.Timestamp | None = None) -> tuple[li
                      f"{int((pos == 0).sum())} | {sp:.3%} | – | {gaps} |")
     if not rets:
         return lines, info
-    df = pd.DataFrame(rets)
-    vol = df.rolling(60, min_periods=20).std().shift(1)
-    both = (df / vol).mean(axis=1, skipna=True).dropna()
-    s_both = float(both.mean() / both.std() * np.sqrt(365)) if len(both) > 30 and both.std() > 0 else np.nan
+    both = same_risk(rets, vols)
+    s_both = ann_sharpe(both)
     n_days = int(max(v["days"] for v in info.values()))
     gaps = int(max(v["gaps"] for v in info.values()))
     spread = float(np.median([v["spread"] for v in info.values()]))
-    info["both"] = {"days": n_days, "sharpe": s_both, "spread": spread, "gaps": gaps}
+    info["both"] = {"days": n_days, "sharpe": s_both, "spread": spread, "gaps": gaps, "scored": len(both)}
     lines.append(f"\n- まとめ（同じリスク）: シャープ {s_both:.2f}、記録 {n_days} 日、スプレッドの中央値 {spread:.3%}"
                  if np.isfinite(s_both) else f"\n- まとめ: 記録 {n_days} 日（30 日たまると成績を出す）")
     if n_days < MIN_DAYS:
@@ -412,20 +490,6 @@ def paper_report(store: PaperStore, now: pd.Timestamp | None = None) -> tuple[li
     info["verdict"] = verdict
     lines.append(f"- 判定: {verdict}")
     return lines, info
-
-
-def same_risk(rets: dict[str, pd.Series]) -> pd.Series:
-    """通貨ごとの成績を、直近 60 日の変動でそろえて平均（paper_report と同じまとめ方）。"""
-    if not rets:
-        return pd.Series(dtype=float)
-    df = pd.DataFrame(rets)
-    vol = df.rolling(60, min_periods=20).std().shift(1)
-    return (df / vol).mean(axis=1, skipna=True).dropna()
-
-
-def ann_sharpe(r: pd.Series) -> float:
-    r = r.dropna()
-    return float(r.mean() / r.std() * np.sqrt(365)) if len(r) > 30 and r.std() > 0 else float("nan")
 
 
 def paper_extra_report(store: PaperStore, now: pd.Timestamp | None = None) -> tuple[list[str], dict]:
@@ -443,14 +507,15 @@ def paper_extra_report(store: PaperStore, now: pd.Timestamp | None = None) -> tu
         lines.append("- まだ記録が無い（./cfd crypto paper で、BTC・ETH の後に記録する）")
         return lines, {}
     start = log["bar_time"].min()
-    rets, info, wide = {}, {}, []
+    rets, vols, info, wide = {}, {}, {}, []
     lines.append("\n| 通貨 | 記録した日 | 向きを変えた回数 | 買い／売り／なしの日 | スプレッド 中央値 | シャープ | 記録の無い日 |")
     lines.append("|---|---|---|---|---|---|---|")
     for sym in EXTRA:
         g = log[log["symbol"] == sym]
         if g.empty:
             continue
-        r, gaps = symbol_returns(g, store.load_klines(sym), EXTRA_COST)
+        k = store.load_klines(sym)
+        r, gaps = symbol_returns(g, k, EXTRA_COST)
         pos = g.sort_values("bar_time")["position"]
         changes = int((pos.diff().fillna(pos.iloc[0]) != 0).sum())
         sp = float(g["spread_pct"].median())
@@ -459,7 +524,7 @@ def paper_extra_report(store: PaperStore, now: pd.Timestamp | None = None) -> tu
         if np.isfinite(sp) and sp > EXTRA_MAX_SPREAD:
             wide.append(sym)
         else:
-            rets[sym] = r
+            rets[sym], vols[sym] = r, price_vol(k)
         lines.append(f"| {EXTRA[sym][1]} | {len(g)} | {changes} | {int((pos > 0).sum())}／{int((pos < 0).sum())}／"
                      f"{int((pos == 0).sum())} | {sp:.3%} | {'–' if not np.isfinite(s) else f'{s:.2f}'} | {gaps} |")
     main = store.load_log()
@@ -467,9 +532,10 @@ def paper_extra_report(store: PaperStore, now: pd.Timestamp | None = None) -> tu
     for sym in SYMBOLS:
         g = main[main["symbol"] == sym] if len(main) else main
         if len(g):
-            r, _ = symbol_returns(g, store.load_klines(sym))
-            base[sym] = r[r.index >= start]
-    a, x = same_risk(base), same_risk(rets)
+            k = store.load_klines(sym)
+            r, _ = symbol_returns(g, k)
+            base[sym], vols[sym] = r[r.index >= start], price_vol(k)      # 変動は start より前の日足も使って出す
+    a, x = same_risk(base, vols), same_risk(rets, vols)
     b = pd.DataFrame({"a": a, "x": x}).mean(axis=1, skipna=True).dropna() if len(a) and len(x) else pd.Series(dtype=float)
     sa, sx, sb = ann_sharpe(a), ann_sharpe(x), ann_sharpe(b)
     n_days = int(log["bar_time"].nunique())

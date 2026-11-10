@@ -2,6 +2,7 @@
 
 毎朝（記録の直後）に 1 回: 記録の向き（買い・売り・なし）と口座の建玉を比べ、違えば成行で閉じて建て直す。
 既定は空運転（注文を出さず、出すはずの注文を記録する）。--real で本物。data/crypto/live/STOP があれば何もしない。
+記録上の資産（記録の向き × 数量の円の損益）が最高値から 20% より減った朝は、STOP を置いて何もしない（建玉は閉じない）。
 API のキーは ~/.bunkoko/gmo_api.json（このリポジトリの外）に置く。
 """
 
@@ -20,7 +21,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from .crypto import SYMBOLS, Decision, PaperStore, decide, frame
+from .crypto import SYMBOLS, Decision, PaperStore, decide, drawdown, frame, paper_equity
 
 PRIVATE = "https://api.coin.z.com/private"
 PUBLIC = "https://api.coin.z.com/public"
@@ -31,7 +32,7 @@ DEFAULT_CONFIG = {
     "equity_jpy": 1_000_000,         # 量を決める資金（口座の残高ではなく、この戦略に割り当てた額）。BTC の最小 0.01 を 1% の損失で持つには 60 万円以上要る
     "max_notional_jpy": 2_000_000,   # 1 銘柄の名目の上限（資金の 2 倍）
     "symbols": ["BTC_JPY", "ETH_JPY"],
-    "max_drawdown_stop": 0.20,       # 記録上の資産がこの割合を下回ったら STOP を置く（手で外すまで何もしない）
+    "max_drawdown_stop": 0.20,       # 記録上の資産が最高値からこの割合より減ったら STOP を置く（手で外すまで何もしない）
 }
 
 
@@ -175,11 +176,46 @@ class LiveStore:
         return pd.read_csv(self.log_path) if self.log_path.exists() else pd.DataFrame(columns=LOG_COLUMNS)
 
 
+STALE_DAYS = 3     # 記録のある通貨の日足の最後が、今よりこれより古ければ、記録上の資産を計算できない朝と同じに扱う
+
+
+def jst(t: pd.Timestamp) -> pd.Timestamp:
+    t = pd.Timestamp(t)
+    return (t if t.tzinfo is not None else t.tz_localize("UTC")).tz_convert("Asia/Tokyo")
+
+
+def recorded_sides(paper: PaperStore) -> str:
+    """記録（6 章）の、通貨ごとの最後の向きと数量（例: BTC 買い 0.01・ETH なし）。"""
+    log = paper.load_log()
+    out = []
+    for sym in SYMBOLS:
+        g = log[log["symbol"] == sym].sort_values("bar_time", kind="stable")
+        if g.empty:
+            continue
+        pos, qty = g["position"].iloc[-1], g["qty"].iloc[-1]
+        word = {1: "買い", -1: "売り", 0: "なし"}.get(int(pos) if np.isfinite(pos) else None, "不明")
+        out.append(f"{SYMBOLS[sym][0]} {word}" + (f" {qty:g}" if word in ("買い", "売り") and np.isfinite(qty) else ""))
+    return "・".join(out) or "記録なし"
+
+
+def stale_klines(paper: PaperStore, now: pd.Timestamp) -> str | None:
+    """記録のある通貨のうち、日足が古いままのもの（その後の損益が 0 と数えられてしまう）。無ければ None。"""
+    log = paper.load_log()
+    for sym in SYMBOLS:
+        if not (log["symbol"] == sym).any():
+            continue
+        k = paper.load_klines(sym)
+        k = k[np.isfinite(pd.to_numeric(k["close"], errors="coerce"))]     # 終値が数字でない足は、無いのと同じ
+        if len(k) and jst(now) - jst(k["time"].max()) > pd.Timedelta(days=STALE_DAYS):
+            return f"{sym} の日足が古い（終値のある最後の足 {k['time'].max():%Y-%m-%d}。{STALE_DAYS} 日より前）"
+    return None
+
+
 def live_run(paper: PaperStore, live: LiveStore, client: GmoClient | None, real: bool = False,
-             now: pd.Timestamp | None = None, log: Callable[[str], None] = print) -> list[dict]:
+             now: pd.Timestamp | None = None, log: Callable[[str], None] = print,
+             paper_equity_jpy: float = 1_000_000.0) -> list[dict]:
     """記録の向きに建玉をそろえる。client が None か real=False なら空運転（注文は出さず記録だけ）。"""
     now = now or pd.Timestamp.now(tz="UTC")
-    cfg = live.config()
     mode = "real" if (real and client is not None) else "dry"
     rows: list[dict] = []
 
@@ -190,6 +226,45 @@ def live_run(paper: PaperStore, live: LiveStore, client: GmoClient | None, real:
 
     if live.stop_file.exists():
         note("*", "skip", text="STOP があるので何もしない")
+        live.append(rows)
+        return rows
+    try:
+        cfg = live.config()
+    except Exception as e:  # noqa: BLE001
+        note("*", "error", text=f"設定（config.json）を読めない（{type(e).__name__}: {str(e)[:100]}）。今日は注文を出さない")
+        live.append(rows)
+        return rows
+    # 記録上の資産（6 章の記録）の下落を見る。空運転でも同じ。計算できない朝は「下落なし」と見なさず、注文を出さない
+    try:
+        raw = cfg["max_drawdown_stop"]
+        limit = float(raw)
+        if isinstance(raw, bool) or not (0 < limit < 1):      # 20 と書くと 2000% になり、いくら減っても止まらない
+            raise ValueError(f"設定の max_drawdown_stop が 0 と 1 の間の数でない（{raw!r}。20% なら 0.20 と書く）")
+        old = stale_klines(paper, now)
+        if old:
+            raise ValueError(old)
+        eq = paper_equity(paper, paper_equity_jpy)
+        # 最高値には、始めの資金そのものも入れる（初日は建てた分のスプレッドを引いた額から始まるため）
+        dd = drawdown(pd.concat([pd.Series([float(paper_equity_jpy)]), eq], ignore_index=True)) if len(eq) else 0.0
+        if not np.isfinite(dd):
+            raise ValueError(f"数字にならない（下落 {dd}）")
+    except Exception as e:  # noqa: BLE001
+        note("*", "error", text=f"記録上の資産の下落を計算できない（{type(e).__name__}: {str(e)[:120]}）。今日は注文を出さない")
+        live.append(rows)
+        return rows
+    if dd > limit:                           # ちょうど上限なら止めない（「上限より減ったら」）
+        want = recorded_sides(paper)         # 止まる朝は閉じる注文も出さないので、口座の建玉と見比べられるように、記録の向きを書いておく
+        try:
+            live.root.mkdir(parents=True, exist_ok=True)
+            live.stop_file.write_text(f"{jst(now):%Y-%m-%d %H:%M}（日本時間） 記録上の資産が最高値から {dd:.1%} 減った"
+                                      f"（上限 {limit:.0%}）。見直してから手で消す。今朝の記録の向き: {want}。"
+                                      "口座の建玉は閉じていないので、記録と違えば手で閉じるかを決める\n", encoding="utf-8")
+        except OSError as e:                 # STOP を書けなくても、落とさずに、注文を出さないで理由を残す（次の朝も同じ確かめをする）
+            note("*", "error", text=f"記録上の資産が最高値から {dd:.1%} 減ったが、STOP を置けなかった（{type(e).__name__}）。今日は注文を出さない")
+            live.append(rows)
+            return rows
+        note("*", "stop", text=f"記録上の資産が最高値から {dd:.1%} 減った。STOP を置いた（手で外すまで何もしない）。今朝の記録の向き: {want}。"
+                               "口座の建玉は閉じていない")
         live.append(rows)
         return rows
     if client is not None:
