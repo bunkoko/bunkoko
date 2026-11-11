@@ -1,5 +1,7 @@
 """相方の行き過ぎフィルタを、使っていない商品の組で確かめる（./cfd partner）。仮説と判定の条件は docs/cross_asset.md 7 章。
 
+    2026-10-16 に 1 回計算した（採らない・閉じた。docs/cross_asset.md 7.6）。今は動かしても止まる。下は元の使い方。
+
     python scripts/partner_study.py               # data/universe の日足（無い市場は Yahoo から取る。Mac で。数十分）
     python scripts/partner_study.py --placebo 20  # 試しに速く（判定には 200 回を使う）
 
@@ -27,6 +29,9 @@ from cfdbot.study import clean, load_picks  # noqa: E402
 from cfdbot.train.config import load_train_config  # noqa: E402
 from cfdbot.train.pipeline import _account_config  # noqa: E402
 from cfdbot.universe import sharpe  # noqa: E402
+
+# 1 回だけ計算した判定（docs/cross_asset.md 7.6）。書いてあれば止まる（動かし直さない。試験ではここを空にして動かす）
+RESULT: dict = {"date": "2026-10-16", "verdict": "採らない・閉じた", "numbers": "差 +0.04、偶然より良い割合 74%", "doc": "docs/cross_asset.md 7.6"}
 
 
 def f2(x: float) -> str:
@@ -82,6 +87,9 @@ def main() -> None:
     p.add_argument("--prior-trials", type=int, default=P.PRIOR_TRIALS, help="これまでに試した数（docs/review.md。計算した時点の数）")
     p.add_argument("--out", default="output/partner")
     args = p.parse_args()
+    if RESULT:
+        sys.exit(f"判定はもう 1 回計算してある（{RESULT['date']}: {RESULT['verdict']}。{RESULT['numbers']}。{RESULT['doc']}）。"
+                 "1 回だけの決まりなので、動かし直さない")
 
     cfg = load_train_config(args.config)
     pk0 = load_picks(args.final)[0]

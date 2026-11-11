@@ -9,7 +9,8 @@
     ./cfd news backfill    GDELT の過去の分をまとめて取る（推移 2017 年〜・生データの見出し 2019-10〜・一覧 90 日。数時間）
     ./cfd news collect     1 回だけ集める（自動の収集が 15 分ごとに実行するもの）
     ./cfd news embed       見出しを埋め込む（終わった日の分だけ）
-    ./cfd news report      仮説を確かめて output/news/<日時>/report.md に書く（埋め込みも先に行う）
+    ./cfd news report      仮説を確かめて output/news/<日時>/report.md に書く（埋め込みも先に行う。判定は 2026-10-10・11 の 1 回で、今は参考）
+    ./cfd news forward     geo_vol の先の確かめ（2026-10-12〜2027-10-11。2027-10-14 から 1 回だけ。docs/news.md 8 章）
     ./cfd news status      集めた量と、自動の収集が動いているか
     ./cfd news clean       比べるためだけに取ったモデルとダウンロードの一時置き場を消す（--dry-run で確認だけ）
 """
@@ -692,6 +693,13 @@ def cmd_status(args) -> None:
         tl = store.load_timeline(q.key, "timelinevolraw")
         if len(tl):
             print(f"推移 {q.key}: {tl.index[0]:%Y-%m-%d}〜{tl.index[-1]:%Y-%m-%d}")
+    upto = min(FWD_LAST, now_utc().floor("D") - pd.Timedelta(days=1))
+    if upto >= FWD_FIRST:       # 先の確かめ（./cfd news forward）の前に、足りない日を見ておく。値段は見ない数なので、いつ見てもよい
+        with contextlib.suppress(Exception):
+            thin, none = forward_file_days(store, FWD_FIRST, upto)
+            thin0, none0 = forward_file_days(store, FWD_BASE_FIRST, FWD_FIRST - pd.Timedelta(days=1))
+            print(f"先の確かめの期間（{FWD_FIRST:%Y-%m-%d}〜{upto:%Y-%m-%d}）: 生データのファイルが {FWD_FILES_PER_DAY} つに満たない日 {thin} 日"
+                  f"（うち 1 つも無い日 {none} 日）。その前の 60 日: {thin0} 日（うち {none0} 日）")
     emb_root = store.root / "emb"
     if emb_root.exists():
         for m in sorted(p.name for p in emb_root.iterdir() if p.is_dir()):
@@ -918,6 +926,7 @@ def cmd_report(args) -> Path:
             f"GDELT の一覧 {n['gdelt']:,}・Yahoo {n['yahoo']:,} 件）")
 
     # ---------------- A. キーワードで数える（AI なし）
+    say(f"\n**{REPORT_NOTE}**")
     say("\n## A. キーワードで数える量と論調（AI なし。docs/news.md 3 章）\n")
     tl = keyword_timelines(store, today)   # GDELT の生データから作る（API の推移は使わない。docs/news.md 4.1）
     if tl:
@@ -1021,6 +1030,10 @@ VOL_MARKETS = {"SP500": "^GSPC", "TOPIX": "1306.T", "BTC": "BTC-USD"}   # geo_vo
 VOL_MAX_ABS = 0.25          # 1 日の |値動き|（対数）がこれを超える日は、分割などのデータの誤りとみなして除く（ETF の分割で起きる）
 VOL_PASS_MARKETS = 2        # 3 市場のうち 2 つ以上で geo_vol と同じ条件を満たせば「使えそう」
 VOL_TRIALS_NOTE = "試した数 80 ＋ 1A ＋ 1B ＋ この 1 ＝ 83"
+VOLCHECK_RESULT: dict = {"date": "2026-10-16", "verdict": "使えない",      # 1 回だけ計算した判定（docs/text_signals.md 12 章）。
+                         "detail": "条件を満たした市場 0/3"}              # 書いてあれば volcheck は動かさない
+REPORT_NOTE = ("判定は 2026-10-10・11 の 1 回（docs/news.md 8 章）。この表は、その後の日が加わった参考で、判定をやり直すものではない。"
+               "geo_vol の先の確かめは ./cfd news forward（2027-10-14 から 1 回だけ）")
 
 
 def har_forecast(r: np.ndarray, refit: int = 21, min_obs: int = 250) -> np.ndarray:
@@ -1086,6 +1099,9 @@ def cmd_volcheck(args) -> Path:
     """geo_vol（地政学のニュースの急増の翌日は値動きが大きい）を、使っていない市場（S&P500・TOPIX・BTC）で確かめる。"""
     import dataclasses
 
+    if VOLCHECK_RESULT:
+        sys.exit(f"判定はもう 1 回計算してある（{VOLCHECK_RESULT['date']}: {VOLCHECK_RESULT['verdict']}。{VOLCHECK_RESULT['detail']}。"
+                 "docs/text_signals.md 12 章）。1 回だけの決まりなので、動かし直さない")
     store = NewsStore(args.root)
     lines: list[str] = []
 
@@ -1153,6 +1169,201 @@ def cmd_volcheck(args) -> Path:
     return path
 
 
+# --------------------------------------------------------------------------- geo_vol の先の確かめ（docs/news.md 8 章「先の確かめの細かい決まり」）
+FWD_FIRST = pd.Timestamp("2026-10-12", tz="UTC")          # ニュースの日（UTC）の最初
+FWD_LAST = pd.Timestamp("2027-10-11", tz="UTC")           # ニュースの日（UTC）の最後。この日の分は 10-12 の引けの判断で使う
+FWD_LAST_DECISION = pd.Timestamp("2027-10-12")            # 最後の判断の日。値動きは 10-13 の引けまで
+FWD_NOT_BEFORE = pd.Timestamp("2027-10-14", tz="UTC")     # これより前は計算しない（10-13 の引けの値段がそろってから）
+FWD_MARKETS = ("WTI", "BRENT", "GOLD")                    # geo_vol と同じ 3 商品
+FWD_PCT = 0.90                                            # 偶然より大きい割合の条件（2026-10-11 に決めた）
+FWD_MAX_MISSING = 37                                      # ニュースの欠けた日がこれを超えたら計算しない（365 日の 10%）
+FWD_PLACEBO = 200                                         # 偶然の回数（8 章の 5。変えられないように、forward に --placebo は無い）
+FWD_OUT = ROOT / "output" / "news"                        # 報告の置き場（決まった場所。forward に --out は無い）
+FWD_DONE = ROOT / "data" / "news" / "forward_done.json"   # 1 回計算した印（決まった場所。数字を出す前に書く。--root でも変わらない）
+FWD_FILES_PER_DAY = 8                                     # GDELT の生データは 3 時間ごと（1 日 8 つ）
+FWD_BASE_FIRST = FWD_FIRST - pd.Timedelta(days=60)        # 最初の日の急増の基準に使う 60 日の始まり
+FORWARD_RESULT: dict = {}     # 1 回計算したら {"date": …, "verdict": …, "detail": …} を書く。書いてあれば forward は動かさない
+WEEKDAYS = "月火水木金土日"
+
+
+def forward_verdict(r: dict) -> str:
+    """読み方の 3 通り（docs/news.md 8 章。2026-10-11 に決めたまま）。"""
+    v, p = r["value"], r["pct"]
+    if np.isfinite(v) and v <= 1:
+        return "続かなかった"
+    if np.isfinite(v) and v > 1 and p is not None and p >= FWD_PCT:
+        return "先でも続いた"
+    return "まだ分からない"
+
+
+def cut_market(m: MarketDaily, last: pd.Timestamp) -> MarketDaily:
+    """last より後の判断を捨てる（last の判断の次の日の値動きは残る）。"""
+    import dataclasses
+
+    ok = np.asarray(m.dates <= last)
+    return dataclasses.replace(m, dates=m.dates[ok], decide=m.decide[ok], next_ret=m.next_ret[ok], norm_abs=m.norm_abs[ok],
+                               sigma=m.sigma[ok])
+
+
+def forward_calc(share: pd.Series, markets: dict[str, MarketDaily], placebo: int) -> dict:
+    """先の期間（FWD_FIRST〜FWD_LAST）だけで geo_vol と同じ計算。
+
+    急増の基準（直近 60 日）は期間より前の日も使う（その日より前の日だけなので、先のデータは混ざらない）。
+    偶然は、期間の 365 日の急増の並びを、期間の中で丸ごとずらす（急増の数と続き方はそのまま）。
+    """
+    days = pd.date_range(FWD_FIRST, FWD_LAST, freq="D")
+    full = share.reindex(pd.date_range(min(share.index[0], FWD_FIRST), FWD_LAST, freq="D"))
+    fl = spikes(full).reindex(days).to_numpy(bool)
+    mk = {k: cut_market(markets[k], FWD_LAST_DECISION) for k in FWD_MARKETS}
+    r = Evaluator(mk, placebo).vol(days, {k: fl for k in mk})
+    per = {k: Evaluator({k: mk[k]}, 0).vol(days, {k: fl}) for k in mk}
+    return {"r": r, "per": per, "spike_days": int(fl.sum()), "missing": int(full.reindex(days).isna().sum()),
+            "weekday": [int(fl[days.day_of_week == i].sum()) for i in range(7)]}
+
+
+def forward_file_days(store: NewsStore, first: pd.Timestamp, last: pd.Timestamp) -> tuple[int, int]:
+    """first〜last（UTC の日）のうち、読んだファイルが 8 つに満たない日の数と、そのうち 1 つも無い日の数。値段は見ない。"""
+    days = pd.date_range(first, last, freq="D")
+    st = store.load_gkg_stats()
+    n = pd.Series(0, index=days)
+    if len(st):
+        n = pd.Series(1, index=st.index.floor("D")).groupby(level=0).sum().reindex(days).fillna(0)
+    return int((n < FWD_FILES_PER_DAY).sum()), int((n == 0).sum())
+
+
+def load_forward_markets(args, now: pd.Timestamp) -> dict[str, MarketDaily]:
+    """先の確かめの値段（WTI・ブレント・金）。手元のファイルが新しく見えても、必ず取り直す（2026-11-11 点検の指摘）。
+
+    load_markets は「最後の日が 4 日以内なら取り直さない」ので、2027-10-12 までのファイルや、10-13 の取引の途中で取った
+    ファイルがそのまま使われてしまう。ここでは 3 商品とも取り直し、取れなければ計算しない。
+    --no-fetch のときは、ファイルが FWD_NOT_BEFORE（2027-10-14 0:00 UTC）より後に書かれたものでなければ計算しない。
+    """
+    from cfdbot.context import fetch_yahoo
+    from cfdbot.leadlag import read_yahoo
+
+    out = {}
+    for key in FWD_MARKETS:
+        p = Path(args.universe) / f"{key}.csv"
+        if args.no_fetch:
+            if not p.exists():
+                sys.exit(f"{key} の値段のファイルが無い（{p}）。--no-fetch を付けずに ./cfd news forward をもう一度（値段を取り直す）。計算はしていない")
+            taken = pd.Timestamp(p.stat().st_mtime, unit="s", tz="UTC")
+            if taken < FWD_NOT_BEFORE:
+                sys.exit(f"{key} の値段のファイルが古い（{taken:%Y-%m-%d %H:%M} UTC に書いたもの。{FWD_NOT_BEFORE:%Y-%m-%d} 0:00 UTC より後に"
+                         "取ったものが要る。途中の値段が入っているかもしれない）。--no-fetch を付けずに ./cfd news forward をもう一度"
+                         "（値段を取り直す）。計算はしていない")
+        else:
+            try:
+                df = fetch_yahoo(PRICE_MARKETS[key], "2000-01-01")
+                p.parent.mkdir(parents=True, exist_ok=True)
+                df.to_csv(p, index=False)
+            except Exception as e:  # noqa: BLE001
+                sys.exit(f"{key} の値段を取り直せなかった（{e}）"[:200] + "。手元の古いファイルでは計算しない。"
+                         "ネットにつないで ./cfd news forward をもう一度（値段を取り直す）。計算はしていない")
+            taken = now
+        s, tz = read_yahoo(p)
+        m = MarketDaily.from_close(key, s, tz)
+        need = FWD_LAST_DECISION + pd.Timedelta(days=1)
+        if not len(m.dates) or m.dates[-1] < need:
+            have = f"{m.dates[-1]:%Y-%m-%d} まで" if len(m.dates) else "空"
+            sys.exit(f"{key} の値段が足りない（{have}。{need:%Y-%m-%d} の引けまで要る）。時間をおいて ./cfd news forward をもう一度"
+                     "（値段を取り直す）。計算はしていない")
+        after = m.dates[m.dates > m.dates[m.dates <= FWD_LAST_DECISION][-1]][0]     # 最後の判断の「次の日」の足
+        if after >= taken.tz_convert("UTC").tz_localize(None).normalize():
+            sys.exit(f"{key} の最後の判断の次の日の足（{after:%Y-%m-%d}）が、値段を取った日（UTC）と同じで、途中の値段かもしれない。"
+                     "1 日おいて ./cfd news forward をもう一度（値段を取り直す）。計算はしていない")
+        out[key] = m
+    return out
+
+
+def cmd_forward(args) -> Path:
+    """geo_vol の先の確かめ。2027-10-14 から、1 回だけ。"""
+    done = sorted(FWD_OUT.glob("*/forward.md"))
+    if FORWARD_RESULT or FWD_DONE.exists() or done:
+        when = (f"{FORWARD_RESULT['date']}: {FORWARD_RESULT['verdict']}。{FORWARD_RESULT['detail']}" if FORWARD_RESULT
+                else f"印 {FWD_DONE}" if FWD_DONE.exists() else str(done[-1]))
+        sys.exit(f"先の確かめはもう 1 回計算してある（{when}。docs/news.md 8 章）。1 回だけの決まりなので、動かし直さない")
+    now = now_utc()
+    if now < FWD_NOT_BEFORE:
+        sys.exit(f"まだ早い（今日は {now:%Y-%m-%d}）。先の確かめは {FWD_FIRST:%Y-%m-%d}〜{FWD_LAST:%Y-%m-%d} のニュースで、"
+                 f"{FWD_NOT_BEFORE:%Y-%m-%d} から 1 回だけ計算する（docs/news.md 8 章）。それまでは途中の数字も出さない")
+    store = NewsStore(args.root)
+    tl = keyword_timelines(store, FWD_LAST + pd.Timedelta(days=1))
+    if not tl or "geo" not in tl or tl["geo"]["share"].dropna().empty:
+        sys.exit("GDELT の生データが無い（./cfd news run の後に）")
+    share = tl["geo"]["share"]
+    got = store.days("gkg")[-1]
+    if got < FWD_LAST:
+        sys.exit(f"ニュースが {got:%Y-%m-%d} までしか無い（{FWD_LAST:%Y-%m-%d} まで要る）。./cfd news run で足りない分を取ってから。計算はしていない")
+    missing = int(share.reindex(pd.date_range(FWD_FIRST, FWD_LAST, freq="D")).isna().sum())
+    if missing > FWD_MAX_MISSING:
+        sys.exit(f"期間の中でニュースの欠けた日が {missing} 日ある（{FWD_MAX_MISSING} 日まで）。./cfd news run で取り直してから。"
+                 "取り直しても減らなければ利用者に相談する。計算はしていない")
+    thin, none = forward_file_days(store, FWD_FIRST, FWD_LAST)
+    thin0, none0 = forward_file_days(store, FWD_BASE_FIRST, FWD_FIRST - pd.Timedelta(days=1))
+    files_note = (f"読んだファイルが {FWD_FILES_PER_DAY} つ（3 時間ごと）に満たない日: 期間の中 {thin} 日（うち 1 つも無い日 {none} 日）、"
+                  f"期間の前の 60 日（{FWD_BASE_FIRST:%Y-%m-%d}〜。最初の急増の基準に使う） {thin0} 日（うち 1 つも無い日 {none0} 日）")
+    print(files_note + "。値段はまだ読んでいない", flush=True)
+    markets = load_forward_markets(args, now)
+    c = forward_calc(share, markets, FWD_PLACEBO)
+    r, verdict = c["r"], forward_verdict(c["r"])
+    # 数字を出す前に、決まった場所に「1 回計算した」印を書く（書けなければ数字を出さずに止まる）
+    FWD_DONE.parent.mkdir(parents=True, exist_ok=True)
+    FWD_DONE.write_text(json.dumps({"date": f"{now:%Y-%m-%d}", "verdict": verdict, "n": int(r["n"]),
+                                    "value": None if not np.isfinite(r["value"]) else round(float(r["value"]), 4),
+                                    "pct": r["pct"]}, ensure_ascii=False) + "\n", encoding="utf-8")
+    lines: list[str] = []
+
+    def say(t: str = "") -> None:
+        print(t, flush=True)
+        lines.append(t)
+
+    say(f"# geo_vol の先の確かめ（{datetime.now():%Y-%m-%d %H:%M}）")
+    say("")
+    say(f"決まり: docs/news.md 8 章（2026-10-11 と 2026-11-11 に、先のデータを見る前に決めた）。ニュースの日 {FWD_FIRST:%Y-%m-%d}〜{FWD_LAST:%Y-%m-%d}"
+        f"（UTC）、判断 2026-10-13〜{FWD_LAST_DECISION:%Y-%m-%d} の引け。地政学のニュースの量（4.1 の作り方）が急に増えた翌日の |値動き| ÷ "
+        f"ふだんの値動き（直近 60 日の平均）。WTI・ブレント・金をまとめた平均。偶然 = 期間の 365 日の急増の並びを、期間の中で丸ごとずらした同じ計算 {FWD_PLACEBO} 回"
+        "（ずらし方・回数・種はもとの判定と同じ。ずらす範囲だけ、2019-10 からの全部ではなく期間の中）。"
+        "**計算は 1 回だけ**")
+    say("")
+    say(f"- ニュース: 急増 {c['spike_days']} 日。欠けた日（急増なしとして数えた） {c['missing']} 日")
+    say(f"- {files_note}。満たない日は全記事の数が少なく、割合がぶれやすい（数えるだけで、判定の決まりには入れない。"
+        "GDELT の側に無いファイルは取り直しても埋まらない）")
+    say(f"- 値段: {r['trading_days']} 営業日（250 営業日の下限は当てない）")
+    say("")
+    say("## 1. 判定")
+    say("")
+    say("| 回数（商品 × 日） | 値 | 偶然より大きい割合 | 判定 |")
+    say("|---|---|---|---|")
+    say(f"| {r['n']} | {fmt(r['value'], 3)} | {pct(r['pct'])} | **{verdict}** |")
+    say("")
+    say(f"読み方（変えない）: 値が 1 を超え、偶然より大きい割合 {FWD_PCT:.0%} 以上 →「先でも続いた」。値が 1 以下 →「続かなかった」。それ以外 →「まだ分からない」")
+    if r["n"] < MIN_EVENTS:
+        say("")
+        say(f"⚠ 回数が {r['n']} 回しかない（{MIN_EVENTS} 回より少ない）。読み方は上のままだが、この数ではほとんど何も言えない")
+    say("")
+    say("## 2. 参考（判定に使わない。これを見て読み方を変えない）")
+    say("")
+    say(f"- 前半・後半（営業日を数で半分。境は {r['mid']:%Y-%m-%d}）: {fmt(r['h1'])}・{fmt(r['h2'])}")
+    say("- 商品ごとの比: " + "、".join(f"{k} {fmt(v['value'])}（{v['n']} 回）" for k, v in c["per"].items()))
+    say("- 曜日ごとの急増の数（UTC の日。土日の分は月曜の引けの判断に入る）: "
+        + "、".join(f"{WEEKDAYS[i]} {n}" for i, n in enumerate(c["weekday"])))
+    say("")
+    say("## 3. この後")
+    say("")
+    say("- **その場で**この表を docs/news.md 8 章に書き写し、scripts/news_study.py の FORWARD_RESULT に日付と判定を書いて、記録して送る"
+        "（commit → push。この Mac には印を書いたが、ほかの Mac には送られないので）")
+    say("- 「先でも続いた」ときに使い道へ進むかは、2 通りの読み方がある（docs/news.md 8 章）。決めるのは利用者。"
+        "「続かなかった」「まだ分からない」なら、geo_vol は閉じる（期間を延ばして計算し直さない）")
+    say("- 分かるのは「値動きが大きくなる」ことだけで、上か下かは分からない")
+    out = FWD_OUT / datetime.now().strftime("%Y%m%d-%H%M")
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / "forward.md"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"\n保存先: {path}")
+    return path
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--root", default="data/news", help="保存先")
@@ -1193,11 +1404,15 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--config", default="config/train.toml")
     r.add_argument("--context", default="data/context")
     r.add_argument("--out", default="output/news")
-    v = sub.add_parser("volcheck", help="geo_vol を使っていない市場（S&P500・TOPIX・BTC）で確かめる（docs/text_signals.md 5 章）")
+    v = sub.add_parser("volcheck", help="geo_vol を使っていない市場（S&P500・TOPIX・BTC）で確かめる（docs/text_signals.md 5 章。2026-10-16 に計算済みで、動かない）")
     v.add_argument("--placebo", type=int, default=200)
     v.add_argument("--no-fetch", action="store_true", help="価格を取りに行かない")
     v.add_argument("--universe", default="data/universe", help="価格（Yahoo の日足）の置き場")
     v.add_argument("--out", default="output/news")
+    fw = sub.add_parser("forward", help="geo_vol の先の確かめ（2026-10-12〜2027-10-11。2027-10-14 から 1 回だけ。docs/news.md 8 章）")
+    # --placebo・--out は無い（偶然は 200 回に固定、報告と 1 回だけの印は決まった場所。2026-11-11 点検の指摘）
+    fw.add_argument("--no-fetch", action="store_true", help="値段を取り直さない（2027-10-14 0:00 UTC より後に取ったファイルがあるときだけ通る）")
+    fw.add_argument("--universe", default="data/universe", help="価格（Yahoo の日足）の置き場")
     ru = sub.add_parser("run", help="過去の分の取得 → 判定を続けて行う（止まったら待ってやり直す）")
     ru.add_argument("--retries", type=int, default=len(RUN_WAITS), help="やり直す回数（10・30・60 分待つ）")
     return p
@@ -1219,7 +1434,7 @@ def dispatch(args) -> None:
     {"run": cmd_run, "collect": cmd_collect, "backfill": cmd_backfill, "embed": cmd_embed, "selftest": cmd_selftest,
      "compare": cmd_compare,
      "setup": cmd_setup, "schedule": cmd_schedule, "status": cmd_status, "report": cmd_report,
-     "clean": cmd_clean, "volcheck": cmd_volcheck}[args.cmd](args)
+     "clean": cmd_clean, "volcheck": cmd_volcheck, "forward": cmd_forward}[args.cmd](args)
 
 
 if __name__ == "__main__":

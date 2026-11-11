@@ -1,5 +1,8 @@
 import importlib.util
 import json
+import os
+import shutil
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -619,7 +622,7 @@ def test_stop_request_finishes_the_current_file_and_cut_lines_are_skipped(tmp_pa
 
 def test_report_saves_prices_when_the_folder_does_not_exist_yet(tmp_path, monkeypatch):
     mod = _news_module("news_study_prices")
-    import cfdbot.context as context
+    from cfdbot import context
 
     days = pd.bdate_range("2026-01-01", periods=30)
     monkeypatch.setattr(context, "fetch_yahoo", lambda ticker, since: pd.DataFrame(
@@ -672,3 +675,239 @@ def test_keyword_timelines_are_empty_without_raw_data(tmp_path):
     from cfdbot.news import keyword_timelines
 
     assert keyword_timelines(NewsStore(tmp_path), pd.Timestamp("2026-10-10", tz="UTC")) == {}
+
+
+# --------------------------------------------------------------------------- geo_vol の先の確かめ・済んだ判定の止め
+def _forward_data(boost: float, seed: int = 1):
+    """2026-01〜2027-10 の作った推移（先の期間に急増 24 日）と、急増の翌日に boost 倍動く 3 商品。"""
+    rng = np.random.default_rng(seed)
+    days = pd.date_range("2026-01-01", "2027-10-11", freq="D", tz="UTC")
+    share = pd.Series(rng.normal(0.05, 0.002, len(days)), index=days)
+    hot = days[(days >= "2026-10-20") & (days <= "2027-09-30")]
+    hot = hot[hot.day_of_week < 4][::8][:24]                            # 月〜木（次の日が営業日）
+    share[hot] = 0.2
+    dates = pd.bdate_range("2026-01-01", "2027-10-20")
+    big = np.isin(dates, (hot + pd.Timedelta(days=2)).tz_localize(None))   # D の分 → D+1 の引けの判断 → D+2 の値動き
+    markets = {}
+    for i, k in enumerate(("WTI", "BRENT", "GOLD")):
+        r = np.random.default_rng(seed + 10 + i).normal(0, 0.01, len(dates))
+        r[big] = 0.01 * boost * np.sign(r[big])
+        markets[k] = MarketDaily.from_close(k, pd.Series(100 * np.exp(np.cumsum(r)), index=dates), "America/New_York")
+    return share, markets, hot
+
+
+def test_forward_calc_counts_only_the_forward_period_and_reads_three_ways():
+    mod = _news_module("news_study_forward")
+    share, markets, hot = _forward_data(boost=4.0)
+    share[pd.Timestamp("2026-06-01", tz="UTC")] = 0.3                   # 期間より前の急増は数えない
+    share[pd.Timestamp("2027-01-02", tz="UTC")] = np.nan                # 欠けた日は急増なし
+    c = mod.forward_calc(share, markets, 50)
+    r = c["r"]
+    assert c["spike_days"] == len(hot) == 24 and c["missing"] == 1 and sum(c["weekday"]) == 24 and c["weekday"][5] == 0
+    assert r["n"] == 72 and r["value"] > 2 and r["pct"] >= 0.9
+    assert 250 <= r["trading_days"] <= 262                              # 2026-10-13〜2027-10-12 の判断だけ
+    assert all(v["n"] == 24 and v["pct"] is None for v in c["per"].values())
+    assert mod.forward_verdict(r) == "先でも続いた"
+    cut = mod.cut_market(markets["WTI"], mod.FWD_LAST_DECISION)
+    assert cut.dates[-1] == mod.FWD_LAST_DECISION and np.isfinite(cut.next_ret[-1])   # 最後の判断の次の日の値動きは残る
+    # 読み方の 3 通り（90%・1 の境）
+    assert mod.forward_verdict({"value": 1.2, "pct": 0.9}) == "先でも続いた"
+    assert mod.forward_verdict({"value": 1.2, "pct": 0.89}) == "まだ分からない"
+    assert mod.forward_verdict({"value": 1.0, "pct": 0.99}) == "続かなかった"
+    assert mod.forward_verdict({"value": float("nan"), "pct": None}) == "まだ分からない"
+    # 急増の翌日も同じ大きさの市場では、比は 1 の近くで「続いた」にならない
+    share0, markets0, _ = _forward_data(boost=1.0, seed=5)
+    r0 = mod.forward_calc(share0, markets0, 50)["r"]
+    assert 0.6 < r0["value"] < 1.4
+
+
+def _forward_args(tmp_path):
+    return type("A", (), {"root": str(tmp_path / "news"), "out": str(tmp_path / "out"), "placebo": 20, "no_fetch": True,
+                          "universe": str(tmp_path / "universe")})()
+
+
+def _forward_places(mod, monkeypatch, tmp_path):
+    """報告と「1 回計算した」印の決まった場所を、試験の間だけ一時の場所に向ける。"""
+    monkeypatch.setattr(mod, "FWD_OUT", tmp_path / "fixed_out")
+    monkeypatch.setattr(mod, "FWD_DONE", tmp_path / "fixed_data" / "forward_done.json")
+
+
+def test_forward_waits_until_the_period_ends_and_runs_only_once(tmp_path, monkeypatch, capsys):
+    mod = _news_module("news_study_forward_cmd")
+    share, markets, _ = _forward_data(boost=4.0)
+    args = _forward_args(tmp_path)
+    _forward_places(mod, monkeypatch, tmp_path)
+    called, placebo = [], []
+    calc = mod.forward_calc
+    monkeypatch.setattr(mod, "forward_calc", lambda sh, mk, n: placebo.append(n) or calc(sh, mk, 20))
+    monkeypatch.setattr(mod, "keyword_timelines", lambda store, until: called.append(until) or {"geo": pd.DataFrame({"share": share})})
+    monkeypatch.setattr(mod, "load_markets", lambda a: pytest.fail("先の確かめは「新しければ取り直さない」読み方を使わない"))
+    monkeypatch.setattr(mod, "load_forward_markets", lambda a, now: markets)
+    monkeypatch.setattr(mod, "forward_file_days", lambda store, first, last: (5, 2) if first == mod.FWD_FIRST else (3, 1))
+    monkeypatch.setattr(mod.NewsStore, "days", lambda self, source=None: [share.index[-1]])
+    # 期間が終わる前: 何も読まず、何も書かない
+    monkeypatch.setattr(mod, "now_utc", lambda: pd.Timestamp("2027-10-13 23:00", tz="UTC"))
+    with pytest.raises(SystemExit) as e:
+        mod.cmd_forward(args)
+    assert "まだ早い" in str(e.value) and not called and not mod.FWD_OUT.exists() and not mod.FWD_DONE.exists()
+    monkeypatch.setattr(mod, "now_utc", lambda: pd.Timestamp("2027-10-14 01:00", tz="UTC"))
+    # 欠けた日が多すぎる: 計算しない（値段も読まない）
+    holes = share.copy()
+    holes[pd.date_range("2027-01-01", periods=40, freq="D", tz="UTC")] = np.nan
+    monkeypatch.setattr(mod, "keyword_timelines", lambda store, until: {"geo": pd.DataFrame({"share": holes})})
+    monkeypatch.setattr(mod, "load_forward_markets", lambda a, now: pytest.fail("欠けの確かめの前に値段を読んだ"))
+    with pytest.raises(SystemExit) as e:
+        mod.cmd_forward(args)
+    assert "欠けた日が 40 日" in str(e.value) and not mod.FWD_OUT.exists() and not mod.FWD_DONE.exists()
+    monkeypatch.setattr(mod, "keyword_timelines", lambda store, until: called.append(until) or {"geo": pd.DataFrame({"share": share})})
+    # 値段が止まる（足りない・古い など）: 印も報告も書かない
+    monkeypatch.setattr(mod, "load_forward_markets", lambda a, now: sys.exit("WTI の値段が足りない。計算はしていない"))
+    with pytest.raises(SystemExit) as e:
+        mod.cmd_forward(args)
+    assert "値段が足りない" in str(e.value) and not mod.FWD_OUT.exists() and not mod.FWD_DONE.exists()
+    monkeypatch.setattr(mod, "load_forward_markets", lambda a, now: markets)
+    # 1 回目は計算して書く。偶然は 200 回に固定。報告は決まった場所（args.out は使わない）
+    path = mod.cmd_forward(args)
+    text = path.read_text(encoding="utf-8")
+    assert path.name == "forward.md" and "**先でも続いた**" in text and "250 営業日の下限は当てない" in text
+    assert "決めるのは利用者" in text and "WTI" in text and "月 " in text
+    assert placebo == [200] and "同じ計算 200 回" in text and "ずらす範囲だけ" in text
+    assert path.parent.parent == mod.FWD_OUT and not (tmp_path / "out").exists()
+    assert "満たない日: 期間の中 5 日（うち 1 つも無い日 2 日）" in text and "60 日（2026-08-13〜" in text and "3 日（うち 1 つも無い日 1 日）" in text
+    assert "満たない日: 期間の中 5 日" in capsys.readouterr().out
+    assert called[-1] == pd.Timestamp("2027-10-12", tz="UTC")           # 期間の後の日は読まない
+    done = json.loads(mod.FWD_DONE.read_text(encoding="utf-8"))
+    assert done["date"] == "2027-10-14" and done["verdict"] == "先でも続いた" and done["n"] == 72
+    # 2 回目は止まる。報告を消しても、置き場の指定を変えても、印があれば止まる
+    with pytest.raises(SystemExit) as e:
+        mod.cmd_forward(args)
+    assert "もう 1 回計算してある" in str(e.value)
+    shutil.rmtree(mod.FWD_OUT)
+    with pytest.raises(SystemExit) as e:
+        mod.cmd_forward(_forward_args(tmp_path / "other"))
+    assert "もう 1 回計算してある" in str(e.value) and "forward_done.json" in str(e.value) and not mod.FWD_OUT.exists()
+    # 印が無くても、報告があれば止まる
+    mod.FWD_DONE.unlink()
+    (mod.FWD_OUT / "20271014-1000").mkdir(parents=True)
+    (mod.FWD_OUT / "20271014-1000" / "forward.md").write_text("x", encoding="utf-8")
+    with pytest.raises(SystemExit) as e:
+        mod.cmd_forward(args)
+    assert "もう 1 回計算してある" in str(e.value)
+    shutil.rmtree(mod.FWD_OUT)
+    # 結果の定数が書いてあれば、印も報告も無くても止まる
+    monkeypatch.setattr(mod, "FORWARD_RESULT", {"date": "2027-10-14", "verdict": "続かなかった", "detail": "値 0.98"})
+    with pytest.raises(SystemExit) as e:
+        mod.cmd_forward(args)
+    assert "2027-10-14: 続かなかった" in str(e.value)
+
+
+def test_forward_has_no_placebo_or_out_options_and_fixed_places():
+    mod = _news_module("news_study_forward_opts")
+    parser = mod.build_parser()
+    for extra in (["--placebo", "0"], ["--out", "output/news2"]):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["forward", *extra])
+    a = parser.parse_args(["forward"])
+    assert not hasattr(a, "placebo") and not hasattr(a, "out") and a.no_fetch is False
+    assert mod.FWD_PLACEBO == 200
+    assert mod.FWD_OUT == ROOT / "output" / "news" and mod.FWD_DONE == ROOT / "data" / "news" / "forward_done.json"
+    assert parser.parse_args(["--root", "elsewhere", "forward"]).root == "elsewhere"    # --root を変えても、印の場所は変わらない
+
+
+def _yahoo_frame(last: str, tail: list[tuple[str, float]] = ()) -> pd.DataFrame:
+    dates = pd.bdate_range("2026-01-01", last)
+    close = 100 * np.exp(np.cumsum(np.random.default_rng(3).normal(0, 0.01, len(dates))))
+    df = pd.DataFrame({"date": dates.strftime("%Y-%m-%d"), "close": close, "tz": "America/New_York"})
+    extra = pd.DataFrame([{"date": d, "close": c, "tz": "America/New_York"} for d, c in tail])
+    return pd.concat([df, extra], ignore_index=True) if len(extra) else df
+
+
+def test_forward_always_refetches_prices_and_refuses_stale_files(tmp_path, monkeypatch):
+    from cfdbot import context
+
+    mod = _news_module("news_study_forward_prices")
+    uni = tmp_path / "universe"
+    uni.mkdir()
+    now = pd.Timestamp("2027-10-14 01:00", tz="UTC")
+    for k in ("WTI", "BRENT", "GOLD"):
+        _yahoo_frame("2027-10-12").to_csv(uni / f"{k}.csv", index=False)   # 最後の日が 4 日以内で、load_markets なら取り直さない形
+    args = type("A", (), {"universe": str(uni), "no_fetch": False})()
+    fetched = []
+    monkeypatch.setattr(context, "fetch_yahoo", lambda ticker, since: fetched.append(ticker) or _yahoo_frame("2027-10-13"))
+    mk = mod.load_forward_markets(args, now)
+    assert fetched == ["CL=F", "BZ=F", "GC=F"]                           # 3 商品とも必ず取り直す（銀は要らない）
+    assert all(m.dates[-1] == pd.Timestamp("2027-10-13") for m in mk.values())
+    # 取り直しても 10-13 がまだ無い: 止まる
+    monkeypatch.setattr(context, "fetch_yahoo", lambda ticker, since: _yahoo_frame("2027-10-12"))
+    with pytest.raises(SystemExit) as e:
+        mod.load_forward_markets(args, now)
+    assert "値段が足りない" in str(e.value) and "もう一度" in str(e.value)
+    # 取り直せない: 手元のファイルでは計算しない
+    def boom(ticker, since):
+        raise RuntimeError("断られた")
+    monkeypatch.setattr(context, "fetch_yahoo", boom)
+    with pytest.raises(SystemExit) as e:
+        mod.load_forward_markets(args, now)
+    assert "取り直せなかった" in str(e.value) and "計算はしていない" in str(e.value)
+    # 最後の判断の次の日の足が、取った日と同じ日（途中の値段かもしれない）: 止まる
+    monkeypatch.setattr(context, "fetch_yahoo", lambda ticker, since: _yahoo_frame("2027-10-12", [("2027-10-14", 101.0)]))
+    with pytest.raises(SystemExit) as e:
+        mod.load_forward_markets(args, now)
+    assert "途中の値段かもしれない" in str(e.value)
+    # --no-fetch: 2027-10-14 0:00 UTC より前に書いたファイルは使わない（10-13 の取引の途中で取った足が入っているかもしれない）
+    monkeypatch.setattr(context, "fetch_yahoo", lambda ticker, since: pytest.fail("--no-fetch で取りに行った"))
+    off = type("A", (), {"universe": str(uni), "no_fetch": True})()
+    for k in ("WTI", "BRENT", "GOLD"):
+        _yahoo_frame("2027-10-13").to_csv(uni / f"{k}.csv", index=False)
+        t = pd.Timestamp("2027-10-13 20:00", tz="UTC").timestamp()
+        os.utime(uni / f"{k}.csv", (t, t))
+    with pytest.raises(SystemExit) as e:
+        mod.load_forward_markets(off, now)
+    assert "ファイルが古い" in str(e.value) and "計算はしていない" in str(e.value)
+    for k in ("WTI", "BRENT", "GOLD"):
+        t = pd.Timestamp("2027-10-14 00:30", tz="UTC").timestamp()
+        os.utime(uni / f"{k}.csv", (t, t))
+    assert set(mod.load_forward_markets(off, now)) == {"WTI", "BRENT", "GOLD"}
+    (uni / "GOLD.csv").unlink()
+    with pytest.raises(SystemExit) as e:
+        mod.load_forward_markets(off, now)
+    assert "GOLD の値段のファイルが無い" in str(e.value)
+
+
+def test_forward_file_days_counts_days_with_fewer_than_eight_files(tmp_path):
+    mod = _news_module("news_study_forward_files")
+    store = NewsStore(tmp_path)
+    first, last = pd.Timestamp("2026-10-12", tz="UTC"), pd.Timestamp("2026-10-15", tz="UTC")
+    assert mod.forward_file_days(store, first, last) == (4, 4)          # 生データがまだ無い
+    times = [*pd.date_range("2026-10-12", periods=8, freq="3h", tz="UTC"),      # 8 つそろった日
+             *pd.date_range("2026-10-13", periods=3, freq="3h", tz="UTC"),      # 3 つだけの日
+             pd.Timestamp("2026-10-13 00:00", tz="UTC"),                         # 同じファイルを 2 回読んだ分は 1 つに数える
+             *pd.date_range("2026-10-15", periods=7, freq="3h", tz="UTC")]      # 7 つの日。10-14 は 1 つも無い
+    for t in times:
+        store._append_gz(store.gkg_stats_path(t), pd.DataFrame([{"time": t.strftime("%Y-%m-%d %H:%M:%S"), "n_all": 100}]))
+    assert mod.forward_file_days(store, first, last) == (3, 1)
+    assert mod.forward_file_days(store, first, first) == (0, 0)
+
+
+def test_forward_is_not_recorded_yet_and_volcheck_is_closed(tmp_path, monkeypatch):
+    mod = _news_module("news_study_closed")
+    assert mod.FORWARD_RESULT == {}                                      # 先の確かめはまだ（2027-10-14 から）
+    assert mod.VOLCHECK_RESULT["date"] == "2026-10-16" and mod.VOLCHECK_RESULT["verdict"] == "使えない"
+    monkeypatch.setattr(mod, "keyword_timelines", lambda *a: pytest.fail("止めの前にデータを読んだ"))
+    with pytest.raises(SystemExit) as e:
+        mod.cmd_volcheck(_forward_args(tmp_path))
+    assert "2026-10-16: 使えない" in str(e.value) and "動かし直さない" in str(e.value)
+    assert "forward" in mod.build_parser().parse_args(["forward"]).cmd
+    assert "2026-10-10・11 の 1 回" in mod.REPORT_NOTE and "参考" in mod.REPORT_NOTE
+
+
+def test_volcheck_still_runs_on_made_up_data_when_the_stop_is_lifted(tmp_path, monkeypatch):
+    mod = _news_module("news_study_volcheck")
+    share, markets, _ = _forward_data(boost=4.0)
+    monkeypatch.setattr(mod, "VOLCHECK_RESULT", {})
+    monkeypatch.setattr(mod, "keyword_timelines", lambda store, until: {"geo": pd.DataFrame({"share": share})})
+    monkeypatch.setattr(mod, "load_vol_markets", lambda a, t: {k: m for k, m in zip(t, markets.values())})
+    monkeypatch.setattr(mod, "load_markets", lambda a: {})
+    path = mod.cmd_volcheck(_forward_args(tmp_path))
+    text = path.read_text(encoding="utf-8")
+    assert path.name == "volcheck.md" and "SP500" in text and "**判定: " in text

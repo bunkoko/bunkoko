@@ -4,8 +4,8 @@
     python scripts/edinet.py check      # 何年分さかのぼれるか・本文の 3 つの節が取れるかを確かめて日本語で報告する（数分。呼び出し 20〜40 回）
     python scripts/edinet.py fetch      # 今の TOPIX500 の 490 社の有報（10 年分）の本文の節を集める（一覧 約 1.5 時間・有報 約 4 時間。止めても続きから）
     python scripts/edinet.py status     # 集めた量
-    python scripts/edinet.py momentum   # 1C 文章で近い会社のモメンタム（月 1 回）を確かめる（埋め込みは初回 数十分）
-    python scripts/edinet.py lazy       # 案 2 有報の文面の前年との差（月 1 回）を確かめる（数分）
+    python scripts/edinet.py momentum   # 1C 文章で近い会社のモメンタム（月 1 回）。2026-10-21 に 1 回計算した（まだ判断できない）ので、止まる
+    python scripts/edinet.py lazy       # 案 2 有報の文面の前年との差（月 1 回）。2026-10-21 に 1 回計算した（使えない）ので、止まる
 
 キーは EDINET のサイトでアカウントを作り、API キーの発行の画面で出す（登録は利用者が行う。docs/todo.md）。
 取った本文は data/edinet（コミットしない）。一覧は 2 秒に 1 件、書類は 3 秒に 1 件、同時に 1 本だけ。
@@ -31,6 +31,12 @@ sys.path.insert(0, str(ROOT))
 
 from cfdbot import edinet as ED  # noqa: E402
 from cfdbot import text_signals as TS  # noqa: E402
+
+# 1 回だけ計算した判定（日付・結果・文書の場所）。書いてあるコマンドは止まる（動かし直さない。試験ではここを空にして動かす）
+JUDGED: dict[str, tuple[str, str, str]] = {
+    "momentum": ("2026-10-21", "1C まだ判断できない", "docs/text_signals.md 12 章"),
+    "lazy": ("2026-10-21", "案 2 使えない", "docs/text_signals.md 12 章"),
+}
 
 MODEL = "qwen3-0.6b"   # 埋め込みのモデル（docs/news.md 7 章で決めたものと同じ。近さにだけ使う）
 
@@ -360,6 +366,9 @@ def main(argv: list[str] | None = None, getter=None, sleep=None, encoder=None):
         print(f"見つけた有報（今の TOPIX500）: {len(cand):,} 件、本文を取った: {len(idx):,} 件"
               + (f"（本文なし {int((idx['source'] == 'none').sum())} 件）" if len(idx) else ""))
         return None
+    if args.command in JUDGED:
+        when, verdict, where = JUDGED[args.command]
+        raise SystemExit(f"判定はもう 1 回計算してある（{when}: {verdict}。{where}）。1 回だけの決まりなので、動かし直さない")
     if args.command == "momentum":
         return cmd_momentum(args, encoder)
     if args.command == "lazy":

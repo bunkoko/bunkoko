@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from cfdbot import partner as P
 from tests.test_trend import _yahoo_csv
@@ -77,6 +78,11 @@ def test_partner_study_runs_end_to_end(tmp_path, monkeypatch):
     spec.loader.exec_module(mod)
     monkeypatch.setattr(sys, "argv", ["partner_study.py", "--config", str(cfg), "--data", str(uni), "--start", "2016-01-01",
                                       "--split", "2020-06-01", "--placebo", "4", "--no-fetch", "--out", str(tmp_path / "partner")])
+    assert mod.RESULT["date"] == "2026-10-16"
+    with pytest.raises(SystemExit, match="もう 1 回計算してある（2026-10-16: 採らない・閉じた。.*docs/cross_asset.md 7.6）.*動かし直さない"):
+        mod.main()                                                                   # 済んだ判定は止まる（何も書かない）
+    assert not (tmp_path / "partner").exists()
+    monkeypatch.setattr(mod, "RESULT", {})                                           # 止めを外して、作ったデータで通しで動かす
     mod.main()
     md = next((tmp_path / "partner").glob("*/report.md")).read_text(encoding="utf-8")
     assert "## 1. 判定（使っていない組だけ）" in md and "| 判定の 5 組 | 10 |" in md

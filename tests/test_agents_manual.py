@@ -141,4 +141,5 @@ def test_manual_test_command_writes_a_report(tmp_path, capsys):
     mod.cmd_manual(Namespace(root=str(root), data=str(data), out=str(tmp_path / "out"), test=True, placebo=10, now=None))
     text = next((tmp_path / "out").glob("*/manual.md")).read_text(encoding="utf-8")
     assert "## 1. 判定" in text and "| M2a |" in text and "| M2b |" in text and "遅れ 5 日" in text
+    assert text.splitlines()[2].startswith("**判定は最初の 1 回（2026-10-20: M2a・M2b まだ判断できない。docs/agents.md 13.5）。この実行は参考")
     assert H.COST == M.COST

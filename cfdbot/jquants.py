@@ -1,4 +1,4 @@
-"""J-Quants API（JPX 総研の公式。V2）の確認用。docs/survivorship.md の段階 1（無料プランで 1 時間の確認）。
+"""J-Quants API（JPX 総研の公式。V2）の確認と取得。docs/survivorship.md の段階 1（無料プランで 1 時間の確認）と、段階 2 の取得の道具（8.6）。
 
 公式の文書で確かめた形（チームの調査役の第 2 回 B、2026-10-15）だけを使う:
 - ベース URL `https://api.jquants.com/v2`、認証はヘッダー `x-api-key: <キー>`
@@ -12,13 +12,14 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -26,6 +27,8 @@ import pandas as pd
 
 BASE = "https://api.jquants.com/v2"
 KEY_FILE = Path.home() / ".bunkoko" / "jquants.json"
+LOCK_FILE = KEY_FILE.parent / "jquants.lock"   # 同時に 1 本だけ。置き場所ごとでなくキーと同じ所に 1 つ（check も fetch も同じ印を見る）
+NET_RETRY_WAIT = 30.0            # 通信の例外（時間切れ・切断）は、これだけ待って 1 回だけやり直す
 FREE_INTERVAL = 13.0             # Free は 1 分 5 回 → 13 秒おき
 WAIT_429 = 120.0                 # 429 の後は 2 分待つ（公式: 最低 1 分、安全には約 2 分）
 MAX_PAGES = 30
@@ -58,17 +61,31 @@ def save_key(key: str, path: Path = KEY_FILE) -> Path:
     return path
 
 
-def http_getter(key: str, timeout: float = 60.0) -> Callable[[str, dict], tuple[int, bytes]]:
+def http_getter(key: str, timeout: float = 60.0, sleep: Callable[[float], None] = time.sleep,
+                opener: Callable | None = None) -> Callable[[str, dict], tuple[int, bytes]]:
+    """1 回の呼び出し。通信の例外（時間切れ・切断・途中で切れた応答）は、NET_RETRY_WAIT 秒待って 1 回だけやり直し、続けば Stop にする。
+
+    誤りの文に出すのは例外の種類と理由だけ（URL・ヘッダー・キーは出さない）。
+    """
+    opener = opener or urlopen
+
     def get(path: str, params: dict) -> tuple[int, bytes]:
         url = f"{BASE}{path}" + (f"?{urlencode(params)}" if params else "")
         req = Request(url, headers={"x-api-key": key, "User-Agent": "bunkoko-check/1.0"})
-        try:
-            with urlopen(req, timeout=timeout) as r:
-                return int(r.status), r.read()
-        except HTTPError as e:
-            return int(e.code), e.read() if hasattr(e, "read") else b""
-        except URLError as e:
-            raise Stop(f"つながらない（{e.reason}）") from e
+        for attempt in range(2):
+            try:
+                try:
+                    with opener(req, timeout=timeout) as r:
+                        return int(r.status), r.read()
+                except HTTPError as e:                   # 状態つきの断り（403・429・500 など）は、そのまま返す
+                    return int(e.code), e.read() if hasattr(e, "read") else b""
+            except (OSError, http.client.HTTPException) as e:     # URLError・TimeoutError・ConnectionResetError・IncompleteRead など
+                why = str(getattr(e, "reason", "") or type(e).__name__)[:120]
+                if attempt == 0:
+                    sleep(NET_RETRY_WAIT)
+                    continue
+                raise Stop(f"つながらない（{why}）。同じ命令で続きから取れる") from e
+        raise Stop("ここには来ない")
     return get
 
 
@@ -111,15 +128,17 @@ class Result:
 
 class Client:
     def __init__(self, getter: Callable[[str, dict], tuple[int, bytes]], interval: float = FREE_INTERVAL,
-                 sleep: Callable[[float], None] = time.sleep, log: Callable[[str], None] = print):
-        self.getter, self.interval, self.sleep, self.log = getter, interval, sleep, log
+                 sleep: Callable[[float], None] = time.sleep, log: Callable[[str], None] = print,
+                 path_interval: dict[str, float] | None = None):
+        self.getter, self.interval, self.sleep, self.log = getter, max(float(interval), MIN_INTERVAL), sleep, log
+        self.path_interval = dict(path_interval or {})      # 入口ごとの、これより速くしない間隔（足す分。path_floor は必ず効く）
         self.calls = 0
         self._last: float | None = None
 
     def _call(self, path: str, params: dict) -> tuple[int, object, str]:
         for attempt in range(2):
             if self._last is not None:
-                self.sleep(self.interval)
+                self.sleep(max(self.interval, path_floor(path), self.path_interval.get(path, 0.0)))
             status, body = self.getter(path, params)
             self.calls += 1
             self._last = 1.0
@@ -152,6 +171,8 @@ class Client:
             status, payload, msg = self._call(path, q)
             res.status, res.message = status, msg
             if status != 200:
+                if res.pages:                            # 何ページか取れた後の断り（210 を含む）は「途中で切れた」。行なしとは読ませない
+                    res.message = f"{res.pages} ページ目の後で切れた（{status}: {msg or STATUS.get(status, '不明')}）"[:200]
                 return res
             rows, cont = records(payload)
             res.rows.extend(rows)
@@ -360,4 +381,383 @@ def report(res: dict, today: pd.Timestamp) -> list[str]:
     say("- 無料の窓は直近の 2 年だけなので、ここで分かるのは仕組みまで。偏りの大きさ（2010 年代）は有料の段階でしか分からない")
     say("- 取ったデータはこのリポジトリに入れない（J-Quants の規約: 個人の私的利用のみ・再配布は不可）。この報告は数・項目名・銘柄コードだけ。"
         "公開のリポジトリに移すときは、銘柄コードの一覧（消えた会社など）を消す")
+    return L
+
+
+# --------------------------------------------------------------------------- 取得（段階 2 の道具。docs/survivorship.md 8.6）
+# 使う入口は、段階 1（2026-11-08、Free）で実物を確かめた 3 つだけ: 上場銘柄一覧・日足・財務を、どれも `date` 1 つで呼ぶ。
+# 配当金・指数の構成などは入口の名前を確かめられていないので、ここには書かない（確かめた後に `--also 名前=入口` で足せる）。
+DATA_DIR = Path("data/jquants")                      # コミットしない（.gitignore の data/。規約: 再配布は不可）
+FETCH_KINDS = {"bars": "/equities/bars/daily", "fins": "/fins/summary", "master": "/equities/master"}
+# 呼び出しの間隔（秒）。Free は 1 分 5 回 → 13 秒。Premium は 1 分 500 回 → 余裕を見て 0.15 秒（1 分 400 回）。
+# Light・Standard の回数は確かめられていないので、Free と同じ遅い側にしておく（--interval で変えられるが MIN_INTERVAL より速くはならない）
+PLAN_INTERVAL = {"free": 13.0, "light": 13.0, "standard": 13.0, "premium": 0.15}
+PATH_INTERVAL = {"/fins/summary": 1.2}               # 財務は全プラン 1 分 60 回 → 1.2 秒（1 分 50 回）
+SLOW_INTERVAL = 1.2                                  # 財務の仲間（/fins/ で始まる入口）と、確かめていない入口（--also）の、これより速くしない間隔
+FAST_PATHS = ("/equities/bars/daily", "/equities/master")   # プランの間隔だけで呼んでよいと分かっている入口（2 章。それ以外は遅い側）
+MIN_INTERVAL = 0.12
+FETCH_MAX_PAGES = 200                                # 1 日分がこれより多いページに分かれたら、欠けたまま保存せずに「失敗」にする
+EMPTY_RECHECK_DAYS = 7                               # 新しい日の「行なし」は、まだ出ていないだけかもしれないので、次の回にもう一度聞く
+MAX_REFUSALS = 3                                     # 続けてこの回数断られたら止める（キー・プラン・期間の誤り。相手に迷惑をかけない）
+MAX_HOLIDAY_RUN = 6                                  # 月末からさかのぼる休みの日の上限（平日）。これより続いたら、月末の日を決めない
+STATE_FILE = "state.json"
+
+
+def path_floor(path: str) -> float:
+    """入口ごとの、これより速くしない間隔（秒）。2026-11-11 点検の指摘で直した: 名前がぴったり同じ入口だけでなく、
+    `/fins/` で始まる入口すべてと、確かめていない入口（--also で足したもの）を遅い側（1.2 秒）にする。"""
+    return 0.0 if path in FAST_PATHS else max(SLOW_INTERVAL, PATH_INTERVAL.get(path, 0.0))
+
+
+def call_interval(plan_interval: float, path: str) -> float:
+    return max(float(plan_interval), MIN_INTERVAL, path_floor(path))
+
+
+def plan_interval(plan: str, asked: float | None = None) -> float:
+    """プランごとの間隔。`--interval` は遅くする方にだけ効く（2026-11-11 点検の指摘で直した。速くはならない）。"""
+    return max(PLAN_INTERVAL[plan], float(asked) if asked is not None else 0.0)
+
+
+def weekdays(start: pd.Timestamp, end: pd.Timestamp) -> list[pd.Timestamp]:
+    """start〜end の平日（祝日は分からないので入る。取ってみて行が無ければ「行なし」と覚える）。"""
+    start, end = pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize()
+    return list(pd.bdate_range(start, end)) if start <= end else []
+
+
+def free_window(today: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Free で取れる期間（直近 12 週間を除く 2 年）。"""
+    today = pd.Timestamp(today).normalize()
+    return today - pd.DateOffset(years=2), today - pd.Timedelta(weeks=12)
+
+
+def load_state(root: Path) -> dict:
+    f = Path(root) / STATE_FILE
+    if not f.exists():
+        return {"version": 1, "items": {}}
+    bad = Stop(f"{f} が読めない（壊れている・形が違う）。名前を変えて退けてから、もう一度動かす（取った日の分は、ファイルから数え直さない）")
+    try:
+        st = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise bad from None
+    # 形が違うもの（[]・{}・items が表でない）も、黙って空から始めない（2026-11-11 点検の指摘で直した）
+    if not isinstance(st, dict) or not isinstance(st.get("items"), dict):
+        raise bad
+    if not all(isinstance(v, dict) and all(isinstance(e, dict) for e in v.values()) for v in st["items"].values()):
+        raise bad
+    return st
+
+
+def save_state(root: Path, state: dict) -> None:
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    tmp = root / (STATE_FILE + ".tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=0, sort_keys=True), encoding="utf-8")
+    tmp.replace(root / STATE_FILE)
+
+
+def day_file(root: Path, kind: str, day: str) -> Path:
+    return Path(root) / kind / f"{day}.csv.gz"
+
+
+def read_day(root: Path, kind: str, day: str) -> pd.DataFrame:
+    """取った 1 日分。文字のまま読む（銘柄コードの頭の 0・英字つきのコードをこわさない。数にするのは使う側）。"""
+    return pd.read_csv(day_file(root, kind, day), dtype=str, compression="gzip")
+
+
+def _write_day(root: Path, kind: str, day: str, rows: list[dict]) -> Path:
+    f = day_file(root, kind, day)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    tmp = f.with_name(f.name + ".tmp")
+    pd.DataFrame(rows).to_csv(tmp, index=False, compression="gzip")
+    tmp.replace(f)                                   # 途中で止まっても、半分だけのファイルは残らない
+    return f
+
+
+def _has_rows(entry: dict | None) -> bool:
+    return bool(entry) and entry.get("status") == 200 and int(entry.get("rows", 0)) > 0
+
+
+def _is_empty(entry: dict | None) -> bool:
+    return bool(entry) and entry.get("status") in (200, 210) and int(entry.get("rows", 0)) == 0
+
+
+def _drop_file(root: Path, kind: str, day: str) -> None:
+    day_file(root, kind, day).unlink(missing_ok=True)
+
+
+def last_weekday(month: pd.Period) -> pd.Timestamp:
+    """その月の最後の平日。"""
+    t = month.to_timestamp(how="end").normalize()
+    while t.weekday() >= 5:
+        t -= pd.Timedelta(days=1)
+    return t
+
+
+def item_done(entry: dict | None, root: Path, kind: str, day: str, plan: str, now: pd.Timestamp, retry_empty: bool = False) -> bool:
+    """もう取らなくてよいか。行のある日は、同じプランで取ったファイルがあれば済み。「行なし」は、同じプランで聞いた古い日だけ済み。
+
+    プランを替えたら全部取り直す（調整後の値は「取った日」が基準のはずなので、Free で試した分と有料で取った分を混ぜない）。
+    """
+    if _has_rows(entry):
+        return entry.get("plan") == plan and day_file(root, kind, day).exists()
+    if _is_empty(entry) and not retry_empty:
+        return entry.get("plan") == plan and pd.Timestamp(day) <= pd.Timestamp(now).normalize() - pd.Timedelta(days=EMPTY_RECHECK_DAYS)
+    return False
+
+
+def month_end_days(state: dict, start: pd.Timestamp, end: pd.Timestamp) -> tuple[list[str], list[str]]:
+    """月ごとの、最後に取引のあった日（全銘柄の日足に行があった日）。docs/survivorship.md 8.2 の 3。
+
+    一覧（master）は取引のあった日だけ指定して取る（休みの日を指定すると何が返るかを確かめられていないため）。
+    月末までの平日が全部「行あり」か「行なし」に決まっていない月は決めない（2 つ目の返り値に月を入れる）。
+    """
+    bars = state.get("items", {}).get("bars", {})
+    start, end = pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize()
+    days, undecided = [], []
+    for m in pd.period_range(start, end, freq="M"):
+        last = last_weekday(m)                       # 暦の月末でなく最後の平日と比べる（月末が土日の月を落とさない。2026-11-11 点検の指摘で直した）
+        if last > end:
+            continue                                 # 月の途中までしか頼まれていない月は、月末がまだ分からない
+        found = None
+        # 月末からさかのぼる。休みが MAX_HOLIDAY_RUN より続いたら決めない（取れる期間の外を「行なし」と覚えただけかもしれない）
+        for t in list(reversed(weekdays(max(start, m.to_timestamp(how="start").normalize()), last)))[:MAX_HOLIDAY_RUN + 1]:
+            e = bars.get(f"{t:%Y-%m-%d}")
+            if _has_rows(e):
+                found = f"{t:%Y-%m-%d}"
+                break
+            if not _is_empty(e):
+                break                                # まだ取っていない・失敗した日がある
+        if found:
+            days.append(found)
+        else:
+            undecided.append(str(m))
+    return days, undecided
+
+
+def fetch_plan(state: dict, root: Path, start: pd.Timestamp, end: pd.Timestamp, kinds: list[str], plan: str, now: pd.Timestamp,
+               retry_empty: bool = False) -> dict[str, list[str]]:
+    """これから取る日（種類ごと）。master は、その時点の日足の記録から決まる月末の日だけ。"""
+    items = state.get("items", {})
+    todo: dict[str, list[str]] = {}
+    for k in kinds:
+        days = month_end_days(state, start, end)[0] if k == "master" else [f"{t:%Y-%m-%d}" for t in weekdays(start, end)]
+        todo[k] = [d for d in days if not item_done(items.get(k, {}).get(d), root, k, d, plan, now, retry_empty)]
+    return todo
+
+
+def run_fetch(client: Client, start: pd.Timestamp, end: pd.Timestamp, kinds: list[str], plan: str, root: Path = DATA_DIR,
+              now: pd.Timestamp | None = None, max_calls: int | None = None, retry_empty: bool = False,
+              paths: dict[str, str] | None = None, log: Callable[[str], None] = print) -> dict:
+    """日付ごとに取って `root/<種類>/<日付>.csv.gz` に置く。済んだ日は飛ばすので、何度動かしてもよい（続きから）。
+
+    順番は 日足 → 財務 →（そのほか）→ 一覧。一覧は、日足で「取引のあった日」が分かってから、月ごとの最後の取引日だけを取る。
+    返り値: 種類ごとの {取った・行なし・失敗}、止めた理由（あれば）、呼び出しの数。
+    """
+    paths = dict(FETCH_KINDS, **(paths or {}))
+    unknown = [k for k in kinds if k not in paths]
+    if unknown:
+        raise Stop(f"知らない種類: {', '.join(unknown)}（使えるのは {', '.join(paths)}）")
+    now = pd.Timestamp(now) if now is not None else pd.Timestamp.now(tz="Asia/Tokyo").tz_localize(None)
+    root = Path(root)
+    state = load_state(root)
+    items = state.setdefault("items", {})
+    order = [k for k in kinds if k != "master"] + (["master"] if "master" in kinds else [])
+    out: dict = {"kinds": {k: {"saved": 0, "empty": 0, "failed": 0, "rows": 0} for k in order}, "stopped": None, "undecided_months": []}
+    refusals, since_save = 0, 0
+    try:
+        for k in order:
+            if k == "master":
+                out["undecided_months"] = month_end_days(state, start, end)[1]
+            todo = fetch_plan(state, root, start, end, [k], plan, now, retry_empty)[k]
+            log(f"{k}: これから取る日 {len(todo):,}" + (f"（{todo[0]}〜{todo[-1]}）" if todo else "（全部済み）"))
+            for day in todo:
+                if max_calls is not None and client.calls >= max_calls:
+                    out["stopped"] = f"呼び出しの上限（{max_calls} 回）まで取った。同じ命令で続きから取れる"
+                    return out
+                r = client.get(paths[k], {"date": day}, max_pages=FETCH_MAX_PAGES)
+                entry = {"status": r.status, "rows": len(r.rows), "pages": r.pages, "plan": plan, "at": f"{now:%Y-%m-%d %H:%M}"}
+                cut = r.message.startswith("続きがあった")
+                if r.ok and r.rows and not cut:
+                    date_f = pick(r.fields(), "Date")
+                    if date_f:                       # 返ってきた行の日付（指定と違えば、status で知らせる。確かめ直しでは使わない）
+                        got = sorted({str(x.get(date_f))[:10] for x in r.rows})
+                        entry["dates"] = got[:3]
+                    _write_day(root, k, day, r.rows)
+                    out["kinds"][k]["saved"] += 1
+                    out["kinds"][k]["rows"] += len(r.rows)
+                    refusals = 0
+                    if k == "master":                # 一覧は月に 1 つだけ（その月の最後の取引日）。同じ月の古い日の分は消す
+                        for other in [d for d in items.get(k, {}) if d[:7] == day[:7] and d != day]:
+                            _drop_file(root, k, other)
+                            del items[k][other]
+                elif (r.ok and not cut and not r.rows) or (r.status == 210 and r.pages == 0 and not r.rows):
+                    entry["rows"] = 0                # 1 ページ目から行が無いときだけ「行なし」（休みの日のはず。status が別の出所と突き合わせる）
+                    _drop_file(root, k, day)         # 前のプランで取ったファイルを残さない
+                    out["kinds"][k]["empty"] += 1
+                    refusals = 0
+                else:                                # 断り・ページの途中で切れた（行が 1 行でもある状態で 200 以外）・ページが多すぎる
+                    partial = bool(r.rows) and not r.ok
+                    entry.update(status=-1 if (cut or partial) else r.status, rows=0,
+                                 message=(r.message or STATUS.get(r.status, "不明"))[:200])
+                    _drop_file(root, k, day)
+                    out["kinds"][k]["failed"] += 1
+                    refusals += 1
+                    log(f"  {k} {day}: 取れなかった（{r.status}: {entry['message']}）")
+                items.setdefault(k, {})[day] = entry
+                since_save += 1
+                if since_save >= 25:
+                    save_state(root, state)
+                    since_save = 0
+                if refusals >= MAX_REFUSALS:
+                    out["stopped"] = (f"続けて {MAX_REFUSALS} 回断られたので止めた（最後は {r.status}: {STATUS.get(r.status, '不明')}）。"
+                                      "キー・プラン・期間（--from --to）を確かめる")
+                    return out
+    except Stop as e:
+        out["stopped"] = str(e)
+    except (OSError, http.client.HTTPException) as e:    # 通信の例外がここまで上がってきても、長い誤りの表示で落とさない
+        out["stopped"] = f"途中で止まった（{type(e).__name__}。回線かファイルの書き込みの誤り）。同じ命令で続きから取れる"
+    finally:
+        out["calls"] = client.calls
+        save_state(root, state)
+    return out
+
+
+def read_trading_days(path: Path) -> set[str]:
+    """別の出所の営業日（CSV。`Date`・`date`・`日付` の列、無ければ 1 列目）。行なしの平日と突き合わせるためだけに使う。"""
+    try:
+        df = pd.read_csv(path, dtype=str)
+    except (OSError, ValueError) as e:
+        raise Stop(f"{path} が読めない（{type(e).__name__}）") from e
+    col = next((c for c in df.columns if str(c).strip().lower() in ("date", "datetime", "日付")), df.columns[0] if len(df.columns) else None)
+    if col is None:
+        raise Stop(f"{path} に列が無い")
+    t = pd.to_datetime(df[col].str.slice(0, 10), errors="coerce").dropna()
+    if len(t) < 20:
+        raise Stop(f"{path} の {col} の列から日付を 20 日分も読めなかった（営業日の一覧として使えない）")
+    return {f"{x:%Y-%m-%d}" for x in t}
+
+
+EMPTY_PER_YEAR = (10, 25)                            # 1 年の「行なしの平日」の見当（祝日と年末年始で 15〜20 日）。外れた年は ⚠
+
+
+def fetch_status(root: Path = DATA_DIR, trading_days: set[str] | None = None) -> dict:
+    """何を何件取ったか。state.json とファイルを数える（ネットにはつながない）。
+
+    2026-11-11 点検の指摘で足した照らし合わせ（`checks`）: 取引のあった日が「行なし」と覚えられていないか（財務に行がある・年の数が見当から
+    外れる・別の出所の営業日と合わない）、月末の一覧の抜けと重なり、記録に無いファイル。
+    """
+    root = Path(root)
+    state = load_state(root)
+    out: dict = {"root": str(root), "kinds": {}, "bytes": 0, "checks": {}}
+    for k, ent in sorted(state.get("items", {}).items()):
+        have = sorted(d for d, e in ent.items() if _has_rows(e))
+        empty = sorted(d for d, e in ent.items() if _is_empty(e))
+        failed = sorted(d for d, e in ent.items() if not _has_rows(e) and not _is_empty(e))
+        lost = [d for d in have if not day_file(root, k, d).exists()]
+        size = sum(day_file(root, k, d).stat().st_size for d in have if d not in lost)
+        wrong = [d for d in have if ent[d].get("dates") and ent[d]["dates"] != [d]]
+        stray = sorted(f.name[:-len(".csv.gz")] for f in (root / k).glob("*.csv.gz") if f.name[:-len(".csv.gz")] not in have)
+        gaps: list[str] = []
+        if have and k != "master":                   # 取った最初の日〜最後の日の間で、まだ聞いていない・失敗した平日
+            seen = set(have) | set(empty)
+            gaps = [f"{t:%Y-%m-%d}" for t in weekdays(pd.Timestamp(have[0]), pd.Timestamp(have[-1])) if f"{t:%Y-%m-%d}" not in seen]
+        out["kinds"][k] = {"days": len(have), "first": have[0] if have else None, "last": have[-1] if have else None,
+                           "rows": sum(int(ent[d]["rows"]) for d in have), "empty": len(empty), "failed": failed, "lost": lost,
+                           "wrong_date": wrong, "gaps": gaps, "stray": stray, "bytes": size,
+                           "plans": sorted({str(e.get("plan")) for e in ent.values() if e.get("plan")})}
+        out["bytes"] += size
+    out["checks"] = _cross_checks(state, trading_days)
+    return out
+
+
+def _cross_checks(state: dict, trading_days: set[str] | None) -> dict:
+    """日足の「行なし」が本当に休みの日か、月末の一覧がそろっているかの照らし合わせ（docs/survivorship.md 8.2 の 8）。"""
+    items = state.get("items", {})
+    bars, fins, master = items.get("bars", {}), items.get("fins", {}), items.get("master", {})
+    have = sorted(d for d, e in bars.items() if _has_rows(e))
+    empty = sorted(d for d, e in bars.items() if _is_empty(e))
+    c: dict = {"empty_days": empty, "empty_with_fins": [], "isolated_empty": [], "odd_years": [], "checked": trading_days is not None,
+               "traded_but_empty": [], "empty_outside_calendar": [], "master_missing": [], "master_undecided": [], "master_extra": []}
+    if not have:
+        return c
+    hs, es = set(have), set(empty)
+    c["empty_with_fins"] = [d for d in empty if _has_rows(fins.get(d))]
+    one = pd.offsets.BDay(1)
+    c["isolated_empty"] = [d for d in empty if f"{pd.Timestamp(d) - one:%Y-%m-%d}" in hs and f"{pd.Timestamp(d) + one:%Y-%m-%d}" in hs]
+    seen = hs | es
+    first, last = pd.Timestamp(min(seen)), pd.Timestamp(max(seen))
+    for y in range(first.year, last.year + 1):
+        days = [f"{t:%Y-%m-%d}" for t in weekdays(pd.Timestamp(year=y, month=1, day=1), pd.Timestamp(year=y, month=12, day=31))]
+        n = sum(d in es for d in days)
+        full = all(d in seen for d in days)
+        if n > EMPTY_PER_YEAR[1] or (full and n < EMPTY_PER_YEAR[0]):
+            c["odd_years"].append(f"{y} 年（{n} 日）")
+    if trading_days is not None:
+        lo, hi = min(trading_days), max(trading_days)
+        c["traded_but_empty"] = [d for d in empty if d in trading_days]
+        c["empty_outside_calendar"] = [d for d in empty if not lo <= d <= hi]
+    # 月末の一覧: 日足が月の最後の平日まで決まっている月には、その月の最後の取引日の一覧が 1 つだけあるはず
+    expect, undecided = month_end_days(state, pd.Timestamp(have[0]), last)
+    c["master_undecided"] = undecided
+    c["master_missing"] = [d for d in expect if not _has_rows(master.get(d))]
+    c["master_extra"] = sorted(d for d, e in master.items() if _has_rows(e) and d not in set(expect))
+    return c
+
+
+def status_lines(st: dict) -> list[str]:
+    L = [f"J-Quants から取ったもの（{st['root']}。コミットしない）"]
+    if not st["kinds"]:
+        return L + ["- まだ何も取っていない（./cfd jquants fetch --from … --to …）"]
+    names = {"bars": "日足（全銘柄）", "fins": "財務（開示）", "master": "上場銘柄一覧（月末）"}
+
+    def show(xs: list[str]) -> str:
+        return "、".join(xs[:5]) + (f" ほか {len(xs) - 5}" if len(xs) > 5 else "")
+
+    def every(xs: list[str]) -> str:                 # 疑わしい日は全部の日付を出す
+        return "、".join(xs)
+
+    for k, v in st["kinds"].items():
+        L.append(f"- {names.get(k, k)}: {v['days']:,} 日分・{v['rows']:,} 行（{v['first'] or '–'}〜{v['last'] or '–'}）、"
+                 f"行なしの日 {v['empty']:,}、{v['bytes'] / 1e6:,.1f} MB、プラン {'・'.join(v['plans']) or '–'}")
+        if v["failed"]:
+            L.append(f"  - ⚠ 取れなかった日 {len(v['failed'])}: {show(v['failed'])}（同じ命令でもう一度）")
+        if v["gaps"]:
+            L.append(f"  - ⚠ 間の抜けた平日 {len(v['gaps'])}: {show(v['gaps'])}")
+        if v["lost"]:
+            L.append(f"  - ⚠ 記録にあるのにファイルが無い日 {len(v['lost'])}: {show(v['lost'])}（同じ命令で取り直す）")
+        if v.get("stray"):
+            L.append(f"  - ⚠ 記録に無いのにファイルがある日 {len(v['stray'])}: {show(v['stray'])}（前のプランの残りなど。計算では読まない。消してよい）")
+        if v["wrong_date"]:
+            L.append(f"  - ⚠ 返ってきた行の日付が指定と違う日 {len(v['wrong_date'])}: {show(v['wrong_date'])}（確かめ直しでは使わない）")
+        if len(v["plans"]) > 1:
+            L.append("  - ⚠ プランの違う回が混ざっている（調整後の値の基準がずれるおそれ。判定の計算は 1 つのプランで取り直した分だけで行う。"
+                     "docs/survivorship.md 8.2 の 5）")
+    c = st.get("checks") or {}
+    retry = "`--retry-empty` を付けて取り直す"
+    if c.get("empty_with_fins"):
+        L.append(f"- ⚠ 日足が行なしなのに、財務に開示のある平日 {len(c['empty_with_fins'])}: {every(c['empty_with_fins'])}"
+                 f"（取引のあった日のはず。{retry}）")
+    if c.get("odd_years"):
+        L.append(f"- ⚠ 行なしの平日の数が見当（年 {EMPTY_PER_YEAR[0]}〜{EMPTY_PER_YEAR[1]} 日）から外れた年: {every(c['odd_years'])}")
+    if c.get("traded_but_empty"):
+        L.append(f"- ⚠ 別の出所では取引のあった日なのに、日足が行なしの日 {len(c['traded_but_empty'])}: {every(c['traded_but_empty'])}（{retry}）")
+    if c.get("empty_outside_calendar"):
+        L.append(f"- ⚠ 別の出所の営業日の期間の外にあって、確かめられない行なしの日 {len(c['empty_outside_calendar'])}: "
+                 f"{show(c['empty_outside_calendar'])}")
+    if c.get("empty_days") and not c.get("checked"):
+        L.append(f"- ⚠ 行なしの平日 {len(c['empty_days'])} 日を、別の出所の営業日とまだ突き合わせていない"
+                 "（`./cfd jquants status --trading-days <1 列目が日付の CSV>`。docs/survivorship.md 8.2 の 8）"
+                 + (f"。前後の平日は行ありの単発の行なし {len(c['isolated_empty'])}: {every(c['isolated_empty'])}" if c.get("isolated_empty") else ""))
+    elif c.get("empty_days") and not c.get("traded_but_empty") and not c.get("empty_outside_calendar"):
+        L.append(f"- 行なしの平日 {len(c['empty_days'])} 日は、別の出所の営業日に 1 日も入っていない（休みの日）")
+    if c.get("master_undecided"):
+        L.append(f"- ⚠ 月の最後の取引日を決められない月 {len(c['master_undecided'])}: {show(c['master_undecided'])}（日足の抜け・失敗、または行なしが続きすぎ）")
+    if c.get("master_missing"):
+        L.append(f"- ⚠ 月末の一覧が無い月 {len(c['master_missing'])}（その月の最後の取引日）: {show(c['master_missing'])}（同じ命令でもう一度）")
+    if c.get("master_extra"):
+        L.append(f"- ⚠ その月の最後の取引日でない日の一覧 {len(c['master_extra'])}: {show(c['master_extra'])}"
+                 "（一覧は月に 1 つだけ使う。日足を取り直した後に同じ命令でもう一度動かすと、古い方は消える）")
+    L.append(f"- 合わせて {st['bytes'] / 1e6:,.1f} MB")
+    n = sum("⚠" in x for x in L)
+    L.append(f"- ⚠ は {n} 行。1 行でも残っていれば、判定の計算はしない（docs/survivorship.md 8.2 の 8）" if n else "- ⚠ は無い")
     return L

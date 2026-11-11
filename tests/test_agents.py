@@ -444,6 +444,7 @@ def test_earnings_command_runs_end_to_end(tmp_path, capsys):
     mod.cmd_earnings(Namespace(root=str(root), data=str(data), out=str(tmp_path / "out"), placebo=20))
     capsys.readouterr()
     report = next((tmp_path / "out").glob("*/earnings.md")).read_text(encoding="utf-8")
+    assert report.splitlines()[2].startswith("**判定は最初の 1 回（2026-10-13: E1・E2 まだ判断できない、E3 使えない。docs/agents.md 10.5）。この実行は参考")
     v = pd.read_csv(next((tmp_path / "out").glob("*/verdicts_earnings.csv"))).set_index("key")
     assert list(v.index) == ["E1", "E2", "E3"] and v.loc["E1", "mean"] > 0 and v.loc["E1", "t"] > 3 and v.loc["E1", "placebo"] == 1.0
     assert v.loc["E1", "verdict"] == "使えそう" and "selector 0 件" in report and "e1 0 件" in report   # 記録は決まりどおり
@@ -690,6 +691,7 @@ def test_extra_command_runs_end_to_end(tmp_path, capsys, monkeypatch):
     mod.cmd_extra(args)
     capsys.readouterr()
     report = next((tmp_path / "out").glob("*/extra.md")).read_text(encoding="utf-8")
+    assert report.splitlines()[2].startswith("**判定は最初の 1 回（2026-10-13: F1 まだ判断できない、F2・F3・F4 使えない。docs/agents.md 11.7）。この実行は参考")
     v = pd.read_csv(next((tmp_path / "out").glob("*/verdicts_extra.csv"))).set_index("key")
     assert list(v.index) == ["F1", "F2", "F3", "F4"]
     assert v.loc["F3", "mean"] > 0 and v.loc["F3", "t"] > 3 and v.loc["F3", "placebo"] == 1.0 and v.loc["F3", "verdict"] == "使えそう"

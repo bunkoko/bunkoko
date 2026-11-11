@@ -145,3 +145,18 @@ def test_news_bucket_model_and_pnl():
     assert abs((pnl["gross"] - pnl["d"])[on].mean() - 0.001) < 1e-12
     null = H.news_placebo(pd.Series(y, index=idx)[~train], hold[~train], 300)
     assert np.mean(null < pnl["gross"].mean()) > 0.99 and abs(null.mean()) < 0.0005
+
+
+def test_report_says_the_verdict_is_the_first_run_only():
+    """./cfd shortterm は止めない（データの確かめにも使う）。報告の頭に「判定は最初の 1 回。この実行は参考」と出す。"""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "stocks_short_study.py"
+    spec = importlib.util.spec_from_file_location("stocks_short_study", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    note = mod.first_note(mod.FIRST)
+    assert note.startswith("**判定は最初の 1 回（2026-10-13: 使えそう 0 個。") and "docs/stocks_short.md 11 章" in note and "この実行は参考" in note
+    src = path.read_text(encoding="utf-8")
+    assert src.index("say(first_note(FIRST))") < src.index("## 1. 判定の一覧")              # 判定の表より前に出す

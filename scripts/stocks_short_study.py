@@ -22,6 +22,13 @@ from cfdbot import stocks as S  # noqa: E402
 from cfdbot import stocks_short as H  # noqa: E402
 
 ETF = "1306.T"
+# 判定は最初の 1 回（docs/stocks_short.md 11 章）。後の実行は参考（毎日のデータの確かめにも使うので、止めない）
+FIRST = ("2026-10-13", "使えそう 0 個。M1・M2 まだ判断できない、K1・K2・Q1・N1 使えない", "docs/stocks_short.md 11 章")
+
+
+def first_note(first: tuple[str, str, str]) -> str:
+    when, verdict, where = first
+    return f"**判定は最初の 1 回（{when}: {verdict}。{where}）。この実行は参考（判定を上書きしない・試した数に足さない・条件は変えない）**"
 
 
 def wide(path: Path) -> pd.DataFrame:
@@ -261,6 +268,7 @@ def main() -> None:
     # ---- 報告
     say("# 株の短期の売買（一晩〜5 日）: ルール・機械学習・ニュース・強化学習")
     say(f"作成: {datetime.now():%Y-%m-%d %H:%M}　仮説と判定の条件: docs/stocks_short.md（結果を見る前に決めたもの）")
+    say(first_note(FIRST))
     say(f"データ: 日本株 {close.shape[1]} 銘柄（TOPIX500 の今の銘柄、{close.index[0]:%Y-%m-%d}〜{close.index[-1]:%Y-%m-%d}）。コスト: 往復 {pct(H.COST, 2)}。"
         f"試した数: {H.PRIOR_TRIALS} ＋ {H.NEW_TRIALS} ＝ {n_trials}（全期間の t 値の基準 {f2(S.expected_max_z(n_trials))}）")
     say("売買の形: 13:30 までに決め（前日の引けまでと当日の寄りの情報）、引けで買う。夜だけ持つ形は翌朝の寄りで売り、5 日持つ形は 5 日後の引けで売る")

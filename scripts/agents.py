@@ -54,6 +54,20 @@ JOBS = {   # 自動実行: 名前 → （launchd の名前、動かすコマン�
 }
 
 
+# 判定は最初の 1 回（日付・結果・文書の場所）。後の実行は参考（毎日のデータの確かめにも使うので、止めない）
+FIRST = {
+    "earnings": ("2026-10-13", "E1・E2 まだ判断できない、E3 使えない", "docs/agents.md 10.5"),
+    "extra": ("2026-10-13", "F1 まだ判断できない、F2・F3・F4 使えない", "docs/agents.md 11.7"),
+    "manual": ("2026-10-20", "M2a・M2b まだ判断できない", "docs/agents.md 13.5"),
+}
+
+
+def first_note(key: str) -> str:
+    """報告の頭に出す 1 行: 判定は最初の 1 回で、この実行は参考。"""
+    when, verdict, where = FIRST[key]
+    return f"**判定は最初の 1 回（{when}: {verdict}。{where}）。この実行は参考（判定を上書きしない・試した数に足さない・条件は変えない）**"
+
+
 def wide(path: Path) -> pd.DataFrame:
     return pd.read_csv(path, index_col=0, parse_dates=True)
 
@@ -631,6 +645,7 @@ def cmd_earnings(args) -> None:
 
     say("# 決算の数字で評価する（E1〜E3）")
     say(f"作成: {datetime.now():%Y-%m-%d %H:%M}　仮説と判定の条件: docs/agents.md 10 章（結果を見る前に決めたもの）")
+    say(first_note("earnings"))
     say(f"データ: 決算短信・予想の修正の XBRL {len(feat):,} 回（{numbers['ticker'].nunique()} 銘柄、{first}〜{numbers['date'].max():%Y-%m-%d}）。"
         f"コスト: 往復 {pct(E.COST, 2)}。試した数: 66 ＋ 3 ＝ {n_trials}（全期間の t 値の基準 {f2(S.expected_max_z(n_trials))}）")
     say("\n## 1. 判定\n")
@@ -834,6 +849,7 @@ def cmd_extra(args) -> None:
 
     say("# まだ入れていなかった項目を足す（F1〜F4）")
     say(f"作成: {datetime.now():%Y-%m-%d %H:%M}　仮説と判定の条件: docs/agents.md 11 章（結果を見る前に決めたもの）")
+    say(first_note("extra"))
     say(f"データ: 日本株 {len(tickers)} 銘柄（〜{index[-1]:%Y-%m-%d}）。出来高・分割は Yahoo の日足（{have_raw} 銘柄、分割 {len(splits)} 回）、"
         f"決算の数字は XBRL {len(feat):,} 回。コスト: 往復 {pct(E.COST, 2)}。試した数: 69 ＋ 4 ＝ {n_trials}（全期間の t 値の基準 {f2(S.expected_max_z(n_trials))}）")
     say("\n## 1. 判定\n")
@@ -1199,6 +1215,7 @@ def manual_test(args) -> None:
     a0, a1 = r["period"]
     say("# M2 を手で注文する形の過去の検証（M2a・M2b）")
     say(f"作成: {datetime.now():%Y-%m-%d %H:%M}　判定の条件: docs/agents.md 13.2（結果を見る前に決めたもの）")
+    say(first_note("manual"))
     say(f"データ: 日本株 {close.shape[1]} 銘柄、M2 の点数（{p['selector'].name}）、{a0:%Y-%m}〜{a1:%Y-%m}（後半 {M.SPLIT[:4]}〜）。"
         f"コスト 往復 {pct(M.COST, 2)}。差 = 持っている株 − 全銘柄の平均 − 入れ替えた割合 × コスト")
     say("")

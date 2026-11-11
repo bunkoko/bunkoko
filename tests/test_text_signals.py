@@ -111,6 +111,7 @@ def test_momentum_finds_planted_peer_momentum_and_the_command_writes_a_report(tm
     s2 = TS.monthly_book(sig["s2"], mclose, start)
     assert book["gross"].mean() > s2["gross"].mean()                                 # 業種（集まりと別）では拾いにくい
     mod = _script("edinet_m", "edinet.py")
+    mod.JUDGED = {}                                                                  # 済んだ判定の止めを外して、作ったデータで通しで動かす
     path = mod.main(["momentum", "--root", str(tmp_path / "edinet"), "--data", str(data), "--out", str(tmp_path / "out"),
                      "--placebo", "10"], encoder=enc)
     text = path.read_text(encoding="utf-8")
@@ -132,6 +133,7 @@ def test_lazy_prices_finds_planted_changers_and_the_command_writes_a_report(tmp_
     assert top["gross"].mean() > 0 > low["gross"].mean()                              # 変えていない会社 > 平均 > 変えた会社
     assert top["turnover"].iloc[1:].mean() < 0.5                                     # 月 1 回でも入れ替えは少ない
     mod = _script("edinet_l", "edinet.py")
+    mod.JUDGED = {}
     path = mod.main(["lazy", "--root", str(tmp_path / "edinet"), "--data", str(data), "--out", str(tmp_path / "out"), "--placebo", "10"])
     out = path.read_text(encoding="utf-8")
     assert "| 案 2 |" in out and "変えた会社" in out
@@ -193,6 +195,7 @@ def test_commands_refuse_an_unfinished_fetch_and_reports_are_reproducible(tmp_pa
 
     idx, tick, close, data, store = _world(tmp_path)
     mod = _script("edinet_pf", "edinet.py")
+    mod.JUDGED = {}
     enc = HashEmbedder(256)
     base = ["--root", str(tmp_path / "edinet"), "--data", str(data), "--placebo", "10"]
     first = mod.main(["momentum", *base, "--out", str(tmp_path / "o1")], encoder=enc).read_text(encoding="utf-8")
@@ -217,3 +220,17 @@ def test_commands_refuse_an_unfinished_fetch_and_reports_are_reproducible(tmp_pa
     (tmp_path / "edinet" / ".lock").write_text(str(os.getpid()))
     with pytest.raises(SystemExit, match="まだ動いている"):
         mod.main(["momentum", *base, "--out", str(tmp_path / "o4")], encoder=enc)
+
+
+def test_judged_commands_stop_before_reading_anything(tmp_path):
+    """1C・案 2 は 2026-10-21 に 1 回計算した。データが無くても、読む前に止まる（docs/text_signals.md 12 章）。"""
+    import pytest
+
+    mod = _script("edinet_stop", "edinet.py")
+    assert set(mod.JUDGED) == {"momentum", "lazy"}
+    base = ["--root", str(tmp_path / "none"), "--data", str(tmp_path / "none"), "--out", str(tmp_path / "out")]
+    for cmd, verdict in (("momentum", "1C まだ判断できない"), ("lazy", "案 2 使えない")):
+        with pytest.raises(SystemExit, match=f"もう 1 回計算してある（2026-10-21: {verdict}。docs/text_signals.md 12 章）.*動かし直さない"):
+            mod.main([cmd, *base])
+    assert not (tmp_path / "out").exists()                                           # 報告は書かない
+    mod.main(["status", *base])                                                      # ほかのコマンドは今までどおり
