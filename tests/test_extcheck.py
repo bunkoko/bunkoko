@@ -88,7 +88,7 @@ def test_markets_are_the_partner_ten_without_the_ones_seen_at_adoption():
     assert set(E.MARKETS) | set(E.SEEN) == {k for pair in P.PAIRS for k in pair}
     assert not set(E.MARKETS) & {"GOLD", "SILVER", "WTI", "BRENT", "COPPER", "NATGAS", "PLATINUM"}   # 期間 A・B・C の市場は入れない
     assert (E.N_DAYS, E.THRESHOLD, E.PLACEBO, E.PASS_PCT, E.PRIOR_TRIALS) == (20, 1.5, 200, 0.95, 91)
-    assert E.RESULT == {}                                                                # まだ計算していない（計算したら書く）
+    assert E.RESULT["date"] == "2026-11-11" and E.RESULT["verdict"] == "通らなかった"   # 2026-11-11 に 1 回計算した（docs/cross_asset.md 8.8）
     base, ext = load_picks(BASE)[0], load_picks(EXT)[0]
     rest = {k: v for k, v in ext.params.items() if k not in ("max_extension", "extension_period")}
     assert rest == base.params and (ext.params["max_extension"], ext.params["extension_period"]) == (1.5, 20)   # 違いは行き過ぎの回避だけ

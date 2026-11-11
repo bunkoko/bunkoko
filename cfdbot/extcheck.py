@@ -38,7 +38,9 @@ DAY = pd.Timedelta("1D")
 # 判定に使う市場: 相方の確かめ（7 章）の 10 市場から、行き過ぎの回避の採用（6 章の期間 C）で使ったプラチナを除いた 9 市場
 SEEN = ("PLATINUM",)                 # 参考に並べるだけ（判定しない）
 MARKETS: tuple[str, ...] = tuple(k for pair in P.PAIRS for k in pair if k not in SEEN)
-RESULT: dict = {}                    # 1 回計算したら、ここに日付と判定を書く（書いてあれば道具は止まる。8.7）
+RESULT: dict = {"date": "2026-11-11", "verdict": "通らなかった",
+                 "detail": "9 市場で差 -0.05（0.07 → 0.03）、でたらめに止めた偶然より良い 28%・時期をずらした偶然より良い 22%、R が良くなった市場 44%"}
+                                     # 1 回計算したら、ここに日付と判定を書く（書いてあれば道具は止まる。8.7）
 
 
 def own_gates(frames: dict[str, pd.DataFrame], tf: pd.Timedelta = DAY, n: int = N_DAYS,
