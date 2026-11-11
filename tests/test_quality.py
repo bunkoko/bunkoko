@@ -114,6 +114,8 @@ def test_runs_only_once_whatever_the_output_folder(tmp_path, capsys, monkeypatch
     files, calls = {Q.FILE_PORT: p, Q.FILE_MKT: m}, []
     get = _getter(files, calls)
     marker = tmp_path / Q.MARKER
+    assert Q.RESULT["date"] == "2026-11-11" and Q.RESULT["verdict"] == "使えない"   # 2026-11-11 に 1 回計算した（docs/quality.md 9 章）
+    monkeypatch.setattr(Q, "RESULT", {})                                          # 記録する前の形で 1 回だけ動かす
 
     assert study.main(["--check"], getter=get, root=tmp_path) is None            # 形だけ。印は付かない・差は出ない
     out = capsys.readouterr().out
@@ -150,7 +152,8 @@ def test_runs_only_once_whatever_the_output_folder(tmp_path, capsys, monkeypatch
     assert "2026-11-12" in str(e.value) and len(calls) == n
 
 
-def test_missing_file_or_wrong_shape_leaves_no_mark(tmp_path, capsys):
+def test_missing_file_or_wrong_shape_leaves_no_mark(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(Q, "RESULT", {})                                          # 記録する前の形
     p, m = make(edge=0.004)
     marker = tmp_path / Q.MARKER
     for files in ({Q.FILE_MKT: m},                                                # 組のファイルが無い（404）

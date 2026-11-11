@@ -25,7 +25,9 @@ MAX_TRIALS = 99                       # 打ち間違いへの備え（今わか�
 PRIOR_TRIALS = 92                     # 登録した日（2026-11-11）までに試した数。Q1 は 92 より前の番号にはならない
 START_BY, MIN_MONTHS, MAX_ABS, MIN_CORR = "1991-07-31", 360, 0.50, 0.80   # 形の点検（docs/quality.md 4 章）
 MARKER = Path("data") / "quality" / "Q1_DONE.json"   # 1 回だけの印（リポジトリの根から。報告の保存先とは別）
-RESULT: dict = {}                     # 1 回計算して docs/quality.md 9 章に書いたら、ここにも書く（{"date":…, "verdict":…, "detail":…}）。
+RESULT: dict = {"date": "2026-11-11", "verdict": "使えない",
+                 "detail": "年 -0.2%（前半 0.3% → 後半 -0.7%）、t 全期間 -0.21／後半 -0.64、試した数 93（基準 2.505）"}
+                                      # 1 回計算して docs/quality.md 9 章に書いたら、ここにも書く（{"date":…, "verdict":…, "detail":…}）。
                                       # 書いてあれば、印のファイルが無い別の機械でも動かさない
 
 
