@@ -108,11 +108,12 @@ def combos(streams: dict[str, pd.Series]) -> tuple[pd.DataFrame, dict[tuple[str,
     return pd.DataFrame(rows), series, dropped
 
 
-def flip_pvalue(series: dict[tuple[str, ...], pd.Series], best_t: float, n: int = N_FLIPS, seed: int = SEED) -> float:
+def flip_pvalue(series: dict[tuple[str, ...], pd.Series], best_t: float, n: int | None = None, seed: int = SEED) -> float:
     """月ごとに、すべての組の値の符号を同じ向きにそろえてでたらめに入れ替え、「全部の組の中で一番高い t 値」が本物以上になる割合。
 
     符号を入れ替えても 2 乗の和は変わらないので、和だけを入れ替えて t 値を出す（速い）。
     """
+    n = N_FLIPS if n is None else n                    # 既定は呼んだ時の N_FLIPS（報告の回数の表示と合わせる）
     m = pd.concat(series, axis=1, sort=True)           # 月 × 組（無い月は NaN）
     x = m.to_numpy(dtype=float)
     mask = np.isfinite(x)
@@ -133,7 +134,7 @@ def flip_pvalue(series: dict[tuple[str, ...], pd.Series], best_t: float, n: int 
     return (hits + 1) / (n + 1)
 
 
-def judge_combos(single: dict[str, dict], streams: dict[str, Stream], n_flips: int = N_FLIPS) -> dict:
+def judge_combos(single: dict[str, dict], streams: dict[str, Stream], n_flips: int | None = None) -> dict:
     """WX の判定。単独の判定が出たルール（数が足りないものは除く）が 2 つ以上なければ「作れない」。"""
     use = {k: streams[k].d.dropna() for k, j in single.items() if j["verdict"] != SHORT}
     if len(use) < 2:
