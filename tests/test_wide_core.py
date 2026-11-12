@@ -72,6 +72,16 @@ def test_sigma_uses_previous_months_only():
     assert C.sigmas(d2).iloc[13] == s.iloc[13]
 
 
+def test_sigma_window_is_calendar_months_when_a_month_is_missing():
+    d = pd.Series(np.arange(50, dtype=float), index=months(50))
+    gap = d.drop(d.index[20])                     # 1 か月だけ作らなかった
+    s = C.sigmas(gap)
+    t = d.index[45]
+    expect = d.reindex(months(50)).drop(d.index[20]).loc[d.index[9]:d.index[44]].std(ddof=1)
+    assert s[t] == pytest.approx(expect)          # 窓は 36 暦月（値のある月は 35）
+    assert d.index[20] not in s.index
+
+
 def test_combo_series_equal_risk_weights():
     rng = np.random.default_rng(2)
     a = pd.Series(0.01 * rng.standard_normal(100), index=months(100))

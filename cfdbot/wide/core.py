@@ -68,8 +68,16 @@ def judge(s: Stream) -> dict:
 
 # --------------------------------------------------------------------------- 組み合わせ（5 章）
 def sigmas(d: pd.Series) -> pd.Series:
-    """前の月までの直近 36 か月（12 か月以上）の標準偏差。d は月が続いて並んだ系列（ルールの中で 0 埋め済み）。"""
-    return d.shift(1).rolling(SIGMA_WINDOW, min_periods=SIGMA_MIN).std(ddof=1)
+    """前の月までの直近 36 か月（暦の月。そのうち値のある月が 12 以上）の標準偏差。
+
+    途中に作らなかった月（W7 など）があっても窓が 36 か月より長くならないよう、月を続けて並べ直してから測る。
+    """
+    d = d.dropna()
+    if d.empty:
+        return d
+    idx = pd.period_range(d.index[0], d.index[-1], freq="M").to_timestamp(how="end").normalize()
+    full = d.reindex(idx)
+    return full.shift(1).rolling(SIGMA_WINDOW, min_periods=SIGMA_MIN).std(ddof=1).reindex(d.index)
 
 
 def combo_series(streams: dict[str, pd.Series], keys: tuple[str, ...]) -> pd.Series:
@@ -242,5 +250,6 @@ def report_lines(single: dict[str, dict], wx: dict, streams: dict[str, Stream], 
         L.append(f"- {k}: {_ym(j['start'])}〜{_ym(j['end'])}。コストを引く前の月の平均 {_pct(s.gross)}")
         L += [f"  - {x}" for x in s.notes]
     L += ["- 個別株の 1 日の値動きは ±30% にそろえた。税金は入れていない",
+          "- W5・W6 は買った月に数える（持つ期間は次の月にかかる）。組の重さに使う「前の月まで」の値の一部は、その月の中で決まる（影響はごく小さい。条件どおりに計算した）",
           "- 結果を見てルールの決め方・期間・コスト・名前の一覧を替えて試し直さない（docs/wide.md）"]
     return L
