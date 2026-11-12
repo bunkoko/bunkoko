@@ -1,0 +1,7 @@
+# このファイルを .dev.vars という名前でコピーして値を入れる（.dev.vars は Git に含めない）
+# SwitchBot アプリの「開発者向けオプション」で発行したトークンとシークレット
+SWITCHBOT_TOKEN=
+SWITCHBOT_SECRET=
+# 自分で決める長いランダムな文字列（例: `openssl rand -hex 24` で作る）
+WEBHOOK_SECRET=
+ADMIN_TOKEN=

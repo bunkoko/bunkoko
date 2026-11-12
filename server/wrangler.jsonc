@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "bunkoko-server",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "observability": { "enabled": true },
+
+  // 5分ごとにセンサーの値を取得する
+  "triggers": { "crons": ["*/5 * * * *"] },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "bunkoko",
+      // `npx wrangler d1 create bunkoko` で表示された database_id に置き換える
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "vars": {
+    // 将来の複数ユーザー対応に備えた、データの持ち主の ID
+    "USER_ID": "me",
+    // CSV の表示に使うタイムゾーン（保存はすべて UTC）
+    "TIME_ZONE": "Asia/Tokyo"
+  }
+
+  // 秘密の値は wrangler.jsonc に書かず、`npx wrangler secret put <名前>` で登録する:
+  //   SWITCHBOT_TOKEN, SWITCHBOT_SECRET, WEBHOOK_SECRET, ADMIN_TOKEN
+}

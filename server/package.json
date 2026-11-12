@@ -1,0 +1,25 @@
+{
+  "name": "bunkoko-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "睡眠と部屋の環境データを集めるサーバー（Cloudflare Workers）",
+  "scripts": {
+    "dev": "wrangler dev --test-scheduled",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "db:migrate:local": "wrangler d1 migrations apply bunkoko --local",
+    "db:migrate:remote": "wrangler d1 migrations apply bunkoko --remote",
+    "switchbot": "tsx scripts/switchbot-cli.ts",
+    "mock:switchbot": "tsx scripts/mock-switchbot.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261112.1",
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.12",
+    "wrangler": "^4.161.0"
+  }
+}
