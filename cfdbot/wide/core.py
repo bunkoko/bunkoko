@@ -152,7 +152,9 @@ def judge_combos(single: dict[str, dict], streams: dict[str, Stream], n_flips: i
     else:
         verdict = "使えない"
     member_best = max(single[k]["t"] for k in key)
-    return {"verdict": verdict, "best": best.to_dict(), "p": p, "z": NormalDist().inv_cdf(1 - p),
+    # p = 1（本物の一番がどの入れ替えの一番にも届かない。どの組も大きく負けたとき）でも止まらない（inv_cdf(0) は落ちる）
+    z = NormalDist().inv_cdf(1 - p) if p < 1 else float("-inf")
+    return {"verdict": verdict, "best": best.to_dict(), "p": p, "z": z,
             "no_lift": bool(best["t"] < member_best), "member_best": member_best,
             "table": table, "dropped": dropped, "n_combos": len(table), "rules": sorted(use)}
 
@@ -229,7 +231,7 @@ def report_lines(single: dict[str, dict], wx: dict, streams: dict[str, Stream], 
     if wx["verdict"] != "作れない":
         L.append(f"- WX: {len(wx['rules'])} つのルール（{'・'.join(wx['rules'])}）から {wx['n_combos']} 通りの組を作った"
                  f"（月が {MIN_MONTHS} に届かず使わなかった組 {wx['dropped']}）。代表 = 一番 t 値の高い組。"
-                 f"偶然との比べ（月ごとに全部の組の符号を同じ向きに入れ替え {N_FLIPS:,} 回）の p = {wx['p']:.4f}（正規分布の値で {wx['z']:.2f}。"
+                 f"偶然との比べ（月ごとに全部の組の符号を同じ向きに入れ替え {N_FLIPS:,} 回）の p = {wx['p']:.4f}（正規分布の値で {_f2(wx['z'])}。"
                  f"「使えそう」は p ≤ {P_GOOD}、「まだ判断できない」は p ≤ {P_MAYBE}）")
         if wx["no_lift"]:
             L.append(f"- 読み方（5 章の決め）: 代表の t 値 {_f2(wx['best']['t'])} は、入っている単独のルールの一番高い t 値 {_f2(wx['member_best'])} より低い"

@@ -144,6 +144,18 @@ def test_judge_combos_excludes_short_and_counts():
     assert C.trials_used(single, wx) == 93 + 3 + 1
 
 
+def test_judge_combos_all_losing_gives_p_one_without_crash():
+    # どの組も大きく負けると、どの入れ替えの一番も本物の一番以上になり p = 1。正規分布の値に直すところで落ちない
+    rng = np.random.default_rng(9)
+    s = {k: stream(k, -0.01 + 0.01 * rng.standard_normal(150)) for k in ("W1", "W3", "W7")}
+    single = {k: C.judge(v) for k, v in s.items()}
+    wx = C.judge_combos(single, s, n_flips=300)
+    assert wx["p"] == 1.0 and wx["verdict"] == "使えない" and wx["z"] == float("-inf")
+    skipped = {k: "試し" for k in C.RULES if k not in s}
+    text = "\n".join(C.report_lines(single, wx, s, skipped, "2026-11-12 10:00"))
+    assert "p = 1.0000" in text
+
+
 def test_report_has_all_rules():
     rng = np.random.default_rng(6)
     s = {k: stream(k, 0.01 * rng.standard_normal(100)) for k in ("W1", "W2", "W3", "W4", "W5", "W7")}
