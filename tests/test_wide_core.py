@@ -25,7 +25,8 @@ def stream(key, values, events=None, start="2000-01-31"):
 
 def test_threshold_and_trials():
     assert C.TRIALS == 101 and C.PRIOR_TRIALS == 93
-    assert abs(C.THRESHOLD - 2.5341) < 1e-4
+    assert abs(C.THRESHOLD - 2.5341) < 1e-4       # 参考の列だけ
+    assert C.T_MIN == 1.65 and C.P_FIRST == 0.05  # 判定は 1 回目として（2026-11-12 利用者の決め）
     assert C.RESULT == {}
 
 
@@ -52,8 +53,16 @@ def test_judge_maybe_when_t_between():
     base = np.tile([0.03, -0.025], 60)            # 平均 0.0025、標準偏差 ≈ 0.0276 → t ≈ 0.99
     d = base + 0.0020                             # 平均 0.0045 → t ≈ 1.78
     j = C.judge(stream("W2", d, events=200))
-    assert 1.65 <= j["t"] < C.THRESHOLD
-    assert j["verdict"] == "まだ判断できない"
+    assert 1.65 <= j["t"] < C.THRESHOLD and j["t2"] < 1.65
+    assert j["verdict"] == "まだ判断できない" and j["verdict_ref"] == "まだ判断できない"
+
+
+def test_first_time_bar_does_not_depend_on_trials():
+    # 全期間 t ≈ 2.4・後半 t ≈ 1.70: 1 回目としては「使えそう」、通し番号で数えると（2.534 に届かず）「まだ判断できない」
+    d = np.tile([0.03, -0.025], 60) + 0.00355
+    j = C.judge(stream("W1", d))
+    assert 2.3 < j["t"] < C.THRESHOLD and j["t2"] >= 1.65
+    assert j["verdict"] == "使えそう" and j["verdict_ref"] == "まだ判断できない"
 
 
 def test_judge_short():
@@ -127,6 +136,53 @@ def test_flip_matches_slow_version():
     assert fast == pytest.approx((hits + 1) / 301)
 
 
+def slow_counts(series, n, seed):
+    m = pd.concat(series, axis=1, sort=True)
+    r = np.random.default_rng(seed)
+    out = []
+    for start in range(0, n, 1000):
+        for sg in r.choice((-1.0, 1.0), size=(min(1000, n - start), len(m))):
+            k = 0
+            for c in m.columns:
+                v = (m[c] * sg).dropna()
+                a, b = C.halves(v)
+                k += C.label(bool(a.mean() > 0 and b.mean() > 0), C.t_value(v), C.t_value(b), C.T_MIN) == "使えそう"
+            out.append(k)
+    return np.array(out)
+
+
+def test_flip_counts_match_slow_version():
+    rng = np.random.default_rng(10)
+    ser = {"A": pd.Series(0.3 + rng.standard_normal(61), index=months(61)),
+           "B": pd.Series(0.1 + rng.standard_normal(70), index=months(70, "1999-03-31")),
+           "C": pd.Series(rng.standard_normal(80), index=months(80, "1998-06-30"))}
+    assert (C.flip_counts(ser, n=200, seed=3) == slow_counts(ser, 200, 3)).all()
+
+
+def test_chance_noise_and_signal():
+    rng = np.random.default_rng(11)
+    noise = {k: pd.Series(rng.standard_normal(200), index=months(200)) for k in "ABCDEFG"}
+    c = C.flip_counts(noise, n=2000)
+    assert 0.0 < c.mean() < 0.3                   # でたらめでは 7 つのうち平均 0.1 個ほど
+    ch = C.chance(2, c)
+    assert ch["real"] == 2 and ch["atleast"] < 0.05 and ch["any"] == pytest.approx((c >= 1).mean())
+    assert C.chance(0, c)["atleast"] == 1.0
+
+
+def test_combo_table_labels_each_combo_first_time():
+    rng = np.random.default_rng(12)
+    s = {"W1": stream("W1", 0.01 + 0.01 * rng.standard_normal(150)), "W3": stream("W3", 0.01 * rng.standard_normal(150)),
+         "W7": stream("W7", 0.01 * rng.standard_normal(150))}
+    single = {k: C.judge(v) for k, v in s.items()}
+    wx = C.judge_combos(single, s, n_flips=300)
+    t = wx["table"]
+    assert set(t["first"]) <= {"使えそう", "まだ判断できない", "使えない"}
+    for r in t.itertuples(index=False):
+        assert r.first == C.label(r.mean1 > 0 and r.mean2 > 0, r.t, r.t2, C.T_MIN)
+    assert wx["chance"]["real"] == int((t["first"] == "使えそう").sum())
+    assert wx["verdict"] == "使えそう" and wx["verdict_ref"] in ("使えそう", "まだ判断できない", "使えない")
+
+
 def test_judge_combos_cannot_with_one_rule():
     s = {"W1": stream("W1", np.full(100, 0.01))}
     single = {"W1": C.judge(s["W1"])}
@@ -166,6 +222,7 @@ def test_report_has_all_rules():
     for k in C.RULES:
         assert f"| {k} |" in text
     assert "外した（一覧が 95% に届かない）" in text and "| WX |" in text
+    assert "判定（1 回目として）" in text and "偶然でもいくつ通るか" in text and "参考の列" in text
 
 
 # --------------------------------------------------------------------------- 実行の道具（scripts/wide_study.py）

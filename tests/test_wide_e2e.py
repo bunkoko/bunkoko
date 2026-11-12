@@ -91,5 +91,7 @@ def test_end_to_end(tmp_path, monkeypatch, capsys):
     assert "120 通りの組" in text
     rec = json.loads((tmp_path / C.MARKER).read_text(encoding="utf-8"))
     assert rec["trials"] == 101 and set(rec["verdicts"]) == {*C.RULES, "WX"}
+    assert set(rec["verdicts_ref"]) == {*C.RULES, "WX"} and isinstance(rec["combos_good"], list)
+    assert "判定（1 回目として）" in text and "偶然でもいくつ通るか" in text
     with pytest.raises(SystemExit):
         m.main([], root=tmp_path)

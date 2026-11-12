@@ -20,10 +20,12 @@ RULES = ("W1", "W2", "W3", "W4", "W5", "W6", "W7")
 NAMES = {"W1": "資産のトレンド（上がっている資産だけ持つ）", "W2": "FOMC の声明の日", "W3": "1 年の高値に近い株",
          "W4": "配当の権利落ちの日", "W5": "公募増資の値決めの後", "W6": "物言う株主の新しい取得", "W7": "金利の高い通貨（為替のキャリー）"}
 PRIOR_TRIALS = 93                  # 登録した日（2026-11-11）までに試した数
-TRIALS = 101                       # 8 つの判定がどれも使う数（docs/wide.md 7 章。計算する順で分けない・下げない）
-THRESHOLD = expected_max_z(TRIALS)   # 2.5341
-T_MIN = 1.65                       # 後半だけの t 値の線
-P_GOOD, P_MAYBE = 0.0056, 0.05     # WX の p の線（5 章 3・4）
+T_MIN = 1.65                       # 判定の線（docs/wide.md 3 章。2026-11-12 利用者の決め）: どれも「初めて試した 1 つ目」として、
+                                   # 全期間・後半とも t 値 1.65（でたらめが超えるのは 20 回に 1 回）。試した数で線を上げない
+P_FIRST = 0.05                     # WX（一番の組を偶然の一番と比べる）の p の線。1 回目として
+TRIALS = 101                       # 参考の列だけが使う通し番号（今までの数え方。docs/wide.md 7 章）
+THRESHOLD = expected_max_z(TRIALS)   # 参考の列の全期間の線 2.5341
+P_GOOD, P_MAYBE = 0.0056, 0.05     # 参考の列の WX の p の線
 SIGMA_WINDOW, SIGMA_MIN = 36, 12   # 組の重さ: 前の月までの直近 36 か月（12 か月以上あれば）
 N_FLIPS, SEED = 10_000, 20261111   # 偶然との比べ（符号の入れ替え）
 SHORT = "数が足りない（判定しない）"
@@ -46,23 +48,27 @@ def halves(d: pd.Series) -> tuple[pd.Series, pd.Series]:
     return d.iloc[: len(d) // 2], d.iloc[len(d) // 2:]
 
 
+def label(c1: bool, t_all: float, t2: float, bar: float) -> str:
+    """3 章の 3 つの条件から判定の言葉を出す。bar は全期間の t 値の線（1 回目として 1.65、参考の列は 2.534）。"""
+    if c1 and t2 >= T_MIN and t_all >= bar:
+        return "使えそう"
+    if c1 and t_all >= T_MIN:
+        return "まだ判断できない"
+    return "使えない"
+
+
 def judge(s: Stream) -> dict:
     d = s.d.dropna()
     out = {"key": s.key, "n": len(d), "events": s.events, "gross": s.gross,
            "start": d.index[0] if len(d) else None, "end": d.index[-1] if len(d) else None}
     if len(d) < MIN_MONTHS or (s.events is not None and s.events < MIN_EVENTS):
-        return {**out, "verdict": SHORT, "mean": float(d.mean()) if len(d) else float("nan"),
+        return {**out, "verdict": SHORT, "verdict_ref": SHORT, "mean": float(d.mean()) if len(d) else float("nan"),
                 "mean1": float("nan"), "mean2": float("nan"), "t": float("nan"), "t2": float("nan")}
     a, b = halves(d)
     t_all, t2 = t_value(d), t_value(b)
-    c1 = a.mean() > 0 and b.mean() > 0
-    if c1 and t2 >= T_MIN and t_all >= THRESHOLD:
-        verdict = "使えそう"
-    elif c1 and t_all >= T_MIN:
-        verdict = "まだ判断できない"
-    else:
-        verdict = "使えない"
-    return {**out, "verdict": verdict, "mean": float(d.mean()), "mean1": float(a.mean()), "mean2": float(b.mean()),
+    c1 = bool(a.mean() > 0 and b.mean() > 0)
+    return {**out, "verdict": label(c1, t_all, t2, T_MIN), "verdict_ref": label(c1, t_all, t2, THRESHOLD),
+            "mean": float(d.mean()), "mean1": float(a.mean()), "mean2": float(b.mean()),
             "t": t_all, "t2": t2, "split": b.index[0]}
 
 
@@ -102,9 +108,10 @@ def combos(streams: dict[str, pd.Series]) -> tuple[pd.DataFrame, dict[tuple[str,
                 continue
             a, b = halves(c)
             series[ks] = c
+            t_all, t2 = t_value(c), t_value(b)
             rows.append({"combo": "+".join(ks), "size": len(ks), "n": len(c), "start": c.index[0], "end": c.index[-1],
-                         "mean": float(c.mean()), "mean1": float(a.mean()), "mean2": float(b.mean()),
-                         "t": t_value(c), "t2": t_value(b)})
+                         "mean": float(c.mean()), "mean1": float(a.mean()), "mean2": float(b.mean()), "t": t_all, "t2": t2,
+                         "first": label(bool(a.mean() > 0 and b.mean() > 0), t_all, t2, T_MIN)})
     return pd.DataFrame(rows), series, dropped
 
 
@@ -134,6 +141,46 @@ def flip_pvalue(series: dict[tuple[str, ...], pd.Series], best_t: float, n: int 
     return (hits + 1) / (n + 1)
 
 
+def flip_counts(series: dict, n: int | None = None, seed: int = SEED) -> np.ndarray:
+    """偶然でもいくつ通るか: 月ごとに全部の系列の符号を同じ向きにそろえてでたらめに入れ替え、1 回ごとに
+    「1 回目として使えそう」（前半・後半の平均がプラス、後半と全期間の t 値が 1.65 以上）になる系列の数を返す。
+
+    前半・後半は系列ごとに、その系列の月の数で半分に分ける（本物と同じ）。2 乗の和は入れ替えても変わらない。
+    """
+    n = N_FLIPS if n is None else n
+    m = pd.concat(series, axis=1, sort=True)
+    x = m.to_numpy(dtype=float)
+    mask = np.isfinite(x)
+    x0 = np.where(mask, x, 0.0)
+    second = np.zeros_like(mask)
+    for j in range(x.shape[1]):
+        rows = np.flatnonzero(mask[:, j])
+        second[rows[len(rows) // 2:], j] = True
+    first = mask & ~second
+    xa, xb = np.where(first, x0, 0.0), np.where(second, x0, 0.0)
+    cnt, na, nb = mask.sum(0).astype(float), first.sum(0).astype(float), second.sum(0).astype(float)
+    s2, s2b = (x0 ** 2).sum(0), (xb ** 2).sum(0)
+    rng = np.random.default_rng(seed)
+    out, chunk = [], 1000
+    for start in range(0, n, chunk):
+        k = min(chunk, n - start)
+        signs = rng.choice((-1.0, 1.0), size=(k, x.shape[0]))
+        mean, ma, mb = (signs @ x0) / cnt, (signs @ xa) / na, (signs @ xb) / nb
+        with np.errstate(divide="ignore", invalid="ignore"):
+            var, varb = (s2 - cnt * mean ** 2) / (cnt - 1), (s2b - nb * mb ** 2) / (nb - 1)
+            t = np.where(var > 0, mean / np.sqrt(var / cnt), np.nan)
+            t2 = np.where(varb > 0, mb / np.sqrt(varb / nb), np.nan)
+        ok = (ma > 0) & (mb > 0) & (t2 >= T_MIN) & (t >= T_MIN)
+        out.append(ok.sum(axis=1))
+    return np.concatenate(out)
+
+
+def chance(real: int, counts: np.ndarray) -> dict:
+    """本物で通った数と、でたらめで通った数の比べ（判定は変えない。並べて書く）。"""
+    return {"real": int(real), "mean": float(counts.mean()), "any": float((counts >= 1).mean()),
+            "atleast": float((counts >= real).mean()) if real > 0 else 1.0}
+
+
 def judge_combos(single: dict[str, dict], streams: dict[str, Stream], n_flips: int | None = None) -> dict:
     """WX の判定。単独の判定が出たルール（数が足りないものは除く）が 2 つ以上なければ「作れない」。"""
     use = {k: streams[k].d.dropna() for k, j in single.items() if j["verdict"] != SHORT}
@@ -145,17 +192,16 @@ def judge_combos(single: dict[str, dict], streams: dict[str, Stream], n_flips: i
     best = table.sort_values(["t", "size", "combo"], ascending=[False, True, True], na_position="last").iloc[0]
     key = tuple(best["combo"].split("+"))
     p = flip_pvalue(series, float(best["t"]), n=n_flips)
-    pos = best["mean1"] > 0 and best["mean2"] > 0
-    if pos and best["t2"] >= T_MIN and p <= P_GOOD:
-        verdict = "使えそう"
-    elif pos and p <= P_MAYBE:
-        verdict = "まだ判断できない"
-    else:
-        verdict = "使えない"
+    pos = bool(best["mean1"] > 0 and best["mean2"] > 0)
+    good2 = bool(best["t2"] >= T_MIN)
+    verdict = "使えそう" if pos and good2 and p <= P_FIRST else "まだ判断できない" if pos and p <= P_FIRST else "使えない"
+    verdict_ref = "使えそう" if pos and good2 and p <= P_GOOD else "まだ判断できない" if pos and p <= P_MAYBE else "使えない"
+    real = int((table["first"] == "使えそう").sum())
     member_best = max(single[k]["t"] for k in key)
     # p = 1（本物の一番がどの入れ替えの一番にも届かない。どの組も大きく負けたとき）でも止まらない（inv_cdf(0) は落ちる）
     z = NormalDist().inv_cdf(1 - p) if p < 1 else float("-inf")
-    return {"verdict": verdict, "best": best.to_dict(), "p": p, "z": z,
+    return {"verdict": verdict, "verdict_ref": verdict_ref, "best": best.to_dict(), "p": p, "z": z,
+            "chance": chance(real, flip_counts(series, n=n_flips)),
             "no_lift": bool(best["t"] < member_best), "member_best": member_best,
             "table": table, "dropped": dropped, "n_combos": len(table), "rules": sorted(use)}
 
@@ -182,12 +228,26 @@ def trials_used(single: dict[str, dict], wx: dict) -> int:
     return PRIOR_TRIALS + n + (1 if wx["verdict"] != "作れない" else 0)
 
 
+def single_chance(single: dict[str, dict], streams: dict[str, Stream], n_flips: int | None = None) -> dict | None:
+    """単独のルール（判定の出たもの）で、偶然でもいくつ「使えそう」になるか。"""
+    use = {k: streams[k].d.dropna() for k, j in single.items() if j["verdict"] != SHORT}
+    if not use:
+        return None
+    real = sum(1 for k in use if single[k]["verdict"] == "使えそう")
+    return chance(real, flip_counts(use, n=n_flips))
+
+
 def mark(marker: Path, single: dict[str, dict], wx: dict, lines: list[str], made: str) -> dict:
     """判定を出したら、まず印を書く（報告の中身も入れておく）。"""
     marker.parent.mkdir(parents=True, exist_ok=True)
     verdicts = {k: j["verdict"] for k, j in single.items()}
     verdicts["WX"] = wx["verdict"]
-    rec = {"date": made, "verdicts": verdicts, "trials": trials_used(single, wx), "report": lines}
+    ref = {k: j["verdict_ref"] for k, j in single.items()}
+    ref["WX"] = wx.get("verdict_ref", wx["verdict"])
+    table = wx.get("table")
+    good = [] if table is None or table.empty else table.loc[table["first"] == "使えそう", "combo"].tolist()
+    rec = {"date": made, "verdicts": verdicts, "verdicts_ref": ref, "combos_good": good,
+           "trials": trials_used(single, wx), "report": lines}
     marker.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
     return rec
 
@@ -205,46 +265,64 @@ def _ym(ts) -> str:
     return f"{pd.Timestamp(ts):%Y-%m}" if ts is not None and not pd.isna(ts) else "–"
 
 
-def report_lines(single: dict[str, dict], wx: dict, streams: dict[str, Stream], skipped: dict[str, str], made: str) -> list[str]:
+def _chance_line(what: str, unit: str, c: dict | None) -> str:
+    if c is None:
+        return f"- {what}: 作れなかった"
+    tail = f"、{c['real']} {unit}以上になる割合 {c['atleast']:.0%}" if c["real"] > 0 else ""
+    return (f"- {what}: 本物で「使えそう」は **{c['real']} {unit}**。でたらめ（符号の入れ替え {N_FLIPS:,} 回）でも平均 {c['mean']:.1f} {unit}が"
+            f"「使えそう」になり、1 {unit}以上になる割合 {c['any']:.0%}{tail}")
+
+
+def report_lines(single: dict[str, dict], wx: dict, streams: dict[str, Stream], skipped: dict[str, str], made: str,
+                 sc: dict | None = None) -> list[str]:
+    if sc is None:
+        sc = single_chance(single, streams)
     L = ["# 広げた候補 7 つと、その組み合わせ（W1〜W7・WX）", "",
          f"作成 {made}。仮説と判定の条件は docs/wide.md（結果を見る前に決めたもの）。この計算は 1 回だけで、動かし直さない。", "",
          "## 1. 判定", "",
-         "| 記号 | 中身 | 月の平均（コストの後） | 前半 → 後半 | t 値 全期間／後半 | 月・事象の数 | 判定 |",
-         "|---|---|---|---|---|---|---|"]
+         "| 記号 | 中身 | 月の平均（コストの後） | 前半 → 後半 | t 値 全期間／後半 | 月・事象の数 | 判定（1 回目として） | 参考: 通し番号で数えた場合 |",
+         "|---|---|---|---|---|---|---|---|"]
     for k in RULES:
         if k in skipped:
-            L.append(f"| {k} | {NAMES[k]} | – | – | – | – | 外した（{skipped[k]}） |")
+            L.append(f"| {k} | {NAMES[k]} | – | – | – | – | 外した（{skipped[k]}） | – |")
             continue
         j = single[k]
         ev = f"{j['n']} か月" + (f"・{j['events']} 件" if j["events"] is not None else "")
         L.append(f"| {k} | {NAMES[k]} | {_pct(j['mean'])} | {_pct(j['mean1'])} → {_pct(j['mean2'])} | "
-                 f"{_f2(j['t'])}／{_f2(j['t2'])} | {ev} | **{j['verdict']}** |")
+                 f"{_f2(j['t'])}／{_f2(j['t2'])} | {ev} | **{j['verdict']}** | {j['verdict_ref']} |")
     if wx["verdict"] == "作れない":
-        L.append(f"| WX | 組み合わせ | – | – | – | – | 作れない（{wx['why']}） |")
+        L.append(f"| WX | 組み合わせ | – | – | – | – | 作れない（{wx['why']}） | – |")
     else:
         b = wx["best"]
-        L.append(f"| WX | 組み合わせ（代表 {b['combo']}） | {_pct(b['mean'])} | {_pct(b['mean1'])} → {_pct(b['mean2'])} | "
-                 f"{_f2(b['t'])}／{_f2(b['t2'])} | {int(b['n'])} か月 | **{wx['verdict']}** |")
+        L.append(f"| WX | 一番の組を偶然と比べる（代表 {b['combo']}） | {_pct(b['mean'])} | {_pct(b['mean1'])} → {_pct(b['mean2'])} | "
+                 f"{_f2(b['t'])}／{_f2(b['t2'])} | {int(b['n'])} か月 | **{wx['verdict']}** | {wx['verdict_ref']} |")
     used = trials_used(single, wx)
     L += ["",
-          f"- 基準: 全期間の t 値 {THRESHOLD:.3f}（{TRIALS} 個試した場合。どの判定も同じ）。後半だけの t 値 {T_MIN}。前半・後半は月の数で半分",
-          f"- 試した数: {PRIOR_TRIALS} → **{used}**（判定を出した分だけ。基準は {TRIALS} のまま下げない）"]
+          (f"- 判定は、どれも「初めて試した 1 つ目」として出した（2026-11-12 の利用者の決め。試した順・それまでに試した数で線を変えない）。"
+           f"線は全期間・後半とも t 値 {T_MIN}（1 つだけ試したとき、でたらめが超えるのは 20 回に 1 回）。前半・後半は月の数で半分"),
+          "- **偶然でもいくつ通るか**（判定は変えない。たくさん並べると、でたらめでもいくつかは通るので、本物の数と並べて読む）:",
+          "  " + _chance_line("単独のルール", "個", sc)[2:]]
     if wx["verdict"] != "作れない":
-        L.append(f"- WX: {len(wx['rules'])} つのルール（{'・'.join(wx['rules'])}）から {wx['n_combos']} 通りの組を作った"
-                 f"（月が {MIN_MONTHS} に届かず使わなかった組 {wx['dropped']}）。代表 = 一番 t 値の高い組。"
-                 f"偶然との比べ（月ごとに全部の組の符号を同じ向きに入れ替え {N_FLIPS:,} 回）の p = {wx['p']:.4f}（正規分布の値で {_f2(wx['z'])}。"
-                 f"「使えそう」は p ≤ {P_GOOD}、「まだ判断できない」は p ≤ {P_MAYBE}）")
+        L += ["  " + _chance_line(f"組み合わせ {wx['n_combos']} 通り", "通り", wx.get("chance"))[2:],
+              (f"- WX: {len(wx['rules'])} つのルール（{'・'.join(wx['rules'])}）から {wx['n_combos']} 通りの組を作った"
+               f"（月が {MIN_MONTHS} に届かず使わなかった組 {wx['dropped']}）。代表 = 一番 t 値の高い組。"
+               f"「全部の組の中の一番」を、でたらめの一番と比べた p = {wx['p']:.4f}（正規分布の値で {_f2(wx['z'])}）。"
+               f"「使えそう」は p ≤ {P_FIRST} かつ代表の後半の t 値 {T_MIN} 以上、「まだ判断できない」は p ≤ {P_FIRST} だけ")]
         if wx["no_lift"]:
             L.append(f"- 読み方（5 章の決め）: 代表の t 値 {_f2(wx['best']['t'])} は、入っている単独のルールの一番高い t 値 {_f2(wx['member_best'])} より低い"
                      " → **組み合わせの上乗せは無い**")
-    L += ["- 「使えそう」でもお金は入れない。次の段は記録だけの売買を新しく登録すること（利用者が決める）。W3〜W6 は今残っている 490 社だけの検証",
-          "", "## 2. 組み合わせの表（見るだけ。代表のほかは判定しない。ここから良さそうな組を選び直さない）", ""]
+    L += [(f"- 参考の列（今までの数え方。判定ではない）: 通し番号で数え、全期間の線 {THRESHOLD:.3f}（{TRIALS} 個）、WX は p ≤ {P_GOOD}。"
+           f"記録のための通し番号は {PRIOR_TRIALS} → {used}"),
+          "- 「使えそう」でもお金は入れない。次の段は記録だけの売買を新しく登録すること（利用者が決める）。W3〜W6 は今残っている 490 社だけの検証",
+          "", "## 2. 組み合わせの表（どの組も 1 回目として判定）", "",
+          "- 組どうしは中身が重なっている。良い単独のルールが入った組はまとめて通りやすいので、1 章の「偶然でもいくつ通るか」と並べて読む",
+          ""]
     if wx["verdict"] == "作れない" or wx["table"].empty:
         L.append("- 組は作れなかった")
     else:
-        L += ["| 組 | 月の数 | 月の平均 | 前半 → 後半 | t 値 全期間／後半 |", "|---|---|---|---|---|"]
+        L += ["| 組 | 月の数 | 月の平均 | 前半 → 後半 | t 値 全期間／後半 | 判定（1 回目として） |", "|---|---|---|---|---|---|"]
         for r in wx["table"].sort_values(["size", "combo"]).itertuples(index=False):
-            L.append(f"| {r.combo} | {r.n} | {_pct(r.mean)} | {_pct(r.mean1)} → {_pct(r.mean2)} | {_f2(r.t)}／{_f2(r.t2)} |")
+            L.append(f"| {r.combo} | {r.n} | {_pct(r.mean)} | {_pct(r.mean1)} → {_pct(r.mean2)} | {_f2(r.t)}／{_f2(r.t2)} | {r.first} |")
     L += ["", "## 3. データと注意", ""]
     for k in RULES:
         if k in skipped or k not in streams:

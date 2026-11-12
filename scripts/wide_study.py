@@ -124,7 +124,7 @@ def main(argv: list[str] | None = None, root: Path | None = None) -> Path | None
     out.mkdir(parents=True, exist_ok=True)
     path = out / "report.md"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    for t in lines[: lines.index("## 2. 組み合わせの表（見るだけ。代表のほかは判定しない。ここから良さそうな組を選び直さない）")]:
+    for t in lines[: next(i for i, x in enumerate(lines) if x.startswith("## 2."))]:
         print(t, flush=True)
     print(f"\n報告: {path}（docs/wide.md 10 章に書き写す。cfdbot/wide/core.py の RESULT にも書く）", flush=True)
     return path
