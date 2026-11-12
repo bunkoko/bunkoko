@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -43,7 +44,7 @@ def build(root: Path) -> None:
     p = data/"agents"/"ir"/"disclosures.csv"; p.parent.mkdir(parents=True)
     pd.DataFrame(rows, columns=["id","time","ticker","company","title","url","xbrl"]).to_csv(p, index=False)
     # W6
-    days = ED.fetch_days(pd.Timestamp(END))
+    days = ED.fetch_days(pd.Timestamp.today().normalize())     # 一覧は今日まで見た形（点検は今日から 10 年を数える）
     (data/"wide").mkdir(exist_ok=True)
     pd.DataFrame({"date": [f"{d:%Y-%m-%d}" for d in days], "n": 1, "n350": 1, "checked_at": "x"}).to_csv(data/w6.FLISTED, index=False)
     codes = pd.DataFrame({"edinetCode": [f"E{1001+i}" for i in range(40)], "secCode": [f"{1001+i}0" for i in range(40)],
@@ -78,7 +79,7 @@ def test_end_to_end(tmp_path, monkeypatch, capsys):
     m.main(["--check"], root=tmp_path)
     out = capsys.readouterr().out
     assert "W2 FOMC の声明の日: 通らない" in out and out.count(": 通った") == 6
-    assert "%" not in out.split("W7")[0].replace("100.0%", "")       # 点検にリターンの数字は出ない（W6 の 100.0% は日数の割合）
+    assert "%" not in re.sub(r"（[0-9.]+%）", "", out.split("W7")[0])   # 点検にリターンの数字は出ない（W6 の括弧の % は日数の割合）
     with pytest.raises(SystemExit):
         m.main([], root=tmp_path)                                    # W2 が通らないまま判定はしない
     assert not (tmp_path / C.MARKER).exists()
