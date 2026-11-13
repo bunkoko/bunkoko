@@ -1,0 +1,6 @@
+// このファイルを Local.xcconfig という名前でコピーして、値を書き換える（Local.xcconfig は Git に含めない）
+
+// Apple Developer のチーム ID（Xcode → Settings → Accounts でも確認できる）
+DEVELOPMENT_TEAM = ABCDE12345
+// アプリの ID。世界で1つになるように、自分の名前などを入れる（例: com.taro.kenkokanri）
+APP_BUNDLE_ID = com.yourname.kenkokanri

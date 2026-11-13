@@ -1,0 +1,10 @@
+// 全員に共通の設定。人によって違う値は Local.xcconfig に書く（Local.xcconfig.example をコピーして作る）
+
+// アプリの ID（App Store・通知の設定にも使う）。Local.xcconfig で自分のものに変える
+APP_BUNDLE_ID = com.example.kenkokanri
+// アプリと拡張機能（スクリーンタイム）の間でデータを受け渡す場所
+APP_GROUP_ID = group.$(APP_BUNDLE_ID)
+// Apple Developer のチーム ID。Local.xcconfig に書く
+DEVELOPMENT_TEAM =
+
+#include? "Local.xcconfig"

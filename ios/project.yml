@@ -1,0 +1,82 @@
+# XcodeGen の設定。`xcodegen` を実行すると KenkoKanri.xcodeproj ができる。
+# アプリの名前（ホーム画面に出る名前）は「健康管理」。中の名前は英字で KenkoKanri。
+name: KenkoKanri
+
+options:
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+
+configFiles:
+  Debug: Config/Base.xcconfig
+  Release: Config/Base.xcconfig
+
+settings:
+  base:
+    # まずは Swift 5 の書き方で作る（Swift 6 の厳しい並行処理のチェックで、ビルドが止まりにくいように）
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Automatic
+    GENERATE_INFOPLIST_FILE: NO
+
+targets:
+  KenkoKanri:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+      - path: Shared
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: 健康管理
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UIBackgroundModes: [remote-notification]
+        NSHealthShareUsageDescription: 睡眠・心拍・活動などのデータを読み取り、部屋の環境と合わせて睡眠を分析するために使います。
+        NSHealthUpdateUsageDescription: 記録したカフェインと飲酒の量を、ヘルスケアにも保存するために使います。
+        AppGroupIdentifier: $(APP_GROUP_ID)
+        ITSAppUsesNonExemptEncryption: false
+    entitlements:
+      path: App/KenkoKanri.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+        com.apple.developer.healthkit.background-delivery: true
+        com.apple.developer.family-controls: true
+        com.apple.security.application-groups: [$(APP_GROUP_ID)]
+        aps-environment: development
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID)
+    dependencies:
+      - target: KenkoKanriActivityMonitor
+
+  # スクリーンタイムの節目を受け取る拡張機能（夜にスマホを最後に使った時刻を記録する）
+  KenkoKanriActivityMonitor:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: ActivityMonitor
+      - path: Shared
+    info:
+      path: ActivityMonitor/Info.plist
+      properties:
+        CFBundleDisplayName: 健康管理 スクリーンタイム
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        AppGroupIdentifier: $(APP_GROUP_ID)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.deviceactivity.monitor-extension
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ActivityMonitorExtension
+    entitlements:
+      path: ActivityMonitor/KenkoKanriActivityMonitor.entitlements
+      properties:
+        com.apple.developer.family-controls: true
+        com.apple.security.application-groups: [$(APP_GROUP_ID)]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID).ActivityMonitor

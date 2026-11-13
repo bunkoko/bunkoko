@@ -1,0 +1,8 @@
+# XcodeGen が作るので Git に含めない（project.yml から作り直せる）
+*.xcodeproj/
+# あなたのチーム ID とアプリの ID（人によって違うので Git に含めない）
+Config/Local.xcconfig
+DerivedData/
+xcuserdata/
+*.xcuserstate
+.DS_Store
