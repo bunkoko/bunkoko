@@ -26,5 +26,5 @@
   }
 
   // 秘密の値は wrangler.jsonc に書かず、`npx wrangler secret put <名前>` で登録する:
-  //   SWITCHBOT_TOKEN, SWITCHBOT_SECRET, WEBHOOK_SECRET, ADMIN_TOKEN
+  //   SWITCHBOT_TOKEN, SWITCHBOT_SECRET, WEBHOOK_SECRET, ADMIN_TOKEN, APP_TOKEN, AI_TASK_TOKEN
 }

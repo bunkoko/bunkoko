@@ -1,7 +1,10 @@
-# bunkoko-server（Phase 0: センサーの記録）
+# bunkoko-server
 
-SwitchBot の全機器の値を **5分ごと** に取得して保存するサーバー。
-人感センサー Pro・開閉センサーなどの変化は **Webhook** でも受け取り、正確な時刻で記録する。
+睡眠と部屋の環境のデータを集めて、1日 = 1行の表を計算するサーバー。
+
+- SwitchBot の全機器の値を **5分ごと** に取得して保存する。人感センサー Pro・開閉センサーなどの変化は **Webhook** でも受け取り、正確な時刻で記録する（Phase 0）
+- iPhone アプリから HealthKit のデータと記録（食事・朝の体感など）を受け取り、1日 = 1行の表を計算する（Phase 1）
+- Claude Code のスケジュールされたタスクに、食事の目安を出してもらう（Phase 1）
 
 - 動く場所: Cloudflare Workers（サーバーの管理が不要で、5分ごとの自動実行ができる）
 - 保存先: Cloudflare D1（SQLite のデータベース）
@@ -20,6 +23,7 @@ SwitchBot の全機器の値を **5分ごと** に取得して保存するサー
 5. [データを取り出す](#5-データを取り出す)
 6. [機器がなくても手元で試す](#6-機器がなくても手元で試す)
 7. [仕組み](#7-仕組み)
+8. [食事の目安（Claude Code のスケジュールされたタスク）](#8-食事の目安claude-code-のスケジュールされたタスク)
 
 ---
 
@@ -31,7 +35,7 @@ SwitchBot の全機器の値を **5分ごと** に取得して保存するサー
    ```sh
    cd server
    npm install
-   npm test        # 36件のテストがすべて通ることを確認
+   npm test        # すべてのテストが通ることを確認
    ```
 
 ## 2. Cloudflare に置く（機器が届く前にできる）
@@ -55,12 +59,14 @@ SwitchBot の全機器の値を **5分ごと** に取得して保存するサー
    npm run deploy
    ```
    最後に表示される `https://bunkoko-server.<あなたの名前>.workers.dev` が、このサーバーの URL。
-6. 合言葉を2つ作って登録する。ターミナルで `openssl rand -hex 24` を2回実行し、出てきた文字列をそれぞれ使う:
+6. 合言葉を4つ作って登録する。ターミナルで `openssl rand -hex 24` を4回実行し、出てきた文字列をそれぞれ使う:
    ```sh
-   npx wrangler secret put WEBHOOK_SECRET   # 1つ目の文字列を貼り付ける
-   npx wrangler secret put ADMIN_TOKEN      # 2つ目の文字列を貼り付ける
+   npx wrangler secret put WEBHOOK_SECRET   # 1つ目: SwitchBot の Webhook の URL に入れる
+   npx wrangler secret put ADMIN_TOKEN      # 2つ目: あなたが動作確認に使う
+   npx wrangler secret put APP_TOKEN        # 3つ目: iPhone アプリに設定する
+   npx wrangler secret put AI_TASK_TOKEN    # 4つ目: Claude Code のタスクに設定する（8章）
    ```
-   **この2つはパスワードと同じ扱い**。パスワード管理アプリなどに保存し、人に見せない。
+   **どれもパスワードと同じ扱い**。パスワード管理アプリなどに保存し、人に見せない。
 
 この時点では SwitchBot のトークンが未登録なので、5分ごとの取得はエラーになる（問題ない）。
 
@@ -146,7 +152,7 @@ npx wrangler d1 export bunkoko --remote --output backup.sql
 
 ```sh
 cp .dev.vars.example .dev.vars
-# .dev.vars に、適当な値を4つと、次の1行を書く:
+# .dev.vars に、適当な値を6つと、次の1行を書く:
 #   SWITCHBOT_API_BASE=http://127.0.0.1:8788
 npm run db:migrate:local
 npm run mock:switchbot     # ターミナル1: 偽の SwitchBot サーバー
@@ -180,7 +186,12 @@ SwitchBot の機器 ─Bluetooth→ ハブ3 ─Wi-Fi→ SwitchBot のクラウ�
 | `src/normalize.ts` | 応答を「項目ごとの値」に変換する。機器の種類ごとの対応表は持たず、新しい機器にもそのまま対応する |
 | `src/webhook.ts` | Webhook を受け取って保存する |
 | `src/admin.ts` | 動作確認用の管理 API（summary・CSV） |
-| `src/db.ts` | データベースへの読み書き |
+| `src/db.ts` | センサーの値のデータベースへの読み書き |
+| `src/api.ts` / `src/ingest.ts` / `src/settings.ts` | iPhone アプリ向けの API（HealthKit のデータ・記録の受け取り、設定） |
+| `src/days/` | 1日 = 1行の表の計算（`sleep.ts` が睡眠の区切り方、`compute.ts` が各値、`queue.ts` が計算待ちの処理） |
+| `src/roles.ts` | 機器の役割（どの機器の値を室温・在床などに使うか） |
+| `src/ai.ts` / `src/meals.ts` | 食事の目安の受け渡し |
+| `ai/meal-estimation-task.md` | Claude Code のスケジュールされたタスクへの指示書 |
 | `migrations/` | データベースの表の定義 |
 | `scripts/switchbot-cli.ts` | 手元から SwitchBot API を試すコマンド |
 | `scripts/mock-switchbot.ts` | 手元で試すための偽の SwitchBot サーバー |
@@ -192,13 +203,17 @@ SwitchBot の機器 ─Bluetooth→ ハブ3 ─Wi-Fi→ SwitchBot のクラウ�
 | `devices` | SwitchBot に登録されている機器 |
 | `webhook_events` | 届いた Webhook の生データ |
 | `collector_runs` | 5分ごとの取得の実行記録（データの欠けや API の利用回数の確認用） |
+| `health_samples` / `health_buckets` / `workouts` | iPhone アプリから届いた HealthKit のデータ |
+| `user_logs` / `meal_estimates` | 食事・朝の体感・入浴などの記録と、食事の目安 |
+| `days` / `day_queue` | 1日 = 1行の表と、計算し直す日 |
+| `user_settings` / `apns_devices` / `notifications_sent` | 設定、通知の送り先、送った通知 |
 
 時刻はすべて UTC のエポックミリ秒で保存している（表示するときに日本時間にする）。
 
 ### 安全のための決まり
 - トークン・シークレット・合言葉は `wrangler secret` と `.dev.vars` にだけ置き、Git には含めない。
 - SwitchBot の Webhook には署名がないため、URL に長い合言葉を含めて、合言葉が違う送信は「存在しない URL」として扱う。
-- 管理 API は `Authorization: Bearer <ADMIN_TOKEN>` がないと使えない。
+- 合言葉は使う相手ごとに分け、使える API を絞っている（管理: `ADMIN_TOKEN` で `/admin/*`、アプリ: `APP_TOKEN` で `/api/*`、Claude Code のタスク: `AI_TASK_TOKEN` で `/ai/*`）。
 
 ### 費用と上限
 2026年11月時点の Cloudflare の無料枠の目安（変わることがあるので公式で確認: https://developers.cloudflare.com/workers/platform/pricing/ 、 https://developers.cloudflare.com/d1/platform/pricing/ ）。
@@ -208,3 +223,27 @@ SwitchBot の機器 ─Bluetooth→ ハブ3 ─Wi-Fi→ SwitchBot のクラウ�
 | Workers の実行 | 1日 10万回 | 約300回（5分ごと＋Webhook） |
 | D1 の書き込み | 1日 10万行 | 約2万行 |
 | D1 の保存容量 | 5GB | 1年で約0.4GB |
+
+---
+
+## 8. 食事の目安（Claude Code のスケジュールされたタスク）
+
+食事の料理名から、睡眠の分析に使う目安（カロリー・脂っこさ・辛さ・量など）を、毎朝 Claude Code に出してもらう。
+Claude のサブスクリプションの使用量の範囲で動き、API の別料金はかからない。サーバーを公開したあとに1回だけ設定する。
+
+**この会話で Claude に「食事の目安のタスクを設定して」と頼めば、下の手順を一緒に進められる**（合言葉は、表示される入力欄にあなたが入れる。チャットには貼らない）。
+
+自分で設定する場合:
+1. サーバーに `AI_TASK_TOKEN` を登録しておく（2章の手順 6）。
+2. Claude Code（ https://claude.ai/code ）で、このタスク用のクラウド環境を用意する。環境の設定（セッションのタイトルバーの環境のメニュー →「編集」）で:
+   - **環境変数**: `BUNKOKO_URL=https://<URL>`（2章の手順 5 の URL）
+   - **ネットワークシークレット**: ホストに `<URL のホスト名>`（`bunkoko-server.<あなたの名前>.workers.dev`）、ヘッダーに `Authorization`、値に `Bearer <AI_TASK_TOKEN>`。保存すると、そのホストへの通信も許可される
+3. スケジュールされたタスクを作る:
+   - 時刻: 毎朝 5:30（日本時間）。朝のレポートの前に終わらせるため
+   - リポジトリ: このリポジトリ
+   - 環境: 手順 2 の環境
+   - 指示: `server/ai/meal-estimation-task.md の手順に従って、食事の目安を出してください。`
+4. タスクを今すぐ1回動かして、報告に件数が出れば完了。アプリの食事の一覧で、目安が付いていることを確かめる。
+
+指示書（`ai/meal-estimation-task.md`）では、Claude ができることを「目安がまだの食事を読む」「目安を書き込む」の2つの API だけに絞っている。料理名の文字に何が書かれていても、指示としては扱わない。
+

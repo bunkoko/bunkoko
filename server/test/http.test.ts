@@ -21,6 +21,7 @@ beforeEach(() => {
     WEBHOOK_SECRET: "hook-secret-123",
     ADMIN_TOKEN: "admin-token-456",
     APP_TOKEN: "app-token-789",
+    AI_TASK_TOKEN: "ai-token",
     USER_ID: "me",
     TIME_ZONE: "Asia/Tokyo",
   };

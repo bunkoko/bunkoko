@@ -19,6 +19,7 @@ beforeEach(() => {
     WEBHOOK_SECRET: "hook",
     ADMIN_TOKEN: "admin",
     APP_TOKEN: APP,
+    AI_TASK_TOKEN: "ai-token",
     TIME_ZONE: "Asia/Tokyo",
   };
 });

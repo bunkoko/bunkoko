@@ -1,8 +1,10 @@
 // Cloudflare Workers の入り口
 //   - 5分ごと（cron）: SwitchBot の全機器の状態を取得して保存する
-//   - HTTP: Webhook の受け取り、iPhone アプリ向けの API（/api/*）、動作確認用の管理 API（/admin/*）
+//   - HTTP: Webhook の受け取り、iPhone アプリ向けの API（/api/*）、Claude Code のタスク向けの API（/ai/*）、
+//           動作確認用の管理 API（/admin/*）
 
 import { buildSummary, exportReadingsCsv } from "./admin";
+import { handleAi } from "./ai";
 import { handleApi } from "./api";
 import { collect } from "./collector";
 import { processDayQueue, queueDateRange } from "./days/queue";
@@ -22,6 +24,8 @@ export interface Env {
   ADMIN_TOKEN: string;
   /** iPhone アプリが /api/* を使うための合言葉 */
   APP_TOKEN: string;
+  /** Claude Code のスケジュールされたタスクが /ai/* を使うための合言葉 */
+  AI_TASK_TOKEN: string;
   USER_ID?: string;
   TIME_ZONE?: string;
   /** テスト用。通常は設定しない */
@@ -56,6 +60,10 @@ export async function handleRequest(request: Request, env: Env, now = Date.now()
 
   if (url.pathname.startsWith("/api/")) {
     return handleApi(request, url, env, userId, now);
+  }
+
+  if (url.pathname.startsWith("/ai/")) {
+    return handleAi(request, url, env, userId, now);
   }
 
   if (url.pathname.startsWith("/admin/")) {

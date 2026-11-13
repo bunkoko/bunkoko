@@ -8,7 +8,9 @@ import {
   parseHealthBatch,
   parseLogsBatch,
 } from "./ingest";
+import { listMeals, parseEstimate, saveEstimates } from "./meals";
 import { applySettingsPatch, getSettings, saveSettings } from "./settings";
+import { DAY_MS, addDays, isValidDate, localMidnight } from "./time";
 import { Problems, isRecord, oneOf } from "./validate";
 
 export interface ApiEnv {
@@ -90,6 +92,34 @@ export async function handleApi(
         .run();
       return Response.json({ ok: true });
     }
+
+    case "GET /api/meals": {
+      // 期間の食事と目安（from / to は日付。省略すると直近7日）
+      const settings = await getSettings(env.DB, userId, defaultTimeZone);
+      const fromDate = url.searchParams.get("from");
+      const toDate = url.searchParams.get("to");
+      if ((fromDate && !isValidDate(fromDate)) || (toDate && !isValidDate(toDate))) {
+        return jsonError(400, "from と to は YYYY-MM-DD で指定してください");
+      }
+      const to = toDate ? localMidnight(addDays(toDate, 1), settings.timeZone) : now;
+      const from = fromDate ? localMidnight(fromDate, settings.timeZone) : to - 7 * DAY_MS;
+      if (to - from > 62 * DAY_MS) return jsonError(400, "一度に見られるのは62日分までです");
+      return Response.json({ ok: true, meals: await listMeals(env.DB, userId, from, to) });
+    }
+  }
+
+  // 食事の目安を利用者が直す（生成AI の目安より優先される）
+  const mealEstimate = /^\/api\/meals\/([A-Za-z0-9-]{1,64})\/estimate$/.exec(url.pathname);
+  if (request.method === "PUT" && mealEstimate) {
+    const body = await readJsonBody(request, 32 * 1024);
+    if (!body.ok) return body.response;
+    const problems = new Problems();
+    const estimate = parseEstimate(problems, "estimate", isRecord(body.value) ? body.value.estimate : undefined);
+    if (!problems.ok || !estimate) return invalid(problems);
+    const settings = await getSettings(env.DB, userId, defaultTimeZone);
+    const result = await saveEstimates(env.DB, userId, settings.timeZone, "user", [{ id: mealEstimate[1], model: null, estimate }], now);
+    if (result.saved.length === 0) return jsonError(404, "その食事の記録はありません");
+    return Response.json({ ok: true });
   }
   return notFound();
 }

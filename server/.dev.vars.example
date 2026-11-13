@@ -5,3 +5,5 @@ SWITCHBOT_SECRET=
 # 自分で決める長いランダムな文字列（例: `openssl rand -hex 24` で作る）
 WEBHOOK_SECRET=
 ADMIN_TOKEN=
+APP_TOKEN=
+AI_TASK_TOKEN=
