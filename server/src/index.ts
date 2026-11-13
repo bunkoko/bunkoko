@@ -1,9 +1,11 @@
 // Cloudflare Workers の入り口
 //   - 5分ごと（cron）: SwitchBot の全機器の状態を取得して保存する
-//   - HTTP: Webhook の受け取りと、動作確認用の管理 API
+//   - HTTP: Webhook の受け取り、iPhone アプリ向けの API（/api/*）、動作確認用の管理 API（/admin/*）
 
 import { buildSummary, exportReadingsCsv } from "./admin";
+import { handleApi } from "./api";
 import { collect } from "./collector";
+import { hasBearer, notFound, secretsMatch, unauthorized } from "./http";
 import { SwitchBotClient } from "./switchbot";
 import { handleSwitchBotWebhook } from "./webhook";
 
@@ -15,6 +17,8 @@ export interface Env {
   WEBHOOK_SECRET: string;
   /** 管理 API を使うための合言葉（Authorization: Bearer <ADMIN_TOKEN>） */
   ADMIN_TOKEN: string;
+  /** iPhone アプリが /api/* を使うための合言葉 */
+  APP_TOKEN: string;
   USER_ID?: string;
   TIME_ZONE?: string;
   /** テスト用。通常は設定しない */
@@ -30,29 +34,6 @@ function createClient(env: Env): SwitchBotClient {
     baseUrl: env.SWITCHBOT_API_BASE,
   });
 }
-
-/** 文字列を、長さや内容から推測されにくい方法で比べる */
-async function secretsMatch(given: string, expected: string): Promise<boolean> {
-  if (!expected) return false;
-  const encoder = new TextEncoder();
-  const [a, b] = await Promise.all([
-    crypto.subtle.digest("SHA-256", encoder.encode(given)),
-    crypto.subtle.digest("SHA-256", encoder.encode(expected)),
-  ]);
-  const left = new Uint8Array(a);
-  const right = new Uint8Array(b);
-  let diff = 0;
-  for (let i = 0; i < left.length; i += 1) diff |= left[i] ^ right[i];
-  return diff === 0;
-}
-
-async function isAdmin(request: Request, env: Env): Promise<boolean> {
-  const header = request.headers.get("authorization") ?? "";
-  const match = /^Bearer\s+(.+)$/i.exec(header);
-  return match !== null && (await secretsMatch(match[1].trim(), env.ADMIN_TOKEN));
-}
-
-const notFound = () => new Response("not found", { status: 404 });
 
 export async function handleRequest(request: Request, env: Env, now = Date.now()): Promise<Response> {
   const url = new URL(request.url);
@@ -70,10 +51,12 @@ export async function handleRequest(request: Request, env: Env, now = Date.now()
     return handleSwitchBotWebhook(request, env.DB, userId);
   }
 
+  if (url.pathname.startsWith("/api/")) {
+    return handleApi(request, url, env, userId, now);
+  }
+
   if (url.pathname.startsWith("/admin/")) {
-    if (!(await isAdmin(request, env))) {
-      return new Response("unauthorized", { status: 401, headers: { "WWW-Authenticate": "Bearer" } });
-    }
+    if (!(await hasBearer(request, env.ADMIN_TOKEN))) return unauthorized();
     if (url.pathname === "/admin/summary" && request.method === "GET") {
       return Response.json(await buildSummary(env.DB, userId, now));
     }

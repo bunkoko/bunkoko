@@ -2,9 +2,10 @@
 //   GET /admin/summary       … 機器ごとの最新の値、直近の取得結果、API の利用回数
 //   GET /admin/readings.csv  … センサーの値を CSV で書き出す（最大7日分）
 
+import { DAY_MS, formatLocal, timeZoneOffsetMs } from "./time";
+
 export const MAX_EXPORT_DAYS = 7;
 export const MAX_EXPORT_ROWS = 100_000;
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 interface RunRow {
   started_at: number;
@@ -114,28 +115,6 @@ export function parseTimeParam(value: string | null, timeZone: string): number |
   }
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? null : parsed;
-}
-
-/** その時刻における、タイムゾーンの UTC からのずれ（ミリ秒） */
-function timeZoneOffsetMs(epochMs: number, timeZone: string): number {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hourCycle: "h23",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).formatToParts(new Date(epochMs));
-  const get = (type: string) => Number(parts.find((part) => part.type === type)?.value);
-  const asUtc = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
-  return asUtc - epochMs;
-}
-
-export function formatLocal(epochMs: number, timeZone: string): string {
-  const shifted = new Date(epochMs + timeZoneOffsetMs(epochMs, timeZone));
-  return shifted.toISOString().replace("T", " ").slice(0, 19);
 }
 
 function csvCell(value: unknown): string {
