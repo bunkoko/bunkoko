@@ -29,15 +29,19 @@ struct SettingsView: View {
                 }
 
                 Section("通知") {
-                    if settings != nil {
+                    if !AppConfig.hasPaidFeatures {
+                        PaidFeatureNote()
+                    } else if settings != nil {
                         Toggle("寝る前の確認", isOn: notificationBinding(\.bedtime))
                         Stepper("就寝の \(settings?.notifications.bedtimeLeadMinutes ?? 60) 分前に確認", value: leadBinding, in: 15...180, step: 15)
                         Toggle("朝のレポート", isOn: notificationBinding(\.morningReport))
                     }
-                    Button("通知を許可する") {
-                        Task {
-                            let granted = await NotificationPermission.request()
-                            message = granted ? "通知を許可しました" : "通知が許可されませんでした（iPhone の設定アプリから変えられます）"
+                    if AppConfig.hasPaidFeatures {
+                        Button("通知を許可する") {
+                            Task {
+                                let granted = await NotificationPermission.request()
+                                message = granted ? "通知を許可しました" : "通知が許可されませんでした（iPhone の設定アプリから変えられます）"
+                            }
                         }
                     }
                 }
@@ -73,7 +77,9 @@ struct SettingsView: View {
                 }
 
                 Section("スクリーンタイム（夜にスマホを最後に使った時刻）") {
-                    if !screenTime.isAuthorized {
+                    if !AppConfig.hasPaidFeatures {
+                        PaidFeatureNote()
+                    } else if !screenTime.isAuthorized {
                         Button("スクリーンタイムを許可") {
                             Task { await screenTime.requestAuthorization() }
                         }
@@ -199,6 +205,15 @@ struct SettingsView: View {
         guard total > 0 else { return "完了" }
         let ratio = min(1, max(0, done / total))
         return ratio >= 0.999 ? "完了" : "\(Int(ratio * 100))%"
+    }
+}
+
+/// 無料の Apple ID でビルドしたときに、使えない機能の代わりに出す説明
+struct PaidFeatureNote: View {
+    var body: some View {
+        Text("Apple Developer Program（有料）に登録すると使えます。登録したら、ios/Config/Local.xcconfig の KENKO_EDITION を Paid にして、ビルドし直してください。")
+            .font(.callout)
+            .foregroundStyle(.secondary)
     }
 }
 

@@ -21,6 +21,12 @@ enum AppConfig {
     static var isConfigured: Bool {
         serverURL != nil && !(appToken ?? "").isEmpty
     }
+
+    /// Apple Developer Program（有料）の機能（通知・スクリーンタイム）を使えるか。
+    /// 無料の Apple ID でビルドしたとき（Config の KENKO_EDITION = Free）は使えない
+    static var hasPaidFeatures: Bool {
+        (Bundle.main.object(forInfoDictionaryKey: "KenkoEdition") as? String) != "Free"
+    }
 }
 
 /// キーチェーン（端末の中の、パスワードなどを安全に保存する場所）

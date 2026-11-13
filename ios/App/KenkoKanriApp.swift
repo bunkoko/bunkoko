@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         // バックグラウンドで新しい HealthKit のデータを受け取れるように、起動するたびに登録する
         Task { await HealthSync.shared.startBackgroundDelivery() }
         // 通知を許可済みなら、通知の送り先（デバイストークン）をサーバーに登録し直す
+        guard AppConfig.hasPaidFeatures else { return true }
         UNUserNotificationCenter.current().getNotificationSettings { settings in
             guard settings.authorizationStatus == .authorized else { return }
             DispatchQueue.main.async { application.registerForRemoteNotifications() }

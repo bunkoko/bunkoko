@@ -20,7 +20,11 @@
 ## 1. 準備（1回だけ）
 
 1. **Xcode** と **XcodeGen** を入れる（済み）。
-2. **Apple Developer Program**: 通知・スクリーンタイム・App Group の機能は、無料の Apple ID では使えないことがある。ビルドのときに「Capability」や「Provisioning profile」のエラーが出たら、登録する。
+2. **Apple Developer Program**: 登録していなくても、無料の Apple ID で iPhone に入れられる（`KENKO_EDITION = Free`）。ただし無料のあいだは:
+   - 通知（寝る前の確認・朝のレポート）とスクリーンタイムは使えない（Apple の決まりで、無料のチームでは使えないため）
+   - 7日ごとに、Xcode からもう一度入れ直す必要がある（入れ直してもデータは消えない）
+
+   登録したら `KENKO_EDITION = Paid` に変えて、ビルドし直す。
 3. **自分用の設定ファイルを作る**（`ios` フォルダで）:
    ```sh
    cp Config/Local.xcconfig.example Config/Local.xcconfig
@@ -28,6 +32,7 @@
    `Config/Local.xcconfig` をテキストエディタで開き、2つを書き換える:
    - `DEVELOPMENT_TEAM`: Apple Developer のチーム ID（ https://developer.apple.com/account の「Membership」に出る10文字の英数字）
    - `APP_BUNDLE_ID`: アプリの ID。世界で1つになるように、自分の名前などを入れる（例: `com.taro.kenkokanri`）。**サーバーの `APNS_BUNDLE_ID` と同じにする**（server/README.md の9章）
+   - `KENKO_EDITION`: 無料の Apple ID なら `Free`、Apple Developer Program に登録済みなら `Paid`
 
 ## 2. ビルドして iPhone に入れる
 
@@ -42,7 +47,7 @@
 3. Xcode の上の方で、実行先にあなたの iPhone を選び、▶（Run）を押す。
 4. iPhone にアプリが入って開いたら、「3. はじめの設定」へ。
 
-**ビルドのエラーが出たら**: このアプリは、Xcode のない作業環境で書いたため、まだ一度もビルドしていない。エラーが出る可能性が高いので、Xcode の左の「Issue navigator」（⚠ のアイコン）に出た赤いエラーを、まとめてコピーして Claude に貼ってほしい（エラーを選んで右クリック →「Copy」）。
+**ビルドのエラーが出たら**: Xcode の左の「Issue navigator」（⚠ のアイコン）に出た赤いエラーを、まとめてコピーして Claude に貼ってほしい（エラーを選んで右クリック →「Copy」）。コンパイルのエラーは、GitHub の Mac（`.github/workflows/ios-build.yml`）でも、push するたびに確かめている。
 
 ## 3. はじめの設定（アプリの中で）
 

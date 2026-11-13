@@ -6,5 +6,8 @@ APP_BUNDLE_ID = com.example.kenkokanri
 APP_GROUP_ID = group.$(APP_BUNDLE_ID)
 // Apple Developer のチーム ID。Local.xcconfig に書く
 DEVELOPMENT_TEAM =
+// Paid: Apple Developer Program（有料）に登録済み。すべての機能を使う
+// Free: 無料の Apple ID。通知・スクリーンタイムは使えない（Apple の決まりで、無料のチームでは使えないため）
+KENKO_EDITION = Paid
 
 #include? "Local.xcconfig"

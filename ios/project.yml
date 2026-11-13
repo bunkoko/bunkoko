@@ -40,18 +40,14 @@ targets:
         NSHealthShareUsageDescription: 睡眠・心拍・活動などのデータを読み取り、部屋の環境と合わせて睡眠を分析するために使います。
         NSHealthUpdateUsageDescription: 記録したカフェインと飲酒の量を、ヘルスケアにも保存するために使います。
         AppGroupIdentifier: $(APP_GROUP_ID)
+        # Paid（Apple Developer Program に登録済み）か Free（無料の Apple ID）か。Config/Base.xcconfig の KENKO_EDITION
+        KenkoEdition: $(KENKO_EDITION)
         ITSAppUsesNonExemptEncryption: false
-    entitlements:
-      path: App/KenkoKanri.entitlements
-      properties:
-        com.apple.developer.healthkit: true
-        com.apple.developer.healthkit.background-delivery: true
-        com.apple.developer.family-controls: true
-        com.apple.security.application-groups: [$(APP_GROUP_ID)]
-        aps-environment: development
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID)
+        # 権限のファイルは、Paid と Free で分けて置いてある（Free は通知・スクリーンタイム・App Group なし）
+        CODE_SIGN_ENTITLEMENTS: App/KenkoKanri-$(KENKO_EDITION).entitlements
     dependencies:
       - target: KenkoKanriActivityMonitor
 
@@ -72,11 +68,17 @@ targets:
         NSExtension:
           NSExtensionPointIdentifier: com.apple.deviceactivity.monitor-extension
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ActivityMonitorExtension
-    entitlements:
-      path: ActivityMonitor/KenkoKanriActivityMonitor.entitlements
-      properties:
-        com.apple.developer.family-controls: true
-        com.apple.security.application-groups: [$(APP_GROUP_ID)]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID).ActivityMonitor
+        CODE_SIGN_ENTITLEMENTS: ActivityMonitor/KenkoKanriActivityMonitor-$(KENKO_EDITION).entitlements
+
+schemes:
+  KenkoKanri:
+    build:
+      targets:
+        KenkoKanri: all
+    run:
+      config: Debug
+    archive:
+      config: Release
