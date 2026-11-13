@@ -52,6 +52,14 @@ jobs:
             2>&1 | tee build.log | grep -E "error:|warning:|BUILD (SUCCEEDED|FAILED)" || true
           grep -q "BUILD SUCCEEDED" build.log
 
+      - name: Check the shortcut action (App Intents) is in the app
+        run: |
+          grep -n -B2 -A3 "ExtractAppIntentsMetadata" build.log | grep -E "ExtractAppIntentsMetadata|warning|error" || true
+          app=$(find build/Build/Products -maxdepth 2 -name "KenkoKanri.app" | head -1)
+          echo "app: $app"
+          find "$app" -path "*Metadata.appintents*" | head
+          test -n "$(find "$app" -path "*Metadata.appintents*" -name "*.actionsdata")"
+
       - name: Build (Free)
         run: |
           set -o pipefail

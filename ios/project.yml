@@ -35,7 +35,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
-        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         UIBackgroundModes: [remote-notification]
         NSHealthShareUsageDescription: 睡眠・心拍・活動などのデータを読み取り、部屋の環境と合わせて睡眠を分析するために使います。
         NSHealthUpdateUsageDescription: 記録したカフェインと飲酒の量を、ヘルスケアにも保存するために使います。
