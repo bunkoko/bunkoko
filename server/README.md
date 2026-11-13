@@ -24,6 +24,7 @@
 6. [機器がなくても手元で試す](#6-機器がなくても手元で試す)
 7. [仕組み](#7-仕組み)
 8. [食事の目安（Claude Code のスケジュールされたタスク）](#8-食事の目安claude-code-のスケジュールされたタスク)
+9. [通知（寝る前の確認・朝のレポート）](#9-通知寝る前の確認朝のレポート)
 
 ---
 
@@ -246,4 +247,29 @@ Claude のサブスクリプションの使用量の範囲で動き、API の別
 4. タスクを今すぐ1回動かして、報告に件数が出れば完了。アプリの食事の一覧で、目安が付いていることを確かめる。
 
 指示書（`ai/meal-estimation-task.md`）では、Claude ができることを「目安がまだの食事を読む」「目安を書き込む」の2つの API だけに絞っている。料理名の文字に何が書かれていても、指示としては扱わない。
+
+---
+
+## 9. 通知（寝る前の確認・朝のレポート）
+
+Apple Developer Program に登録したあとに設定する。iPhone アプリができて、通知を許可してから試す。
+
+1. 通知用の鍵を作る: Apple Developer のサイト（ https://developer.apple.com/account ）→「Certificates, Identifiers & Profiles」→「Keys」→「+」→「Apple Push Notifications service (APNs)」にチェックして作成する。
+   - `.p8` ファイルをダウンロードする（**1回しかダウンロードできない**。パスワードと同じ扱いで保管する）
+   - 表示される **Key ID** と、「Membership」に出ている **Team ID** を控える
+2. サーバーに登録する（`AuthKey_XXXXXXXXXX.p8` はダウンロードしたファイル名）:
+   ```sh
+   npx wrangler secret put APNS_KEY_P8 < AuthKey_XXXXXXXXXX.p8
+   npx wrangler secret put APNS_KEY_ID      # Key ID
+   npx wrangler secret put APNS_TEAM_ID     # Team ID
+   npx wrangler secret put APNS_BUNDLE_ID   # アプリの ID（例: com.<あなた>.bunkoko）
+   ```
+3. 届くか試す:
+   ```sh
+   curl -X POST "https://<URL>/admin/notify/test" -H "Authorization: Bearer <ADMIN_TOKEN>"
+   ```
+   `"delivered": 1` のように表示され、iPhone に「通知のテスト」が届けば完了。
+
+- Cloudflare Workers から Apple の通知の仕組みに送れるかは、この手順で初めて確かめられる（この作業環境からは Apple のサーバーに通信できず、確かめられていない）。届かない場合は、表示される `failed` の `reason` を Claude に伝える。
+- 通知は5分ごとの実行の中で送る。寝る前の確認は目標の就寝時刻の60分前（設定で変えられる）、朝のレポートは起きた20分後以降に1回だけ。部屋に問題がなければ、寝る前の確認は送らない。
 

@@ -9,6 +9,8 @@ import { handleApi } from "./api";
 import { collect } from "./collector";
 import { processDayQueue, queueDateRange } from "./days/queue";
 import { hasBearer, jsonError, notFound, secretsMatch, unauthorized } from "./http";
+import { apnsConfigFrom, runNotifications, sendToAll } from "./notify";
+import { latestRoom } from "./read";
 import { getSettings } from "./settings";
 import { SwitchBotClient } from "./switchbot";
 import { addDays, isValidDate } from "./time";
@@ -28,6 +30,11 @@ export interface Env {
   AI_TASK_TOKEN: string;
   USER_ID?: string;
   TIME_ZONE?: string;
+  /** 通知（APNs）。Apple Developer Program で作る通知用の鍵（.p8 の中身）、鍵の ID、チーム ID、アプリの ID */
+  APNS_KEY_P8?: string;
+  APNS_KEY_ID?: string;
+  APNS_TEAM_ID?: string;
+  APNS_BUNDLE_ID?: string;
   /** テスト用。通常は設定しない */
   SWITCHBOT_API_BASE?: string;
 }
@@ -100,6 +107,13 @@ export async function handleRequest(request: Request, env: Env, now = Date.now()
       const settings = await getSettings(env.DB, userId, env.TIME_ZONE || "Asia/Tokyo");
       return Response.json(await processDayQueue(env.DB, userId, settings, now, max));
     }
+    if (url.pathname === "/admin/notify/test" && request.method === "POST") {
+      // 通知が届くかを試す
+      const config = apnsConfigFrom(env);
+      if (!config) return jsonError(400, "APNS_KEY_P8 / APNS_KEY_ID / APNS_TEAM_ID / APNS_BUNDLE_ID が設定されていません");
+      const result = await sendToAll(env.DB, userId, config, { title: "通知のテスト", body: "bunkoko から通知が届きました" }, now);
+      return Response.json({ ok: result.delivered > 0, ...result });
+    }
     if (url.pathname === "/admin/collect" && request.method === "POST") {
       const result = await collect(
         { db: env.DB, client: createClient(env), userId },
@@ -129,7 +143,12 @@ export default {
 
     // ついでに、計算待ちの日を数日分ずつ計算する
     const settings = await getSettings(env.DB, userId, env.TIME_ZONE || "Asia/Tokyo");
-    const days = await processDayQueue(env.DB, userId, settings, Date.now());
+    const now = Date.now();
+    const days = await processDayQueue(env.DB, userId, settings, now);
     if (days.computed.length > 0) console.log(`computed days ${days.computed.join(", ")} (${days.remaining} left)`);
+
+    // 寝る前の確認・朝のレポート（送る時刻になっていれば）
+    const notified = await runNotifications(env.DB, userId, settings, apnsConfigFrom(env), now, (roles) => latestRoom(env.DB, userId, roles, now));
+    if (notified.bedtime === "sent" || notified.morning === "sent") console.log("notifications", JSON.stringify(notified));
   },
 } satisfies ExportedHandler<Env>;

@@ -9,8 +9,9 @@ import {
   parseLogsBatch,
 } from "./ingest";
 import { listMeals, parseEstimate, saveEstimates } from "./meals";
+import { buildHome, buildTimeline, loadDays } from "./read";
 import { applySettingsPatch, getSettings, saveSettings } from "./settings";
-import { DAY_MS, addDays, isValidDate, localMidnight } from "./time";
+import { DAY_MS, addDays, isValidDate, localDate, localMidnight } from "./time";
 import { Problems, isRecord, oneOf } from "./validate";
 
 export interface ApiEnv {
@@ -93,6 +94,22 @@ export async function handleApi(
       return Response.json({ ok: true });
     }
 
+    case "GET /api/home": {
+      const settings = await getSettings(env.DB, userId, defaultTimeZone);
+      return Response.json({ ok: true, ...(await buildHome(env.DB, userId, settings, now)) });
+    }
+
+    case "GET /api/days": {
+      // 1日 = 1行の表（from / to は日付。省略すると直近14日）
+      const settings = await getSettings(env.DB, userId, defaultTimeZone);
+      const today = localDate(now, settings.timeZone);
+      const to = url.searchParams.get("to") ?? today;
+      const from = url.searchParams.get("from") ?? addDays(to, -13);
+      if (!isValidDate(from) || !isValidDate(to) || from > to) return jsonError(400, "from と to を YYYY-MM-DD で指定してください");
+      if (addDays(from, 92) < to) return jsonError(400, "一度に見られるのは92日分までです");
+      return Response.json({ ok: true, days: await loadDays(env.DB, userId, from, to) });
+    }
+
     case "GET /api/meals": {
       // 期間の食事と目安（from / to は日付。省略すると直近7日）
       const settings = await getSettings(env.DB, userId, defaultTimeZone);
@@ -106,6 +123,15 @@ export async function handleApi(
       if (to - from > 62 * DAY_MS) return jsonError(400, "一度に見られるのは62日分までです");
       return Response.json({ ok: true, meals: await listMeals(env.DB, userId, from, to) });
     }
+  }
+
+  // 夜の詳細
+  const timeline = /^\/api\/nights\/(\d{4}-\d{2}-\d{2})\/timeline$/.exec(url.pathname);
+  if (request.method === "GET" && timeline && isValidDate(timeline[1])) {
+    const settings = await getSettings(env.DB, userId, defaultTimeZone);
+    const view = await buildTimeline(env.DB, userId, timeline[1], settings);
+    if (!view) return jsonError(404, "その日のデータはまだ計算されていません");
+    return Response.json({ ok: true, ...view });
   }
 
   // 食事の目安を利用者が直す（生成AI の目安より優先される）
