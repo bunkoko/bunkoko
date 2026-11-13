@@ -5,8 +5,11 @@
 import { buildSummary, exportReadingsCsv } from "./admin";
 import { handleApi } from "./api";
 import { collect } from "./collector";
-import { hasBearer, notFound, secretsMatch, unauthorized } from "./http";
+import { processDayQueue, queueDateRange } from "./days/queue";
+import { hasBearer, jsonError, notFound, secretsMatch, unauthorized } from "./http";
+import { getSettings } from "./settings";
 import { SwitchBotClient } from "./switchbot";
+import { addDays, isValidDate } from "./time";
 import { handleSwitchBotWebhook } from "./webhook";
 
 export interface Env {
@@ -63,6 +66,32 @@ export async function handleRequest(request: Request, env: Env, now = Date.now()
     if (url.pathname === "/admin/readings.csv" && request.method === "GET") {
       return exportReadingsCsv(env.DB, userId, url, env.TIME_ZONE || "Asia/Tokyo", now);
     }
+    if (url.pathname === "/admin/days" && request.method === "GET") {
+      // 計算した 1日 = 1行の表を見る（動作確認用）
+      const from = url.searchParams.get("from") ?? "0000-00-00";
+      const to = url.searchParams.get("to") ?? "9999-99-99";
+      const { results } = await env.DB
+        .prepare(`SELECT date, computed_at, metrics_json FROM days WHERE user_id = ?1 AND date >= ?2 AND date <= ?3 ORDER BY date DESC LIMIT 60`)
+        .bind(userId, from, to)
+        .all<{ date: string; computed_at: number; metrics_json: string }>();
+      return Response.json(results.map((row) => ({ date: row.date, computedAt: row.computed_at, metrics: JSON.parse(row.metrics_json) })));
+    }
+    if (url.pathname === "/admin/days/requeue" && request.method === "POST") {
+      // 期間の日をすべて計算し直す（計算方法を変えたときなど）
+      const from = url.searchParams.get("from") ?? "";
+      const to = url.searchParams.get("to") ?? "";
+      if (!isValidDate(from) || !isValidDate(to) || from > to) return jsonError(400, "from と to を YYYY-MM-DD で指定してください");
+      const dates: string[] = [];
+      for (let date = from; date <= to && dates.length < 400; date = addDays(date, 1)) dates.push(date);
+      await queueDateRange(env.DB, userId, dates, now);
+      return Response.json({ ok: true, queued: dates.length });
+    }
+    if (url.pathname === "/admin/days/process" && request.method === "POST") {
+      // 計算待ちの日を今すぐ計算する
+      const max = Math.min(Math.max(Number(url.searchParams.get("max") ?? "10") || 10, 1), 50);
+      const settings = await getSettings(env.DB, userId, env.TIME_ZONE || "Asia/Tokyo");
+      return Response.json(await processDayQueue(env.DB, userId, settings, now, max));
+    }
     if (url.pathname === "/admin/collect" && request.method === "POST") {
       const result = await collect(
         { db: env.DB, client: createClient(env), userId },
@@ -81,12 +110,18 @@ export default {
   },
 
   async scheduled(_controller, env) {
-    const result = await collect({ db: env.DB, client: createClient(env), userId: userIdOf(env) });
+    const userId = userIdOf(env);
+    const result = await collect({ db: env.DB, client: createClient(env), userId });
     if (result.errors.length > 0) {
       console.warn("collector errors", JSON.stringify(result.errors));
     }
     console.log(
       `collected ${result.devicesOk}/${result.devicesTotal} devices, ${result.readingsWritten} readings`,
     );
+
+    // ついでに、計算待ちの日を数日分ずつ計算する
+    const settings = await getSettings(env.DB, userId, env.TIME_ZONE || "Asia/Tokyo");
+    const days = await processDayQueue(env.DB, userId, settings, Date.now());
+    if (days.computed.length > 0) console.log(`computed days ${days.computed.join(", ")} (${days.remaining} left)`);
   },
 } satisfies ExportedHandler<Env>;

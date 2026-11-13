@@ -107,6 +107,15 @@ curl "https://<URL>/admin/summary" -H "Authorization: Bearer <ADMIN_TOKEN>"
 | `webhook.eventsReceived` | 届いた Webhook の数 |
 | `switchBotApiCallsLast24h` | 直近24時間の SwitchBot API の利用回数（上限は1日 10,000回。9台なら約2,600回） |
 
+計算した 1日 = 1行の表を見る（iPhone アプリからデータが届くようになってから）:
+```sh
+curl "https://<URL>/admin/days?from=2026-12-01&to=2026-12-07" -H "Authorization: Bearer <ADMIN_TOKEN>"
+# 計算方法を変えたときなどに、期間の日をすべて計算し直す
+curl -X POST "https://<URL>/admin/days/requeue?from=2026-12-01&to=2026-12-07" -H "Authorization: Bearer <ADMIN_TOKEN>"
+curl -X POST "https://<URL>/admin/days/process?max=10" -H "Authorization: Bearer <ADMIN_TOKEN>"
+```
+計算待ちの日は、5分ごとの実行のついでに4日分ずつ計算される。
+
 ログを見る: `npx wrangler tail`（またはCloudflare のダッシュボードの Workers → bunkoko-server → ログ）
 
 よくあるエラー:
