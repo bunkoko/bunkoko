@@ -137,7 +137,26 @@ let writing = Promise.resolve();
 
 const grade = (it) => local[it.k] ?? it.g ?? "";
 const worries = [...new Map(ITEMS.map((it) => [it.w, it.wt])).entries()];
-const inFilter = () => ITEMS.map((it, i) => i).filter((i) => !filter || ITEMS[i].w === filter);
+// 抜き取り：悩みごとに PER_WORRY 行（人と Haiku の点の一致を見るのに足りる数。悩みをまたいで散らす）
+const PICK = "pick", PER_WORRY = 3;
+const byKey = (a, b) => (ITEMS[a].k < ITEMS[b].k ? -1 : ITEMS[a].k > ITEMS[b].k ? 1 : 0);
+function pickList() {
+  const out = [];
+  for (const [w] of worries) {
+    // キー（ハッシュ）の順は、作品や検索の順位と関係のない順。点のある行はそのまま数える
+    const idx = ITEMS.map((it, i) => i).filter((i) => ITEMS[i].w === w).sort(byKey);
+    const graded = idx.filter((i) => grade(ITEMS[i]));
+    const need = Math.max(0, PER_WORRY - graded.length);
+    const open = idx.filter((i) => !grade(ITEMS[i]));
+    // 飛ばした行は後回しにして、同じ悩みの別の行で埋める
+    const order = [...open.filter((i) => !skipped.has(i)), ...open.filter((i) => skipped.has(i))];
+    out.push(...graded.slice(0, PER_WORRY), ...order.slice(0, need));
+  }
+  return out;
+}
+const inFilter = () => filter === PICK
+  ? pickList()
+  : ITEMS.map((it, i) => i).filter((i) => !filter || ITEMS[i].w === filter);
 
 function el(tag, attrs, ...kids) {
   const e = document.createElement(tag);
@@ -160,7 +179,12 @@ function nextUngraded(from) {
 function renderSelect() {
   const sel = $("worry");
   const keep = sel.value;
-  sel.replaceChildren(el("option", { value: "" }, "すべての悩み"));
+  const picks = pickList();
+  const pickDone = picks.filter((i) => grade(ITEMS[i])).length;
+  sel.replaceChildren(
+    el("option", { value: PICK }, `抜き取り（${pickDone}/${picks.length}）悩みごとに${PER_WORRY}行ずつ`),
+    el("option", { value: "" }, "すべての悩み"),
+  );
   for (const [w, text] of worries) {
     const its = ITEMS.filter((it) => it.w === w);
     const n = its.filter((it) => grade(it)).length;
@@ -174,7 +198,7 @@ function renderCounts() {
   const list = inFilter();
   const n = list.filter((i) => grade(ITEMS[i])).length;
   $("overall").textContent =
-    `${filter ? "この悩み" : "全体"} ${n}/${list.length} 行・全体 ${all}/${ITEMS.length} 行に点があります`;
+    `${filter === PICK ? "抜き取り" : filter ? "この悩み" : "全体"} ${n}/${list.length} 行・全体 ${all}/${ITEMS.length} 行に点があります`;
   $("bar").style.width = list.length ? `${(n / list.length) * 100}%` : "0";
 }
 
@@ -193,7 +217,8 @@ function render() {
   if (cur < 0) {
     const left = ITEMS.filter((it) => !grade(it)).length;
     main.replaceChildren(el("div", { class: "card done" },
-      el("p", { class: "worry" }, filter ? "この悩みは全部に点を付けました" : "全部の行に点を付けました"),
+      el("p", { class: "worry" }, filter === PICK ? "抜き取りの行は全部に点を付けました"
+        : filter ? "この悩みは全部に点を付けました" : "全部の行に点を付けました"),
       el("p", {}, left ? `ほかの悩みに、点の無い行が ${left} あります。上の一覧から選べます。`
                        : "おつかれさまでした。"),
       el("p", { class: "summary" }, "付け終わったら、Claude のこの会話で「スマホの点を取り込んで」と伝えてください。"),
@@ -296,6 +321,8 @@ $("worry").addEventListener("change", (e) => {
 });
 
 function firstOpenWorry() {
+  // まず抜き取りから。抜き取りが終わっていれば、点の無い行のある最初の悩み
+  if (pickList().some((i) => !grade(ITEMS[i]))) return PICK;
   return (worries.find(([w]) => ITEMS.some((it) => it.w === w && !grade(it))) || [""])[0];
 }
 
