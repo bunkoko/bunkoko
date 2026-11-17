@@ -255,6 +255,121 @@ def test_no_activist_gives_zero_months(tmp_path):
     assert s.events == 0 and len(s.d) == 17 and (s.d == 0).all() and s.gross == 0
 
 
+# --------------------------------------------------------------------------- 大量保有報告書がそろっている期間（EDINET で見られるのは 5 年）
+def _set_n350(data, zero_before, also_has=(), no_docs=()):
+    """一覧の件数を書き換える: zero_before より前の日は 350 の書類なし（also_has の日だけあり）。no_docs の日は書類そのものが 0 件。"""
+    t = pd.read_csv(data / W.FLISTED, dtype=str)
+    day = pd.to_datetime(t["date"])
+    has = (day >= pd.Timestamp(zero_before)) | day.isin(pd.to_datetime(list(also_has)))
+    t["n350"] = np.where(has, "1", "0")
+    none = day.isin(pd.to_datetime(list(no_docs)))
+    t.loc[none, ["n", "n350"]] = "0"
+    t.to_csv(data / W.FLISTED, index=False)
+
+
+GAP_ROWS = [
+    ("t", "2016-04-05 10:00", EFF, "E9001", "E1002", "大量保有報告書", "0"),          # そろっている期間より前に 1 件だけ残っていた書類 → 使わない
+    ("x", "2016-08-25 10:00", EFF, "E9001", "E1001", "大量保有報告書", "0"),          # 境目の月（8 月。半分しかそろっていない）→ 使わない
+    ("e", "2016-09-15 09:30", "株式会社レノ", "E9003", "E1003", "大量保有報告書", "0"),   # 使う
+    ("k", "2016-11-04 11:00", EFF, "E9001", "E1002", "大量保有報告書", "0"),          # t と同じ出した人 × 同じ会社。期間の中では最初 → 使う
+]
+
+
+def _gap_data(tmp_path):
+    close = _close(pd.bdate_range("2016-01-01", "2017-06-30"), [f"{1001 + k}.T" for k in range(6)], 3)
+    data = _write(tmp_path, close, rows=GAP_ROWS)
+    _set_n350(data, "2016-08-17", also_has=["2016-04-05"])
+    return data, close
+
+
+def test_data_start_by_hand():
+    days = pd.bdate_range("2016-01-04", "2017-06-30")
+
+    def table(n350_of, n_of=lambda d: 5):
+        return pd.DataFrame({"date": [f"{d:%Y-%m-%d}" for d in days], "n": [str(n_of(d)) for d in days],
+                             "n350": [str(n350_of(d)) for d in days], "checked_at": "x"})
+
+    # どの日にも 350 の書類がある → 一覧を見た最初の日から（もとの決まり）
+    start, info = W.data_start(table(lambda d: 3))
+    assert start == pd.Timestamp("2016-01-04") and info["low_months"] == 0
+    # 2016-08-17 から出ている → 8 月は 11/23 日で 8 割に届かない → 9 月の初めから
+    start, info = W.data_start(table(lambda d: int(d >= pd.Timestamp("2016-08-17"))))
+    assert start == pd.Timestamp("2016-09-01") and info["low_months"] == 8
+    assert info["days_before"] == len(days[days < "2016-09-01"]) and info["has_before"] == 11
+    # 月の初めから出ていれば、その月から
+    start, _ = W.data_start(table(lambda d: int(d >= pd.Timestamp("2016-08-01"))))
+    assert start == pd.Timestamp("2016-08-01")
+    # 前に 1 日だけ残っていても、その月はそろっていない
+    start, _ = W.data_start(table(lambda d: int(d >= pd.Timestamp("2016-08-17") or d == pd.Timestamp("2016-04-05"))))
+    assert start == pd.Timestamp("2016-09-01")
+    # 書類が 1 件も無い日（祝日）は数えない: 9 月に祝日が 5 日あっても 9 月はそろっている
+    hol = set(pd.to_datetime(["2016-09-19", "2016-09-20", "2016-09-21", "2016-09-22", "2016-09-23"]))
+    start, _ = W.data_start(table(lambda d: int(d >= pd.Timestamp("2016-09-01") and d not in hol), lambda d: 0 if d in hol else 5))
+    assert start == pd.Timestamp("2016-09-01")
+    # 8 割ちょうどは「そろっている」（2017-02 は 20 営業日。4 日欠けて 16/20）
+    miss = set(pd.bdate_range("2017-02-01", "2017-02-06"))
+    start, _ = W.data_start(table(lambda d: int(d not in miss)))
+    assert start == pd.Timestamp("2016-01-04")
+    start, _ = W.data_start(table(lambda d: int(d not in miss | {pd.Timestamp("2017-02-07")})))      # 15/20 は届かない → 3 月から
+    assert start == pd.Timestamp("2017-03-01")
+    # 最後の月にもそろっていない・件数が数でない → 計算しない
+    with pytest.raises(base.NotReady, match="最後の月"):
+        W.data_start(table(lambda d: int(d < pd.Timestamp("2017-06-01"))))
+    with pytest.raises(base.NotReady, match="件数"):
+        W.data_start(table(lambda d: "x"))
+    with pytest.raises(base.NotReady, match="書類のあった日"):
+        W.data_start(table(lambda d: 0, lambda d: 0))
+
+
+def test_months_without_350_reports_are_not_counted_as_zero(tmp_path):
+    data, close = _gap_data(tmp_path)
+    s = W.compute(data)
+    d = s.d
+    assert d.index[0] == pd.Timestamp("2016-09-30") and d.index[-1] == pd.Timestamp("2017-05-31") and len(d) == 9
+    want = {}
+    for t, day in [("1003.T", "2016-09-15"), ("1002.T", "2016-11-04")]:
+        buy, v = _expected(close, t, day)
+        want[base.month_end(buy)] = v
+    assert sorted(want) == [pd.Timestamp("2016-09-30"), pd.Timestamp("2016-11-30")]
+    for mth, v in want.items():
+        assert d[mth] == pytest.approx(v, abs=1e-12)
+    assert (d.drop(list(want)) == 0).all() and s.events == 2
+    text = "\n".join(s.notes)
+    assert "そろっているのは 2016-09-01 から" in text and "そろっている期間より前 2 件は使わない" in text
+    assert "最初の 1 回 2 件 → 使った 2 件" in text
+
+
+def test_same_result_as_if_the_list_started_at_the_data_start(tmp_path):
+    """そろっている期間より前を一覧ごと無かったことにしても、同じ d になる（前の月は 0 としても数えていない）。"""
+    data, close = _gap_data(tmp_path / "a")
+    d = W.compute(data).d
+    rows = [r for r in GAP_ROWS if r[1] >= "2016-09-01"]
+    d2 = W.compute(_write(tmp_path / "b", close, rows=rows, listed=pd.bdate_range("2016-09-01", "2017-06-30"))).d
+    assert d.index.equals(d2.index) and np.allclose(d, d2)
+
+
+def test_check_tells_the_data_start_and_the_short_span(tmp_path, monkeypatch):
+    monkeypatch.setattr(W.ED, "fetch_days", lambda today, *a, **k: list(pd.bdate_range("2016-01-04", today)))
+    data, _ = _gap_data(tmp_path)
+    c = W.check(data, today="2017-07-03")
+    assert c.ok                                                                              # 一覧は全部見てある。月が足りないかは判定の側で決まる
+    text = "\n".join(c.lines)
+    assert "そろっているのは 2016-09-01 から" in text and "d を作れる月 2016-09〜2017-05（9 か月）" in text
+    assert "月が 60 に届かない・事象が 30 に届かないので、判定は決まりどおり「数が足りない（判定しない）」" in text
+    assert "%" not in text.replace("（100.0%）", "")
+
+
+def test_no_350_reports_at_the_end_is_not_ready(tmp_path, monkeypatch):
+    monkeypatch.setattr(W.ED, "fetch_days", lambda today, *a, **k: list(pd.bdate_range("2016-01-04", today)))
+    close = _close(pd.bdate_range("2016-01-01", "2017-06-30"), [f"{1001 + k}.T" for k in range(6)], 3)
+    data = _write(tmp_path, close)
+    _set_n350(data, "2030-01-01")                                                            # 350 の書類がどの日にも無い
+    with pytest.raises(base.NotReady, match="最後の月"):
+        W.compute(data)
+    c = W.check(data, today="2017-07-03")
+    assert not c.ok and "最後の月" in c.why
+
+
 # --------------------------------------------------------------------------- データが無い・形が違う
 def test_not_ready(tmp_path):
     close = _close(pd.bdate_range("2016-01-01", "2017-06-30"), ["1001.T", "1002.T"])

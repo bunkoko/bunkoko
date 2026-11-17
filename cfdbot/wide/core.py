@@ -63,7 +63,8 @@ def judge(s: Stream) -> dict:
     out = {"key": s.key, "n": len(d), "events": s.events, "gross": s.gross,
            "start": d.index[0] if len(d) else None, "end": d.index[-1] if len(d) else None}
     if len(d) < MIN_MONTHS or (s.events is not None and s.events < MIN_EVENTS):
-        return {**out, "verdict": SHORT, "verdict_ref": SHORT, "mean": float(d.mean()) if len(d) else float("nan"),
+        # 判定しないルールは、平均も出さない（後で数がそろってから確かめるときに、先に成績を見てしまわないため）
+        return {**out, "verdict": SHORT, "verdict_ref": SHORT, "mean": float("nan"),
                 "mean1": float("nan"), "mean2": float("nan"), "t": float("nan"), "t2": float("nan")}
     a, b = halves(d)
     t_all, t2 = t_value(d), t_value(b)
@@ -355,7 +356,11 @@ def report_lines(single: dict[str, dict], wx: dict, streams: dict[str, Stream], 
         if k in skipped or k not in streams:
             continue
         s, j = streams[k], single[k]
-        L.append(f"- {k}: {_ym(j['start'])}〜{_ym(j['end'])}。コストを引く前の月の平均 {_pct(s.gross)}")
+        if j["verdict"] == SHORT:
+            L.append(f"- {k}: {_ym(j['start'])}〜{_ym(j['end'])}。数が足りないので判定せず、成績の数字も出さない"
+                     "（後で数がそろってから確かめるときに、先に見てしまわないため）")
+        else:
+            L.append(f"- {k}: {_ym(j['start'])}〜{_ym(j['end'])}。コストを引く前の月の平均 {_pct(s.gross)}")
         L += [f"  - {x}" for x in s.notes]
     L += ["- 個別株の 1 日の値動きは ±30% にそろえた。税金は入れていない",
           "- W5・W6 は買った月に数える（持つ期間は次の月にかかる）。組の重さに使う「前の月まで」の値の一部は、その月の中で決まる（影響はごく小さい。条件どおりに計算した）",

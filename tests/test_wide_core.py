@@ -71,6 +71,24 @@ def test_judge_short():
     assert C.judge(stream("W5", 0.01 + 0.001 * np.sin(np.arange(120)), events=30))["verdict"] != C.SHORT
 
 
+def test_short_rule_shows_no_return_numbers():
+    rng = np.random.default_rng(31)
+    s = {k: stream(k, 0.01 * rng.standard_normal(120)) for k in ("W1", "W3", "W7")}
+    s["W6"] = stream("W6", np.full(58, 0.0321), events=42)          # 月が 60 に届かない
+    s["W6"].gross = 0.0331
+    single = {k: C.judge(v) for k, v in s.items()}
+    j = single["W6"]
+    assert j["verdict"] == C.SHORT and all(np.isnan(j[x]) for x in ("mean", "mean1", "mean2", "t", "t2"))
+    wx = C.judge_combos(single, s, n_flips=200)
+    assert wx["rules"] == ["W1", "W3", "W7"]                         # 組み合わせにも入らない
+    skipped = {k: "作ったデータに無い" for k in C.RULES if k not in s}
+    text = "\n".join(C.report_lines(single, wx, s, skipped, "2026-11-17 10:00"))
+    row = next(x for x in text.splitlines() if x.startswith("| W6 |"))
+    assert "58 か月・42 件" in row and C.SHORT in row and "%" not in row
+    assert "3.21%" not in text and "3.31%" not in text              # 平均も、コストの前の平均も出さない
+    assert "W6: 2000-01〜2004-10。数が足りないので判定せず、成績の数字も出さない" in text
+
+
 def test_sigma_uses_previous_months_only():
     d = pd.Series(np.r_[np.zeros(11), 1.0, 0.0, 0.0], index=months(14))
     s = C.sigmas(d)

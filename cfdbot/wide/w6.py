@@ -32,6 +32,8 @@ COLS_LISTED = ["date", "n", "n350", "checked_at"]
 DOC = "350"                                       # 大量保有報告書（変更報告書も同じ種類。書類の説明で分ける）
 HOLDING = {"350", "360", "370", "380"}            # 大量保有の書類。証券の番号の対応づけには使わない（その会社自身の書類から作る）
 COVER = 0.95                                      # 見るはずの平日のうち、一覧を見た日がこれに届かなければ点検を通さない
+HAVE_350 = 0.8                                    # 月の「書類のあった一覧の日」のうち、350 の書類の出ている日がこれ以上なら「そろっている月」
+KEEP_YEARS = 5                                    # EDINET で大量保有報告書を見られる年数（提出から。有価証券報告書は 10 年）。点検の見当に出すだけ
 FETCH_HINT = "nohup ./cfd wide --fetch-edinet >> data/wide/edinet.log 2>&1 &"
 # 名前の一覧（docs/wide.md 4 章 W6。結果を見て足したり引いたりしない）。空白と「・」を除き、全角と半角・大文字と小文字をそろえて「含む」かを見る
 NAMES = ("エフィッシモ", "オアシスマネジメント", "ストラテジックキャピタル", "シティインデックスイレブンス", "南青山不動産",
@@ -177,6 +179,33 @@ def _table(path: Path, cols: list[str], need: bool = True) -> pd.DataFrame:
     return df
 
 
+def data_start(listed: pd.DataFrame) -> tuple[pd.Timestamp, dict]:
+    """大量保有報告書（350 の書類）が一覧にそろっている最初の日。docs/wide.md 4 章 W6 の「期間」（2026-11-17 に直した）。
+
+    EDINET で大量保有報告書を見られるのは提出から 5 年で、それより前の日の一覧には出ない（10 年分の一覧を見ても、前の 5 年は空）。
+    その空の月を「事象の無い月 = 0」として数えないために、月ごとに「書類が 1 件以上あった一覧の日」のうち 350 の書類が出ている日の
+    割合を出し、HAVE_350 に届かない最後の月の、次の月の初めから数える。どの月も届いていれば、一覧を見た最初の日から（もとの決まり）。
+    見るのは 350 の書類の有無だけ（出した人・相手の会社・値動きは見ない）。返すのは始まりの日と、点検に出す数。
+    """
+    days = pd.to_datetime(listed["date"], format="%Y-%m-%d", errors="coerce")
+    n, n350 = pd.to_numeric(listed["n"], errors="coerce"), pd.to_numeric(listed["n350"], errors="coerce")
+    if days.empty or days.isna().any() or n.isna().any() or n350.isna().any():
+        raise base.NotReady(f"{FLISTED.name} が空か、日付・件数でない行がある（{FETCH_HINT} で取り直す）")
+    t = pd.DataFrame({"day": days, "n": n, "has": n350 > 0}).drop_duplicates("day", keep="last").sort_values("day")
+    t = t[t["n"] > 0]                               # 書類が 1 件も無い日（祝日など）は数えない
+    if t.empty:
+        raise base.NotReady(f"{FLISTED.name} に、書類のあった日が 1 日も無い（{FETCH_HINT} で取り直す）")
+    m = t.groupby(t["day"].dt.to_period("M"))["has"].agg(["size", "sum"])
+    low = m.index[m["sum"] * 10 < round(HAVE_350 * 10) * m["size"]]      # 整数どうしで比べる（8 割ちょうどは「そろっている」）
+    if len(low) and low[-1] == m.index[-1]:
+        raise base.NotReady(f"一覧の最後の月（{m.index[-1]}）にも大量保有報告書（350 の書類）がそろっていない"
+                            f"（書類のあった {int(m['size'].iloc[-1])} 日のうち {int(m['sum'].iloc[-1])} 日）。取得か一覧の形を確かめる")
+    start = (low[-1] + 1).to_timestamp() if len(low) else days.min()
+    before = t[t["day"] < start]
+    return pd.Timestamp(start), {"low_months": len(low), "days_before": len(before), "has_before": int(before["has"].sum()),
+                                 "expected": (days.max() - pd.DateOffset(years=KEEP_YEARS))}
+
+
 def _prepare(data: Path) -> dict:
     root = Path(data)
     close = load_close(root)
@@ -184,6 +213,7 @@ def _prepare(data: Path) -> dict:
     days = pd.to_datetime(listed["date"], format="%Y-%m-%d", errors="coerce")
     if days.empty or days.isna().any():
         raise base.NotReady(f"{root / FLISTED} が空か、日付でない行がある（{FETCH_HINT} で取り直す）")
+    start, info = data_start(listed)
     raw = _table(root / F350, COLS_350)
     # 同じ書類が 2 つの日の一覧に出ることがある（取下げなどの操作の日）。どれか 1 つでも取り下げの印があれば使わない
     gone = set(raw.loc[~raw["withdrawalStatus"].str.strip().isin(["0", ""]), "docID"])
@@ -194,30 +224,55 @@ def _prepare(data: Path) -> dict:
     act = new & rows["filerName"].map(is_activist).astype(bool)
     mapping = issuer_tickers(codes, close.columns)
     tick = rows["issuerEdinetCode"].str.strip().map(mapping)
-    hit = act & tick.notna()
+    mapped = act & tick.notna()
+    hit = mapped & (when >= start)                    # 大量保有報告書がそろっている期間の中だけ（最初の 1 回もこの中で数える）
     ev = rows[hit].assign(when=when[hit], day=when[hit].dt.normalize(), ticker=tick[hit],
                           issuer=rows.loc[hit, "issuerEdinetCode"].str.strip(),
                           filer=rows.loc[hit, "edinetCode"].str.strip().where(rows.loc[hit, "edinetCode"].str.strip() != "",
                                                                                 rows.loc[hit, "filerName"].map(norm)))
     ev = ev.sort_values(["when", "docID"], kind="stable").drop_duplicates(["filer", "issuer"])   # 同じ出した人 × 同じ会社は最初の 1 回
     return {"close": close, "days": pd.DatetimeIndex(days).unique().sort_values(), "rows": rows, "codes": codes, "mapping": mapping,
-            "n_bad_time": int(when.isna().sum()), "n_new": int(new.sum()), "n_act": int(act.sum()), "n_hit": int(hit.sum()), "ev": ev}
+            "n_bad_time": int(when.isna().sum()), "n_new": int(new.sum()), "n_act": int(act.sum()), "n_hit": int(mapped.sum()),
+            "n_early": int((mapped & ~(when >= start)).sum()), "start": start, "info": info, "ev": ev}
 
 
 def _counts(p: dict) -> str:
+    early = f"（うち、そろっている期間より前 {p['n_early']} 件は使わない）" if p["n_early"] else ""
     return (f"350 の書類 {len(p['rows'])} 件 →「大量保有報告書」で始まり取り下げのないもの {p['n_new']} 件 → 名前の一覧に合うもの {p['n_act']} 件 → "
-            f"相手の会社が値段の表の銘柄に結びつくもの {p['n_hit']} 件 → 同じ出した人 × 同じ会社の最初の 1 回 {len(p['ev'])} 件")
+            f"相手の会社が値段の表の銘柄に結びつくもの {p['n_hit']} 件{early} → 同じ出した人 × 同じ会社の最初の 1 回 {len(p['ev'])} 件")
+
+
+def _start_line(p: dict) -> str:
+    """大量保有報告書がそろっている期間（点検と報告に出す。件数と日付だけ）。"""
+    i, days = p["info"], p["days"]
+    if not i["low_months"]:
+        return f"大量保有報告書（350 の書類）は、一覧を見た最初の日（{days[0]:%Y-%m-%d}）からそろっている"
+    return (f"大量保有報告書（350 の書類）がそろっているのは {p['start']:%Y-%m-%d} から。それより前は、書類のあった一覧の日 {i['days_before']} 日のうち "
+            f"350 の書類が出ていたのは {i['has_before']} 日だけ（EDINET で見られるのは提出から {KEEP_YEARS} 年。見当では {i['expected']:%Y-%m-%d} ごろから）。"
+            "そろっていない月は数えない（0 にもしない）")
+
+
+def _short_line(used: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> str:
+    """月か事象の数が決まり（docs/wide.md 3 章）に届かないときの知らせ（点検用。リターンは出さない）。"""
+    months = len(pd.period_range(start, end, freq="M"))
+    n = sum(start <= base.month_end(b) <= end for b in used["buy"])
+    why = [x for x in (f"月が {base.MIN_MONTHS} に届かない" if months < base.MIN_MONTHS else "",
+                       f"事象が {base.MIN_EVENTS} に届かない" if n < base.MIN_EVENTS else "") if x]
+    if not why:
+        return ""
+    return f"。{'・'.join(why)}ので、判定は決まりどおり「数が足りない（判定しない）」になり、組み合わせにも入らない（--without には書かない）"
 
 
 def compute(data: Path) -> base.Stream:
     p = _prepare(data)
     days, close = p["days"], p["close"]
-    d, g, used, drop = event_stream(close, p["ev"], HOLD, days[0], days[-1] + pd.offsets.BDay(1))
+    d, g, used, drop = event_stream(close, p["ev"], HOLD, p["start"], days[-1] + pd.offsets.BDay(1))
     weekdays = pd.bdate_range(max(days[0], d.index[0].to_period("M").to_timestamp()), d.index[-1])
     gap = len(weekdays.difference(days))
     notes = [
         (f"期間 {d.index[0]:%Y-%m}〜{d.index[-1]:%Y-%m}（{len(d)} か月）。EDINET の一覧を見た日 {len(days)} 日（{days[0]:%Y-%m-%d}〜"
          f"{days[-1]:%Y-%m-%d}。期間の中で見ていない平日 {gap} 日）、値段の最後の日 {close.index[-1]:%Y-%m-%d}"),
+        _start_line(p),
         _counts(p) + f" → 使った {len(used)} 件" + (f"。提出の日時が読めない行 {p['n_bad_time']} 件は使わない" if p["n_bad_time"] else ""),
         drop_line(drop),
         (f"買い = 出した日の次の営業日の引け、売り = {HOLD} 営業日後の引け。値 = 株 − 同じ期間の全銘柄の平均 − {base.COST_JP:.2%}。"
@@ -229,7 +284,7 @@ def compute(data: Path) -> base.Stream:
 def check(data: Path, today=None) -> base.Check:
     try:
         p = _prepare(data)
-        start, end = span(p["close"].index, HOLD, p["days"][0], p["days"][-1] + pd.offsets.BDay(1))
+        start, end = span(p["close"].index, HOLD, p["start"], p["days"][-1] + pd.offsets.BDay(1))
     except base.NotReady as e:
         return base.Check(KEY, False, [f"フォルダ {Path(data) / DIR}（{F350.name}・{FCODES.name}・{FLISTED.name}）"], why=str(e))
     today = pd.Timestamp(today).normalize() if today is not None else _now()
@@ -241,10 +296,11 @@ def check(data: Path, today=None) -> base.Check:
     lines = [
         (f"一覧を見た日 {len(days)} 日（{days[0]:%Y-%m-%d}〜{days[-1]:%Y-%m-%d}）。見るはずの平日 {len(expect)} 日"
          f"（{expect[0]:%Y-%m-%d}〜{expect[-1]:%Y-%m-%d}）のうち {have} 日（{share:.1%}）"),
+        _start_line(p),
         _counts(p) + (f"。提出の日時が読めない行 {p['n_bad_time']} 件" if p["n_bad_time"] else ""),
         f"証券の番号の対応 {len(p['codes'])} 行（値段の表の {close.shape[1]} 銘柄のうち、結びつく会社 {len(set(p['mapping'].values()))} 社）",
         f"買いと売りの日に値段のある事象 {len(used)} 件。{drop_line(drop)}",
-        span_line(used, start, end),
+        span_line(used, start, end) + _short_line(used, start, end),
     ]
     if share < COVER:
         return base.Check(KEY, False, lines, why=f"一覧を見た日が見るはずの平日の {share:.1%}（{COVER:.0%} に届かない）。{FETCH_HINT} で続きから")
