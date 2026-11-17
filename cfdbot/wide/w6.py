@@ -32,7 +32,9 @@ COLS_LISTED = ["date", "n", "n350", "checked_at"]
 DOC = "350"                                       # 大量保有報告書（変更報告書も同じ種類。書類の説明で分ける）
 HOLDING = {"350", "360", "370", "380"}            # 大量保有の書類。証券の番号の対応づけには使わない（その会社自身の書類から作る）
 COVER = 0.95                                      # 見るはずの平日のうち、一覧を見た日がこれに届かなければ点検を通さない
-HAVE_350 = 0.8                                    # 月の「書類のあった一覧の日」のうち、350 の書類の出ている日がこれ以上なら「そろっている月」
+HAVE_350 = 0.8                                    # 月の「書類のあった一覧の日」のうち、350 の書類の出ている日がこれ以上で、
+THIN_350 = 3                                      # 350 の書類の数（書類のあった日 1 日あたり）が一覧の最後の 12 か月の 3 分の 1 以上なら「そろっている月」
+REF_MONTHS = 12                                   # 比べる相手にする、一覧の最後の月の数
 KEEP_YEARS = 5                                    # EDINET で大量保有報告書を見られる年数（提出から。有価証券報告書は 10 年）。点検の見当に出すだけ
 FETCH_HINT = "nohup ./cfd wide --fetch-edinet >> data/wide/edinet.log 2>&1 &"
 # 名前の一覧（docs/wide.md 4 章 W6。結果を見て足したり引いたりしない）。空白と「・」を除き、全角と半角・大文字と小文字をそろえて「含む」かを見る
@@ -183,27 +185,35 @@ def data_start(listed: pd.DataFrame) -> tuple[pd.Timestamp, dict]:
     """大量保有報告書（350 の書類）が一覧にそろっている最初の日。docs/wide.md 4 章 W6 の「期間」（2026-11-17 に直した）。
 
     EDINET で大量保有報告書を見られるのは提出から 5 年で、それより前の日の一覧には出ない（10 年分の一覧を見ても、前の 5 年は空）。
-    その空の月を「事象の無い月 = 0」として数えないために、月ごとに「書類が 1 件以上あった一覧の日」のうち 350 の書類が出ている日の
-    割合を出し、HAVE_350 に届かない最後の月の、次の月の初めから数える。どの月も届いていれば、一覧を見た最初の日から（もとの決まり）。
-    見るのは 350 の書類の有無だけ（出した人・相手の会社・値動きは見ない）。返すのは始まりの日と、点検に出す数。
+    その空の月を「事象の無い月 = 0」として数えないために、月ごとに 2 つを見る:
+      ア. 「書類が 1 件以上あった一覧の日」のうち、350 の書類が出ている日の割合が HAVE_350 以上
+      イ. 350 の書類の数（書類のあった日 1 日あたり）が、一覧の最後の REF_MONTHS か月の同じ数の THIN_350 分の 1 以上
+          （古い書類がごく一部だけ見えている月を「そろっている」と数えないため）
+    どちらかに届かない最後の月の、次の月の初めから数える。どの月も届いていれば、一覧を見た最初の日から（もとの決まり）。
+    見るのは 350 の書類の有無と数だけ（出した人・相手の会社・値動きは見ない）。返すのは始まりの日と、点検に出す数。
     """
     days = pd.to_datetime(listed["date"], format="%Y-%m-%d", errors="coerce")
     n, n350 = pd.to_numeric(listed["n"], errors="coerce"), pd.to_numeric(listed["n350"], errors="coerce")
-    if days.empty or days.isna().any() or n.isna().any() or n350.isna().any():
+    if days.empty or days.isna().any() or not (n.abs() < 1e12).all() or not (n350.abs() < 1e12).all():      # 数でない・大きすぎる行
         raise base.NotReady(f"{FLISTED.name} が空か、日付・件数でない行がある（{FETCH_HINT} で取り直す）")
-    t = pd.DataFrame({"day": days, "n": n, "has": n350 > 0}).drop_duplicates("day", keep="last").sort_values("day")
+    t = pd.DataFrame({"day": days, "n": n, "docs": n350.clip(lower=0).round().astype("int64"), "has": n350 > 0})
+    t = t.drop_duplicates("day", keep="last").sort_values("day")
     t = t[t["n"] > 0]                               # 書類が 1 件も無い日（祝日など）は数えない
     if t.empty:
         raise base.NotReady(f"{FLISTED.name} に、書類のあった日が 1 日も無い（{FETCH_HINT} で取り直す）")
-    m = t.groupby(t["day"].dt.to_period("M"))["has"].agg(["size", "sum"])
-    low = m.index[m["sum"] * 10 < round(HAVE_350 * 10) * m["size"]]      # 整数どうしで比べる（8 割ちょうどは「そろっている」）
+    m = t.groupby(t["day"].dt.to_period("M")).agg(size=("has", "size"), has=("has", "sum"), docs=("docs", "sum")).astype("int64")
+    ref = m[m.index > m.index[-1] - REF_MONTHS]      # 一覧の最後の 12 か月（今も見られる期間の中）
+    ref_docs, ref_days = int(ref["docs"].sum()), int(ref["size"].sum())
+    few = m["has"] * 10 < round(HAVE_350 * 10) * m["size"]                # 整数どうしで比べる（8 割ちょうどは「そろっている」）
+    thin = m["docs"] * (THIN_350 * ref_days) < ref_docs * m["size"]       # 1 日あたりの数が、最後の 12 か月の 3 分の 1 に届かない
+    low = m.index[few | thin]
     if len(low) and low[-1] == m.index[-1]:
         raise base.NotReady(f"一覧の最後の月（{m.index[-1]}）にも大量保有報告書（350 の書類）がそろっていない"
-                            f"（書類のあった {int(m['size'].iloc[-1])} 日のうち {int(m['sum'].iloc[-1])} 日）。取得か一覧の形を確かめる")
+                            f"（書類のあった {int(m['size'].iloc[-1])} 日のうち {int(m['has'].iloc[-1])} 日）。取得か一覧の形を確かめる")
     start = (low[-1] + 1).to_timestamp() if len(low) else days.min()
     before = t[t["day"] < start]
-    return pd.Timestamp(start), {"low_months": len(low), "days_before": len(before), "has_before": int(before["has"].sum()),
-                                 "expected": (days.max() - pd.DateOffset(years=KEEP_YEARS))}
+    return pd.Timestamp(start), {"low_months": len(low), "thin_months": int((thin & ~few).sum()), "days_before": len(before),
+                                 "has_before": int(before["has"].sum()), "expected": (days.max() - pd.DateOffset(years=KEEP_YEARS))}
 
 
 def _prepare(data: Path) -> dict:
@@ -249,7 +259,9 @@ def _start_line(p: dict) -> str:
         return f"大量保有報告書（350 の書類）は、一覧を見た最初の日（{days[0]:%Y-%m-%d}）からそろっている"
     return (f"大量保有報告書（350 の書類）がそろっているのは {p['start']:%Y-%m-%d} から。それより前は、書類のあった一覧の日 {i['days_before']} 日のうち "
             f"350 の書類が出ていたのは {i['has_before']} 日だけ（EDINET で見られるのは提出から {KEEP_YEARS} 年。見当では {i['expected']:%Y-%m-%d} ごろから）。"
-            "そろっていない月は数えない（0 にもしない）")
+            "そろっていない月は数えない（0 にもしない）"
+            + (f"。350 の書類が出てはいるが、数が最近 {REF_MONTHS} か月の {THIN_350} 分の 1 に届かない月 {i['thin_months']} か月も、そろっていない月に数えた"
+               if i["thin_months"] else ""))
 
 
 def _short_line(used: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> str:

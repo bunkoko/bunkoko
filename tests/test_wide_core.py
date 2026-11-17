@@ -78,7 +78,7 @@ def test_short_rule_shows_no_return_numbers():
     s["W6"].gross = 0.0331
     single = {k: C.judge(v) for k, v in s.items()}
     j = single["W6"]
-    assert j["verdict"] == C.SHORT and all(np.isnan(j[x]) for x in ("mean", "mean1", "mean2", "t", "t2"))
+    assert j["verdict"] == C.SHORT and all(np.isnan(j[x]) for x in ("mean", "mean1", "mean2", "t", "t2", "gross"))
     wx = C.judge_combos(single, s, n_flips=200)
     assert wx["rules"] == ["W1", "W3", "W7"]                         # 組み合わせにも入らない
     skipped = {k: "作ったデータに無い" for k in C.RULES if k not in s}

@@ -64,7 +64,7 @@ def judge(s: Stream) -> dict:
            "start": d.index[0] if len(d) else None, "end": d.index[-1] if len(d) else None}
     if len(d) < MIN_MONTHS or (s.events is not None and s.events < MIN_EVENTS):
         # 判定しないルールは、平均も出さない（後で数がそろってから確かめるときに、先に成績を見てしまわないため）
-        return {**out, "verdict": SHORT, "verdict_ref": SHORT, "mean": float("nan"),
+        return {**out, "verdict": SHORT, "verdict_ref": SHORT, "mean": float("nan"), "gross": float("nan"),
                 "mean1": float("nan"), "mean2": float("nan"), "t": float("nan"), "t2": float("nan")}
     a, b = halves(d)
     t_all, t2 = t_value(d), t_value(b)

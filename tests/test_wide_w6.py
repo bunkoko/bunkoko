@@ -321,6 +321,92 @@ def test_data_start_by_hand():
         W.data_start(table(lambda d: 0, lambda d: 0))
 
 
+def test_months_with_only_a_few_350_reports_are_not_complete():
+    """古い書類がごく一部だけ見えている月（毎日 1 件は出ているが、数が最近の 3 分の 1 に届かない）は「そろっている」に数えない。"""
+    days = pd.bdate_range("2016-01-04", "2017-06-30")                       # 比べる相手 = 最後の 12 か月（2016-07〜2017-06）
+
+    def table(n350_of):
+        return pd.DataFrame({"date": [f"{d:%Y-%m-%d}" for d in days], "n": "150", "n350": [str(n350_of(d)) for d in days], "checked_at": "x"})
+
+    # 2016-08-01 より前は毎日 1 件だけ、後は毎日 60 件 → 「出ている日の割合」はどの月も 10 割だが、前の月は数が足りない
+    start, info = W.data_start(table(lambda d: 60 if d >= pd.Timestamp("2016-08-01") else 1))
+    assert start == pd.Timestamp("2016-08-01") and info["low_months"] == 7 and info["thin_months"] == 7
+    assert info["has_before"] == info["days_before"] == len(days[days < "2016-08-01"])
+    # ちょうど 3 分の 1（毎日 20 件。最後の 12 か月は毎日 60 件）は「そろっている」。それより少ないと届かない
+    march = lambda d: d.year == 2016 and d.month == 3
+    start, info = W.data_start(table(lambda d: 20 if march(d) else 60))
+    assert start == pd.Timestamp("2016-01-04") and info["low_months"] == 0 and info["thin_months"] == 0
+    start, info = W.data_start(table(lambda d: 19 if march(d) else 60))
+    assert start == pd.Timestamp("2016-04-01") and info["low_months"] == 1 and info["thin_months"] == 1
+    # 割合でも数でも届かない月は、「数が少ない月」には数えない（割合のほうで数える）
+    start, info = W.data_start(table(lambda d: 60 if d >= pd.Timestamp("2016-08-17") else 0))
+    assert start == pd.Timestamp("2016-09-01") and info["low_months"] == 8 and info["thin_months"] == 0
+    # 大きすぎる・数でない件数は読まない
+    with pytest.raises(base.NotReady, match="件数"):
+        W.data_start(table(lambda d: "inf"))
+
+
+def _spec_start(rows):
+    """docs/wide.md 4 章 W6「期間」を、道具とは別の書き方（分数。表の部品を使わない）で読んだもの。rows = (日付, 件数, 350 の件数)。"""
+    from collections import defaultdict
+    from fractions import Fraction
+
+    last = {}
+    for d, n, n3 in rows:                                  # 同じ日が 2 行あれば後の行
+        last[d] = (n, n3)
+    size, has, docs = defaultdict(int), defaultdict(int), defaultdict(int)
+    for d, (n, n3) in last.items():
+        if n >= 1:                                         # 書類が 1 件以上あった一覧の日
+            ym = (int(d[:4]), int(d[5:7]))
+            size[ym] += 1
+            has[ym] += 1 if n3 >= 1 else 0
+            docs[ym] += n3
+    if not size:
+        return "NotReady"
+    months = sorted(size)
+    pos = lambda ym: ym[0] * 12 + ym[1]
+    ref = [m for m in months if pos(m) > pos(months[-1]) - 12]          # 一覧の最後の 12 か月
+    level = Fraction(sum(docs[m] for m in ref), sum(size[m] for m in ref))
+    low = [m for m in months if Fraction(has[m], size[m]) < Fraction(8, 10) or Fraction(docs[m], size[m]) < level / 3]
+    if not low:
+        return min(last)
+    if low[-1] == months[-1]:
+        return "NotReady"
+    y, mth = low[-1]
+    y, mth = (y + 1, 1) if mth == 12 else (y, mth + 1)
+    return f"{y:04d}-{mth:02d}-01"
+
+
+def test_data_start_matches_an_independent_reading_of_the_rule():
+    rng = np.random.default_rng(20261117)
+    seen = set()
+    for _ in range(400):
+        first = pd.Timestamp("2019-01-01") + pd.Timedelta(days=int(rng.integers(0, 40)))
+        days = pd.bdate_range(first, periods=int(rng.integers(5, 700)))
+        cut = days[int(rng.integers(0, len(days)))]
+        p_after, p_before = rng.choice([1.0, 0.95, 0.85, 0.8, 0.75]), rng.choice([0.0, 0.02, 0.3, 0.9, 1.0])
+        p_nodoc, few = rng.choice([0.0, 0.05, 0.2]), rng.choice([1, 3, 30])
+        rows = []
+        for d in days:
+            n = 0 if rng.random() < p_nodoc else int(rng.integers(1, 300))
+            if d >= cut:
+                n3 = int(rng.integers(40, 110)) if rng.random() < p_after else 0
+            else:
+                n3 = int(rng.integers(1, few + 1)) if rng.random() < p_before else 0
+            rows.append((f"{d:%Y-%m-%d}", n, n3))
+        if rng.random() < 0.3:                             # 同じ日の行がもう 1 つ（後の行が勝つ）
+            rows += [(d, n, 0 if n3 else 5) for d, n, n3 in (rows[int(rng.integers(0, len(rows)))] for _ in range(3))]
+        df = pd.DataFrame(rows, columns=["date", "n", "n350"]).astype(str).assign(checked_at="x")
+        try:
+            got = f"{W.data_start(df)[0]:%Y-%m-%d}"
+        except base.NotReady:
+            got = "NotReady"
+        want = _spec_start(rows)
+        assert got == want, (got, want, rows[:3], len(rows))
+        seen.add("NotReady" if want == "NotReady" else "first" if want == min(r[0] for r in rows) else "later")
+    assert seen == {"NotReady", "first", "later"}          # 3 つの出方のどれも通っている
+
+
 def test_months_without_350_reports_are_not_counted_as_zero(tmp_path):
     data, close = _gap_data(tmp_path)
     s = W.compute(data)
@@ -357,6 +443,19 @@ def test_check_tells_the_data_start_and_the_short_span(tmp_path, monkeypatch):
     assert "そろっているのは 2016-09-01 から" in text and "d を作れる月 2016-09〜2017-05（9 か月）" in text
     assert "月が 60 に届かない・事象が 30 に届かないので、判定は決まりどおり「数が足りない（判定しない）」" in text
     assert "%" not in text.replace("（100.0%）", "")
+
+
+def test_check_tells_when_months_are_dropped_for_having_too_few_reports(tmp_path, monkeypatch):
+    monkeypatch.setattr(W.ED, "fetch_days", lambda today, *a, **k: list(pd.bdate_range("2016-01-04", today)))
+    data, _ = _gap_data(tmp_path)
+    t = pd.read_csv(data / W.FLISTED, dtype=str)
+    t["n350"] = np.where(pd.to_datetime(t["date"]) >= pd.Timestamp("2016-09-01"), "9", "1")        # 前は毎日 1 件だけ見えている
+    t.to_csv(data / W.FLISTED, index=False)
+    c = W.check(data, today="2017-07-03")
+    text = "\n".join(c.lines)
+    assert c.ok and "そろっているのは 2016-09-01 から" in text and "d を作れる月 2016-09〜2017-05（9 か月）" in text
+    assert "数が最近 12 か月の 3 分の 1 に届かない月 8 か月も、そろっていない月に数えた" in text
+    assert W.compute(data).d.index[0] == pd.Timestamp("2016-09-30")
 
 
 def test_no_350_reports_at_the_end_is_not_ready(tmp_path, monkeypatch):
