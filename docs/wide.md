@@ -183,7 +183,7 @@
 
 1. `./cfd update`
 2. `./cfd wide --fetch`（数分。W1 の ETF と ^IRX、W7 の FRED、W2 の公式の日付との見比べ）
-3. `nohup ./cfd wide --fetch-edinet >> data/wide/edinet.log 2>&1 &`（W6。1 時間半ほど。止まっても同じコマンドで続きから。Mac を眠らせない）
+3. `nohup ./cfd wide --fetch-edinet >> data/wide/edinet.log 2>&1 &`（W6。1 時間半ほど。止まっても同じコマンドで続きから。取得の間は道具が Mac を眠らせない（2026-11-17 に入れた）。ただし、ふたを閉じると眠るので、ふたは開けて電源につないでおく）
 4. `./cfd wide --check`（数秒。ルールごとに、データの期間・事象の数・形だけを出す。**リターンは 1 つも出さない**。何度でもよい）
    - W2 の日付の見比べが自動でできなかったら、公式のページ（federalreserve.gov の FOMC の日程と、年ごとの過去のページ）を開いて
      `config/fomc_days.csv` と見比べ、合っていれば `./cfd wide --fomc-checked "<何と見比べたか>"` で印を付ける

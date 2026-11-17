@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +30,15 @@ FETCH = ("W1", "W7", "W2")          # --fetch で取るルール（W6 は時間�
 
 def rule(key: str):
     return importlib.import_module(f"cfdbot.wide.{key.lower()}")
+
+
+def keep_awake() -> None:
+    """取得が終わるまで Mac を眠らせない（画面は消えてよい。ふたを閉じると眠る）。眠ると回線が切れて取得が止まる（2026-10-21 の EDINET で起きた）。"""
+    if sys.platform == "darwin":
+        try:
+            subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())])
+        except OSError:                            # caffeinate が無い・動かせない。取得はそのまま続ける
+            pass
 
 
 def stop_if_done(marker: Path) -> None:
@@ -71,6 +82,7 @@ def main(argv: list[str] | None = None, root: Path | None = None) -> Path | None
     marker = root / C.MARKER                       # 印の場所は --out に関係なく決まっている
 
     if args.fetch or args.fetch_edinet:
+        keep_awake()
         for k in (FETCH if args.fetch else ()) + (("W6",) if args.fetch_edinet else ()):
             print(f"{k} {C.NAMES[k]} のデータを取る…", flush=True)
             try:

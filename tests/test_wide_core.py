@@ -364,3 +364,26 @@ def test_broken_marker_stops(fake, tmp_path):
     (tmp_path / C.MARKER).write_text("{", encoding="utf-8")
     with pytest.raises(SystemExit):
         m.main([], root=tmp_path)
+
+
+def test_fetch_keeps_the_mac_awake(fake, tmp_path, monkeypatch):
+    m, _ = fake
+    calls = []
+    monkeypatch.setattr(m.sys, "platform", "darwin")
+    monkeypatch.setattr(m.subprocess, "Popen", lambda cmd, *a, **k: calls.append(cmd))
+    assert m.main(["--fetch-edinet"], root=tmp_path) is None
+    assert calls and calls[0][:2] == ["caffeinate", "-i"] and calls[0][2] == "-w"
+    calls.clear()
+    m.main(["--check"], root=tmp_path)             # 点検と判定では呼ばない
+    assert calls == []
+
+
+def test_fetch_goes_on_when_caffeinate_is_missing(fake, tmp_path, monkeypatch):
+    m, _ = fake
+
+    def boom(*a, **k):
+        raise FileNotFoundError("caffeinate")
+
+    monkeypatch.setattr(m.sys, "platform", "darwin")
+    monkeypatch.setattr(m.subprocess, "Popen", boom)
+    assert m.main(["--fetch"], root=tmp_path) is None
