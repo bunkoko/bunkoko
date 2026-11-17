@@ -29,6 +29,7 @@ P_GOOD, P_MAYBE = 0.0056, 0.05     # 参考の列の WX の p の線
 SIGMA_WINDOW, SIGMA_MIN = 36, 12   # 組の重さ: 前の月までの直近 36 か月（12 か月以上あれば）
 N_FLIPS, SEED = 10_000, 20261111   # 偶然との比べ（符号の入れ替え）
 SHORT = "数が足りない（判定しない）"
+GOOD_SHOWN = 40                    # 報告の 2 章の頭に並べる「使えそう」の組の数（それより多ければ「ほか」。表には全部出る）
 MARKER = Path("data") / "wide" / "W_DONE.json"   # 1 回だけの印（リポジトリの根から。報告の保存先とは別）
 RESULT: dict = {}                  # 1 回計算して docs/wide.md 10 章に書いたら、ここにも書く（{"date":…, "verdicts": {...}, "trials": …}）。
                                    # 書いてあれば、印のファイルが無い別の機械でも動かさない
@@ -109,10 +110,27 @@ def combos(streams: dict[str, pd.Series]) -> tuple[pd.DataFrame, dict[tuple[str,
             a, b = halves(c)
             series[ks] = c
             t_all, t2 = t_value(c), t_value(b)
+            member, t_member = best_member(streams, ks, c.index)
             rows.append({"combo": "+".join(ks), "size": len(ks), "n": len(c), "start": c.index[0], "end": c.index[-1],
                          "mean": float(c.mean()), "mean1": float(a.mean()), "mean2": float(b.mean()), "t": t_all, "t2": t2,
-                         "first": label(bool(a.mean() > 0 and b.mean() > 0), t_all, t2, T_MIN)})
+                         "first": label(bool(a.mean() > 0 and b.mean() > 0), t_all, t2, T_MIN),
+                         "member": member, "t_member": t_member, "lift": bool(t_all > t_member)})
     return pd.DataFrame(rows), series, dropped
+
+
+def best_member(streams: dict[str, pd.Series], keys: tuple[str, ...], months: pd.Index) -> tuple[str, float]:
+    """組の月だけで測った、中身の単独のルールの一番高い t 値（と、そのルール）。読み方のための数で、判定には使わない。
+
+    単独の全期間の t 値と比べると期間が違ってしまうので、組と同じ月にそろえて比べる（docs/wide.md 5 章の読み方の決め）。
+    t 値が計算できないルール（その月の値がすべて同じ、など）は −∞ として扱う。同じ値なら記号の順で先のもの。
+    """
+    best_k, best_t = keys[0], float("-inf")
+    for k in keys:
+        t = t_value(streams[k].reindex(months))
+        t = t if np.isfinite(t) else float("-inf")
+        if t > best_t:
+            best_k, best_t = k, t
+    return best_k, best_t
 
 
 def flip_pvalue(series: dict[tuple[str, ...], pd.Series], best_t: float, n: int | None = None, seed: int = SEED) -> float:
@@ -190,19 +208,19 @@ def judge_combos(single: dict[str, dict], streams: dict[str, Stream], n_flips: i
     if table.empty:
         return {"verdict": "作れない", "why": f"月が {MIN_MONTHS} に届く組が無い", "table": table, "dropped": dropped}
     best = table.sort_values(["t", "size", "combo"], ascending=[False, True, True], na_position="last").iloc[0]
-    key = tuple(best["combo"].split("+"))
     p = flip_pvalue(series, float(best["t"]), n=n_flips)
     pos = bool(best["mean1"] > 0 and best["mean2"] > 0)
     good2 = bool(best["t2"] >= T_MIN)
     verdict = "使えそう" if pos and good2 and p <= P_FIRST else "まだ判断できない" if pos and p <= P_FIRST else "使えない"
     verdict_ref = "使えそう" if pos and good2 and p <= P_GOOD else "まだ判断できない" if pos and p <= P_MAYBE else "使えない"
-    real = int((table["first"] == "使えそう").sum())
-    member_best = max(single[k]["t"] for k in key)
+    good = table["first"] == "使えそう"
+    real = int(good.sum())
     # p = 1（本物の一番がどの入れ替えの一番にも届かない。どの組も大きく負けたとき）でも止まらない（inv_cdf(0) は落ちる）
     z = NormalDist().inv_cdf(1 - p) if p < 1 else float("-inf")
     return {"verdict": verdict, "verdict_ref": verdict_ref, "best": best.to_dict(), "p": p, "z": z,
             "chance": chance(real, flip_counts(series, n=n_flips)),
-            "no_lift": bool(best["t"] < member_best), "member_best": member_best,
+            "no_lift": not bool(best["lift"]), "member": best["member"], "member_best": float(best["t_member"]),
+            "good_lift": int((good & table["lift"]).sum()),
             "table": table, "dropped": dropped, "n_combos": len(table), "rules": sorted(use)}
 
 
@@ -307,22 +325,31 @@ def report_lines(single: dict[str, dict], wx: dict, streams: dict[str, Stream], 
               (f"- WX: {len(wx['rules'])} つのルール（{'・'.join(wx['rules'])}）から {wx['n_combos']} 通りの組を作った"
                f"（月が {MIN_MONTHS} に届かず使わなかった組 {wx['dropped']}）。代表 = 一番 t 値の高い組。"
                f"「全部の組の中の一番」を、でたらめの一番と比べた p = {wx['p']:.4f}（正規分布の値で {_f2(wx['z'])}）。"
-               f"「使えそう」は p ≤ {P_FIRST} かつ代表の後半の t 値 {T_MIN} 以上、「まだ判断できない」は p ≤ {P_FIRST} だけ")]
-        if wx["no_lift"]:
-            L.append(f"- 読み方（5 章の決め）: 代表の t 値 {_f2(wx['best']['t'])} は、入っている単独のルールの一番高い t 値 {_f2(wx['member_best'])} より低い"
-                     " → **組み合わせの上乗せは無い**")
+               f"「使えそう」は、代表の前半・後半ともプラス・p ≤ {P_FIRST}・代表の後半の t 値 {T_MIN} 以上。"
+               f"「まだ判断できない」は、そのうち後半の t 値だけ届かないとき")]
+        L.append(f"- 読み方（5 章の決め。判定は変えない）: 代表の t 値 {_f2(wx['best']['t'])} を、同じ月だけで測った中身の単独のルールの一番"
+                 f"（{wx['member']} の {_f2(wx['member_best'])}）と比べると、"
+                 + ("高くない → **組み合わせの上乗せは無い**" if wx["no_lift"] else "高い → 組み合わせの上乗せがある")
+                 + f"。「使えそう」の {wx['chance']['real']} 通りのうち、上乗せのある組は {wx['good_lift']} 通り")
     L += [(f"- 参考の列（今までの数え方。判定ではない）: 通し番号で数え、全期間の線 {THRESHOLD:.3f}（{TRIALS} 個）、WX は p ≤ {P_GOOD}。"
-           f"記録のための通し番号は {PRIOR_TRIALS} → {used}"),
+           f"記録のための通し番号は {PRIOR_TRIALS} → {used}（組ごとの判定は入れない。通し番号で数える読み方では、組は WX の 1 回にまとめている）"),
           "- 「使えそう」でもお金は入れない。次の段は記録だけの売買を新しく登録すること（利用者が決める）。W3〜W6 は今残っている 490 社だけの検証",
           "", "## 2. 組み合わせの表（どの組も 1 回目として判定）", "",
           "- 組どうしは中身が重なっている。良い単独のルールが入った組はまとめて通りやすいので、1 章の「偶然でもいくつ通るか」と並べて読む",
-          ""]
+          ("- 「中身の一番」= その組の月だけで測った、中身の単独のルールの一番高い t 値。組の t 値がそれより高ければ「上乗せ あり」"
+           "（組にしたことで良くなった）。「なし」の組は、中身の 1 つを単独で持つのと変わらないか、それより悪い（見るだけ。判定は変えない）")]
     if wx["verdict"] == "作れない" or wx["table"].empty:
-        L.append("- 組は作れなかった")
+        L += ["", "- 組は作れなかった"]
     else:
-        L += ["| 組 | 月の数 | 月の平均 | 前半 → 後半 | t 値 全期間／後半 | 判定（1 回目として） |", "|---|---|---|---|---|---|"]
+        good = wx["table"].loc[wx["table"]["first"] == "使えそう"].sort_values(["size", "combo"])
+        names = [f"{r.combo}{'' if r.lift else '（上乗せなし）'}" for r in good.itertuples(index=False)]
+        shown = "、".join(names[:GOOD_SHOWN]) + (f"、ほか {len(names) - GOOD_SHOWN} 通り（下の表）" if len(names) > GOOD_SHOWN else "")
+        L += [f"- 1 回目として「使えそう」の組（{len(names)} 通り）: {shown if names else 'なし'}", "",
+              "| 組 | 月の数 | 月の平均 | 前半 → 後半 | t 値 全期間／後半 | 判定（1 回目として） | 中身の一番（同じ月） | 上乗せ |",
+              "|---|---|---|---|---|---|---|---|"]
         for r in wx["table"].sort_values(["size", "combo"]).itertuples(index=False):
-            L.append(f"| {r.combo} | {r.n} | {_pct(r.mean)} | {_pct(r.mean1)} → {_pct(r.mean2)} | {_f2(r.t)}／{_f2(r.t2)} | {r.first} |")
+            L.append(f"| {r.combo} | {r.n} | {_pct(r.mean)} | {_pct(r.mean1)} → {_pct(r.mean2)} | {_f2(r.t)}／{_f2(r.t2)} | {r.first} | "
+                     f"{r.member} {_f2(r.t_member)} | {'あり' if r.lift else 'なし'} |")
     L += ["", "## 3. データと注意", ""]
     for k in RULES:
         if k in skipped or k not in streams:

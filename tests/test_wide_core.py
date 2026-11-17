@@ -183,6 +183,54 @@ def test_combo_table_labels_each_combo_first_time():
     assert wx["verdict"] == "使えそう" and wx["verdict_ref"] in ("使えそう", "まだ判断できない", "使えない")
 
 
+def test_best_member_is_measured_on_the_combo_months():
+    rng = np.random.default_rng(21)
+    # A は始めの 40 か月だけ大きく儲かる（全期間の t 値は高い）。B は 31 か月目から始まるので、組の月は A の良い時期を含まない
+    a = pd.Series(np.r_[0.05 + 0.01 * rng.standard_normal(40), 0.01 * rng.standard_normal(90)], index=months(130))
+    b = pd.Series(0.002 + 0.01 * rng.standard_normal(100), index=months(100, "2002-07-31"))
+    table, series, _ = C.combos({"W1": a, "W2": b})
+    row = table.iloc[0]
+    idx = series[("W1", "W2")].index
+    assert idx[0] == b.index[12]                                   # σ がそろう月から
+    ta, tb = C.t_value(a.reindex(idx)), C.t_value(b.reindex(idx))
+    assert C.t_value(a) > 5 and ta < 2                             # 全期間と同じ月とで大きく違う
+    assert row["t_member"] == pytest.approx(max(ta, tb))
+    assert row["member"] == ("W1" if ta >= tb else "W2")
+    assert bool(row["lift"]) == bool(row["t"] > max(ta, tb))
+    assert C.best_member({"W1": a, "W2": b}, ("W1", "W2"), idx) == (row["member"], row["t_member"])
+
+
+def test_lift_yes_for_two_independent_good_rules_and_no_for_good_plus_noise():
+    rng = np.random.default_rng(22)
+    good1 = stream("W1", 0.003 + 0.01 * rng.standard_normal(200))
+    good2 = stream("W3", 0.003 + 0.01 * rng.standard_normal(200))
+    noise = stream("W7", 0.01 * rng.standard_normal(200))
+    s = {"W1": good1, "W3": good2, "W7": noise}
+    single = {k: C.judge(v) for k, v in s.items()}
+    wx = C.judge_combos(single, s, n_flips=300)
+    t = wx["table"].set_index("combo")
+    assert bool(t.loc["W1+W3", "lift"])                            # 別々に良い 2 つを足すと、どちらの単独より良い
+    assert not bool(t.loc["W1+W7", "lift"])                        # 良いものに中身の無いものを足しても、単独より良くならない
+    for r in wx["table"].itertuples(index=False):
+        assert bool(r.lift) == bool(r.t > r.t_member)
+    good = wx["table"]["first"] == "使えそう"
+    assert wx["good_lift"] == int((good & wx["table"]["lift"]).sum())
+    assert wx["no_lift"] == (not bool(wx["table"].set_index("combo").loc[wx["best"]["combo"], "lift"]))
+    skipped = {k: "作ったデータに無い" for k in C.RULES if k not in s}
+    text = "\n".join(C.report_lines(single, wx, s, skipped, "2026-11-17 10:00"))
+    assert "中身の一番（同じ月）" in text and "| 上乗せ |" in text and "1 回目として「使えそう」の組（" in text
+    assert "上乗せのある組は" in text
+
+
+def test_best_member_ignores_rules_without_a_t_value():
+    idx = months(80)
+    const = pd.Series(0.0, index=idx)                              # 事象が 1 つも無い月ばかり（値がすべて 0）→ t 値は計算できない
+    rng = np.random.default_rng(23)
+    other = pd.Series(0.01 * rng.standard_normal(80), index=idx)
+    k, t = C.best_member({"W1": const, "W2": other}, ("W1", "W2"), idx)
+    assert k == "W2" and t == pytest.approx(C.t_value(other))
+
+
 def test_judge_combos_cannot_with_one_rule():
     s = {"W1": stream("W1", np.full(100, 0.01))}
     single = {"W1": C.judge(s["W1"])}
