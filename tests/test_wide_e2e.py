@@ -17,6 +17,12 @@ from cfdbot.wide import w1, w6, w7
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def _before_record(monkeypatch):
+    """道具を通しで動かす試験は、記録する前の形（RESULT が空）で動かす（2026-11-18 に 1 回計算して RESULT を書いたため）。"""
+    monkeypatch.setattr(C, "RESULT", {})
+
+
 def build(root: Path) -> None:
     data = root / "data"
     rng = np.random.default_rng(0)

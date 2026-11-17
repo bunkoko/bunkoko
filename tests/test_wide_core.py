@@ -14,6 +14,12 @@ from cfdbot.wide.base import Check, NotReady, Stream
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def _before_record(monkeypatch):
+    """道具を通しで動かす試験は、記録する前の形（RESULT が空）で動かす（2026-11-18 に 1 回計算して RESULT を書いたため）。"""
+    monkeypatch.setattr(C, "RESULT", {})
+
+
 def months(n, start="2000-01-31"):
     return pd.date_range(start, periods=n, freq="ME")
 
@@ -27,7 +33,6 @@ def test_threshold_and_trials():
     assert C.TRIALS == 101 and C.PRIOR_TRIALS == 93
     assert abs(C.THRESHOLD - 2.5341) < 1e-4       # 参考の列だけ
     assert C.T_MIN == 1.65 and C.P_FIRST == 0.05  # 判定は 1 回目として（2026-11-12 利用者の決め）
-    assert C.RESULT == {}
 
 
 def test_halves_odd_gives_second_one_more():
@@ -405,3 +410,15 @@ def test_fetch_goes_on_when_caffeinate_is_missing(fake, tmp_path, monkeypatch):
     monkeypatch.setattr(m.sys, "platform", "darwin")
     monkeypatch.setattr(m.subprocess, "Popen", boom)
     assert m.main(["--fetch"], root=tmp_path) is None
+
+
+def test_result_is_recorded():
+    """2026-11-18 に 1 回計算した（docs/wide.md 10 章）。プログラムに書いた結果（autouse で空にする前の値）を、ファイルから読んで確かめる。"""
+    import ast
+    from pathlib import Path
+    src = Path(C.__file__).read_text(encoding="utf-8")
+    node = next(n for n in ast.parse(src).body if isinstance(n, ast.AnnAssign) and getattr(n.target, "id", "") == "RESULT")
+    rec = ast.literal_eval(node.value)
+    assert rec["date"] == "2026-11-18" and rec["trials"] == 100 and rec["combos_good"] == []
+    assert rec["verdicts"]["W7"] == "まだ判断できない" and rec["verdicts"]["W6"] == "数が足りない（判定しない）"
+    assert all(rec["verdicts"][k] == "使えない" for k in ("W1", "W2", "W3", "W4", "W5", "WX"))
