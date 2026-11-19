@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "db:migrate:local": "wrangler d1 migrations apply bunkoko --local",
     "db:migrate:remote": "wrangler d1 migrations apply bunkoko --remote",
+    "secrets": "tsx scripts/setup-secrets.ts",
     "switchbot": "tsx scripts/switchbot-cli.ts",
     "mock:switchbot": "tsx scripts/mock-switchbot.ts"
   },

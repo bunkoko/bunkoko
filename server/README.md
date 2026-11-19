@@ -60,14 +60,17 @@
    npm run deploy
    ```
    最後に表示される `https://bunkoko-server.<あなたの名前>.workers.dev` が、このサーバーの URL。
-6. 合言葉を4つ作って登録する。ターミナルで `openssl rand -hex 24` を4回実行し、出てきた文字列をそれぞれ使う:
+6. 合言葉を4つ作って登録する:
    ```sh
-   npx wrangler secret put WEBHOOK_SECRET   # 1つ目: SwitchBot の Webhook の URL に入れる
-   npx wrangler secret put ADMIN_TOKEN      # 2つ目: あなたが動作確認に使う
-   npx wrangler secret put APP_TOKEN        # 3つ目: iPhone アプリに設定する
-   npx wrangler secret put AI_TASK_TOKEN    # 4つ目: Claude Code のタスクに設定する（8章）
+   npm run secrets
    ```
-   **どれもパスワードと同じ扱い**。パスワード管理アプリなどに保存し、人に見せない。
+   4つの合言葉（`WEBHOOK_SECRET`・`ADMIN_TOKEN`・`APP_TOKEN`・`AI_TASK_TOKEN`）をランダムに作って `server/.dev.vars` に保存し、Cloudflare に登録する。何度実行しても、一度作った合言葉は変わらない。
+   - `WEBHOOK_SECRET`: SwitchBot の Webhook の URL に入れる（3章）
+   - `ADMIN_TOKEN`: あなたが動作確認に使う（4章）
+   - `APP_TOKEN`: iPhone アプリに設定する。`npm run secrets -- --copy APP_TOKEN` でクリップボードにコピーし、iPhone に貼り付ける（Mac と iPhone が同じ Apple ID なら、Mac でコピーしたものを iPhone で貼り付けられる）
+   - `AI_TASK_TOKEN`: Claude Code のタスクに設定する（8章）
+
+   **どれもパスワードと同じ扱い**。人に見せない。`.dev.vars` は Git に含まれない。消すと分からなくなるので、パスワード管理アプリなどにも控えておくとよい。
 
 この時点では SwitchBot のトークンが未登録なので、5分ごとの取得はエラーになる（問題ない）。
 
@@ -76,26 +79,21 @@
 1. SwitchBot アプリで、ハブ3 → 各センサーの順に登録する。各機器の設定で「クラウドサービス」をオンにする。
 2. トークンとシークレットを発行する（アプリのバージョン 9.0 以降）:
    「プロフィール」→「設定」→「アプリについて」→「アプリバージョン」を **10回タップ** →「開発者向けオプション」→ トークンとシークレットが表示される
-3. サーバーに登録する:
+3. `server/.dev.vars` をテキストエディタで開き（`open -e .dev.vars`）、`SWITCHBOT_TOKEN=` と `SWITCHBOT_SECRET=` のあとに書き込んで保存する（このファイルは Git に含まれない）。
+4. サーバーに登録する（2章の合言葉は変わらない）:
    ```sh
-   npx wrangler secret put SWITCHBOT_TOKEN
-   npx wrangler secret put SWITCHBOT_SECRET
+   npm run secrets
    ```
-4. 手元のコマンドでも使えるように、`server/.dev.vars` を作る:
-   ```sh
-   cp .dev.vars.example .dev.vars
-   ```
-   `.dev.vars` をテキストエディタで開き、トークン・シークレット・2つの合言葉を書き込む（このファイルは Git に含まれない）。
 5. トークンが正しいか確かめる（機器の一覧が出れば OK）:
    ```sh
    npm run switchbot -- devices
    ```
-6. **Webhook を登録する**（在床・開閉の変化を正確な時刻で受け取るため）。`<URL>` は手順 2-5 の URL、`<WEBHOOK_SECRET>` は手順 2-6 の1つ目の文字列:
+6. **Webhook を登録する**（在床・開閉の変化を正確な時刻で受け取るため）。`<URL>` は手順 2-5 の URL、`<WEBHOOK_SECRET>` は `.dev.vars` の `WEBHOOK_SECRET` の値:
    ```sh
    npm run switchbot -- webhook-setup https://<URL>/webhooks/switchbot/<WEBHOOK_SECRET>
    npm run switchbot -- webhook-query    # 登録した URL が表示されれば OK
    ```
-7. すぐに1回取得してみる（`<ADMIN_TOKEN>` は手順 2-6 の2つ目の文字列）:
+7. すぐに1回取得してみる（`<ADMIN_TOKEN>` は `.dev.vars` の `ADMIN_TOKEN` の値）:
    ```sh
    curl -X POST "https://<URL>/admin/collect?refresh=1" -H "Authorization: Bearer <ADMIN_TOKEN>"
    ```
