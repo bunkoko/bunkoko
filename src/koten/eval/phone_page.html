@@ -133,7 +133,25 @@ const $ = (id) => document.getElementById(id);
 const local = {};   // スマホで付けた点 {キー: "1"|"0"}（データベースから）
 let db = null, dbState = "wait", filter = "", cur = -1, loaded = false, picked = false;
 const history = [], skipped = new Set();
-let writing = Promise.resolve();
+
+// まだ送れていない点。電波が切れても押せるように、このスマホ（localStorage）に置いて、
+// つながったら送る。localStorage が使えないときは、画面を閉じるまでのあいだだけ持つ
+const PENDING_KEY = "koten-eval-pending-v1";
+let pending = {}, storeOk = true, flushing = false, again = false, retryTimer = null;
+function loadPending() {
+  try {
+    const raw = localStorage.getItem(PENDING_KEY);
+    const got = raw ? JSON.parse(raw) : {};
+    pending = got && typeof got === "object" ? got : {};
+  } catch (e) { storeOk = false; pending = {}; }
+  for (const d of Object.values(pending)) if (d && (d.g === "1" || d.g === "0")) local[d.k] = d.g;
+}
+function savePending() {
+  try { localStorage.setItem(PENDING_KEY, JSON.stringify(pending)); storeOk = true; }
+  catch (e) { storeOk = false; }
+}
+const withTimeout = (promise, ms) =>
+  Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), ms))]);
 
 const grade = (it) => local[it.k] ?? it.g ?? "";
 const worries = [...new Map(ITEMS.map((it) => [it.w, it.wt])).entries()];
@@ -213,7 +231,6 @@ function contextNode(c, q) {
 function render() {
   renderSelect(); renderCounts();
   const main = $("main");
-  const can = dbState === "ok";
   if (cur < 0) {
     const left = ITEMS.filter((it) => !grade(it)).length;
     main.replaceChildren(el("div", { class: "card done" },
@@ -248,7 +265,7 @@ function render() {
   main.replaceChildren(...kids);
   $("yes").classList.toggle("chosen", g === "1");
   $("no").classList.toggle("chosen", g === "0");
-  $("yes").disabled = $("no").disabled = !can;
+  $("yes").disabled = $("no").disabled = false;  // つながっていなくても押せる（あとで送る）
   $("skip").disabled = false;
   $("back").disabled = !history.length;
   window.scrollTo(0, 0);
@@ -259,20 +276,53 @@ function setSave(text, cls) {
   s.textContent = text; s.className = "pill" + (cls ? " " + cls : "");
 }
 
+function showStatus() {
+  const n = Object.keys(pending).length;
+  const lose = storeOk ? "" : "。この画面を閉じると消えます";
+  if (!db) {
+    if (dbState === "wait") { setSave("保存先に接続中…"); return; }
+    setSave(n ? `未送信 ${n} 件：電波のある所でページを開き直すと送ります${lose}`
+              : "保存先につながっていません（付けた点はこのスマホに置きます）", "ng");
+    return;
+  }
+  if (n && navigator.onLine === false) setSave(`圏外です。未送信 ${n} 件は電波が戻ると送ります${lose}`, "ng");
+  else if (flushing && n) setSave(`送信中…（未送信 ${n} 件）`);
+  else if (n) setSave(`未送信 ${n} 件：電波が戻ると送ります${lose}`, "ng");
+  else setSave("保存しました", "ok");
+}
+
+async function flush() {
+  if (!db) { showStatus(); return; }
+  if (flushing) { again = true; return; }  // 今の送信が終わったら（諦めたら）すぐもう一度
+  flushing = true;
+  showStatus();
+  let failed = false;
+  try {
+    let keys;
+    while ((keys = Object.keys(pending)).length) {
+      const doc = pending[keys[0]];
+      await withTimeout(db.doc("grades/" + doc.k).set(doc), 10000);
+      // 送っているあいだに押し直した点は、次の回に送る
+      if (pending[doc.k] && pending[doc.k].at === doc.at) delete pending[doc.k];
+      savePending();
+    }
+  } catch (e) { failed = true; }
+  flushing = false;
+  showStatus();
+  clearTimeout(retryTimer);
+  if (again) { again = false; flush(); return; }
+  if (failed) retryTimer = setTimeout(flush, 15000);
+}
+window.addEventListener("online", () => flush());
+
 function answer(g) {
-  if (cur < 0 || dbState !== "ok") return;
+  if (cur < 0) return;
   const it = ITEMS[cur];
   if (grade(it) !== g) {
     local[it.k] = g;
-    setSave("保存中…");
-    writing = writing.then(() => db.doc("grades/" + it.k).set({ k: it.k, w: it.w, g, at: Date.now() }))
-      .then(() => setSave("保存しました", "ok"))
-      .catch(() => {
-        // 保存できなかった行は点の無い行に戻す（あとでもう一度出る）
-        if (local[it.k] === g) delete local[it.k];
-        setSave("保存できなかった行があります。その行はあとでもう一度出ます", "ng");
-        render();
-      });
+    pending[it.k] = { k: it.k, w: it.w, g, at: Date.now() };
+    savePending();
+    flush();
   }
   history.push(cur);
   skipped.delete(cur);
@@ -292,7 +342,8 @@ function docsOf(snap) {
 
 function applyGrades(snap) {
   for (const { id, data } of docsOf(snap)) {
-    if (id && data && (data.g === "1" || data.g === "0")) local[id] = data.g;
+    // まだ送れていない点（このスマホで新しく押した点）は、保存先の古い点で上書きしない
+    if (id && data && (data.g === "1" || data.g === "0") && !pending[id]) local[id] = data.g;
   }
   if (!loaded) {
     // 初めて読んだときだけ、点の無い行のある最初の悩みから始める（あとの更新では今の行のまま）
@@ -327,22 +378,22 @@ function firstOpenWorry() {
 }
 
 $("sample").hidden = !SAMPLE;
+loadPending();
 filter = firstOpenWorry();
 cur = nextUngraded(-1);
 render();
 
 const timer = setTimeout(() => {
-  if (dbState === "wait") { dbState = "none"; setSave("保存できません：Claude にサインインして開いてください", "ng"); render(); }
+  if (dbState === "wait") { dbState = "none"; showStatus(); render(); }
 }, 10000);
 (async () => {
   try {
     db = window.claude && window.claude.use ? await window.claude.use("db") : null;
   } catch (e) { db = null; }
   clearTimeout(timer);
-  if (!db) {
-    dbState = "none"; setSave("保存できません：Claude にサインインして開いてください", "ng"); render(); return;
-  }
-  dbState = "ok"; setSave("保存できます", "ok");
+  if (!db) { dbState = "none"; showStatus(); render(); return; }
+  dbState = "ok";
+  if (Object.keys(pending).length) flush(); else setSave("保存できます", "ok");
   const col = db.collection("grades");
   try {
     if (typeof col.onSnapshot === "function") {
