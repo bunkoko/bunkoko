@@ -138,7 +138,6 @@ export interface DayMetrics {
     valenceAvg: number | null;
     /** この夜の前の日中のふり返り（要因）。1〜5 */
     condition: number | null;
-    sleepiness: number | null;
     stress: number | null;
   };
   morning: { feeling: number | null };
@@ -153,14 +152,13 @@ export interface DayMetrics {
   };
 }
 
-/** 1日のふり返り。condition: 調子（1 悪い〜5 よい）、sleepiness: 日中の眠気（1 なかった〜5 とても眠い）、stress: ストレス（1 なかった〜5 とても強い） */
+/** 1日のふり返り。condition: 調子（1 悪い〜5 よい）、stress: ストレス（1 なかった〜5 とても強い） */
 export interface DayCheckin {
   condition: number | null;
-  sleepiness: number | null;
   stress: number | null;
 }
 
-const EMPTY_CHECKIN: DayCheckin = { condition: null, sleepiness: null, stress: null };
+const EMPTY_CHECKIN: DayCheckin = { condition: null, stress: null };
 
 const round = (value: number | null | undefined, digits = 1): number | null => {
   if (value === null || value === undefined || !Number.isFinite(value)) return null;
@@ -498,7 +496,7 @@ export async function computeDay(
   for (const row of checkinResult.results as { occurred_at: number; data_json: string }[]) {
     const data = JSON.parse(row.data_json) as Record<string, unknown>;
     const score = (value: unknown) => (typeof value === "number" ? value : null);
-    checkins.set(String(data.day), { condition: score(data.condition), sleepiness: score(data.sleepiness), stress: score(data.stress) });
+    checkins.set(String(data.day), { condition: score(data.condition), stress: score(data.stress) });
   }
   const before = checkins.get(addDays(date, -1)) ?? EMPTY_CHECKIN;
 
@@ -620,7 +618,6 @@ export async function computeDay(
       napMin: minutes(napMs(sessions, date, tz)),
       valenceAvg: round(average(samplesOf("stateOfMind", dayStart, bedRef)), 2),
       condition: before.condition,
-      sleepiness: before.sleepiness,
       stress: before.stress,
     },
     morning: { feeling: feeling ? Number(feeling.data.score) : null },

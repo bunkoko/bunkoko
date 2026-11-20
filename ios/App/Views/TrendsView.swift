@@ -38,7 +38,6 @@ struct TrendsView: View {
                 // 目的（朝すっきり起きられて、日中の調子がよい）を先に出す
                 trendSection("朝の体感（1 ぐったり〜5 すっきり）", points { $0.metrics.morning?.feeling }, color: .mint, domain: 1...5)
                 trendSection("日中の調子（1 悪い〜5 よい）", points { $0.metrics.nextDay?.condition }, color: .cyan, domain: 1...5)
-                trendSection("日中の眠気（1 なかった〜5 とても眠い）", points { $0.metrics.nextDay?.sleepiness }, color: .yellow, domain: 1...5)
                 trendSection("ストレス（1 なかった〜5 とても強い）", points { $0.metrics.nextDay?.stress }, color: .red, domain: 1...5)
                 trendSection("眠った時間（時間）", points { $0.metrics.sleep?.asleepMin.map { $0 / 60 } }, bar: true, color: .indigo)
                 trendSection("睡眠効率（%）", points { $0.metrics.sleep?.efficiency.map { $0 * 100 } }, color: .blue)

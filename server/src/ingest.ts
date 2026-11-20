@@ -377,14 +377,13 @@ function parseLogData(problems: Problems, path: string, kind: LogKind, value: un
       const day = typeof data.day === "string" && isValidDate(data.day) ? data.day : null;
       if (!day) problems.add(`${path}.day`, "YYYY-MM-DD の日付にしてください");
       const condition = optionalScore(problems, `${path}.condition`, data.condition);
-      const sleepiness = optionalScore(problems, `${path}.sleepiness`, data.sleepiness);
       const stress = optionalScore(problems, `${path}.stress`, data.stress);
-      if (condition === null && sleepiness === null && stress === null) {
-        problems.add(path, "condition・sleepiness・stress のどれか1つは入れてください");
+      if (condition === null && stress === null) {
+        problems.add(path, "condition・stress のどちらか1つは入れてください");
         return null;
       }
       const note = optionalString(problems, `${path}.note`, data.note, 500);
-      return day ? { day, condition, sleepiness, stress, note } : null;
+      return day ? { day, condition, stress, note } : null;
     }
     case "bath":
       return {};

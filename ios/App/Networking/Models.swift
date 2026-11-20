@@ -64,10 +64,9 @@ struct LogData: Codable, Hashable {
     var drinks: Double? = nil
     var state: String? = nil
     var cumulativeMinutes: Int? = nil
-    /// 1日のふり返り: ふり返る日（"2026-11-20"）と、今日の調子・日中の眠気・ストレス（1〜5）
+    /// 1日のふり返り: ふり返る日（"2026-11-20"）と、今日の調子・ストレス（1〜5）
     var day: String? = nil
     var condition: Int? = nil
-    var sleepiness: Int? = nil
     var stress: Int? = nil
 }
 
@@ -227,14 +226,12 @@ struct DayActivity: Decodable {
     let napMin: Double?
     /// その日（この夜の前の日中）のふり返り
     let condition: Double?
-    let sleepiness: Double?
     let stress: Double?
 }
 
 /// この夜のあとの日中のふり返り（結果）
 struct DayCheckinMetrics: Decodable {
     let condition: Double?
-    let sleepiness: Double?
     let stress: Double?
 }
 

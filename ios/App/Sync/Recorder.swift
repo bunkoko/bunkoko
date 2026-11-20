@@ -15,11 +15,11 @@ enum Recorder {
     }
 
     /// 1日のふり返り。ふり返る日ごとに1つ（入れ直したら上書き）。入れなかった項目は nil
-    static func dayCheckin(day: String, condition: Int?, sleepiness: Int?, stress: Int?) async {
-        guard condition != nil || sleepiness != nil || stress != nil else { return }
+    static func dayCheckin(day: String, condition: Int?, stress: Int?) async {
+        guard condition != nil || stress != nil else { return }
         await LogStore.shared.add(
             .dayCheckin,
-            data: LogData(day: day, condition: condition, sleepiness: sleepiness, stress: stress),
+            data: LogData(day: day, condition: condition, stress: stress),
             id: checkinID(day: day)
         )
         await Reminders.refresh()

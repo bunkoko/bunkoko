@@ -232,7 +232,6 @@ struct DaySummarySections: View {
         Section("朝と、次の日中（この夜のあと）") {
             MetricRow(label: "朝の体感", value: score(m.morning?.feeling))
             MetricRow(label: "日中の調子", value: score(m.nextDay?.condition))
-            MetricRow(label: "日中の眠気", value: score(m.nextDay?.sleepiness))
             MetricRow(label: "ストレス", value: score(m.nextDay?.stress))
         }
         Section("睡眠") {
@@ -272,7 +271,7 @@ struct DaySummarySections: View {
             MetricRow(label: "日光（合計 / 午前）", value: "\(Fmt.duration(m.day?.daylightMin)) / \(Fmt.duration(m.day?.morningDaylightMin))")
             MetricRow(label: "ワークアウト", value: Fmt.duration(m.day?.workoutMin))
             MetricRow(label: "昼寝", value: Fmt.duration(m.day?.napMin))
-            MetricRow(label: "調子 / 眠気 / ストレス", value: "\(score(m.day?.condition)) / \(score(m.day?.sleepiness)) / \(score(m.day?.stress))")
+            MetricRow(label: "調子 / ストレス", value: "\(score(m.day?.condition)) / \(score(m.day?.stress))")
         }
     }
 

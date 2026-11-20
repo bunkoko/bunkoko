@@ -62,7 +62,7 @@ struct HomeView: View {
                     } header: {
                         Text("今日のふり返り")
                     } footer: {
-                        Text("入れた分はすぐに保存されます。どの項目も飛ばせます")
+                        Text("入れた分はすぐに保存されます。どちらも飛ばせます")
                     }
                 }
 

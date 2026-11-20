@@ -205,7 +205,7 @@ describe("POST /api/logs/batch", () => {
     expect(first.status).toBe(200);
     expect(((await first.json()) as { daysQueued: string[] }).daysQueued).toEqual(["2026-11-20", "2026-11-21"]);
     expect(rows(`SELECT data_json FROM user_logs`)).toEqual([
-      { data_json: '{"day":"2026-11-20","condition":4,"sleepiness":null,"stress":2,"note":null}' },
+      { data_json: '{"day":"2026-11-20","condition":4,"stress":2,"note":null}' },
     ]);
 
     // ふり返る日を直したら、前の日の分も計算し直す

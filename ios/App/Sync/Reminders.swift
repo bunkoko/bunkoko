@@ -38,7 +38,7 @@ enum Reminders {
             if let bedtime = bedtime(for: date) {
                 let fire = bedtime.addingTimeInterval(-60 * 60)
                 if fire > now, await LogStore.shared.log(id: Recorder.checkinID(day: day)) == nil {
-                    await schedule(id: "\(prefix)evening.\(day)", at: fire, title: "今日のふり返り", body: "今日の調子・眠気・ストレスを記録しましょう（3タップ）")
+                    await schedule(id: "\(prefix)evening.\(day)", at: fire, title: "今日のふり返り", body: "今日の調子とストレスを記録しましょう（2タップ）")
                 }
             }
         }
