@@ -45,6 +45,7 @@
 - uv run koten eval retrieval（--by llm で LLM の点を使う。--rerank-model でリランカーを1つずつ足して比べる。export にも同じ指定をして、上に上がった一節にも点を付ける）
 - uv run koten plan --worry W0001 --format A（保存）→ uv run koten script --episode E20261101-01 → --show で読む
 - uv run koten episode list ／ uv run koten episode discard --episode <ID>（試しの回を取り消す）
+- uv run koten produce --episode E…（M6：台本のあと、音声 → 画面 → 組み立て → 公開用キット → 確認画面を続けて。--from render などで途中から。段ごとに koten voice・visuals・render・kit・review も）→ HDD の exports/<回>/review.html を開く → koten episode take --episode E… --text …（人の一言。--audio・--skip）→ koten episode approve --episode E…（承認。差し戻しは reject --to script_done --note …）。作りは docs/m6_design.md
 - uv run koten forget-works --changed（正規化で本文が変わった作品。--apply で付加情報を取り除き、augment で作り直す）
 - uv run koten facts build（HDD の書誌と config/facts.csv から、SSD の事実の表を作り直す）／ facts coverage ／ facts list --episode <ID>
 - uv run koten facts todo --episode <ID> → facts draft --episode <ID>（AI の下書き）→ facts review（下書きを読む）→ 人が別の資料で確かめ、CSV の accept に 1 → facts accept（--from を省くと最新の下書き）→ facts build → facts attach --episode <ID>（企画に事実を付け直す）→ script

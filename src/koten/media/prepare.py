@@ -77,7 +77,7 @@ def prepare_lines(
                     display=display,
                     reading=reading,
                     visual=dict(seg.get("visual") or {}),
-                    chapter_title=ch.get("title", ""),
+                    chapter_title=resolver.resolve(ch.get("title", "")),
                     role=ch.get("role", ""),
                 )
             )
@@ -93,7 +93,7 @@ def prepare_lines(
                     display=text,
                     reading=speech_text(text) if text else "",
                     visual={"type": "photo", "ref": None},
-                    chapter_title=ch.get("title", ""),
+                    chapter_title=resolver.resolve(ch.get("title", "")),
                     role=ch.get("role", ""),
                     audio_path=take.get("audio_path") or None,
                 )
@@ -154,11 +154,19 @@ def used_ids(script: dict[str, Any]) -> dict[str, list[str]]:
     return out
 
 
+NUMBER_PLACEHOLDERS = ("{{stat:", "{{finding")
+
+
 def _hook(script: dict[str, Any], resolver: Resolver) -> str:
-    """①つかみ：冒頭の章の最初の語りの、最初の1〜2文（検査を通った文）。"""
+    """①つかみ：冒頭の章の最初の語りの、最初の1〜2文（検査を通った文）。
+
+    統計・研究の記号が入った語りは使わない（説明欄に調査の数値を書かない。D-036）。
+    """
     for ch in script["chapters"]:
         for seg in ch["segments"]:
-            if seg["kind"] == "narration":
+            if seg["kind"] == "narration" and not any(
+                p in seg["text"] for p in NUMBER_PLACEHOLDERS
+            ):
                 return "".join(split_sentences(resolver.resolve(seg["text"]))[:2])
         break
     return ""
@@ -220,7 +228,8 @@ def kit_input(
         s = resolver.stats.get(sid)
         if s is None:
             continue
-        year = f"（{s['year']}年）" if s.get("year") else ""
+        y = str(s.get("year") or "").strip().removesuffix("年")
+        year = f"（{y}年）" if y else ""
         line = f"{s.get('survey') or s.get('label')}{year}　{s.get('url') or ''}".strip()
         if line not in data_sources:
             data_sources.append(line)

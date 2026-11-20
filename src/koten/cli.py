@@ -3261,6 +3261,209 @@ episode_app = typer.Typer(no_args_is_help=True, help="回（episodes）")
 app.add_typer(episode_app, name="episode")
 
 
+# --- M6：1本を手で通す（docs/m6_design.md） -------------------------------------
+
+PRODUCE_STEPS = ("voice", "visuals", "render", "kit", "review")
+
+
+def _media_errors() -> tuple[type[Exception], ...]:
+    from koten.media.produce import ProduceError
+    from koten.publish_kit.kit import DescriptionError
+    from koten.render.ffmpeg import RenderError
+    from koten.review.actions import ReviewError
+    from koten.visuals.cards import CardError
+    from koten.visuals.photos import PhotoError
+    from koten.voice.voicevox import VoiceError
+
+    return (
+        ProduceError,
+        VoiceError,
+        CardError,
+        PhotoError,
+        RenderError,
+        DescriptionError,
+        ReviewError,
+    )
+
+
+def _run_steps(episode: str, steps: list[str], settings: str | None) -> None:
+    """動画づくりの段を順に動かす。どこかで止まったら、理由を出して終わる（前の段の結果は残る）。"""
+    from koten.db import connect
+    from koten.media import produce
+
+    s = _settings(settings)
+    conn = connect(s.ssd_root)
+    try:
+        for step in steps:
+            typer.secho(f"── {step}", bold=True)
+            if step == "voice":
+                m = produce.step_voice(s, conn, episode, log=typer.echo)
+                typer.echo(f"音声：{produce._mmss(m.total_sec)}（{len(m.chapters)} 章）")
+            elif step == "visuals":
+                produce.step_visuals(s, conn, episode, log=typer.echo)
+            elif step == "render":
+                out, issues = produce.step_render(s, conn, episode, log=typer.echo)
+                typer.echo(f"動画：{out}")
+                for x in issues:
+                    typer.secho(f"G7：{x}", fg="yellow")
+            elif step == "kit":
+                produce.step_kit(s, conn, episode, log=typer.echo)
+            elif step == "review":
+                _, current = _episode_claims(s, episode)
+                holds = _episode_holds(s, conn, episode, current)
+                out, blockers = produce.step_review(s, conn, episode, holds=holds, log=typer.echo)
+                for b in blockers:
+                    typer.secho(f"承認できない理由：{b}", fg="red")
+                typer.echo(f"ブラウザで開く：open {out}")
+    except _media_errors() as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(1) from e
+
+
+@app.command("voice")
+def voice_cmd(
+    episode: Annotated[str, typer.Option(help="回の ID")],
+    settings: SettingsOpt = None,
+) -> None:
+    """台本を VOICEVOX で読み上げ、章ごとの音声と時刻を HDD の media/<回>/voice/ に作る（M6）。"""
+    _run_steps(episode, ["voice"], settings)
+
+
+@app.command("visuals")
+def visuals_cmd(
+    episode: Annotated[str, typer.Option(help="回の ID")],
+    settings: SettingsOpt = None,
+) -> None:
+    """カード（引用・章タイトル・統計）と自分の写真から、画面の切り替え（ショット）を作る（M6）。"""
+    _run_steps(episode, ["visuals"], settings)
+
+
+@app.command("render")
+def render_cmd(
+    episode: Annotated[str, typer.Option(help="回の ID")],
+    settings: SettingsOpt = None,
+) -> None:
+    """ffmpeg で章ごとの動画をつなぎ、完成した mp4 を作る。G7（尺）を確かめる（M6）。"""
+    _run_steps(episode, ["render"], settings)
+
+
+@app.command("kit")
+def kit_cmd(
+    episode: Annotated[str, typer.Option(help="回の ID")],
+    settings: SettingsOpt = None,
+) -> None:
+    """説明欄・チャプター・字幕（SRT）・サムネイル3枚を作る（M6）。"""
+    _run_steps(episode, ["kit"], settings)
+
+
+@app.command("review")
+def review_cmd(
+    episode: Annotated[str, typer.Option(help="回の ID")],
+    settings: SettingsOpt = None,
+) -> None:
+    """確認画面（HDD の exports/<回>/review.html）を作る。承認は koten episode approve（M6）。"""
+    _run_steps(episode, ["review"], settings)
+
+
+@app.command("produce")
+def produce_cmd(
+    episode: Annotated[str, typer.Option(help="回の ID")],
+    start: Annotated[
+        str, typer.Option("--from", help="ここから動かす（voice・visuals・render・kit・review）")
+    ] = "voice",
+    settings: SettingsOpt = None,
+) -> None:
+    """台本のあとの段（音声 → 画面 → 組み立て → 公開用キット → 確認画面）を続けて動かす（M6）。"""
+    if start not in PRODUCE_STEPS:
+        typer.secho(f"--from は {'・'.join(PRODUCE_STEPS)} のどれか", fg="red", err=True)
+        raise typer.Exit(2)
+    _run_steps(episode, list(PRODUCE_STEPS[PRODUCE_STEPS.index(start) :]), settings)
+
+
+@episode_app.command("take")
+def episode_take(
+    episode: Annotated[str, typer.Option(help="回の ID")],
+    text: Annotated[str | None, typer.Option(help="人の一言（文字。読み上げる）")] = None,
+    audio: Annotated[
+        str | None,
+        typer.Option(help="自分の声で録った wav（media/<回>/ からの相対パスか、絶対パス）"),
+    ] = None,
+    skip: Annotated[bool, typer.Option(help="この回は人の一言を入れない")] = False,
+    settings: SettingsOpt = None,
+) -> None:
+    """まとめの章の「人の一言」を決める（文字・自分の声・省く）。
+
+    入れたら koten produce をやり直す。
+    """
+    from koten.db import connect
+    from koten.review.actions import ReviewError, set_human_take
+
+    conn = connect(_settings(settings).ssd_root)
+    try:
+        take = set_human_take(conn, episode, text=text, audio_path=audio, skip=skip)
+    except ReviewError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
+    if take.get("skip"):
+        typer.echo(f"{episode}：人の一言は入れません")
+    else:
+        typer.echo(
+            f"{episode}：人の一言を入れました。"
+            f"動画に入れるには：uv run koten produce --episode {episode}"
+        )
+
+
+@episode_app.command("approve")
+def episode_approve(
+    episode: Annotated[str, typer.Option(help="回の ID")],
+    note: Annotated[str, typer.Option(help="確認のメモ")] = "",
+    settings: SettingsOpt = None,
+) -> None:
+    """確認画面を見たあとで、回を承認する（reviewed）。承認できない理由があれば止める。"""
+    from koten.db import connect
+    from koten.media import produce
+    from koten.media.model import media_dir
+    from koten.review.actions import ReviewError, approve
+
+    s = _settings(settings)
+    conn = connect(s.ssd_root)
+    try:
+        ep = produce.load_episode(conn, s.ssd_root, episode)
+        _, current = _episode_claims(s, episode)
+        holds = _episode_holds(s, conn, episode, current)
+        blockers, _ = produce.blockers_for(
+            s, ep, holds=holds, media=media_dir(s.require_hdd(), episode)
+        )
+        approve(conn, episode, note=note, blockers=blockers)
+    except (ReviewError, produce.ProduceError) as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
+    typer.echo(f"{episode} を承認しました（reviewed）")
+
+
+@episode_app.command("reject")
+def episode_reject(
+    episode: Annotated[str, typer.Option(help="回の ID")],
+    note: Annotated[str, typer.Option(help="直すところ（必ず書く）")],
+    to: Annotated[
+        str,
+        typer.Option(help="戻す状態：script_done（台本はそのまま）か planned（台本から書き直す）"),
+    ] = "script_done",
+    settings: SettingsOpt = None,
+) -> None:
+    """確認画面を見て差し戻す。メモを残し、状態を戻す。"""
+    from koten.db import connect
+    from koten.review.actions import ReviewError, reject
+
+    conn = connect(_settings(settings).ssd_root)
+    try:
+        reject(conn, episode, note=note, to_state=to)
+    except ReviewError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
+    typer.echo(f"{episode} を {to} に戻しました")
+
+
 @episode_app.command("list")
 def episode_list(
     top: Annotated[int, typer.Option(help="表示する件数（新しい順）")] = 20,
