@@ -251,6 +251,8 @@ class Reading:
     sha: str
     divided: bool = False  # 読み方が分かれる（人が承認のときに確かめた）
     source_id: str = ""  # 訳の元の本文（pd はその訳そのもの。画面の一節と合っているかを見る）
+    # 読み上げの読み（pd だけ。人が確かめた renderings.reading のかな）。空なら text を読む
+    speech: str = ""
 
     def row(self) -> dict[str, Any]:
         return {
@@ -271,7 +273,14 @@ def reading_for(conn: sqlite3.Connection, passage_key: str) -> Reading | None:
         text = pd.get("display_text") or pd["text"]
         label = pd.get("ref_credit") or ref_source_label(pd)
         return Reading(
-            "pd", text, label, pd["rendering_id"], pd["text_sha"], False, pd["rendering_id"]
+            "pd",
+            text,
+            label,
+            pd["rendering_id"],
+            pd["text_sha"],
+            False,
+            pd["rendering_id"],
+            speech=pd.get("reading") or "",
         )
     if pd_in_same_book(conn, passage_key) is not None:
         return None

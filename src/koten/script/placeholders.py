@@ -107,6 +107,13 @@ class Resolver:
         self.expected = expected or {}
 
     def value(self, kind: str, key: str) -> str:
+        return self._value(kind, key, speech=False)
+
+    def _value(self, kind: str, key: str, *, speech: bool) -> str:
+        """speech のときは、語釈・解釈・一節の日本語を、人が確かめた読み上げの読みで返す。
+
+        読み（かな）が無ければ、画面と同じ本文。ほかの記号は画面と同じ。
+        """
         key = key.strip()
         if kind in ("quote", "quote_ja", "source", "author", "title"):
             c = self.candidates.get(key)
@@ -129,7 +136,7 @@ class Resolver:
                         f"{{{{quote_ja:{key}}}}}：台本のあとで一節の日本語が変わった"
                         f"（{exp['ref']}→{r.ref}。koten script --force で書き直す）"
                     )
-                return r.text
+                return (r.speech or r.text) if speech else r.text
             if kind == "source":
                 return format_source(c)
             if kind == "author":
@@ -161,7 +168,9 @@ class Resolver:
             r = self.refs.get(key)
             if r is None or not key.startswith(REF_KINDS[kind]):
                 raise UnresolvedPlaceholder(f"{{{{{kind}:{key}}}}}：この回の企画に無い語釈・解釈")
-            return ref_source_label(r) if kind.endswith("_src") else ref_text(r)
+            if kind.endswith("_src"):
+                return ref_source_label(r)
+            return (r.get("reading") or ref_text(r)) if speech else ref_text(r)
         if kind in FINDING_FIELDS:
             f = self.findings.get(key)
             if f is None:
@@ -173,7 +182,20 @@ class Resolver:
         raise UnresolvedPlaceholder(f"{{{{{kind}:{key}}}}}")
 
     def resolve(self, text: str) -> str:
-        out = PLACEHOLDER.sub(lambda m: self.value(m.group(1), m.group(2)), text)
+        """画面と説明欄に出す文。"""
+        return self._sub(text, speech=False)
+
+    def speak(self, text: str) -> str:
+        """読み上げる文（VOICEVOX に渡す）。
+
+        {{def:}}・{{interp:}} は語釈・解釈の読み（reading）、{{quote_ja:}} は古い日本語訳の読み
+        （Reading.speech）を差し込む。人が確かめたかなで、VOICEVOX が文語・カタカナを読み違えない
+        ようにする（docs/ref_sources.md）。読みが無ければ画面と同じ本文。ほかは resolve と同じ。
+        """
+        return self._sub(text, speech=True)
+
+    def _sub(self, text: str, *, speech: bool) -> str:
+        out = PLACEHOLDER.sub(lambda m: self._value(m.group(1), m.group(2), speech=speech), text)
         stray = ANY_BRACES.search(out)
         if stray:
             raise UnresolvedPlaceholder(f"{stray.group(0)}：使えない記号")
