@@ -13,8 +13,6 @@ from typing import Any
 
 from koten.script.placeholders import Resolver
 
-PHOTO_EXT = {".jpg", ".jpeg", ".png", ".heic", ".tif", ".tiff", ".webp"}
-
 
 @dataclass
 class EpisodeVisuals:
@@ -50,10 +48,9 @@ def episode_visuals(
 
 
 def count_photos(photos_dir: Path) -> int | None:
+    """動画で使える写真の数（動画づくりと同じ数え方：koten.visuals.photos.list_photos）。"""
+    from koten.visuals.photos import list_photos
+
     if not photos_dir.exists():
         return None
-    return sum(
-        1
-        for p in photos_dir.rglob("*")
-        if p.is_file() and p.suffix.lower() in PHOTO_EXT and not p.name.startswith(".")
-    )
+    return len(list_photos(photos_dir))

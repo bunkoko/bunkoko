@@ -181,7 +181,14 @@ def kit_input(
     hashtags: list[str],
     channel_name: str = "",
     books: list[dict[str, str]] | None = None,
+    source_renderings: dict[str, dict[str, Any]] | None = None,
 ) -> KitInput:
+    """説明欄の材料。
+
+    source_renderings：古典の一節（canon。M8b）の画面の原文がどの版のものか（候補の source_id →
+    renderings の行。ref_credit・ref_url・ref_pid・locator）。底本と URL の代わりに出す（R7）。
+    """
+    source_renderings = source_renderings or {}
     ids = used_ids(script)
     cands = [resolver.candidates[c] for c in ids["quotes"] if c in resolver.candidates]
     # 主役の作品：最初の一節の作品（出てきた順）
@@ -210,14 +217,23 @@ def kit_input(
         if key in seen_works:
             continue
         seen_works.add(key)
+        base_book, url = c.get("base_book") or "", c.get("url") or ""
+        r = source_renderings.get(c.get("source_id") or "")
+        if r is not None:
+            # 古典の一節：画面の原文の版（「國譯漢文大成」など）とその場所・URL
+            parts = (r.get("ref_credit") or "", r.get("locator") or "")
+            base_book = "　".join(x for x in parts if x)
+            url = r.get("ref_url") or (
+                f"https://dl.ndl.go.jp/pid/{r['ref_pid']}" if r.get("ref_pid") else ""
+            )
         classics.append(
             ClassicSource(
                 title=c["title"],
                 authors=author_label(c),
                 translator=translator_label(c),
                 section=short_section(c.get("section") or ""),
-                base_book=c.get("base_book") or "",
-                url=c.get("url") or "",
+                base_book=base_book,
+                url=url,
                 license=c.get("license") or "",
                 label=labels.get(cid, ""),
             )
@@ -235,7 +251,8 @@ def kit_input(
             data_sources.append(line)
     for fid in ids["findings"]:
         f = resolver.findings.get(fid) or {}
-        label = f.get("source_label") or ""
+        # 説明欄には書誌（著者 (年). 題. 雑誌, 巻(号). DOI）。語りの言い方（〇〇大学の研究）ではない
+        label = f.get("citation") or f.get("source_label") or ""
         if label and label not in data_sources:
             data_sources.append(label)
 
@@ -244,7 +261,14 @@ def kit_input(
         for src in fact_sources.get(fid, []):
             if src.get("role") != "confirm" or src.get("kind") == "wikipedia":
                 continue  # ウィキペディアは手がかりだけ（R2）
-            parts = [src.get("title") or "", src.get("locator") or "", src.get("url") or ""]
+            # クレジット（CC BY の資料は決まった書き方）とライセンス（R7）
+            head = src.get("credit") or src.get("title") or ""
+            lic = src.get("license") or ""
+            if lic in ("PD_JP", "PD"):
+                lic = ""  # 保護期間満了の資料は書き方の決まりが無い
+            parts = [head, src.get("locator") or "", src.get("url") or ""]
+            if lic and lic not in head:
+                parts.append(lic)
             line = "　".join(p for p in parts if p)
             if line and line not in background:
                 background.append(line)
@@ -254,7 +278,10 @@ def kit_input(
         r = resolver.refs.get(rid)
         if r is None:
             continue
-        parts = [ref_source_label(r), r.get("locator") or "", r.get("url") or ""]
+        url = r.get("ref_url") or (
+            f"https://dl.ndl.go.jp/pid/{r['ref_pid']}" if r.get("ref_pid") else ""
+        )
+        parts = [r.get("ref_credit") or ref_source_label(r), r.get("locator") or "", url]
         line = "　".join(p for p in parts if p)
         if line not in background:
             background.append(line)
@@ -285,7 +312,8 @@ def kit_input(
         amazon_notice=amazon,
         credits=[c for c in credits if c],
         notices=notices,
-        question=(script.get("comment_prompt") or "").strip(),
+        # 問いかけ：検査を通った文。{{author:}}・{{title:}}・{{worry:}} は使ってよい（script_v5）
+        question=resolver.resolve((script.get("comment_prompt") or "").strip()),
         hashtags=hashtags[:3],
     )
 
@@ -308,7 +336,7 @@ def chapter_ranges(
         has_refs = any(seg.get("refs") for seg in ch["segments"])
         if has_facts and conf.get("fact_sec"):
             hi += float(conf["fact_sec"][1])
-        if has_refs and conf.get("def_sec"):
-            hi += float(conf["def_sec"][1])
+        if has_refs:
+            hi += float((conf.get("def_sec") or [20, 30])[1])  # 企画（planner.ref_sec）と同じ既定
         out[ch["chapter_id"]] = (lo, hi)
     return out

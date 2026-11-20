@@ -112,7 +112,12 @@ def test_produce_from_script_to_approval(env, tmp_path, monkeypatch):
         mine = [x for x in shots.shots if x.chapter_id == ch.chapter_id]
         assert abs(sum(x.duration for x in mine) - ch.duration) < 1e-6
     assert any(x.kind == "quote_card" for x in shots.shots)
-    used = {r[0] for r in conn.execute("SELECT path FROM media_usage WHERE episode_id = ?", (eid,))}
+    used = {
+        r[0]
+        for r in conn.execute(
+            "SELECT path FROM media_usage WHERE episode_id = ? AND kind = 'photo'", (eid,)
+        )
+    }
     assert used == set(shots.photos_used)
 
     # 組み立て：長さが音声と合う。G7（章の長さ）は、この小さな台本では範囲の外になる
@@ -159,6 +164,13 @@ def test_produce_from_script_to_approval(env, tmp_path, monkeypatch):
         conn.execute("SELECT state FROM episodes WHERE episode_id = ?", (eid,)).fetchone()[0]
         == "rendered"
     )
+    # クレジットを書いたら、説明欄を作り直すまで承認できない
+    res = CliRunner().invoke(
+        app, ["episode", "approve", "--episode", eid, "--settings", str(s2.path)]
+    )
+    assert res.exit_code == 2 and "クレジットが無い" in res.output, res.output
+    produce.step_kit(s2, conn, eid, log=logs.append)
+    assert "音声：VOICEVOX:テスト" in (media / "kit" / "description.txt").read_text("utf-8")
     res = CliRunner().invoke(
         app, ["episode", "approve", "--episode", eid, "--note", "見た", "--settings", str(s2.path)]
     )
@@ -167,6 +179,23 @@ def test_produce_from_script_to_approval(env, tmp_path, monkeypatch):
         "SELECT state, reviewer_note FROM episodes WHERE episode_id = ?", (eid,)
     ).fetchone()
     assert (row["state"], row["reviewer_note"]) == ("reviewed", "見た")
+
+    # 承認のあとで画面を作り直したら、動画を作り直して確かめ直すまで承認できない
+    produce.step_visuals(s2, conn, eid, log=logs.append)
+    state_now = conn.execute("SELECT state FROM episodes WHERE episode_id = ?", (eid,)).fetchone()[
+        0
+    ]
+    assert state_now == "voiced"
+    # 差し戻した回は、音声から作り直すまで画面も動画も作らない（古い動画を rendered にしない）
+    res = CliRunner().invoke(
+        app,
+        ["episode", "reject", "--episode", eid, "--to", "script_done", "--note", "直す", *st],
+    )
+    assert res.exit_code == 0, res.output
+    with pytest.raises(produce.ProduceError, match="音声のあと"):
+        produce.step_render(s2, conn, eid, log=logs.append)
+    with pytest.raises(produce.ProduceError, match="音声のあと"):
+        produce.step_visuals(s2, conn, eid, log=logs.append)
 
 
 def test_recent_photos_are_not_reused(env, tmp_path):

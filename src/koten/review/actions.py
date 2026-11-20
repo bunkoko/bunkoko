@@ -24,9 +24,13 @@ class ReviewError(RuntimeError):
     pass
 
 
+def _decided(take: dict[str, Any]) -> bool:
+    return bool(take.get("text") or take.get("audio_path") or take.get("skip"))
+
+
 def _row(conn: sqlite3.Connection, episode_id: str) -> sqlite3.Row:
     row = conn.execute(
-        "SELECT state, script_json FROM episodes WHERE episode_id = ?", (episode_id,)
+        "SELECT state, script_json, human_take FROM episodes WHERE episode_id = ?", (episode_id,)
     ).fetchone()
     if row is None:
         raise ReviewError(f"{episode_id} という回はありません")
@@ -148,6 +152,11 @@ def set_human_take(
         raise ReviewError(f"{episode_id} の台本がありません（koten script が先）")
     script = json.loads(row["script_json"])
     old = dict(script.get("human_take") or {})
+    # koten script（作り直し）は台本の人の一言を空にする。音声に入っているのは列に残した一言
+    # （koten.media.produce.load_episode と同じ戻し方）なので、それと比べる
+    saved = json.loads(row["human_take"]) if row["human_take"] else {}
+    if isinstance(saved, dict) and not _decided(old) and _decided(saved):
+        old = {**old, **saved}
     if not old.get("chapter_id"):
         raise ReviewError(
             f"{episode_id} の台本に人の一言の枠がありません（koten script で作り直す）"

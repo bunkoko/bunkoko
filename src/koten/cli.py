@@ -3267,10 +3267,12 @@ PRODUCE_STEPS = ("voice", "visuals", "render", "kit", "review")
 
 
 def _media_errors() -> tuple[type[Exception], ...]:
+    """動画づくりで出るはずの失敗（どれも何をすればよいかの文を持つ）。トレースバックを出さない。"""
     from koten.media.produce import ProduceError
     from koten.publish_kit.kit import DescriptionError
     from koten.render.ffmpeg import RenderError
     from koten.review.actions import ReviewError
+    from koten.script.placeholders import UnresolvedPlaceholder
     from koten.visuals.cards import CardError
     from koten.visuals.photos import PhotoError
     from koten.voice.voicevox import VoiceError
@@ -3283,6 +3285,9 @@ def _media_errors() -> tuple[type[Exception], ...]:
         RenderError,
         DescriptionError,
         ReviewError,
+        HddNotConnectedError,
+        UnresolvedPlaceholder,  # 台本のあとで統計・事実が使えなくなった
+        ValueError,  # config/readings.csv の書き方など
     )
 
 
@@ -3435,7 +3440,7 @@ def episode_approve(
             s, ep, holds=holds, media=media_dir(s.require_hdd(), episode)
         )
         approve(conn, episode, note=note, blockers=blockers)
-    except (ReviewError, produce.ProduceError) as e:
+    except (ReviewError, produce.ProduceError, HddNotConnectedError) as e:
         typer.secho(str(e), fg="red", err=True)
         raise typer.Exit(2) from e
     typer.echo(f"{episode} を承認しました（reviewed）")

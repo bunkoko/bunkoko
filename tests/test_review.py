@@ -416,3 +416,16 @@ def test_set_human_take_only_before_approval(tmp_path, state):
     with pytest.raises(ReviewError):
         set_human_take(conn, EP, text="一言")
     assert row(conn)["state"] == state
+
+
+def test_take_compares_with_the_voiced_take_after_script_rewrite(tmp_path):
+    """koten script の作り直しで台本の一言が空になっても、音声に入っているのは列に残した一言。
+    それを省いたら、音声から作り直す（rendered のままにしない）。"""
+    conn = db(tmp_path, state="rendered")
+    with conn:
+        conn.execute(
+            "UPDATE episodes SET human_take = ? WHERE episode_id = ?",
+            (json.dumps({"chapter_id": "ch5", "text": "前の一言", "audio_path": None}), EP),
+        )
+    set_human_take(conn, EP, skip=True)
+    assert row(conn)["state"] == "script_done"

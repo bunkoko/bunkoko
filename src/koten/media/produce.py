@@ -8,8 +8,8 @@
 from __future__ import annotations
 
 import json
-import math
 import os
+import shutil
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -34,8 +34,9 @@ from koten.media.prepare import card_specs, chapter_ranges, kit_input, prepare_l
 
 TEMPLATES = REPO_ROOT / "templates"
 PHOTO_EPISODES = 5  # 同じ写真は直近5回で使わない（SPEC §8.10）
-PHOTO_EVERY = 7.0  # 写真を替える目安の秒数（visuals.build_shots の目安と同じ）
 VOICE_STATES = {"script_done", "voiced", "rendered", "reviewed"}
+# 画面・組み立て・キットは、音声のあと（voiced 以降）だけ。差し戻した回・取り消した回では動かさない
+AFTER_VOICE = {"voiced", "rendered", "reviewed"}
 # 不合格なら承認できないゲート。G3 の「人の確認へ」・G6・視聴の確かめは注意にとどめる（SPEC §8.8）
 BLOCKING_GATES = ("schema", "G1", "G2", "G4", "G5", "G7")
 WARNINGS = "warnings.json"
@@ -88,6 +89,14 @@ def load_episode(conn: sqlite3.Connection, ssd_root: Path, episode_id: str) -> E
         data,
         gates.resolver_for(data, script),
     )
+
+
+def _require(ep: Episode, states: set[str], what: str) -> None:
+    if ep.state not in states:
+        raise ProduceError(
+            f"{ep.episode_id} は {ep.state} です。{what}は音声のあとで作ります"
+            f"（uv run koten produce --episode {ep.episode_id}）"
+        )
 
 
 def _set_state(
@@ -170,6 +179,7 @@ def step_voice(
         raise ProduceError(f"{episode_id} は {ep.state}。台本（script_done）のあとで作ります")
     conf = s.section("voicevox")
     lines = prepare_lines(ep.script, ep.resolver, load_overrides(s.config_dir / "readings.csv"))
+    media = media_dir(s.require_hdd(), episode_id)  # HDD を先に確かめる（辞書を変える前に）
     if client is None:
         client = VoicevoxClient(
             conf.get("endpoint", "http://127.0.0.1:50021"), int(conf["speaker_id"])
@@ -177,7 +187,6 @@ def step_voice(
     added = client.register_words(dictionary_words(conn, ep), log=log)
     if added:
         log(f"読み上げの辞書に {added} 語を足しました（作品名・人名の読み）")
-    media = media_dir(s.require_hdd(), episode_id)
     manifest = synthesize(
         lines,
         media,
@@ -204,10 +213,15 @@ def step_voice(
 
 
 def recent_photos(conn: sqlite3.Connection, episode_id: str, n: int = PHOTO_EPISODES) -> set[str]:
-    """直近 n 回（この回を除く、取り消していない回）で使った写真（photos_dir からの相対パス）。"""
+    """直近 n 回（この回を除く、取り消していない回）で使った写真（photos_dir からの相対パス）。
+
+    数えるのは画面を作った回（写真を使わずに色の画面で作った回も、印 kind='visuals' で数える）。
+    写真を使った回だけを数えると、写真が尽きたあと窓が進まず、ずっと写真が使えなくなる。
+    """
     rows = conn.execute(
         "SELECT episode_id FROM episodes WHERE episode_id != ? AND state != 'discarded' "
-        "AND episode_id IN (SELECT DISTINCT episode_id FROM media_usage WHERE kind = 'photo') "
+        "AND episode_id IN (SELECT DISTINCT episode_id FROM media_usage "
+        "WHERE kind IN ('photo', 'visuals')) "
         "ORDER BY created_at DESC, episode_id DESC LIMIT ?",
         (episode_id, n),
     ).fetchall()
@@ -223,23 +237,20 @@ def recent_photos(conn: sqlite3.Connection, episode_id: str, n: int = PHOTO_EPIS
     }
 
 
-def photo_seconds(manifest: VoiceManifest, cards: dict[str, str]) -> float:
-    return sum(
-        seg.end - seg.start
-        for ch in manifest.chapters
-        for seg in ch.segments
-        if seg.seg_id not in cards
-    )
+def photo_window(s: Settings) -> int:
+    """同じ写真を使わない回の数（settings の recency.photo_episodes。既定5）。"""
+    return int(s.section("recency").get("photo_episodes", PHOTO_EPISODES))
 
 
 def step_visuals(
     s: Settings, conn: sqlite3.Connection, episode_id: str, *, log: Callable[[str], None] = print
 ) -> ShotList:
     from koten.visuals.cards import render_cards
-    from koten.visuals.photos import list_photos, pick_photos, prepare_photo
+    from koten.visuals.photos import PhotoError, list_photos, pick_photos, prepare_photo
     from koten.visuals.shots import build_shots
 
     ep = load_episode(conn, s.ssd_root, episode_id)
+    _require(ep, AFTER_VOICE, "画面")
     media = media_dir(s.require_hdd(), episode_id)
     if not (media / MANIFEST).exists():
         raise ProduceError(f"{episode_id} の音声がありません（koten voice が先）")
@@ -258,17 +269,42 @@ def step_visuals(
     )
     log(f"カード {len(cards)} 枚")
     folder = photos_dir(s)
+    window = photo_window(s)
     all_photos = list_photos(folder) if folder.exists() else []
-    need = max(1, math.ceil(photo_seconds(manifest, cards) / PHOTO_EVERY) + 2)
-    picked = pick_photos(all_photos, recent_photos(conn, episode_id), need, episode_id, folder)
-    # 前に作った写真は使わない（選び直した写真と食い違わないように）
-    for old in (media / "photos").glob("p*.jpg") if (media / "photos").exists() else []:
-        old.unlink()
+    # 要る枚数は、実際のショットの数で数える（写真の段落をまとめて区切るので、秒数の割り算とは違う）
+    need = sum(
+        x.kind == "photo"
+        for x in build_shots(manifest, cards, ["_"], width=width, height=height, fps=fps).shots
+    )
+    # 1回で写真を使い切らないよう、1回に使う写真は全体の (窓+1) 分の1まで
+    # （足りなければ回の中で使い回す）
+    cap = max(1, len(all_photos) // (window + 1))
+    picked = pick_photos(
+        all_photos, recent_photos(conn, episode_id, window), min(need, cap), episode_id, folder
+    )
+    # 新しいフォルダに作ってから入れ替える（途中で止まっても、前の写真と shots.json は残る）
+    new_dir, old_dir = media / "photos.new", media / "photos"
+    if new_dir.exists():
+        shutil.rmtree(new_dir)
+    new_dir.mkdir(parents=True)
     rels: list[str] = []
-    for i, src in enumerate(picked, start=1):
-        rel = f"photos/p{i:03d}.jpg"
-        prepare_photo(src, media / rel, width, height)
-        rels.append(rel)
+    used: list[Path] = []
+    seen: dict[Path, str] = {}
+    for src in picked:
+        if src in seen:
+            continue
+        rel = f"photos/p{len(seen) + 1:03d}.jpg"
+        try:
+            prepare_photo(src, new_dir / Path(rel).name, width, height)
+        except PhotoError as e:
+            warnings.append(f"写真を使えませんでした：{e}")
+            continue
+        seen[src] = rel
+        used.append(src)
+    rels = list(seen.values())
+    if old_dir.exists():
+        shutil.rmtree(old_dir)
+    new_dir.rename(old_dir)
     if not rels:
         # 自分の写真が無い・全部直近の回で使った：色だけの画像で作る（確認画面で注意を出す）
         plain = render_cards(
@@ -281,22 +317,33 @@ def step_visuals(
         )
         rels = [plain["plain"]]
         warnings.append(
-            f"使える自分の写真がありません（{folder}。直近{PHOTO_EPISODES}回で使った写真は使わない）。"
+            f"使える自分の写真がありません（{folder}。直近{window}回で使った写真は使わない）。"
             "色だけの画面で作りました"
         )
     shots = build_shots(manifest, cards, rels, width=width, height=height, fps=fps)
-    shots.photos_used = sorted(p.relative_to(folder).as_posix() for p in picked)
+    shown = {x.image for x in shots.shots}
+    shots.photos_used = sorted(
+        src.relative_to(folder).as_posix() for src, rel in seen.items() if rel in shown
+    )
     shots.save(media / SHOTS)
     with conn:
         conn.execute(
-            "DELETE FROM media_usage WHERE episode_id = ? AND kind = 'photo'", (episode_id,)
+            "DELETE FROM media_usage WHERE episode_id = ? AND kind IN ('photo', 'visuals')",
+            (episode_id,),
         )
         conn.executemany(
             "INSERT OR IGNORE INTO media_usage(episode_id, kind, path) VALUES (?, 'photo', ?)",
             [(episode_id, p) for p in shots.photos_used],
         )
+        # 画面を作った印（写真が無くても、直近の回の窓を進めるため）
+        conn.execute(
+            "INSERT OR IGNORE INTO media_usage(episode_id, kind, path) VALUES (?, 'visuals', '')",
+            (episode_id,),
+        )
+    if ep.state != "voiced":
+        _set_state(conn, episode_id, "voiced", "画面を作り直した。koten render で動画を作り直す")
     _save_warnings(media, "visuals", warnings)
-    log(f"写真 {len(picked)} 枚・画面の切り替え {len(shots.shots)} 回")
+    log(f"写真 {len(seen)} 枚・画面の切り替え {len(shots.shots)} 回")
     return shots
 
 
@@ -313,9 +360,14 @@ def step_render(
     from koten.render.ffmpeg import g7_issues, render_episode
 
     ep = load_episode(conn, s.ssd_root, episode_id)
+    _require(ep, AFTER_VOICE, "動画")
     media = media_dir(s.require_hdd(), episode_id)
     if not (media / SHOTS).exists():
         raise ProduceError(f"{episode_id} の画面の切り替えがありません（koten visuals が先）")
+    if (media / SHOTS).stat().st_mtime < (media / MANIFEST).stat().st_mtime:
+        raise ProduceError(
+            f"{episode_id} の画面の切り替えが音声より古い（koten visuals からやり直す）"
+        )
     manifest = VoiceManifest.load(media / MANIFEST)
     shots = ShotList.load(media / SHOTS)
     video = s.section("video")
@@ -361,9 +413,12 @@ def read_hashtags(config_dir: Path, themes: list[str], fixed: list[str]) -> list
     return out[:3]
 
 
-def _kit(s: Settings, ep: Episode):
+def _kit(s: Settings, ep: Episode, conn: sqlite3.Connection):
+    from koten.ref.store import load_renderings
+
     conf_kit = s.section("kit")
     credit = (s.section("voicevox").get("credit") or "").strip()
+    source_ids = [c["source_id"] for c in ep.resolver.candidates.values() if c.get("source_id")]
     return kit_input(
         ep.script,
         ep.resolver,
@@ -375,6 +430,7 @@ def _kit(s: Settings, ep: Episode):
             list(conf_kit.get("fixed_hashtags") or []),
         ),
         channel_name=str(conf_kit.get("channel_name") or ""),
+        source_renderings=load_renderings(conn, source_ids) if source_ids else {},
     )
 
 
@@ -386,11 +442,12 @@ def step_kit(
     from koten.visuals.cards import render_thumbnails
 
     ep = load_episode(conn, s.ssd_root, episode_id)
+    _require(ep, AFTER_VOICE, "説明欄・字幕")
     media = media_dir(s.require_hdd(), episode_id)
     if not (media / MANIFEST).exists():
         raise ProduceError(f"{episode_id} の音声がありません（koten voice が先）")
     manifest = VoiceManifest.load(media / MANIFEST)
-    paths = write_kit(_kit(s, ep), manifest, media)
+    paths = write_kit(_kit(s, ep, conn), manifest, media)
     # サムネイル3枚（別々のテンプレート）：悩みの言葉・著者名・この回の写真
     shots = ShotList.load(media / SHOTS) if (media / SHOTS).exists() else None
     photos = sorted({x.image for x in shots.shots if x.kind == "photo"}) if shots else []
@@ -414,6 +471,8 @@ def step_kit(
     thumbs = render_thumbnails(specs, media, templates_dir=TEMPLATES, warnings=warnings, log=log)
     (media / THUMBS).write_text(json.dumps(thumbs, ensure_ascii=False), "utf-8")
     _save_warnings(media, "kit", warnings)
+    if ep.state == "reviewed":
+        _set_state(conn, episode_id, "rendered", "説明欄を作り直した。もう一度確かめて承認する")
     log(f"説明欄・字幕・チャプター・サムネイル {len(thumbs)} 枚")
     return {**paths, "thumbnails": thumbs}
 
@@ -427,10 +486,29 @@ def blockers_for(
     """承認できない理由と、注意（承認は止めない）。"""
     blockers: list[str] = []
     warnings: list[str] = []
+    from koten.script import gates
+
+    eid = ep.episode_id
     if ep.state not in ("rendered", "reviewed"):
-        blockers.append(f"状態が {ep.state}（動画を作ってから：koten render）")
-    if not (media / "render" / f"{ep.episode_id}.mp4").exists():
+        blockers.append(f"状態が {ep.state}（動画を作ってから：koten produce --episode {eid}）")
+    video = media / "render" / f"{eid}.mp4"
+    manifest = media / MANIFEST
+    if not video.exists():
         blockers.append("完成した動画がありません")
+    elif manifest.exists() and video.stat().st_mtime < max(
+        manifest.stat().st_mtime, (media / SHOTS).stat().st_mtime if (media / SHOTS).exists() else 0
+    ):
+        blockers.append(f"動画が音声・画面より古い（koten produce --episode {eid} --from render）")
+    # 公開用キット（説明欄・字幕・チャプター・サムネイル）がそろい、音声より新しいこと
+    kit_files = [media / "kit" / n for n in ("description.txt", "subtitles.srt", "chapters.txt")]
+    kit_files.append(media / THUMBS)
+    missing = [f.name for f in kit_files if not f.exists()]
+    if missing:
+        blockers.append(
+            f"公開用キットが無い（{'・'.join(missing)}。koten produce --episode {eid} --from kit）"
+        )
+    elif manifest.exists() and min(f.stat().st_mtime for f in kit_files) < manifest.stat().st_mtime:
+        blockers.append(f"公開用キットが音声より古い（koten produce --episode {eid} --from kit）")
     for gate in BLOCKING_GATES:
         result = ep.verification.get(gate)
         if isinstance(result, dict) and result.get("ok") is False:
@@ -445,16 +523,44 @@ def blockers_for(
     viewing = ep.verification.get("viewing") or {}
     if viewing.get("ok") is False:
         warnings.append(f"視聴の確かめ：{'・'.join(str(x) for x in viewing.get('issues') or [])}")
-    if ep.script.get("review_required") or (ep.verification.get("G6") or {}).get("review_required"):
+    # G6 は今の台帳で数え直す（台本のあとで事実・語釈・研究の文が変わった回も人の確認へ）
+    g6_now = gates.g6_review(ep.data, ep.script)
+    if (
+        ep.script.get("review_required")
+        or (ep.verification.get("G6") or {}).get("review_required")
+        or g6_now.get("review_required")
+    ):
+        reasons = "・".join(str(x) for x in (g6_now.get("reasons") or [])[:3])
         warnings.append(
-            "G6：人の確認が要る回です（NDL・自前の訳・あとで変わった資料など）。中身をよく読んでください"
+            "G6：人の確認が要る回です（NDL・自前の訳・あとで変わった資料など）。"
+            f"中身をよく読んでください{('：' + reasons) if reasons else ''}"
         )
+    # 台本のあとで使えなくなった統計・事実・語釈・研究・訳は止める。文が変わっただけなら注意（G6）
+    for x in (
+        ep.data.stat_issues
+        + ep.data.fact_issues
+        + ep.data.ref_issues
+        + ep.data.finding_issues
+        + ep.data.reading_issues
+    ):
+        if "変わった（今の" in x:
+            warnings.append(f"台本のあとで変わった：{x}")
+        else:
+            blockers.append(
+                f"台本のあとで使えなくなった：{x}（差し戻して koten script で作り直す）"
+            )
     if holds:
         blockers.append(f"今の本との照合で保留が {len(holds)} 件（koten check status）")
-    if not (s.section("voicevox").get("credit") or "").strip():
+    credit = (s.section("voicevox").get("credit") or "").strip()
+    desc = media / "kit" / "description.txt"
+    if not credit:
         blockers.append(
             "VOICEVOX のクレジットが空"
             "（キャラクターの規約を確かめて settings の voicevox.credit に書く）"
+        )
+    elif desc.exists() and credit not in desc.read_text("utf-8"):
+        blockers.append(
+            f"説明欄に VOICEVOX のクレジットが無い（koten produce --episode {eid} --from kit）"
         )
     if not _take_decided(ep.script.get("human_take") or {}):
         blockers.append(
@@ -491,25 +597,21 @@ def step_review(
             quotes.append(
                 {
                     "seg_id": seg.seg_id,
-                    "display": seg.display,
+                    # 画面に出る原文（古典の一節の訳の段落でも、画面は原文）
+                    "display": c.get("quote_text") or seg.display,
                     "reading": seg.reading,
                     "source": format_source(c) if c else "",
                     "license": c.get("license") or "",
                 }
             )
-    kit = _kit(s, ep)
-    sources = [
-        {
-            "kind": "古典",
-            "text": "　".join(
-                x
-                for x in (f"{c.authors}『{c.title}』「{c.section}」", c.base_book, c.url, c.label)
-                if x
-            ),
-            "license": c.license,
-        }
-        for c in kit.classics
-    ]
+    kit = _kit(s, ep, conn)
+    sources = []
+    for c in kit.classics:
+        head = f"{c.authors}『{c.title}』"
+        head += f"（{c.translator}訳）" if c.translator else ""
+        head += f"「{c.section}」" if c.section else ""
+        text = "　".join(x for x in (head, c.base_book, c.url, c.label) if x)
+        sources.append({"kind": "古典", "text": text, "license": c.license})
     sources += [{"kind": "調査・データ", "text": t, "license": ""} for t in kit.data_sources]
     sources += [
         {"kind": "背景・昔の資料", "text": t, "license": ""} for t in kit.background_sources
