@@ -2,6 +2,7 @@
 
 8.1 持つ年数ごとの元本割れ: 指数を N 年持った（まとめて買う・毎月積み立てる）とき、元本を割って終わった割合。
 8.2 戻し方 3 通りの比べ: 株と「元本が動かない置き場所」を決めた割合で 20 年持つとき、放置・年 1 回戻す・幅を超えたら戻す、の下げと割合のぶれ。
+8.3 足した分: 株の割合 80・90・100% と、円で見た版（S&P500 × ドル円）。
 """
 
 from __future__ import annotations
@@ -11,11 +12,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .wide import base
+from .wide import base, w7
 
 YEARS = (1, 3, 5, 10, 15, 20)                  # 持つ年数（8.1）
 INDEXES = {"^GSPC": ("S&P500（米国。ドル建て・配当なし）", "1950-01-01"), "^N225": ("日経平均（日本。円建て・配当なし）", "1965-01-01")}
-SHARES = (0.3, 0.5, 0.7)                       # 株の割合（8.2）
+SHARES = (0.3, 0.5, 0.7, 0.8, 0.9, 1.0)        # 株の割合（8.2。80% から上は 8.3 で足した）
+YEN, YEN_SINCE, USDJPY = "S&P500 を円で見たもの（S&P500 × ドル円。配当なし）", "1971-01-01", "DEXJPUS"     # 8.3
+VIEWS = {"yen": "円で見た場合（S&P500 × ドル円。円の預金と組む）", "usd": "ドルで見た場合（S&P500 そのまま）"}
 WAYS = {"drift": "放置（1 度も戻さない）", "yearly": "年 1 回、12 月末に必ず戻す", "band": "年 1 回見て、10 ポイントより外れていたら戻す"}
 WINDOW_YEARS, BAND, STOCK = 20, 0.10, "^GSPC"
 FILE = Path("stocks") / "misc_close.csv"       # data の下（./cfd stocks --fetch が取る。日付 × 記号）
@@ -40,6 +43,18 @@ def read_index(data, ticker: str) -> pd.Series:
     if c.empty or not c.index.is_unique or (c <= 0).any():
         raise base.NotReady(f"{p} の {ticker} が空・同じ日が 2 回ある・0 以下の値がある、のどれか")
     return c
+
+
+def read_usdjpy(data) -> pd.Series:
+    """ドル円（1 ドル = 何円）の日ごとの値。./cfd wide --fetch が取った FRED のファイルを読む（取りに行かない）。"""
+    return w7._read(Path(data), USDJPY)
+
+
+def in_yen(m_usd: pd.Series, usdjpy_daily: pd.Series) -> pd.Series:
+    """ドル建ての月末の値 × その月の最後のドル円 ＝ 円で見た月末の値（どちらにも値のある月だけ）。"""
+    rate = month_ends(usdjpy_daily)
+    both = m_usd.index.intersection(rate.index)
+    return (m_usd[both] * rate[both]).sort_index()
 
 
 def month_ends(daily: pd.Series) -> pd.Series:
@@ -119,8 +134,17 @@ def summary(w: pd.DataFrame) -> dict:
 
 
 # --------------------------------------------------------------------------- まとめて計算・報告
+def _hold_block(m: pd.Series) -> dict:
+    return {"start": m.index[0], "end": m.index[-1],
+            "rows": {n: {"lump": shortfall(lump(m, n)), "saving": shortfall(saving(m, n))} for n in YEARS}}
+
+
+def _mix_block(m: pd.Series) -> dict:
+    return {"start": m.index[0], "end": m.index[-1], "rows": {s: {how: summary(windows(m, s, how)) for how in WAYS} for s in SHARES}}
+
+
 def run(data) -> dict:
-    """2 つの点検を計算する。指数のデータが無ければ、その指数は理由だけ返す。"""
+    """2 つの点検を計算する。データの無い指数・ドル円は、理由だけ返して先へ進む。"""
     out: dict = {"hold": {}, "skipped": {}, "mix": {}}
     monthly = {}
     for ticker, (label, since) in INDEXES.items():
@@ -133,12 +157,18 @@ def run(data) -> dict:
             out["skipped"][label] = "月末の終値が 1 年ぶんに届かない"
             continue
         monthly[ticker] = m
-        out["hold"][label] = {"start": m.index[0], "end": m.index[-1],
-                              "rows": {n: {"lump": shortfall(lump(m, n)), "saving": shortfall(saving(m, n))} for n in YEARS}}
-    if STOCK in monthly:
-        m = monthly[STOCK]
-        out["mix"] = {"start": m.index[0], "end": m.index[-1],
-                      "rows": {s: {how: summary(windows(m, s, how)) for how in WAYS} for s in SHARES}}
+        out["hold"][label] = _hold_block(m)
+    if STOCK not in monthly:
+        return out
+    try:                                                          # 8.3: 円で見た S&P500
+        yen = in_yen(monthly[STOCK], read_usdjpy(data)[YEN_SINCE:])
+        if len(yen) < 12 * min(YEARS) + 2:
+            raise base.NotReady("ドル円と重なる月が 1 年ぶんに届かない")
+        out["hold"][YEN] = _hold_block(yen)
+        out["mix"][VIEWS["yen"]] = _mix_block(yen)                # 円で見た版を先に（円で暮らす人には、こちらが実感に近い）
+    except base.NotReady as e:
+        out["skipped"][YEN] = str(e)
+    out["mix"][VIEWS["usd"]] = _mix_block(monthly[STOCK])
     return out
 
 
@@ -169,7 +199,8 @@ def report_lines(res: dict, made: str) -> list[str]:
     L = [f"# リスクとお金の置き方の点検 — 作成 {made}", "",
          "決め方は docs/risk_plan.md 8 章（結果を見る前に決めたもの）。**判定はしない。** 過去の数字で、先も同じとは限らない。", "",
          "## 1. 持つ年数ごとの元本割れ", "",
-         "始める月を 1 か月ずつずらして数えた。**配当・物価・為替・費用・税は入っていない**（配当を入れれば、割れる割合は小さくなる。円で米国株を持つ人には、為替の動きが加わる）。", ""]
+         ("始める月を 1 か月ずつずらして数えた。**配当・物価・費用・税は入っていない**（配当を入れれば、割れる割合は小さくなる）。"
+          "S&P500 と日経平均はその国のお金で見た数字。円で米国株を持つ人の目に近いのは「円で見たもの」の表。"), ""]
     for label, h in res["hold"].items():
         L += [f"### {label}（{h['start']:%Y-%m}〜{h['end']:%Y-%m}）", "",
               "| 持つ年数 | 買い方 | 数えた回 | 元本を割って終わった割合 | いちばん悪かった回 | 真ん中の回 |", "|---|---|---|---|---|---|"]
@@ -179,22 +210,29 @@ def report_lines(res: dict, made: str) -> list[str]:
     for label, why in res["skipped"].items():
         L += [f"- {label}: 数えられなかった（{why}）", ""]
     L += ["## 2. 戻し方 3 通りの比べ", ""]
-    mix = res["mix"]
-    if not mix:
+    if not res["mix"]:
         L += ["- S&P500 のデータが無いので、数えられなかった", ""]
         return L
-    intro = (f"株（S&P500。{mix['start']:%Y-%m}〜{mix['end']:%Y-%m}）と、元本が動かない置き場所（利息 0）を、決めた割合で持ち始めて {WINDOW_YEARS} 年。"
-             "始める年を 1 年ずつずらした。途中でお金は足さない。費用と税は入れていない。")
+    intro = (f"株と、元本が動かない置き場所（利息 0）を、決めた割合で持ち始めて {WINDOW_YEARS} 年。始める年を 1 年ずつずらした。"
+             "途中でお金は足さない。費用と税は入れていない。")
     L += [intro, "",
-          "**見るのは、下げと、株の割合のぶれ。** 年率は参考（どれが儲かるかを選ぶための表ではない）。", "",
-          f"| 株の割合 | 戻し方 | 数えた回 | {WINDOW_YEARS} 年の中の最大の下げ: 真ん中 | 最悪（始めた年） | 終わりの株の割合 | 年率の真ん中（参考） |", "|---|---|---|---|---|---|---|"]
-    for share, rows in mix["rows"].items():
-        for how, s in rows.items():
-            if not s.get("n"):
-                L.append(f"| {_pct(share)} | {WAYS[how]} | 0 | – | – | – | – |")
-                continue
-            L.append(f"| {_pct(share)} | {WAYS[how]} | {s['n']} | {_pct(s['dd_median'])} | {_pct(s['dd_worst'])}（{s['dd_worst_start']} 年） | "
-                     f"{_pct(s['share_min'])}〜{_pct(s['share_max'])} | {_pct(s['annual_median'], 1)} |")
-    L += ["", "- 最大の下げは月末の値で測った（月の途中の下げは入っていない）",
-          "- 放置では、株が上がるほど株の割合が増え、下げも大きくなる。戻す決まりは、その割合を決めた所に引き戻すためのもの", ""]
+          "**見るのは、下げと、株の割合のぶれ。** 年率は参考（どれが儲かるかを選ぶための表ではない）。", ""]
+    for view, mix in res["mix"].items():
+        L += [f"### {view}（{mix['start']:%Y-%m}〜{mix['end']:%Y-%m}）", "",
+              f"| 株の割合 | 戻し方 | 数えた回 | {WINDOW_YEARS} 年の中の最大の下げ: 真ん中 | 最悪（始めた年） | 終わりの株の割合 | 年率の真ん中（参考） |",
+              "|---|---|---|---|---|---|---|"]
+        for share, rows in mix["rows"].items():
+            for how, s in rows.items():
+                if share >= 1.0 and how != "drift":               # 株だけなら戻す先が無く、3 つとも同じ → 1 行
+                    continue
+                name = "株だけ（戻す先が無い）" if share >= 1.0 else WAYS[how]
+                if not s.get("n"):
+                    L.append(f"| {_pct(share)} | {name} | 0 | – | – | – | – |")
+                    continue
+                L.append(f"| {_pct(share)} | {name} | {s['n']} | {_pct(s['dd_median'])} | {_pct(s['dd_worst'])}（{s['dd_worst_start']} 年） | "
+                         f"{_pct(s['share_min'])}〜{_pct(s['share_max'])} | {_pct(s['annual_median'], 1)} |")
+        L.append("")
+    L += ["- 最大の下げは月末の値で測った（月の途中の下げは入っていない）",
+          "- 放置では、株が上がるほど株の割合が増え、下げも大きくなる。戻す決まりは、その割合を決めた所に引き戻すためのもの",
+          "- 円で見た版は、株が下げる時に円高が重なると、ドルで見た下げより大きくなる（逆に円安なら小さくなる）", ""]
     return L

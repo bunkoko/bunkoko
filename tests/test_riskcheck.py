@@ -117,31 +117,80 @@ def misc_csv(root, tickers=("^GSPC", "^N225"), end="2026-11-18"):
     return root / "data"
 
 
-def test_run_counts_both_indexes_and_the_three_ways(tmp_path):
-    res = R.run(misc_csv(tmp_path))
-    assert len(res["hold"]) == 2 and not res["skipped"]
+def fred_csv(data, end="2026-11-13"):
+    """./cfd wide --fetch が書く形（FRED の CSV。休みの日は「.」）。1 ドル = 何円。"""
+    idx = pd.bdate_range("1971-01-04", end)
+    rng = np.random.default_rng(1)
+    rate = 300 * np.exp(np.cumsum(rng.normal(-0.00005, 0.006, len(idx))))
+    text = [f"{v:.2f}" for v in rate]
+    for k in range(7, len(text), 251):
+        text[k] = "."                                             # 祝日
+    folder = data / "wide" / "fred"
+    folder.mkdir(parents=True)
+    pd.DataFrame({"observation_date": idx.strftime("%Y-%m-%d"), "DEXJPUS": text}).to_csv(folder / "DEXJPUS.csv", index=False)
+    return data
+
+
+def test_the_registered_shares_and_years():
+    """決め方（docs/risk_plan.md 8 章）。変えるときは、文書を先に直す。"""
+    assert R.SHARES == (0.3, 0.5, 0.7, 0.8, 0.9, 1.0) and R.YEARS == (1, 3, 5, 10, 15, 20)
+    assert (R.WINDOW_YEARS, R.BAND) == (20, 0.10) and list(R.WAYS) == ["drift", "yearly", "band"]
+
+
+def test_in_yen_multiplies_the_month_end_values():
+    m = pd.Series([100.0, 110.0, 120.0], index=months(3, "2024-01-31"))
+    rate = pd.Series([151.0, 150.0, 140.0, 139.0], index=pd.to_datetime(["2024-01-29", "2024-01-30", "2024-02-27", "2024-03-04"]))
+    yen = R.in_yen(m, rate)                                       # 1 月は最後の値 150、2 月は 140。3 月のドル円は終わっていない月なので使わない
+    assert list(yen.index) == list(months(2, "2024-01-31")) and yen.tolist() == pytest.approx([15000.0, 15400.0])
+
+
+def test_usdjpy_reads_the_saved_file_and_never_fetches(tmp_path):
+    rate = R.read_usdjpy(fred_csv(tmp_path / "data"))
+    assert rate.index[0] == pd.Timestamp("1971-01-04") and rate.index.is_monotonic_increasing and (rate > 0).all()
+    assert pd.Timestamp("1971-01-13") not in rate.index            # 「.」の日は値が無い
+    with pytest.raises(R.base.NotReady, match="wide --fetch"):
+        R.read_usdjpy(tmp_path / "nothing")
+
+
+def test_run_counts_the_indexes_and_the_three_ways_in_dollars_and_in_yen(tmp_path):
+    res = R.run(fred_csv(misc_csv(tmp_path)))
+    assert len(res["hold"]) == 3 and not res["skipped"]
     us = res["hold"][R.INDEXES["^GSPC"][0]]
     assert f"{us['start']:%Y-%m}" == "1950-01" and f"{us['end']:%Y-%m}" == "2026-10"       # 11 月は終わっていない
     assert set(us["rows"]) == set(R.YEARS) and us["rows"][20]["lump"]["n"] == 922 - 240       # 1950-01〜2026-10 は 922 か月
     assert us["rows"][20]["saving"]["n"] == 922 - 240
-    jp = res["hold"][R.INDEXES["^N225"][0]]
-    assert f"{jp['start']:%Y-%m}" == "1965-01"
-    rows = res["mix"]["rows"]
+    assert f"{res['hold'][R.INDEXES['^N225'][0]]['start']:%Y-%m}" == "1965-01"
+    yen = res["hold"][R.YEN]
+    assert f"{yen['start']:%Y-%m}" == "1971-01" and f"{yen['end']:%Y-%m}" == "2026-10"
+    assert list(res["mix"]) == [R.VIEWS["yen"], R.VIEWS["usd"]]   # 円で見た版を先に（利用者は円で暮らしている）
+    rows = res["mix"][R.VIEWS["usd"]]["rows"]
     assert set(rows) == set(R.SHARES) and all(set(v) == set(R.WAYS) for v in rows.values())
     assert rows[0.5]["yearly"]["n"] == 56                         # 1951 年〜2006 年に始めた回（1950-12 末の値から。20 年後の 12 月末は 2025-12 まで）
     assert rows[0.5]["yearly"]["share_min"] == pytest.approx(0.5) and rows[0.5]["yearly"]["share_max"] == pytest.approx(0.5)
     assert rows[0.5]["drift"]["share_max"] > 0.5 > rows[0.5]["yearly"]["dd_worst"] - 1
+    assert rows[1.0]["drift"] == rows[1.0]["yearly"] == rows[1.0]["band"]      # 株だけなら、戻す先が無いので 3 つとも同じ
+    assert rows[1.0]["drift"]["dd_worst"] >= rows[0.9]["yearly"]["dd_worst"] >= rows[0.8]["yearly"]["dd_worst"] >= rows[0.7]["yearly"]["dd_worst"]
+    assert res["mix"][R.VIEWS["yen"]]["rows"][0.5]["yearly"]["n"] == 35         # 円で見た版は 1971-12 末の値から: 1972 年〜2006 年に始めた回
+
+
+def test_run_goes_on_without_the_yen_rate(tmp_path):
+    res = R.run(misc_csv(tmp_path))                               # ドル円のファイルが無い
+    assert len(res["hold"]) == 2 and "wide --fetch" in res["skipped"][R.YEN] and list(res["mix"]) == [R.VIEWS["usd"]]
 
 
 def test_run_goes_on_when_one_index_is_missing(tmp_path):
-    res = R.run(misc_csv(tmp_path, tickers=("^GSPC",)))
-    assert len(res["hold"]) == 1 and "^N225" in next(iter(res["skipped"].values())) and res["mix"]
+    res = R.run(fred_csv(misc_csv(tmp_path, tickers=("^GSPC",))))
+    assert len(res["hold"]) == 2 and "^N225" in res["skipped"][R.INDEXES["^N225"][0]] and len(res["mix"]) == 2
 
 
 def test_report_shows_the_tables_and_judges_nothing(tmp_path):
-    text = "\n".join(R.report_lines(R.run(misc_csv(tmp_path)), "2026-11-21 09:00"))
+    lines = R.report_lines(R.run(fred_csv(misc_csv(tmp_path))), "2026-11-21 09:00")
+    text = "\n".join(lines)
     assert "元本を割って終わった割合" in text and "毎月積み立てる" in text and "戻し方" in text and "判定はしない" in text
-    assert "使えそう" not in text and "使えない" not in text and "配当" in text and "為替" in text
+    assert text.index("円で見た場合") < text.index("ドルで見た場合") and "ドル円" in text
+    assert sum("株だけ（戻す先が無い）" in x for x in lines) == 2      # 株 100% は、円・ドルそれぞれ 1 行だけ
+    assert sum(x.startswith("| 90% |") for x in lines) == 6        # 90% は、戻し方 3 通り × 円・ドル
+    assert "使えそう" not in text and "使えない" not in text and "配当" in text and "円高" in text
 
 
 def test_report_shows_gains_and_losses_with_a_sign():
