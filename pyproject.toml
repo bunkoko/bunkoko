@@ -23,6 +23,11 @@ ml = [
     "sudachidict-core>=20240716",
     "sudachipy>=0.6.8",
 ]
+# 動画のカード・サムネイルを HTML から画像にする（M6）。入れたあと Mac で一度だけ
+# uv run playwright install chromium（ml と一緒に入れるときは uv sync --extra ml --extra video）
+video = [
+    "playwright==1.63.0",
+]
 
 [project.scripts]
 koten = "koten.cli:app"
