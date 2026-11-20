@@ -13,3 +13,5 @@ data/
 *.wav
 # 試しに作った一時フォルダ（tempfile.mkdtemp をリポジトリの中で動かしたときなど）
 /tmp*/
+# Mac の Finder が作るファイル
+.DS_Store
