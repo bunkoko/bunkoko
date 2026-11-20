@@ -15,13 +15,14 @@ import pytest
 from typer.testing import CliRunner
 
 from koten.cli import app
-from koten.config import load_settings
+from koten.config import DEFAULT_CONFIG_DIR, load_settings
 from koten.db import connect
 from koten.media import produce
 from koten.media.model import MANIFEST, media_dir
 from koten.render.ffmpeg import probe_duration
 from koten.voice.voicevox import VoicevoxClient
-from tests.test_script import planned, run  # noqa: F401（fixture）
+from tests.m4_corpus import build
+from tests.test_script import planned, run
 from tests.test_voice_synth import ENDPOINT, FakeEngine
 
 
@@ -42,7 +43,15 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _settings_for(env, tmp_path, *, credit: str = ""):  # noqa: F811
+@pytest.fixture
+def env(settings_file):
+    """小さな検索の索引と、台本を書ける回の材料（tests/test_script.py の env と同じ）。"""
+    s = load_settings(settings_file)
+    build(s.require_hdd(), s.ssd_root, DEFAULT_CONFIG_DIR)
+    return s
+
+
+def _settings_for(env, tmp_path, *, credit: str = ""):
     photos = tmp_path / "photos"
     photos.mkdir(parents=True)
     for i, color in enumerate(("navy", "olive", "maroon")):
@@ -75,7 +84,7 @@ def _settings_for(env, tmp_path, *, credit: str = ""):  # noqa: F811
     return load_settings(path)
 
 
-def test_produce_from_script_to_approval(env, tmp_path, monkeypatch):  # noqa: F811
+def test_produce_from_script_to_approval(env, tmp_path, monkeypatch):
     eid = planned(env, "A", worry_id="W0001")
     r, _ = run(env, eid)
     assert r.state == "script_done"
@@ -160,7 +169,7 @@ def test_produce_from_script_to_approval(env, tmp_path, monkeypatch):  # noqa: F
     assert (row["state"], row["reviewer_note"]) == ("reviewed", "見た")
 
 
-def test_recent_photos_are_not_reused(env, tmp_path):  # noqa: F811
+def test_recent_photos_are_not_reused(env, tmp_path):
     """直近5回で使った写真は、次の回で選ばない。"""
     s = _settings_for(env, tmp_path)
     conn = connect(s.ssd_root)
