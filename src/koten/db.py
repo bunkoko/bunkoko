@@ -13,7 +13,7 @@ import re
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS episodes (
     format TEXT NOT NULL,                -- A / B / C / D
     theme TEXT,                          -- JSON 配列
     worry_ids TEXT NOT NULL,             -- JSON 配列
-    state TEXT NOT NULL,                 -- yet / planned / script_done / ... / error / discarded
+    -- yet / planned / script_done / voiced / rendered / reviewed / published / error / discarded
+    state TEXT NOT NULL,
     state_msg TEXT,
     plan_json TEXT,
     script_json TEXT,
@@ -62,6 +63,14 @@ CREATE TABLE IF NOT EXISTS episodes (
     duration_sec REAL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     published_at TEXT
+);
+
+-- 回で使った素材（M6）：自分の写真は同じものを直近5回で使わない（SPEC §8.10）
+CREATE TABLE IF NOT EXISTS media_usage (
+    episode_id TEXT NOT NULL,
+    kind TEXT NOT NULL,                  -- photo
+    path TEXT NOT NULL,                  -- photos_dir からの相対パス
+    PRIMARY KEY (episode_id, kind, path)
 );
 
 CREATE TABLE IF NOT EXISTS usage (

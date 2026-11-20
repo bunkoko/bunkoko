@@ -179,7 +179,18 @@ worry_cluster_days = 30
 
 [voicevox]
 endpoint = "http://127.0.0.1:50021"
-speaker_id = 3
+speaker_id = 3                # 語りの声。利用者が試聴して選ぶ（2026-11-20）。audio_query と synthesis に同じ ID を渡す
+# クレジット（説明欄）。キャラクターごとの規約を確かめてから人が書く（例："VOICEVOX:ずんだもん"）。
+# 空のあいだは確認画面で「承認できない」と出す
+credit = ""
+speed_scale = 1.0             # 話す速さ（G7 の尺に合わないときに少しだけ変える。0.9〜1.15 くらい）
+pause_sentence = 0.25         # 文と文のあいだ（秒）
+pause_segment = 0.6           # 段落と段落のあいだ（秒）
+pause_chapter = 1.2           # 章の終わり（秒）
+
+[kit]
+channel_name = ""             # Amazon アソシエイトの決まった文言に入れる（参考にした本を載せるときだけ）
+fixed_hashtags = ["#古典"]    # いつも付けるハッシュタグ。テーマごとのものは config/hashtags.csv（人が書く）
 
 [video]
 width = 1920
