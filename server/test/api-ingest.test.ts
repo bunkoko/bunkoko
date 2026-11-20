@@ -198,9 +198,31 @@ describe("POST /api/logs/batch", () => {
     expect(rows(`SELECT deleted FROM user_logs`)).toEqual([{ deleted: 1 }]);
   });
 
+  it("1日のふり返りは、ふり返った日と次の日を計算待ちに入れる（記録した時刻が日付をまたいでも）", async () => {
+    // 11/21 0:30（日本時間）に、11/20 の日中をふり返った
+    const checkin = { id: "checkin-2026-11-20", kind: "dayCheckin", occurredAt: Date.parse("2026-11-20T15:30:00Z"), data: { day: "2026-11-20", condition: 4, stress: 2 } };
+    const first = await call("POST", "/api/logs/batch", { logs: [checkin] });
+    expect(first.status).toBe(200);
+    expect(((await first.json()) as { daysQueued: string[] }).daysQueued).toEqual(["2026-11-20", "2026-11-21"]);
+    expect(rows(`SELECT data_json FROM user_logs`)).toEqual([
+      { data_json: '{"day":"2026-11-20","condition":4,"sleepiness":null,"stress":2,"note":null}' },
+    ]);
+
+    // ふり返る日を直したら、前の日の分も計算し直す
+    const moved = await call("POST", "/api/logs/batch", { logs: [{ ...checkin, data: { day: "2026-11-19", condition: 4 } }] });
+    expect(((await moved.json()) as { daysQueued: string[] }).daysQueued).toEqual(["2026-11-19", "2026-11-20", "2026-11-21"]);
+
+    // 消したときも、ふり返った日で決める
+    const removed = await call("POST", "/api/logs/batch", { deleted: [checkin.id] });
+    expect(((await removed.json()) as { daysQueued: string[] }).daysQueued).toEqual(["2026-11-19", "2026-11-20"]);
+  });
+
   it("種類ごとの中身が正しくなければ 400", async () => {
     const response = await call("POST", "/api/logs/batch", {
       logs: [
+        { id: "E", kind: "dayCheckin", occurredAt: NOW, data: { day: "2026-11-20", condition: 0 } },
+        { id: "F", kind: "dayCheckin", occurredAt: NOW, data: { day: "11/20", stress: 3 } },
+        { id: "G", kind: "dayCheckin", occurredAt: NOW, data: { day: "2026-11-20" } },
         { id: "A", kind: "meal", occurredAt: NOW, data: { text: "" } },
         { id: "B", kind: "morningFeeling", occurredAt: NOW, data: { score: 7 } },
         { id: "C", kind: "charger", occurredAt: NOW, data: { state: "half" } },
@@ -209,7 +231,8 @@ describe("POST /api/logs/batch", () => {
     });
     expect(response.status).toBe(400);
     const body = (await response.json()) as { details: string[] };
-    expect(body.details).toHaveLength(4);
+    // E: 点数が範囲外（と、どれも入っていない）、F: 日付の形、G: どれも入っていない、ほか4件
+    expect(body.details).toHaveLength(8);
   });
 });
 

@@ -1,7 +1,7 @@
 // iPhone アプリから届くデータ（HealthKit・記録）を確かめて保存する。
 // 1回に届く件数が多いので、まとめて1つのクエリで書き込む（json_each）。
 
-import { addDays, localDate } from "./time";
+import { addDays, isValidDate, localDate } from "./time";
 import {
   Problems,
   arrayOf,
@@ -175,6 +175,25 @@ function collectDates(dates: Set<string>, epochMs: number, timeZone: string): vo
   dates.add(addDays(date, 1));
 }
 
+/** 記録が入る日。1日のふり返り（dayCheckin）は、記録した時刻ではなく、ふり返った日で決める */
+function collectLogDates(dates: Set<string>, kind: string, epochMs: number, dataJson: string, timeZone: string): void {
+  if (kind === "dayCheckin") {
+    let day: unknown = null;
+    try {
+      day = (JSON.parse(dataJson) as { day?: unknown }).day;
+    } catch {
+      day = null;
+    }
+    if (typeof day === "string" && isValidDate(day)) {
+      // その日の日中は、前の夜の「翌日」（結果）と、その夜の「前の日中」（要因）の両方に入る
+      dates.add(day);
+      dates.add(addDays(day, 1));
+      return;
+    }
+  }
+  collectDates(dates, epochMs, timeZone);
+}
+
 function queueStatement(db: D1Database, userId: string, dates: Set<string>, now: number): D1PreparedStatement | null {
   if (dates.size === 0) return null;
   const list = [...dates].sort().slice(-MAX_QUEUED_DATES);
@@ -304,7 +323,7 @@ export async function ingestHealthBatch(
 // ---------------------------------------------------------------------------
 // 記録（手入力・ショートカット・スクリーンタイム）
 
-export const LOG_KINDS = ["meal", "morningFeeling", "bath", "caffeine", "alcohol", "charger", "screenUsage"] as const;
+export const LOG_KINDS = ["meal", "morningFeeling", "dayCheckin", "bath", "caffeine", "alcohol", "charger", "screenUsage"] as const;
 export type LogKind = (typeof LOG_KINDS)[number];
 
 const MEAL_AMOUNTS = ["small", "normal", "large"] as const;
@@ -317,6 +336,16 @@ interface LogRow {
   t: number;
   /** 種類ごとに決まった順番の項目で JSON にした文字列（内容が変わったかを文字列で比べられるように） */
   data: string;
+}
+
+/** 1〜5 の点数（入れなくてもよい） */
+function optionalScore(problems: Problems, path: string, value: unknown): number | null {
+  if (value === undefined || value === null) return null;
+  if (!Number.isInteger(value) || (value as number) < 1 || (value as number) > 5) {
+    problems.add(path, "1〜5 の整数にしてください");
+    return null;
+  }
+  return value as number;
 }
 
 export interface LogsBatch {
@@ -342,6 +371,20 @@ function parseLogData(problems: Problems, path: string, kind: LogKind, value: un
         return null;
       }
       return { score, note: optionalString(problems, `${path}.note`, data.note, 500) };
+    }
+    case "dayCheckin": {
+      // 1日の終わりに、その日の日中をふり返る（docs/analysis.md の 2.7）。day は「ふり返る日」
+      const day = typeof data.day === "string" && isValidDate(data.day) ? data.day : null;
+      if (!day) problems.add(`${path}.day`, "YYYY-MM-DD の日付にしてください");
+      const condition = optionalScore(problems, `${path}.condition`, data.condition);
+      const sleepiness = optionalScore(problems, `${path}.sleepiness`, data.sleepiness);
+      const stress = optionalScore(problems, `${path}.stress`, data.stress);
+      if (condition === null && sleepiness === null && stress === null) {
+        problems.add(path, "condition・sleepiness・stress のどれか1つは入れてください");
+        return null;
+      }
+      const note = optionalString(problems, `${path}.note`, data.note, 500);
+      return day ? { day, condition, sleepiness, stress, note } : null;
     }
     case "bath":
       return {};
@@ -409,13 +452,15 @@ export async function ingestLogsBatch(
   now: number,
 ): Promise<IngestResult> {
   const dates = new Set<string>();
-  for (const log of batch.logs) collectDates(dates, log.t, timeZone);
-  if (batch.deleted.length > 0) {
+  for (const log of batch.logs) collectLogDates(dates, log.kind, log.t, log.data, timeZone);
+  // 記録を直したり消したりしたときは、前の内容が入っていた日も計算し直す
+  const touched = [...batch.logs.map((log) => log.id), ...batch.deleted];
+  if (touched.length > 0) {
     const { results } = await db
-      .prepare(`SELECT occurred_at FROM user_logs WHERE user_id = ?1 AND id IN (SELECT value FROM json_each(?2))`)
-      .bind(userId, JSON.stringify(batch.deleted))
-      .all<{ occurred_at: number }>();
-    for (const row of results) collectDates(dates, row.occurred_at, timeZone);
+      .prepare(`SELECT kind, occurred_at, data_json FROM user_logs WHERE user_id = ?1 AND id IN (SELECT value FROM json_each(?2))`)
+      .bind(userId, JSON.stringify(touched))
+      .all<{ kind: string; occurred_at: number; data_json: string }>();
+    for (const row of results) collectLogDates(dates, row.kind, row.occurred_at, row.data_json, timeZone);
   }
 
   const statements: D1PreparedStatement[] = [];

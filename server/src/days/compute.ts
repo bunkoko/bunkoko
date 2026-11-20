@@ -17,7 +17,7 @@ import {
   type SleepSegment,
 } from "./sleep";
 
-export const ALGO_VERSION = 1;
+export const ALGO_VERSION = 2;
 /** センサーの値を取る間隔（分）。「目安を超えた回数 × 5分」で時間にする */
 export const POLL_INTERVAL_MIN = 5;
 /** 人感センサー Pro の明るさ（1〜20）がこれ以上なら「明るい」 [TBD: 実データで調整] */
@@ -136,8 +136,14 @@ export interface DayMetrics {
     lastWorkoutToBedMin: number | null;
     napMin: number;
     valenceAvg: number | null;
+    /** この夜の前の日中のふり返り（要因）。1〜5 */
+    condition: number | null;
+    sleepiness: number | null;
+    stress: number | null;
   };
   morning: { feeling: number | null };
+  /** この夜のあとの日中のふり返り（結果）。1〜5。その日の夜に記録されたら入る */
+  nextDay: DayCheckin;
   quality: {
     hasSleep: boolean;
     heartRateCoverage: number | null;
@@ -146,6 +152,15 @@ export interface DayMetrics {
     usable: boolean;
   };
 }
+
+/** 1日のふり返り。condition: 調子（1 悪い〜5 よい）、sleepiness: 日中の眠気（1 なかった〜5 とても眠い）、stress: ストレス（1 なかった〜5 とても強い） */
+export interface DayCheckin {
+  condition: number | null;
+  sleepiness: number | null;
+  stress: number | null;
+}
+
+const EMPTY_CHECKIN: DayCheckin = { condition: null, sleepiness: null, stress: null };
 
 const round = (value: number | null | undefined, digits = 1): number | null => {
   if (value === null || value === undefined || !Number.isFinite(value)) return null;
@@ -284,7 +299,7 @@ export async function computeDay(
   const sleepEnd = night?.wake ?? bedRef;
   const ceiling = JSON.stringify(roles.ceilingLight);
 
-  const [aggregateResult, lightResult, lightsOffResult, openingsResult, bucketResult, workoutResult, logResult] = await db.batch([
+  const [aggregateResult, lightResult, lightsOffResult, openingsResult, bucketResult, workoutResult, logResult, checkinResult] = await db.batch([
     db
       .prepare(
         `SELECT device_id, metric,
@@ -363,6 +378,15 @@ export async function computeDay(
          WHERE l.user_id = ?1 AND l.deleted = 0 AND l.occurred_at >= ?2 AND l.occurred_at < ?3`,
       )
       .bind(userId, Math.min(dayStart, bedRef - 12 * HOUR_MS), fetchTo),
+    // 1日のふり返り: 前の日（この夜の前の日中）と、その日（この夜のあとの日中）。忘れて翌日に入れた分も拾う
+    db
+      .prepare(
+        `SELECT occurred_at, data_json FROM user_logs
+         WHERE user_id = ?1 AND kind = 'dayCheckin' AND deleted = 0
+           AND occurred_at >= ?2 AND occurred_at < ?3 AND data_json ->> '$.day' IN (?4, ?5)
+         ORDER BY occurred_at`,
+      )
+      .bind(userId, localMidnight(addDays(date, -1), tz), localMidnight(addDays(date, 3), tz), addDays(date, -1), date),
   ]);
 
   // --- 4. 部屋
@@ -466,6 +490,15 @@ export async function computeDay(
     logsOf("charger", bedRef - 3 * HOUR_MS, sleepStart + HOUR_MS).filter((log) => log.data.state === "connected"),
   );
   const feeling = last(logsOf("morningFeeling", (night?.wake ?? localTimeOn(date, "05:00", tz)) - HOUR_MS, fetchTo));
+
+  // 同じ日のふり返りが複数あるときは、最後に記録したものを使う
+  const checkins = new Map<string, DayCheckin>();
+  for (const row of checkinResult.results as { occurred_at: number; data_json: string }[]) {
+    const data = JSON.parse(row.data_json) as Record<string, unknown>;
+    const score = (value: unknown) => (typeof value === "number" ? value : null);
+    checkins.set(String(data.day), { condition: score(data.condition), sleepiness: score(data.sleepiness), stress: score(data.stress) });
+  }
+  const before = checkins.get(addDays(date, -1)) ?? EMPTY_CHECKIN;
 
   // --- 8. 日中
   const workoutRows = workoutResult.results as { start_at: number; end_at: number; effort: number | null }[];
@@ -584,8 +617,12 @@ export async function computeDay(
       lastWorkoutToBedMin: toBed(lastWorkoutEnd),
       napMin: minutes(napMs(sessions, date, tz)),
       valenceAvg: round(average(samplesOf("stateOfMind", dayStart, bedRef)), 2),
+      condition: before.condition,
+      sleepiness: before.sleepiness,
+      stress: before.stress,
     },
     morning: { feeling: feeling ? Number(feeling.data.score) : null },
+    nextDay: checkins.get(date) ?? EMPTY_CHECKIN,
     quality: {
       hasSleep: night !== null,
       heartRateCoverage: round(heartRateCoverage, 2),

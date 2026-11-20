@@ -3,6 +3,7 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 import { computeDay } from "../src/days/compute";
+import { addDays } from "../src/time";
 import { processDayQueue } from "../src/days/queue";
 import { loadRoles } from "../src/roles";
 import { defaultSettings } from "../src/settings";
@@ -115,10 +116,30 @@ describe("computeDay", () => {
       lastWorkoutToBedMin: 265,
       napMin: 30,
       valenceAvg: 0.5,
+      condition: null,
+      sleepiness: null,
+      stress: null,
     });
 
     expect(metrics.morning).toEqual({ feeling: 4 });
+    expect(metrics.nextDay).toEqual({ condition: null, sleepiness: null, stress: null });
     expect(metrics.quality).toEqual({ hasSleep: true, heartRateCoverage: 1, roomCoverage: 1, presenceAvailable: true, usable: true });
+  });
+
+  it("1日のふり返りは、前の日の分を「前の日中」（要因）に、その日の分を「翌日」（結果）に入れる", async () => {
+    seedNight();
+    insertLog("Q-1", "dayCheckin", at(PREV, "22:00"), { day: PREV, condition: 2, sleepiness: 4, stress: 5 });
+    // 同じ日を記録し直したら、最後のものを使う
+    insertLog("Q-2", "dayCheckin", at(PREV, "22:30"), { day: PREV, condition: 3, sleepiness: 4, stress: 4 });
+    // その日の分を、忘れて次の朝に入れた
+    insertLog("Q-3", "dayCheckin", at(addDays(D, 1), "08:00"), { day: D, condition: 5, sleepiness: 1, stress: null });
+    // 取り消した記録は使わない
+    insertLog("Q-4", "dayCheckin", at(D, "21:00"), { day: D, condition: 1, sleepiness: 5, stress: 5 });
+    db.sqlite.prepare(`UPDATE user_logs SET deleted = 1 WHERE id = 'Q-4'`).run();
+
+    const metrics = await computeDay(db.d1, "me", D, settings, await loadRoles(db.d1, "me", {}));
+    expect([metrics.day.condition, metrics.day.sleepiness, metrics.day.stress]).toEqual([3, 4, 4]);
+    expect(metrics.nextDay).toEqual({ condition: 5, sleepiness: 1, stress: null });
   });
 
   it("寝る直前の目安のない夜食があれば、最後の食事として扱い「夜食」にする", async () => {
