@@ -57,8 +57,9 @@ SPEC §8.8 G7・§8.9 音声・§8.10 映像・§8.11 公開用キット・§8.1
   - 助詞の「は」「へ」は今の書き方でも「は」「へ」なので、そのまま（VOICEVOX が「わ」「え」と読む）。
 - `speech_text(text: str) -> str`：読み上げ用の整え：【】や記号の除去、「 / 」→「、」、別名の括弧
   （「岡倉天心（岡倉覚三）」の括弧の中）を落とす、連続する空白を詰める。かぎかっこはそのまま。
-- `load_overrides(path: Path) -> dict[str, str]`：config/readings.csv（列：key・reading・note）。key は
-  段落の ID（ch2-s3）か候補の ID。無ければ空の dict。
+- `load_overrides(path: Path) -> dict[str, str]`：config/readings.csv（列：key・reading・sha・note）。key は
+  「回の ID:段落の ID」（その回だけ）か候補の ID（どの回でも）。sha（画面の文の sha1 の頭8字）がある行は、
+  画面の文がその sha のときだけ使う（`override_for`）。無ければ空の dict。
 - テスト：tests/test_voice_reading.py。上の例すべて、迷うものを直さないこと、言葉を変えないこと。
 
 `src/koten/voice/voicevox.py`：エンジンとの話（httpx）

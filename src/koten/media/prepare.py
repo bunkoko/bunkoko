@@ -47,10 +47,13 @@ def prepare_lines(
 
     - 一節（quote）：画面は原文。read_as が modern（旧字・旧仮名・外国語）なら、言葉は変えずに
       仮名づかいと字体を今に直して読む。古典の一節の日本語（{{quote_ja:}}。M8b）はその日本語を読む
-    - 読みの直し（config/readings.csv）は、段落の ID か候補の ID で引く（段落の ID が先）
+    - 人が確かめた読み（昔の辞書・時代の解釈・古い日本語訳の reading）があれば、それで読む
+      （Resolver.speak）。くの字点・踊り字は、どの段落でも開いて読む（speech_text）
+    - 読みの直し（config/readings.csv）：key は「回の ID:段落の ID」（E20261107-01:ch2-s3。その回
+      だけ）か候補の ID（どの回でも）。回の段落が先。sha の列があれば、画面の文がその sha のときだけ
     - 人の一言（human_take）は、その章の最後に足す（文字なら読み上げ、録った声ならその wav）
     """
-    from koten.voice.reading import modernize, speech_text
+    from koten.voice.reading import modernize, override_for, speech_text
 
     overrides = overrides or {}
     lines: list[Line] = []
@@ -59,15 +62,17 @@ def prepare_lines(
         for seg in ch["segments"]:
             display = resolver.resolve(seg["text"])
             ref = (seg.get("visual") or {}).get("ref")
-            reading = overrides.get(seg["seg_id"]) or (overrides.get(ref) if ref else None)
+            reading = override_for(
+                overrides, f"{script['episode_id']}:{seg['seg_id']}", display
+            ) or (override_for(overrides, ref, display) if ref else None)
             if reading is None:
-                spoken = display
+                spoken = resolver.speak(seg["text"])
                 if (
                     seg["kind"] == "quote"
                     and not seg.get("translation")
                     and seg.get("read_as") == "modern"
                 ):
-                    spoken = modernize(display)
+                    spoken = modernize(spoken)
                 reading = speech_text(spoken)
             lines.append(
                 Line(

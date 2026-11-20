@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import re
 import unicodedata
 from collections.abc import Callable
@@ -94,6 +95,7 @@ _LONG_UNITS = sorted(
     ばさり どさり ぐさり ふらり ぶらり ちらり きらり ぎらり ぴたり するり ずるり ぬるり とろり
     どろり ぽきり ちびり がらり からり ぱちり ぽかり にこり にやり ぺろり ぽろり ごくり こくり
     がくり みしり ぎしり ぴしり じろり ぞろり のろり だらり ことり ごとり
+    むしや ごちや めちや ぐちや くちや がちや ぎゆう ひゆう じやら ひよこ かさね かへる
     カラン コロン ガタン ゴトン ドシン バタン パタン カタン コトン ポトリ ポタリ""".split(),
     key=len,
     reverse=True,
@@ -102,12 +104,17 @@ _LONG_UNITS = sorted(
 
 _SMALL = set("ぁぃぅぇぉゃゅょゎっァィゥェォャュョヮッ")
 _PARTICLE_LIKE = set("をはがのにへとでもて")  # くの字点の前で、語の切れ目と分かる字
+# い段の字。旧仮名の本はこのあとの拗音を大きい「や・ゆ・よ」で書く（むしや＝むしゃ、ぎゆう＝ぎゅう）
+_I_ROW = set("いきしちにひみりゐぎじぢびぴイキシチニヒミリヰギジヂビピ")
 
 
 def _repeat_unit(out: list[str]) -> str | None:
     """くの字点の前の、繰り返す字（ふつうは2拍）。決められなければ None（開かない）。
 
     小さい字は前の字と合わせて1拍に数える（むしゃ〳〵→むしゃむしゃ、じゃら〳〵→じゃらじゃら）。
+    旧仮名の本は拗音を大きく書く（むしや〳〵）。よく出る語は _LONG_UNITS の3字で開き、それ以外で
+    い段の字のすぐあとの大きい「や・ゆ・よ」から始まる2字（ぎ｜ゆう〳〵）は、拗音の途中かもしれない
+    ので開かない（にや〳〵→にやにや のように、や で終わる2字は開く）。
     """
     tail = "".join(out[-8:])
     for word in _LONG_UNITS:
@@ -130,6 +137,8 @@ def _repeat_unit(out: list[str]) -> str | None:
         return None  # 「途切れ〳〵」は2字か3字か分からない
     if all("ァ" <= c <= "ヺ" for c in unit + [before]):
         return None  # カタカナの擬音は3字のことが多い（カラン〳〵）。決められない
+    if unit[0] in "やゆよヤユヨ" and before in _I_ROW:
+        return None  # 「きよと〳〵」は きょと（2字）か よと か分からない
     return "".join(unit)
 
 
@@ -186,10 +195,10 @@ _END = (
     r"|と(?!う|む|まし|く|い(?![ふひへはうっつ]))|か(?![ぶべびばぼがれつう])|が(?![ひいつ])"
     r"|ね(?![るりられっつ])|よ(?!う)|ぞ(?!う)|ぜ|けれ|から|ぢや|じや|じゃ)"
 )
-# 過去の「た」のあと（言つた事・なつたのだ）。「つたな(い)」「つたへ」などの語の頭は除く
+# 過去の「た」のあと（言つた事・なつたのだ・思つたこと）。「つたな(い)」「つたへ」などの語の頭は除く
 _POST_TA = (
     rf"(?=$|[{_K}]|[、。，．」』）〕〉》！？!?…―\s]|[りらろのがとかもよねぞんにし]"
-    r"|けれ|まま|ところ|ため|きり|やう|よう|さう|そう|らし|ばかり|だけ|ほど|ぢや|じや|じゃ|つて|って)"
+    r"|けれ|まま|ところ|こと|ため|きり|やう|よう|さう|そう|らし|ばかり|だけ|ほど|ぢや|じや|じゃ|つて|って)"
 )
 # ハ行の動詞の「は」のあと（思はず・言はれ・構はない）。助詞の「は」のあとには来ない並びだけ
 _HA_NEXT = (
@@ -318,6 +327,9 @@ _WORDS = {
     "とほざ": "とおざ",
     "なほさ": "なおさ",
     "なほす": "なおす",
+    "なほなほ": "なおなお",  # なほ〳〵 を開いたもの
+    "かはるがはる": "かわるがわる",
+    "かへるがへる": "かえるがえる",
     # ぢ・づ（連濁の「はなぢ」、同じ音が続く「つづく」「ちぢむ」は今も ぢ・づ なので直さない）
     "しづか": "しずか",
     "しづけ": "しずけ",
@@ -340,7 +352,6 @@ _WORDS = {
     "めづら": "めずら",
     "あぢ": "あじ",
     "もみぢ": "もみじ",
-    "とぢ": "とじ",
     "おぢ": "おじ",
     "ぢいさん": "じいさん",
 }
@@ -451,6 +462,8 @@ def _rules() -> list[_Rule]:
         (r"(?<!はな)ぢや(?!う)", "じゃ"),
         (r"じや(?=な[いくか]|あ|ありま)", "じゃ"),  # 同じやうに は直さない
         (r"(?<=[恥閉怖綴捩])ぢ", "じ"),
+        # 閉ぢる（とぢて→とじて）。「ことぢや」「そとぢや」の ぢや を先に じゃ にしてから当てる
+        (r"とぢ", "とじ"),
         (r"はづ(?!き)", "はず"),  # 葉月（はづき）は今も はづき
         (r"(?<!い)づつ(?!み)", "ずつ"),  # 小包（こづつみ）・井筒（いづつ）は今も づ
         # ハ行（かなで書く「言ふ」「顔」「上」など。前の字で語の頭と分かるもの）
@@ -502,7 +515,8 @@ def _rules() -> list[_Rule]:
         (rf"(?<=[{_STEM_HA}])(?<![{_K}][{_STEM_HA}])はう" + _END, "おう"),
         (rf"(?<=[{_STEM_HA}])(?<![{_K}][{_STEM_HA}])は" + _CONT_HA, "わ"),
         # 促音（大きく書いた「つ」）：言つた→言った、あつて→あって（あつい は直さない）
-        (rf"(?<=[{_K}])(?<![一二三四五六七八九十百千幾何])つ(?=て|た{_POST_TA})", "っ"),
+        # 曽つて・嘗つて（かつて）は直さない（旧字の 曾 は先に 曽 にしてある）
+        (rf"(?<=[{_K}])(?<![一二三四五六七八九十百千幾何曽嘗])つ(?=て|た{_POST_TA})", "っ"),
         (rf"(?<=[あいうえきくさしだなまむもやよらわ])つ(?=て|た{_POST_TA})", "っ"),
         # やがつて・ちがつた（「彼がつてを頼る」の が は助詞なので、前がかなのときだけ）
         (rf"(?<=[{_HIRA}]が)つ(?=て|た{_POST_TA})", "っ"),
@@ -560,12 +574,15 @@ def _drop_alias(m: re.Match[str]) -> str:
 def speech_text(text: str) -> str:
     """VOICEVOX に渡す前の整え。かぎかっこ「」『』はそのまま残す。
 
+    - 踊り字を開く（ぐん〳〵→ぐんぐん、かゝる→かかる）。modernize を通さない語りや新字新仮名の
+      一節にも出てくるので、ここで必ず開く。modernize で開いたあとに通しても変わらない
     - 別名の括弧を落とす（岡倉天心（岡倉覚三）『茶の本』→ 岡倉天心『茶の本』。訳者の括弧は残す）
     - 見出しの区切り「 / 」を「、」にする
     - 【】や記号（※・★・〓など）を除き、ダッシュ（――）は「、」にする
     - 連続する空白を1つに詰め、行の頭と終わりの空白・行の頭の読点を落とす。記号だけの行は落とす
       （行の終わりの読点は原文のものなので残す。段落をまとめて読むときの間になる）
     """
+    text = _expand_odoriji(text)  # 先に開く（「ます／＼」の斜線を区切りと取り違えない）
     text = _ALIAS.sub(_drop_alias, text)
     text = _SLASH.sub("、", text)
     text = text.translate(_SYMBOLS)
@@ -586,11 +603,25 @@ def speech_text(text: str) -> str:
 # --- 人が直した読み ---------------------------------------------------------------
 
 
-def load_overrides(path: Path) -> dict[str, str]:
-    """config/readings.csv（列：key・reading・note）を読む。key は段落の ID（ch2-s3）か候補の ID。
+_SHA = re.compile(r"[0-9a-f]{8}")
 
-    ファイルが無ければ空の dict。key と reading のどちらかだけの行や、同じ key が2回ある行は、
-    どれを使えばよいか分からないので ValueError で止める（全部が空の行は飛ばす）。
+
+def text_sha(text: str) -> str:
+    """読みの直しを結ぶ文の指紋：画面の文（UTF-8）の sha1 の頭8字。"""
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:8]
+
+
+def load_overrides(path: Path) -> dict[str, str]:
+    """config/readings.csv（列：key・reading・note、任意で sha）を読む。key は段落の ID（ch2-s3）か
+    候補の ID。
+
+    sha（text_sha。画面の文の sha1 の頭8字）を書いた行は、その文のときだけ使う読みとして
+    「key@sha」の名前で入れる（引くのは override_for）。台本が書き直されて文が変われば sha が
+    合わなくなり、古い読みは使われない。sha が空の行は、文に関わらずその key で使う。
+
+    ファイルが無ければ空の dict。key と reading のどちらかだけの行や、同じ key（sha も同じ）が
+    2回ある行、sha の形が違う行は、どれを使えばよいか分からないので ValueError で止める
+    （key と reading の両方が空の行は飛ばす）。
     """
     if not path.exists():
         return {}
@@ -605,13 +636,32 @@ def load_overrides(path: Path) -> dict[str, str]:
         for n, row in enumerate(reader, start=2):
             key = (row.get("key") or "").strip()
             reading = (row.get("reading") or "").strip()
+            sha = (row.get("sha") or "").strip()
             if not key and not reading:
                 continue
             if not key or not reading:
                 raise ValueError(f"{path} の{n}行目：key と reading の両方を書いてください")
+            if sha:
+                if not _SHA.fullmatch(sha.lower()):
+                    raise ValueError(
+                        f"{path} の{n}行目：sha「{sha}」は画面の文の sha1 の頭8字"
+                        "（0〜9・a〜f の8字）で書いてください"
+                    )
+                key = f"{key}@{sha.lower()}"
             if key in out:
                 raise ValueError(
                     f"{path} の{n}行目：key「{key}」が2回あります（1行にまとめてください）"
                 )
             out[key] = reading
     return out
+
+
+def override_for(overrides: dict[str, str], key: str, display: str) -> str | None:
+    """人が直した読み。いまの画面の文に結んだ行（key@sha）が先、無ければ sha の無い行。
+
+    sha が今の文と合わない行は使わない（文が変わったあとに古い読みで読まない）。無ければ None。
+    """
+    pinned = overrides.get(f"{key}@{text_sha(display)}")
+    if pinned is not None:
+        return pinned
+    return overrides.get(key)

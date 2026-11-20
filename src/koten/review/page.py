@@ -245,8 +245,12 @@ def _quotes(quotes: list[dict[str, str]]) -> str:
         fixed = _flat(display) != _flat(reading)
         tag = '<span class="tag">読みを直した</span>' if fixed else ""
         row = '<tr class="fixed">' if fixed else "<tr>"
+        # 読みを直すときの config/readings.csv の key と sha（コピーして使う）
+        fix = ""
+        if q.get("key"):
+            fix = f'<div class="small">key：{_e(q["key"])}<br>sha：{_e(q.get("sha"))}</div>'
         rows.append(
-            f"{row}<td>{_e(q.get('seg_id'))}{tag}</td>"
+            f"{row}<td>{_e(q.get('seg_id'))}{tag}{fix}</td>"
             f'<td class="quote">{_e(display)}</td>'
             f"<td>{_e(reading)}</td>"
             f"<td>{_e(q.get('source'))}</td>"
@@ -254,8 +258,9 @@ def _quotes(quotes: list[dict[str, str]]) -> str:
         )
     return (
         '<p class="small">画面には原文、読み上げには右の文を使います。「読みを直した」行は、'
-        "動画の音を聞いて読み違いが無いかを確かめてください。直すときは config/readings.csv に"
-        "段落の ID（key）と読み（reading）を書き、音声から作り直します。</p>\n"
+        "動画の音を聞いて読み違いが無いかを確かめてください。直すときは config/readings.csv に、"
+        "key に「回の ID:段落の ID」（例：E20261107-01:ch2-s3）、reading に読みを書き、"
+        "音声から作り直します（koten produce）。</p>\n"
         "<table>\n<tr><th>段落</th><th>原文（画面）</th><th>読み上げ</th><th>出典</th>"
         "<th>ライセンス</th></tr>\n" + "\n".join(rows) + "\n</table>"
     )

@@ -181,3 +181,33 @@ def test_chapter_ranges_add_ref_seconds_like_the_planner():
     r = chapter_ranges(script, formats)
     # 事実（fact_sec）と語釈（def_sec が無ければ 20〜30 秒）の分だけ上の端を広げる。下の端はそのまま
     assert r == {"ch0": (30.0, 60.0), "ch2": (90.0, 220.0)}
+
+
+def test_prepare_lines_reading_overrides_are_scoped_and_tied_to_text():
+    from koten.media.prepare import prepare_lines
+    from koten.voice.reading import text_sha
+
+    script = _script()
+    script["chapters"][0]["segments"][0]["text"] = "ぐん〳〵進む。"  # 語りでも踊り字を開く
+    resolver = _resolver()
+    lines = {x.seg_id: x for x in prepare_lines(script, resolver)}
+    assert (
+        lines["ch0-s1"].reading == "ぐんぐん進む。" and lines["ch0-s1"].display == "ぐん〳〵進む。"
+    )
+    assert lines["ch2-s1"].chapter_title == "一節"
+
+    # 回の段落の key は、その回だけに効く
+    mine = prepare_lines(script, resolver, {"E1:ch2-s1": "いっせつのほんぶん。"})
+    other = prepare_lines({**script, "episode_id": "E2"}, resolver, {"E1:ch2-s1": "いっせつ。"})
+    assert {x.seg_id: x for x in mine}["ch2-s1"].reading == "いっせつのほんぶん。"
+    assert {x.seg_id: x for x in other}["ch2-s1"].reading == "一節の本文。"
+
+    # 候補の ID の key：sha が今の画面の文と合うときだけ
+    good = {f"aozora:001#1/q1@{text_sha('一節の本文。')}": "あう。"}
+    stale = {"aozora:001#1/q1@00000000": "ちがう。"}
+    assert {x.seg_id: x for x in prepare_lines(script, resolver, good)}[
+        "ch2-s1"
+    ].reading == "あう。"
+    assert {x.seg_id: x for x in prepare_lines(script, resolver, stale)}["ch2-s1"].reading == (
+        "一節の本文。"
+    )

@@ -581,6 +581,7 @@ def step_review(
     from koten.review.page import build_review_html
     from koten.script.placeholders import format_source
     from koten.script.run import render
+    from koten.voice.reading import text_sha
 
     ep = load_episode(conn, s.ssd_root, episode_id)
     hdd = s.require_hdd()
@@ -600,6 +601,9 @@ def step_review(
                     # 画面に出る原文（古典の一節の訳の段落でも、画面は原文）
                     "display": c.get("quote_text") or seg.display,
                     "reading": seg.reading,
+                    # 読みを直すときの key（この回の段落）と、読み上げた文の指紋
+                    "key": f"{episode_id}:{seg.seg_id}",
+                    "sha": text_sha(seg.display),
                     "source": format_source(c) if c else "",
                     "license": c.get("license") or "",
                 }

@@ -9,7 +9,14 @@ from __future__ import annotations
 import pytest
 
 from koten.media.model import split_sentences
-from koten.voice.reading import KYUJI, load_overrides, modernize, speech_text
+from koten.voice.reading import (
+    KYUJI,
+    load_overrides,
+    modernize,
+    override_for,
+    speech_text,
+    text_sha,
+)
 
 # --- 旧字体 → 新字体 ------------------------------------------------------------
 
@@ -95,6 +102,27 @@ def test_kept_joyo_forms():
         ("ドン〳〵", "ドンドン"),
         ("かへす〴〵", "かえすがえす"),
         ("人〻", "人々"),
+        # 旧仮名の本は拗音を大きく書く（むしや＝むしゃ）。3字で繰り返す
+        ("むしや〳〵", "むしやむしや"),
+        ("ごちや〳〵", "ごちやごちや"),
+        ("めちや〳〵", "めちやめちや"),
+        ("ぐちや〳〵", "ぐちやぐちや"),
+        ("くちや〳〵", "くちやくちや"),
+        ("がちや〳〵", "がちやがちや"),
+        ("ぎゆう〳〵", "ぎゆうぎゆう"),
+        ("ひゆう〳〵", "ひゆうひゆう"),
+        ("じやら〳〵", "じやらじやら"),
+        ("ひよこ〳〵", "ひよこひよこ"),
+        ("かさね〴〵", "かさねがさね"),
+        ("かへる〳〵", "かえるかえる"),
+        ("かへる〴〵", "かえるがえる"),
+        ("にや〳〵", "にやにや"),  # や で終わる2字はそのまま開く
+        ("いや〳〵", "いやいや"),
+        # 開いたあとの決まった語
+        ("なほ〳〵", "なおなお"),
+        ("なほなほ", "なおなお"),
+        ("かはる〴〵", "かわるがわる"),
+        ("かはるがはる", "かわるがわる"),
     ],
 )
 def test_odoriji(src, want):
@@ -111,6 +139,11 @@ def test_odoriji(src, want):
         "かちり〳〵",  # 「ちり」か「かちり」か分からない
         "ポトン〳〵",  # カタカナの擬音は3字のことが多い
         "んゝ",
+        # い段の字のあとの大きい や・ゆ・よ で始まる2字は、拗音（にゅう・きょと）の途中かもしれない
+        "にゆう〳〵",
+        "きよと〳〵",
+        "ぴよこ〳〵",
+        "しゆう〴〵",
     ],
 )
 def test_odoriji_left_when_unclear(text):
@@ -219,10 +252,21 @@ CONVERT = [
     ("まつたく", "まったく"),
     ("彼はきつと来る", "彼はきっと来る"),
     ("子供つぽい", "子供っぽい"),
+    ("思つたことが", "思ったことが"),  # た＋こと
+    ("言つたこと", "言ったこと"),
+    ("あつたことを", "あったことを"),
+    ("曾つて", "曽つて"),  # 嘗て（かつて）。旧字の 曾 は 曽 に直すが、つ は大きいまま
+    ("未だ曾つて無い", "未だ曽つて無い"),
     # 拗音（大きく書いた「や」「よ」）
     ("ちやん", "ちゃん"),
     ("ぢやない", "じゃない"),
     ("さうじやない", "そうじゃない"),
+    ("それは困つたことぢや", "それは困ったことじゃ"),  # こと＋ぢや（とぢ＝閉ぢ ではない）
+    ("そとぢやない", "そとじゃない"),
+    ("もとぢや。", "もとじゃ。"),
+    ("目をとぢて", "目をとじて"),  # 閉ぢて
+    ("とぢこもる", "とじこもる"),
+    ("おぢや", "おじや"),
     ("ちやうど", "ちょうど"),
     # ぢ・づ
     ("恥ぢる", "恥じる"),
@@ -257,6 +301,10 @@ UNCHANGED = [
     "一つたりとも",
     "彼はかつて",  # 嘗て
     "いまだかつて",
+    "曽つて",  # 曽て・嘗て（かつて）
+    "嘗つて",
+    "未だ嘗つて無い",
+    "筆つたなく",  # た＋な は「つたない」なので直さない
     # 語の切れ目しだいで読みが変わる並び
     "ずつと",  # ずっと か ずつ＋と
     "もつと",  # もっと か 持つと
@@ -412,6 +460,40 @@ def test_speech_text_keeps(text):
     assert speech_text(text) == text
 
 
+@pytest.mark.parametrize(
+    "src,want",
+    [
+        # 新字新仮名の一節や語りでも、踊り字は開いて読む（modernize を通さない文）
+        (
+            "ぐん〳〵実行にうつして行く。二時間はかゝる。",
+            "ぐんぐん実行にうつして行く。二時間はかかる。",
+        ),
+        ("しみ〴〵と思う", "しみじみと思う"),
+        ("ます／＼", "ますます"),  # 横組みの代用表記（斜線の区切りにしない）
+        ("こゝろ／本", "こころ、本"),
+        ("人〻", "人々"),
+        ("時〳〵", "時〳〵"),  # 開き方が決まらないものはそのまま
+    ],
+)
+def test_speech_text_opens_repeat_marks(src, want):
+    assert speech_text(src) == want
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "いよ〳〵三月になつた。「さうでせう」と彼は云つた。",
+        "むしや〳〵食ふ。こゝろ。時〳〵。ハヽヽ。",
+        "かへす〴〵も、たゞ。",
+    ],
+)
+def test_speech_text_after_modernize_is_stable(src):
+    once = modernize(src)
+    assert speech_text(once) == speech_text(speech_text(once))
+    assert speech_text(once) == speech_text(modernize(once))  # 二度開くことはない
+    assert "ゝ" not in speech_text(once) and "ゞ" not in speech_text(once)
+
+
 # --- 人が直した読み ---------------------------------------------------------------
 
 
@@ -434,12 +516,74 @@ def test_load_overrides(tmp_path):
     }
 
 
+def test_text_sha():
+    import hashlib
+
+    text = "いよ〳〵三月になつた。"
+    assert text_sha(text) == hashlib.sha1(text.encode("utf-8")).hexdigest()[:8]
+    assert len(text_sha("")) == 8
+    assert text_sha("あ") != text_sha("い")
+
+
+def test_load_overrides_with_sha(tmp_path):
+    sha = text_sha("いよ〳〵三月になつた。")
+    old = text_sha("いよ〳〵二月になつた。")
+    path = tmp_path / "readings.csv"
+    path.write_text(
+        "key,reading,note,sha\n"
+        f"ch2-s3,いよいよ三月になった,くの字点,{sha}\n"
+        f"ch2-s3,いよいよ二月になった,前の文のとき, {old.upper()} \n"  # sha が違えば別の行
+        "C-0001,東京へ帰ったらどうか,,\n"  # sha が空なら文に関わらず使う
+        ",,メモだけの行,\n",
+        encoding="utf-8",
+    )
+    assert load_overrides(path) == {
+        f"ch2-s3@{sha}": "いよいよ三月になった",
+        f"ch2-s3@{old}": "いよいよ二月になった",  # 大文字・前後の空白はそろえる
+        "C-0001": "東京へ帰ったらどうか",
+    }
+
+
+def test_override_for(tmp_path):
+    display = "いよ〳〵三月になつた。"
+    sha = text_sha(display)
+    overrides = {
+        f"ch2-s3@{sha}": "いよいよ三月になった",
+        "ch2-s4@00000000": "古い文の読み",  # 文が変わったので使わない
+        "C-0001": "東京へ帰ったらどうか",
+        f"C-0002@{sha}": "文に結んだ読み",
+        "C-0002": "文に結ばない読み",
+    }
+    assert override_for(overrides, "ch2-s3", display) == "いよいよ三月になった"
+    assert override_for(overrides, "ch2-s3", display + "。") is None  # 文が変わった
+    assert override_for(overrides, "ch2-s4", "新しい文") is None
+    assert override_for(overrides, "C-0001", "どの文でも") == "東京へ帰ったらどうか"
+    assert override_for(overrides, "C-0002", display) == "文に結んだ読み"  # sha の行が先
+    assert override_for(overrides, "C-0002", "別の文") == "文に結ばない読み"
+    assert override_for({}, "ch1-s1", display) is None
+
+
+def test_load_overrides_then_override_for(tmp_path):
+    display = "國の爲に"
+    path = tmp_path / "readings.csv"
+    path.write_text(
+        f"key,reading,note,sha\nch1-s1,くにのために,,{text_sha(display)}\n", encoding="utf-8"
+    )
+    overrides = load_overrides(path)
+    assert override_for(overrides, "ch1-s1", display) == "くにのために"
+    assert override_for(overrides, "ch1-s1", "国の為に") is None  # 原文が直された
+
+
 @pytest.mark.parametrize(
     "body,message",
     [
         ("key,reading,note\nch1-s1,よみ,\nch1-s1,べつのよみ,\n", "2回"),
         ("key,reading,note\nch1-s1,,\n", "両方"),
         ("key,note\nch1-s1,メモ\n", "reading"),
+        ("key,reading,note,sha\nch1-s1,よみ,,abc\n", "sha"),  # 8字の16進でない
+        ("key,reading,note,sha\nch1-s1,よみ,,0123456g\n", "sha"),
+        ("key,reading,note,sha\nch1-s1,よみ,,01234567\nch1-s1,よみ2,,01234567\n", "2回"),
+        ("key,reading,note,sha\n,よみ,,01234567\n", "両方"),
     ],
 )
 def test_load_overrides_rejects_unclear_rows(tmp_path, body, message):
