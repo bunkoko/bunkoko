@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<!--
+  統計のカード（1920×1080 を基準に作る。koten.visuals.cards が値を差し込んで撮る）。
+  大きな数字と単位・ラベル・「出典：調査名（年）」。数字は DB の stat の値をそのまま出す。
+  外のフォント・画像・スクリプトは読まない。#fit の中が枠に収まるまで --fs を下げる
+  （数字・単位・出典も --fs に合わせて小さくなる）。
+-->
+<style>
+  :root {
+    --fs: 48px;
+    --bg: #1c2024;
+    --ink: #eee7d8;
+    --sub: #c4b58e;
+    --muted: #8e8c85;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100vw; height: 100vh; overflow: hidden; }
+  body {
+    background: radial-gradient(ellipse at 50% 45%, #262b30 0%, var(--bg) 72%);
+    color: var(--ink);
+    font-family: "Hiragino Mincho ProN", "Hiragino Mincho Pro", "Yu Mincho", "YuMincho",
+      "Noto Serif CJK JP", "Noto Serif JP", "IPAexMincho", "IPAMincho",
+      "Noto Sans CJK JP", "IPAexGothic", "IPAGothic", serif;
+  }
+  .card {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #fit {
+    width: 1560px;
+    height: 880px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .text {
+    max-width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+  }
+  .label {
+    font-size: var(--fs);
+    line-height: 1.6;
+    letter-spacing: 0.04em;
+    word-break: auto-phrase;
+    overflow-wrap: anywhere;
+  }
+  .figure {
+    margin-top: calc(var(--fs) * 0.6);
+    color: var(--sub);
+    font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "YuGothic",
+      "Noto Sans CJK JP", "Noto Sans JP", "IPAexGothic", "IPAGothic", sans-serif;
+    font-weight: 700;
+    line-height: 1.1;
+    white-space: nowrap;
+  }
+  .value { font-size: calc(var(--fs) * 4.6); letter-spacing: 0.02em; }
+  .unit { font-size: calc(var(--fs) * 1.7); margin-left: calc(var(--fs) * 0.25); }
+  .rule {
+    width: calc(var(--fs) * 3.2);
+    height: 2px;
+    margin: calc(var(--fs) * 0.9) 0 calc(var(--fs) * 0.6);
+    background: var(--sub);
+    opacity: 0.6;
+  }
+  .source {
+    color: var(--muted);
+    font-size: calc(var(--fs) * 0.66);
+    line-height: 1.5;
+    font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "YuGothic",
+      "Noto Sans CJK JP", "Noto Sans JP", "IPAexGothic", "IPAGothic", sans-serif;
+    overflow-wrap: anywhere;
+  }
+</style>
+</head>
+<body>
+<main class="card">
+  <div id="fit"><div class="text">
+    <div class="label">${label}</div>
+    <div class="figure"><span class="value">${value}</span><span class="unit">${unit}</span></div>
+    <div class="rule"></div>
+    <div class="source">${source}</div>
+  </div></div>
+</main>
+</body>
+</html>

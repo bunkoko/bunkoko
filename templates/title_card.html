@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<!--
+  章タイトルのカード（1920×1080 を基準に作る。koten.visuals.cards が値を差し込んで撮る）。
+  タイトルが空なら色だけの画像になる（写真が無いときの予備にも使える）。
+  外のフォント・画像・スクリプトは読まない。#fit の中が枠に収まるまで --fs を下げる。
+-->
+<style>
+  :root {
+    --fs: 100px;
+    --bg: #1c2024;
+    --ink: #eee7d8;
+    --sub: #c4b58e;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100vw; height: 100vh; overflow: hidden; }
+  body {
+    background: radial-gradient(ellipse at 50% 45%, #262b30 0%, var(--bg) 72%);
+    color: var(--ink);
+    font-family: "Hiragino Mincho ProN", "Hiragino Mincho Pro", "Yu Mincho", "YuMincho",
+      "Noto Serif CJK JP", "Noto Serif JP", "IPAexMincho", "IPAMincho",
+      "Noto Sans CJK JP", "IPAexGothic", "IPAGothic", serif;
+  }
+  .card {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 64px;
+  }
+  .rule { width: 160px; height: 2px; background: var(--sub); opacity: 0.7; }
+  .empty .rule { display: none; }
+  #fit {
+    width: 1560px;
+    height: 560px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .text {
+    max-width: 100%;
+    font-size: var(--fs);
+    font-weight: 600;
+    line-height: 1.45;
+    letter-spacing: 0.12em;
+    text-align: center;
+    word-break: auto-phrase;
+    overflow-wrap: anywhere;
+  }
+</style>
+</head>
+<body class="${mode}">
+<main class="card">
+  <div class="rule"></div>
+  <div id="fit"><div class="text">${title}</div></div>
+  <div class="rule"></div>
+</main>
+</body>
+</html>

@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<!--
+  サムネイル A（1280×720）：写真を全面に、左に悩みの言葉（太いゴシック）と著者名。
+  写真は data: で渡す（外のファイル・フォント・スクリプトは読まない）。写真が無ければ色の背景。
+  #fit の中が枠に収まるまで --fs を下げる。
+-->
+<style>
+  :root {
+    --fs: 120px;
+    --bg: #1c2024;
+    --ink: #ffffff;
+    --sub: #f0d58c;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100vw; height: 100vh; overflow: hidden; }
+  body {
+    position: relative;
+    background: linear-gradient(135deg, #2b3138 0%, var(--bg) 70%);
+    font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "YuGothic",
+      "Noto Sans CJK JP", "Noto Sans JP", "IPAexGothic", "IPAGothic", sans-serif;
+    color: var(--ink);
+  }
+  .bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .no-photo .bg { display: none; }
+  .shade {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, rgba(10, 12, 14, 0.88) 0%, rgba(10, 12, 14, 0.62) 52%,
+      rgba(10, 12, 14, 0.08) 100%);
+  }
+  .panel {
+    position: absolute;
+    left: 72px;
+    top: 64px;
+    bottom: 64px;
+    width: 820px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 36px;
+  }
+  .bar { width: 96px; height: 10px; background: var(--sub); }
+  #fit { height: 440px; display: flex; align-items: center; }
+  .text {
+    max-width: 100%;
+    font-size: var(--fs);
+    font-weight: 800;
+    line-height: 1.22;
+    letter-spacing: 0.02em;
+    word-break: auto-phrase;
+    overflow-wrap: anywhere;
+    text-shadow: 0 4px 18px rgba(0, 0, 0, 0.65);
+  }
+  .authors {
+    color: var(--sub);
+    font-size: 46px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    font-family: "Hiragino Mincho ProN", "Yu Mincho", "YuMincho", "Noto Serif CJK JP",
+      "IPAexMincho", "IPAMincho",
+      "Noto Sans CJK JP", "IPAexGothic", "IPAGothic", serif;
+    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.7);
+  }
+  .authors:empty { display: none; }
+</style>
+</head>
+<body class="${bg}">
+<img class="bg" src="${photo}" alt="">
+<div class="shade"></div>
+<main class="panel">
+  <div class="bar"></div>
+  <div id="fit"><div class="text">${words}</div></div>
+  <div class="authors">${authors}</div>
+</main>
+</body>
+</html>

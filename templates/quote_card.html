@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<!--
+  引用カード（1920×1080 を基準に作る。koten.visuals.cards が値を差し込んで撮る）。
+  一節は縦書き（writing-mode: vertical-rl）。英訳など横の文字が多い一節は横書き（body の class が yoko）。
+  外のフォント・画像・スクリプトは読まない。文字は手元のフォントを並べる。
+  明朝が無い機械では日本語のゴシックを使う（serif のままだと中国語のフォントになり、縦書きで字が重なる）。
+  #fit の中が枠に収まるまで、--fs（文字の大きさ）を段階的に下げる。
+-->
+<style>
+  :root {
+    --fs: 64px;
+    --bg: #1c2024;
+    --ink: #eee7d8;
+    --sub: #c4b58e;
+    --muted: #8e8c85;
+    --rule: rgba(196, 181, 142, 0.38);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100vw; height: 100vh; overflow: hidden; }
+  body {
+    background: radial-gradient(ellipse at 60% 40%, #262b30 0%, var(--bg) 70%);
+    color: var(--ink);
+    font-family: "Hiragino Mincho ProN", "Hiragino Mincho Pro", "Yu Mincho", "YuMincho",
+      "Noto Serif CJK JP", "Noto Serif JP", "IPAexMincho", "IPAMincho",
+      "Noto Sans CJK JP", "IPAexGothic", "IPAGothic", serif;
+  }
+  .card {
+    position: absolute;
+    inset: 96px 128px;
+    display: flex;
+    flex-direction: row-reverse;
+    justify-content: center;
+    gap: 88px;
+  }
+  /* 一節と出典をまとめて真ん中に置く。一節が長いときは #fit が縮み、はみ出しで分かる */
+  #fit {
+    flex: 0 1 auto;
+    min-width: 0;
+    height: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+  .text {
+    flex: none;
+    font-size: var(--fs);
+    white-space: pre-line;
+    overflow-wrap: anywhere;
+  }
+  .meta { flex: none; color: var(--muted); }
+  .meta div:empty { display: none; }
+  .source { color: var(--ink); font-size: 34px; }
+  .label { color: var(--sub); font-size: 27px; }
+  .license { font-size: 23px; }
+
+  /* 縦書き：一節が右、出典・訳の表示・ライセンスが左（下にそろえる） */
+  .tate .text {
+    writing-mode: vertical-rl;
+    max-height: 100%;
+    line-height: 1.9;
+    letter-spacing: 0.1em;
+    line-break: strict;
+  }
+  .tate .meta {
+    writing-mode: vertical-rl;
+    height: 100%;
+    padding-right: 52px;
+    border-right: 1px solid var(--rule);
+    text-align: end;
+    line-height: 1.7;
+    letter-spacing: 0.08em;
+  }
+  .tate .meta div + div { margin-right: 14px; }
+
+  /* 横書き：一節が上、出典などが下（右にそろえる） */
+  .yoko .card { flex-direction: column; gap: 48px; }
+  .yoko #fit { width: 100%; height: auto; flex: 1 1 auto; min-height: 0; }
+  .yoko .text {
+    max-width: 100%;
+    line-height: 1.6;
+    font-family: "Georgia", "Times New Roman", "Hiragino Mincho ProN", "Yu Mincho",
+      "Noto Serif CJK JP", "IPAexMincho", "IPAMincho",
+      "Noto Sans CJK JP", "IPAexGothic", "IPAGothic", serif;
+  }
+  .yoko .meta {
+    padding-top: 36px;
+    border-top: 1px solid var(--rule);
+    text-align: right;
+    line-height: 1.6;
+  }
+</style>
+</head>
+<body class="${mode}">
+<main class="card">
+  <div id="fit"><div class="text">${text}</div></div>
+  <div class="meta"><div class="source">${source}</div><div class="label">${label}</div><div class="license">${license}</div></div>
+</main>
+</body>
+</html>

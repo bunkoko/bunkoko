@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<!--
+  サムネイル B（1280×720）：写真を全面に暗く、右に悩みの言葉を縦書き（明朝）、左下に著者名。
+  写真は data: で渡す（外のファイル・フォント・スクリプトは読まない）。写真が無ければ色の背景。
+  #fit の中が枠に収まるまで --fs を下げる。
+-->
+<style>
+  :root {
+    --fs: 120px;
+    --bg: #1c2024;
+    --ink: #ffffff;
+    --sub: #f0d58c;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100vw; height: 100vh; overflow: hidden; }
+  body {
+    position: relative;
+    background: linear-gradient(160deg, #30363d 0%, var(--bg) 75%);
+    font-family: "Hiragino Mincho ProN", "Hiragino Mincho Pro", "Yu Mincho", "YuMincho",
+      "Noto Serif CJK JP", "Noto Serif JP", "IPAexMincho", "IPAMincho",
+      "Noto Sans CJK JP", "IPAexGothic", "IPAGothic", serif;
+    color: var(--ink);
+  }
+  .bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .no-photo .bg { display: none; }
+  .shade {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(270deg, rgba(8, 10, 12, 0.85) 0%, rgba(8, 10, 12, 0.55) 45%,
+      rgba(8, 10, 12, 0.35) 100%);
+  }
+  #fit {
+    position: absolute;
+    right: 80px;
+    top: 56px;
+    bottom: 56px;
+    width: 640px;
+    display: flex;
+    justify-content: flex-end;
+    align-items: flex-start;
+  }
+  .text {
+    flex: none;
+    writing-mode: vertical-rl;
+    max-height: 100%;
+    font-size: var(--fs);
+    font-weight: 600;
+    line-height: 1.3;
+    letter-spacing: 0.06em;
+    word-break: auto-phrase;
+    overflow-wrap: anywhere;
+    text-shadow: 0 4px 18px rgba(0, 0, 0, 0.7);
+  }
+  .authors {
+    position: absolute;
+    left: 72px;
+    bottom: 64px;
+    max-width: 440px;
+    padding-top: 20px;
+    border-top: 4px solid var(--sub);
+    color: var(--sub);
+    font-size: 44px;
+    font-weight: 600;
+    line-height: 1.4;
+    letter-spacing: 0.08em;
+    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.7);
+  }
+  .authors:empty { display: none; }
+</style>
+</head>
+<body class="${bg}">
+<img class="bg" src="${photo}" alt="">
+<div class="shade"></div>
+<div id="fit"><div class="text">${words}</div></div>
+<div class="authors">${authors}</div>
+</body>
+</html>

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<!--
+  サムネイル C（1280×720）：左に生成りの地と悩みの言葉（明朝・墨色）と著者名（朱色）、右に写真。
+  写真は data: で渡す（外のファイル・フォント・スクリプトは読まない）。写真が無ければ右も色の地。
+  #fit の中が枠に収まるまで --fs を下げる。
+-->
+<style>
+  :root {
+    --fs: 110px;
+    --paper: #f1eadb;
+    --ink: #22201c;
+    --accent: #b0412c;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100vw; height: 100vh; overflow: hidden; }
+  body {
+    position: relative;
+    background: var(--paper);
+    font-family: "Hiragino Mincho ProN", "Hiragino Mincho Pro", "Yu Mincho", "YuMincho",
+      "Noto Serif CJK JP", "Noto Serif JP", "IPAexMincho", "IPAMincho",
+      "Noto Sans CJK JP", "IPAexGothic", "IPAGothic", serif;
+    color: var(--ink);
+  }
+  .photo {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 520px;
+    background: linear-gradient(160deg, #3a4047 0%, #1c2024 80%);
+    overflow: hidden;
+  }
+  .bg { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .no-photo .bg { display: none; }
+  .panel {
+    position: absolute;
+    left: 72px;
+    top: 56px;
+    bottom: 56px;
+    width: 620px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 40px;
+  }
+  #fit { height: 470px; display: flex; align-items: center; }
+  .text {
+    max-width: 100%;
+    font-size: var(--fs);
+    font-weight: 700;
+    line-height: 1.25;
+    letter-spacing: 0.03em;
+    word-break: auto-phrase;
+    overflow-wrap: anywhere;
+  }
+  .authors {
+    align-self: flex-start;
+    padding: 6px 22px 8px;
+    border: 3px solid var(--accent);
+    color: var(--accent);
+    font-size: 42px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+  .authors:empty { display: none; }
+</style>
+</head>
+<body class="${bg}">
+<div class="photo"><img class="bg" src="${photo}" alt=""></div>
+<main class="panel">
+  <div id="fit"><div class="text">${words}</div></div>
+  <div class="authors">${authors}</div>
+</main>
+</body>
+</html>
