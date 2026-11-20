@@ -1480,26 +1480,35 @@ def eval_page(
     file: Annotated[str, typer.Option(help="評価セット")] = "tests/eval/retrieval.csv",
     out: Annotated[str, typer.Option(help="書き出すページ（HTML）")] = "data/eval-page.html",
     sample: Annotated[bool, typer.Option(help="見本の行だと画面に出す")] = False,
+    review: Annotated[
+        str | None,
+        typer.Option(help="見直す行のキーの一覧（JSON の配列）。前の点を見せずに押し直してもらう"),
+    ] = None,
 ) -> None:
     """評価セットを、スマホで点を付けるページ（HTML）にする。Claude がアーティファクトとして載せる。
 
     LLM の点と理由はページに入れない。押した点はページのデータベースに残り、Claude が
     koten eval merge で grade 列に書き戻す。
     """
+    import json
     from pathlib import Path
 
-    from koten.eval.phone import build_page
+    from koten.eval.phone import build_page, review_block
     from koten.eval.retrieval import read_rows
 
     src = Path(file)
     if not src.exists():
         _require_input(src, "eval export")
     rows = read_rows(src)
+    keys = json.loads(Path(review).read_text("utf-8")) if review else None
     dest = Path(out)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(build_page(rows, sample=sample), "utf-8")
+    dest.write_text(build_page(rows, sample=sample, review=keys), "utf-8")
     worries = len({r["worry_id"] for r in rows})
     typer.echo(f"{dest} に、悩み {worries} 件・{len(rows)} 行のページを書きました")
+    if keys is not None:
+        n = len(review_block(rows, keys)["keys"])
+        typer.echo(f"見直す行 {n}（指定 {len(keys)}）")
 
 
 @eval_app.command("merge")
@@ -1567,9 +1576,15 @@ def eval_grade(
     worry: Annotated[
         list[str] | None, typer.Option(help="この悩みだけ判定する（くり返し指定できる）")
     ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            help="判定役のモデル（haiku・sonnet・opus など。settings の llm.grader の代わり）"
+        ),
+    ] = None,
     settings: SettingsOpt = None,
 ) -> None:
-    """評価セットに、LLM（既定は Claude Code の Haiku）が「合う／合わない」を付ける。"""
+    """評価セットに、LLM（既定は settings の llm.grader）が「合う／合わない」を付ける。"""
     from pathlib import Path
 
     from koten.eval.grader import grade_file
@@ -1578,7 +1593,7 @@ def eval_grade(
     s = _settings(settings)
     if not Path(file).exists():
         _require_input(Path(file), "eval export")
-    llm = make_llm(s.section("llm.grader"))
+    llm = make_llm(s.section("llm.grader"), model=model)
     typer.echo(f"grader：{llm.name}")
     try:
         r = grade_file(

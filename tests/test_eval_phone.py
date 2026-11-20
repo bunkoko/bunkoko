@@ -87,3 +87,30 @@ def test_page_and_merge_commands(tmp_path):
     assert read_rows(path)[0]["grade"] == "1"
     missing = CliRunner().invoke(app, ["eval", "page", "--file", str(tmp_path / "none.csv")])
     assert missing.exit_code == 2 and "eval export" in missing.output
+
+
+def test_review_block_and_page():
+    """見直す行：評価セットにあるキーだけを入れ、組ごとに印（tag）を作る。"""
+    from koten.eval.phone import review_block
+
+    rows = _rows()
+    a, b = (row_key(r["worry_id"], r["candidate_id"]) for r in rows)
+    block = review_block(rows, [b, "W9-none", b, a])
+    assert block["keys"] == [b, a] and len(block["tag"]) == 8
+    assert review_block(rows, [a])["tag"] != block["tag"]  # 組が変われば別の見直し
+    assert review_block(rows, None) == {"tag": "", "keys": []}
+    html = build_page(rows, review=[a])
+    assert '"keys": ["' + a + '"]' in html  # 見直す行の一覧がページに入る
+    assert "/*__REVIEW__*/" not in html
+
+
+def test_page_command_with_review(tmp_path):
+    path = tmp_path / "eval.csv"
+    write_eval(path, _rows())
+    keys = tmp_path / "review.json"
+    keys.write_text(json.dumps([row_key("W0001", "aozora:000148#9/q2"), "W9-x"]), "utf-8")
+    out = tmp_path / "page.html"
+    r = CliRunner().invoke(
+        app, ["eval", "page", "--file", str(path), "--out", str(out), "--review", str(keys)]
+    )
+    assert r.exit_code == 0 and "見直す行 1（指定 2）" in r.output, r.output

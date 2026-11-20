@@ -194,10 +194,19 @@ def test_agreement_and_cli(tmp_path, settings_file, monkeypatch):
     assert r.exit_code == 0, r.output
     assert "一致率 67%" in r.output and "[人だけ「合う」]" in r.output and "関係が薄い" in r.output
 
-    monkeypatch.setattr("koten.llm.make_llm", lambda conf, model=None: FakeGrader())
+    asked: list[str | None] = []
+
+    def fake_make_llm(conf, model=None):
+        asked.append(model)
+        return FakeGrader()
+
+    monkeypatch.setattr("koten.llm.make_llm", fake_make_llm)
     r = CliRunner().invoke(app, ["eval", "grade", "--file", str(path), *st])
     assert r.exit_code == 0, r.output
     assert "判定 0 件" in r.output and "判定済みで飛ばした 4 件" in r.output
+    # --model で判定役のモデルを替えられる（省くと settings の llm.grader）
+    r = CliRunner().invoke(app, ["eval", "grade", "--file", str(path), "--model", "opus", *st])
+    assert r.exit_code == 0 and asked == [None, "opus"], (asked, r.output)
 
 
 def test_doctor_checks_claude_cli(settings_file, monkeypatch):

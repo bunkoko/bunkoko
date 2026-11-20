@@ -23,6 +23,7 @@ from koten.eval.retrieval import parse_grade, read_rows, write_eval
 TEMPLATE = Path(__file__).with_name("phone_page.html")
 ITEMS_MARK = "/*__ITEMS__*/[]"
 SAMPLE_MARK = "/*__SAMPLE__*/false"
+REVIEW_MARK = '/*__REVIEW__*/{"tag": "", "keys": []}'
 
 
 def row_key(worry_id: str, candidate_id: str) -> str:
@@ -63,12 +64,28 @@ def _script_json(value: Any) -> str:
     )
 
 
-def build_page(rows: list[dict[str, str]], *, sample: bool = False) -> str:
+def review_block(rows: list[dict[str, str]], keys: list[str] | None) -> dict[str, Any]:
+    """見直す行（人と判定役の点が分かれた行など）。評価セットに無いキーは入れない。
+
+    tag は見直す行の組から作る印。ページは押した点に rv として残し、見直した行を数える
+    （見直す行の組が変われば、別の見直しとして数え直す）。
+    """
+    have = {row_key(r["worry_id"], r["candidate_id"]) for r in rows}
+    keep = [k for k in dict.fromkeys(keys or []) if k in have]
+    tag = hashlib.sha1("\n".join(keep).encode()).hexdigest()[:8] if keep else ""
+    return {"tag": tag, "keys": keep}
+
+
+def build_page(
+    rows: list[dict[str, str]], *, sample: bool = False, review: list[str] | None = None
+) -> str:
     html = TEMPLATE.read_text("utf-8")
-    if ITEMS_MARK not in html or SAMPLE_MARK not in html:
+    if ITEMS_MARK not in html or SAMPLE_MARK not in html or REVIEW_MARK not in html:
         raise ValueError(f"{TEMPLATE.name} に差し込む印がない")
-    return html.replace(ITEMS_MARK, _script_json(page_items(rows))).replace(
-        SAMPLE_MARK, "true" if sample else "false"
+    return (
+        html.replace(ITEMS_MARK, _script_json(page_items(rows)))
+        .replace(SAMPLE_MARK, "true" if sample else "false")
+        .replace(REVIEW_MARK, _script_json(review_block(rows, review)))
     )
 
 

@@ -128,11 +128,14 @@ button:disabled { opacity: .45; cursor: default; }
 <script>
 const ITEMS = /*__ITEMS__*/[];
 const SAMPLE = /*__SAMPLE__*/false;
+// 見直し：人と判定役の点が分かれた行。前に押した点は見せずに、もう一度押してもらう。
+// tag はこの見直しの回の印（押した点に rv として残し、どの行を見直したかを数える）
+const REVIEW = /*__REVIEW__*/{"tag": "", "keys": []};
 
 const $ = (id) => document.getElementById(id);
 const local = {};   // スマホで付けた点 {キー: "1"|"0"}（データベースから）
 let db = null, dbState = "wait", filter = "", cur = -1, loaded = false, picked = false;
-const history = [], skipped = new Set();
+const history = [], skipped = new Set(), reviewed = new Set();
 
 // まだ送れていない点。電波が切れても押せるように、このスマホ（localStorage）に置いて、
 // つながったら送る。localStorage が使えないときは、画面を閉じるまでのあいだだけ持つ
@@ -144,7 +147,10 @@ function loadPending() {
     const got = raw ? JSON.parse(raw) : {};
     pending = got && typeof got === "object" ? got : {};
   } catch (e) { storeOk = false; pending = {}; }
-  for (const d of Object.values(pending)) if (d && (d.g === "1" || d.g === "0")) local[d.k] = d.g;
+  for (const d of Object.values(pending)) {
+    if (d && (d.g === "1" || d.g === "0")) local[d.k] = d.g;
+    if (d && REVIEW.tag && d.rv === REVIEW.tag) reviewed.add(d.k);
+  }
 }
 function savePending() {
   try { localStorage.setItem(PENDING_KEY, JSON.stringify(pending)); storeOk = true; }
@@ -172,9 +178,16 @@ function pickList() {
   }
   return out;
 }
-const inFilter = () => filter === PICK
-  ? pickList()
+const REV = "review";
+const reviewIdx = (() => {
+  const at = new Map(ITEMS.map((it, i) => [it.k, i]));
+  return REVIEW.keys.map((k) => at.get(k)).filter((i) => i !== undefined);
+})();
+const inFilter = () => filter === REV ? reviewIdx
+  : filter === PICK ? pickList()
   : ITEMS.map((it, i) => i).filter((i) => !filter || ITEMS[i].w === filter);
+// 見直しでは「もう一度押したか」、ほかでは「点があるか」で、済んだ行を数える
+const isDone = (i) => (filter === REV ? reviewed.has(ITEMS[i].k) : !!grade(ITEMS[i]));
 
 function el(tag, attrs, ...kids) {
   const e = document.createElement(tag);
@@ -189,17 +202,21 @@ function nextUngraded(from) {
   const list = inFilter();
   const start = Math.max(0, list.indexOf(from) + 1);
   const order = [...list.slice(start), ...list.slice(0, start)];
-  return order.find((i) => !grade(ITEMS[i]) && !skipped.has(i))
-      ?? order.find((i) => !grade(ITEMS[i]))
+  return order.find((i) => !isDone(i) && !skipped.has(i))
+      ?? order.find((i) => !isDone(i))
       ?? -1;
 }
 
 function renderSelect() {
   const sel = $("worry");
-  const keep = sel.value;
   const picks = pickList();
   const pickDone = picks.filter((i) => grade(ITEMS[i])).length;
-  sel.replaceChildren(
+  sel.replaceChildren();
+  if (reviewIdx.length) {
+    const n = reviewIdx.filter((i) => reviewed.has(ITEMS[i].k)).length;
+    sel.append(el("option", { value: REV }, `見直し（${n}/${reviewIdx.length}）点が分かれた行`));
+  }
+  sel.append(
     el("option", { value: PICK }, `抜き取り（${pickDone}/${picks.length}）悩みごとに${PER_WORRY}行ずつ`),
     el("option", { value: "" }, "すべての悩み"),
   );
@@ -208,15 +225,16 @@ function renderSelect() {
     const n = its.filter((it) => grade(it)).length;
     sel.append(el("option", { value: w }, `${w}（${n}/${its.length}）${text}`));
   }
-  sel.value = keep || filter;
+  sel.value = filter;
 }
 
 function renderCounts() {
   const all = ITEMS.filter((it) => grade(it)).length;
   const list = inFilter();
-  const n = list.filter((i) => grade(ITEMS[i])).length;
+  const n = list.filter((i) => isDone(i)).length;
+  const what = filter === REV ? "見直し" : filter === PICK ? "抜き取り" : filter ? "この悩み" : "全体";
   $("overall").textContent =
-    `${filter === PICK ? "抜き取り" : filter ? "この悩み" : "全体"} ${n}/${list.length} 行・全体 ${all}/${ITEMS.length} 行に点があります`;
+    `${what} ${n}/${list.length} 行${filter === REV ? "を押し直しました" : ""}・全体 ${all}/${ITEMS.length} 行に点があります`;
   $("bar").style.width = list.length ? `${(n / list.length) * 100}%` : "0";
 }
 
@@ -234,11 +252,15 @@ function render() {
   if (cur < 0) {
     const left = ITEMS.filter((it) => !grade(it)).length;
     main.replaceChildren(el("div", { class: "card done" },
-      el("p", { class: "worry" }, filter === PICK ? "抜き取りの行は全部に点を付けました"
+      el("p", { class: "worry" }, filter === REV ? "見直しは全部押し直しました"
+        : filter === PICK ? "抜き取りの行は全部に点を付けました"
         : filter ? "この悩みは全部に点を付けました" : "全部の行に点を付けました"),
-      el("p", {}, left ? `ほかの悩みに、点の無い行が ${left} あります。上の一覧から選べます。`
-                       : "おつかれさまでした。"),
-      el("p", { class: "summary" }, "付け終わったら、Claude のこの会話で「スマホの点を取り込んで」と伝えてください。"),
+      el("p", {}, filter === REV ? "おつかれさまでした。"
+        : left ? `ほかの悩みに、点の無い行が ${left} あります。上の一覧から選べます。`
+        : "おつかれさまでした。"),
+      el("p", { class: "summary" }, filter === REV
+        ? "Claude のこの会話で「見直した」と伝えてください。"
+        : "付け終わったら、Claude のこの会話で「スマホの点を取り込んで」と伝えてください。"),
     ));
     for (const id of ["yes", "no", "skip"]) $(id).disabled = true;
     $("back").disabled = !history.length;
@@ -256,7 +278,10 @@ function render() {
   if (it.c) card.append(el("div", {}, el("span", { class: "label" }, "前後の文（一節は色付き）"), contextNode(it.c, it.q)));
   if (it.m) card.append(el("div", {}, el("span", { class: "label" }, "要旨（AI が書いた手がかり。読み違いもあります）"), el("p", { class: "summary" }, it.m)));
   kids.push(card);
-  kids.push(el("p", { class: "state" }, g ? `この行の点：${g === "1" ? "合う" : "合わない"}（押し直すと変えられます）` : "まだ点がありません"));
+  const hide = filter === REV && !reviewed.has(it.k);
+  kids.push(el("p", { class: "state" }, hide
+    ? "見直しです。前に押した点は出しません。下の「判断の目安」に沿って、もう一度押してください"
+    : g ? `この行の点：${g === "1" ? "合う" : "合わない"}（押し直すと変えられます）` : "まだ点がありません"));
   kids.push(el("details", {},
     el("summary", {}, "判断の目安"),
     el("p", {}, "この悩みを抱える人に、共感・別の見方・前へ進むヒントのどれか1つを与え、動画でこの悩みと結び付けて紹介できるなら「合う」。"),
@@ -267,8 +292,8 @@ function render() {
     el("p", {}, "判定するのは一節そのもので、前後の文はだれがどんな場面で言っているかを確かめるためだけに使います。迷ったら「合わない」。"),
   ));
   main.replaceChildren(...kids);
-  $("yes").classList.toggle("chosen", g === "1");
-  $("no").classList.toggle("chosen", g === "0");
+  $("yes").classList.toggle("chosen", !hide && g === "1");
+  $("no").classList.toggle("chosen", !hide && g === "0");
   $("yes").disabled = $("no").disabled = false;  // つながっていなくても押せる（あとで送る）
   $("skip").disabled = false;
   $("back").disabled = !history.length;
@@ -322,9 +347,13 @@ window.addEventListener("online", () => flush());
 function answer(g) {
   if (cur < 0) return;
   const it = ITEMS[cur];
-  if (grade(it) !== g) {
+  const inReview = filter === REV && REVIEW.tag;
+  if (grade(it) !== g || (inReview && !reviewed.has(it.k))) {
     local[it.k] = g;
-    pending[it.k] = { k: it.k, w: it.w, g, at: Date.now() };
+    // 見直した行は、あとで別の見方から押し直しても見直し済みのまま
+    const rv = REVIEW.tag && (inReview || reviewed.has(it.k)) ? { rv: REVIEW.tag } : {};
+    pending[it.k] = { k: it.k, w: it.w, g, at: Date.now(), ...rv };
+    if (inReview) reviewed.add(it.k);
     savePending();
     flush();
   }
@@ -348,6 +377,7 @@ function applyGrades(snap) {
   for (const { id, data } of docsOf(snap)) {
     // まだ送れていない点（このスマホで新しく押した点）は、保存先の古い点で上書きしない
     if (id && data && (data.g === "1" || data.g === "0") && !pending[id]) local[id] = data.g;
+    if (id && data && REVIEW.tag && data.rv === REVIEW.tag) reviewed.add(id);
   }
   if (!loaded) {
     // 初めて読んだときだけ、点の無い行のある最初の悩みから始める（あとの更新では今の行のまま）
@@ -376,7 +406,8 @@ $("worry").addEventListener("change", (e) => {
 });
 
 function firstOpenWorry() {
-  // まず抜き取りから。抜き取りが終わっていれば、点の無い行のある最初の悩み
+  // 見直しがあればそれから。次に抜き取り、そのあとは点の無い行のある最初の悩み
+  if (reviewIdx.some((i) => !reviewed.has(ITEMS[i].k))) return REV;
   if (pickList().some((i) => !grade(ITEMS[i]))) return PICK;
   return (worries.find(([w]) => ITEMS.some((it) => it.w === w && !grade(it))) || [""])[0];
 }
