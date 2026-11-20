@@ -70,7 +70,8 @@ def shortfall(ratio: pd.Series) -> dict:
     """元本を割って終わった割合・いちばん悪かった回・真ん中。"""
     if ratio.empty:
         return {"n": 0}
-    return {"n": len(ratio), "share": float((ratio < 1.0).mean()), "worst": float(ratio.min()), "worst_start": ratio.idxmin(),
+    below = int((ratio < 1.0).sum())
+    return {"n": len(ratio), "below": below, "share": below / len(ratio), "worst": float(ratio.min()), "worst_start": ratio.idxmin(),
             "median": float(ratio.median())}
 
 
@@ -150,10 +151,17 @@ def _change(ratio: float) -> str:
     return f"{(ratio - 1) * 100:+.0f}%".replace("-", "−")
 
 
+def _share(s: dict) -> str:
+    """元本を割って終わった割合。0 ではないのに四捨五入で 0% になるときは、回数で出す（「いちばん悪かった回」と食い違って見えないように）。"""
+    if s["below"] and s["share"] < 0.005:
+        return f"1% 未満（{s['below']} 回）"
+    return _pct(s["share"])
+
+
 def _hold_row(n: int, kind: str, s: dict) -> str:
     if not s.get("n"):
         return f"| {n} 年 | {kind} | 0 | – | – | – |"
-    return (f"| {n} 年 | {kind} | {s['n']} | **{_pct(s['share'])}** | {_change(s['worst'])}（{s['worst_start']:%Y-%m} に始めた回） | "
+    return (f"| {n} 年 | {kind} | {s['n']} | **{_share(s)}** | {_change(s['worst'])}（{s['worst_start']:%Y-%m} に始めた回） | "
             f"{_change(s['median'])} |")
 
 

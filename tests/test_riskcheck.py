@@ -168,3 +168,13 @@ def test_tool_writes_the_report(tmp_path, capsys):
 def test_tool_stops_when_there_is_no_data(tmp_path):
     with pytest.raises(SystemExit, match="stocks --fetch"):
         load_script().main(["--data", str(tmp_path / "data"), "--out", str(tmp_path / "out")])
+
+
+def test_a_share_that_rounds_to_zero_is_not_shown_as_zero():
+    """682 回のうち 1 回だけ元本を割った、のような割合を「0%」と出すと、「いちばん悪かった回 −6%」と食い違って見える。"""
+    one = R.shortfall(pd.Series([0.94] + [1.5] * 681, index=months(682)))
+    assert one["below"] == 1 and R._share(one) == "1% 未満（1 回）"
+    none = R.shortfall(pd.Series([1.2] * 10, index=months(10)))
+    assert none["below"] == 0 and R._share(none) == "0%"
+    some = R.shortfall(pd.Series([0.9] * 3 + [1.2] * 7, index=months(10)))
+    assert R._share(some) == "30%"
