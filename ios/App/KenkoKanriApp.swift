@@ -15,6 +15,8 @@ struct KenkoKanriApp: App {
             // アプリを開くたびに、新しいデータを送る
             if phase == .active {
                 Task { await HealthSync.shared.sync() }
+                // 記録のリマインダーを、先の7日分予約し直す
+                Task { await Reminders.refresh() }
             }
         }
     }
@@ -49,12 +51,16 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     }
 }
 
-/// 通知の許可を求め、許可されたら送り先を登録する
+/// 通知の許可を求める。許可されたら、記録のリマインダーを予約し、
+/// Apple Developer Program の機能があれば、サーバーからの通知の送り先も登録する
 enum NotificationPermission {
     @MainActor
     static func request() async -> Bool {
         let granted = (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])) ?? false
-        if granted { UIApplication.shared.registerForRemoteNotifications() }
+        if granted {
+            if AppConfig.hasPaidFeatures { UIApplication.shared.registerForRemoteNotifications() }
+            await Reminders.refresh()
+        }
         return granted
     }
 }

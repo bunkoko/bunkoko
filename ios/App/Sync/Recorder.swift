@@ -7,10 +7,27 @@ enum Recorder {
         await sendSoon()
     }
 
-    static func morningFeeling(_ score: Int) async {
-        await LogStore.shared.add(.morningFeeling, data: LogData(score: score))
+    /// 朝の体感。1日に1つ（入れ直したら上書き）
+    static func morningFeeling(_ score: Int, at date: Date = Date()) async {
+        await LogStore.shared.add(.morningFeeling, data: LogData(score: score), at: date, id: feelingID(day: Fmt.dateString(date)))
+        await Reminders.refresh()
         await sendSoon()
     }
+
+    /// 1日のふり返り。ふり返る日ごとに1つ（入れ直したら上書き）。入れなかった項目は nil
+    static func dayCheckin(day: String, condition: Int?, sleepiness: Int?, stress: Int?) async {
+        guard condition != nil || sleepiness != nil || stress != nil else { return }
+        await LogStore.shared.add(
+            .dayCheckin,
+            data: LogData(day: day, condition: condition, sleepiness: sleepiness, stress: stress),
+            id: checkinID(day: day)
+        )
+        await Reminders.refresh()
+        await sendSoon()
+    }
+
+    static func feelingID(day: String) -> String { "feeling-\(day)" }
+    static func checkinID(day: String) -> String { "checkin-\(day)" }
 
     static func bath(at date: Date = Date()) async {
         await LogStore.shared.add(.bath, at: date)

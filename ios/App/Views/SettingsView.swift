@@ -15,6 +15,7 @@ struct SettingsView: View {
     @State private var urlText = AppConfig.serverURL?.absoluteString ?? ""
     @State private var tokenText = ""
     @AppStorage("health.authorizationRequested") private var healthRequested = false
+    @AppStorage(Reminders.enabledKey) private var remindersEnabled = true
 
     var body: some View {
         NavigationStack {
@@ -28,21 +29,27 @@ struct SettingsView: View {
                     DatePicker("起床", selection: $wake, displayedComponents: .hourAndMinute)
                 }
 
-                Section("通知") {
+                Section {
+                    Toggle("入れ忘れを知らせる", isOn: $remindersEnabled)
+                    Button("通知を許可する") {
+                        Task {
+                            let granted = await NotificationPermission.request()
+                            message = granted ? "通知を許可しました" : "通知が許可されませんでした（iPhone の設定アプリから変えられます）"
+                        }
+                    }
+                } header: {
+                    Text("記録のリマインダー（この iPhone の通知）")
+                } footer: {
+                    Text("朝は目標の起床時刻の30分後に朝の体感を、夜は目標の就寝時刻の1時間前に1日のふり返りを知らせます。入れた日は知らせません。")
+                }
+
+                Section("サーバーからの通知") {
                     if !AppConfig.hasPaidFeatures {
                         PaidFeatureNote()
                     } else if settings != nil {
                         Toggle("寝る前の確認", isOn: notificationBinding(\.bedtime))
                         Stepper("就寝の \(settings?.notifications.bedtimeLeadMinutes ?? 60) 分前に確認", value: leadBinding, in: 15...180, step: 15)
                         Toggle("朝のレポート", isOn: notificationBinding(\.morningReport))
-                    }
-                    if AppConfig.hasPaidFeatures {
-                        Button("通知を許可する") {
-                            Task {
-                                let granted = await NotificationPermission.request()
-                                message = granted ? "通知を許可しました" : "通知が許可されませんでした（iPhone の設定アプリから変えられます）"
-                            }
-                        }
                     }
                 }
 
@@ -130,6 +137,9 @@ struct SettingsView: View {
                 status = await HealthSync.shared.status()
             }
             .familyActivityPicker(isPresented: $showPicker, selection: $screenTime.selection)
+            .onChange(of: remindersEnabled) { _, _ in
+                Task { await Reminders.refresh() }
+            }
             .onChange(of: showPicker) { _, shown in
                 if !shown { screenTime.startMonitoring() }
             }
@@ -156,6 +166,7 @@ struct SettingsView: View {
         do {
             let loaded = try await APIClient.shared.settings()
             settings = loaded
+            LocalSettings.remember(loaded)
             bedtime = TimeOfDay.date(from: loaded.targetBedtime)
             wake = TimeOfDay.date(from: loaded.targetWake)
         } catch {
@@ -169,7 +180,10 @@ struct SettingsView: View {
         next.targetWake = TimeOfDay.string(from: wake)
         next.timeZone = TimeZone.current.identifier
         do {
-            settings = try await APIClient.shared.saveSettings(next)
+            let saved = try await APIClient.shared.saveSettings(next)
+            settings = saved
+            LocalSettings.remember(saved)
+            await Reminders.refresh()
             message = "保存しました"
         } catch {
             message = error.localizedDescription
@@ -225,6 +239,13 @@ enum TimeOfDay {
         components.hour = parts.first ?? 23
         components.minute = parts.count > 1 ? parts[1] : 0
         return Calendar.current.date(from: components) ?? Date()
+    }
+
+    /// その日の "07:00" の時刻
+    static func date(on day: Date, hhmm: String) -> Date? {
+        let parts = hhmm.split(separator: ":").compactMap { Int($0) }
+        guard parts.count == 2 else { return nil }
+        return Calendar.current.date(bySettingHour: parts[0], minute: parts[1], second: 0, of: day)
     }
 
     static func string(from date: Date) -> String {

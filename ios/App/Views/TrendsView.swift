@@ -35,6 +35,11 @@ struct TrendsView: View {
                     Text(errorMessage).foregroundStyle(.red)
                 }
 
+                // 目的（朝すっきり起きられて、日中の調子がよい）を先に出す
+                trendSection("朝の体感（1 ぐったり〜5 すっきり）", points { $0.metrics.morning?.feeling }, color: .mint, domain: 1...5)
+                trendSection("日中の調子（1 悪い〜5 よい）", points { $0.metrics.nextDay?.condition }, color: .cyan, domain: 1...5)
+                trendSection("日中の眠気（1 なかった〜5 とても眠い）", points { $0.metrics.nextDay?.sleepiness }, color: .yellow, domain: 1...5)
+                trendSection("ストレス（1 なかった〜5 とても強い）", points { $0.metrics.nextDay?.stress }, color: .red, domain: 1...5)
                 trendSection("眠った時間（時間）", points { $0.metrics.sleep?.asleepMin.map { $0 / 60 } }, bar: true, color: .indigo)
                 trendSection("睡眠効率（%）", points { $0.metrics.sleep?.efficiency.map { $0 * 100 } }, color: .blue)
                 trendSection("寝つきまで（分）", points { $0.metrics.sleep?.latencyMin }, color: .purple)
@@ -42,7 +47,6 @@ struct TrendsView: View {
                 trendSection("室温の平均（℃）", points { $0.metrics.room?.temperatureAvg }, color: .orange)
                 trendSection("安静時心拍数", points { $0.metrics.body?.restingHeartRate }, color: .pink)
                 trendSection("HRV（7日平均, ms）", points { $0.hrv7dAvg }, color: .teal)
-                trendSection("朝の体感（1〜5）", points { $0.metrics.morning?.feeling }, color: .mint)
             }
             .navigationTitle("推移")
             .task(id: range) { await load() }
@@ -51,30 +55,39 @@ struct TrendsView: View {
     }
 
     @ViewBuilder
-    private func trendSection(_ title: String, _ data: [DayPoint], bar: Bool = false, color: Color, threshold: Double? = nil) -> some View {
+    private func trendSection(_ title: String, _ data: [DayPoint], bar: Bool = false, color: Color, threshold: Double? = nil, domain: ClosedRange<Double>? = nil) -> some View {
         Section(title) {
             if data.isEmpty {
                 Text("データなし").foregroundStyle(.secondary)
+            } else if let domain {
+                // 1〜5 の点数は、縦の範囲をいつも同じにする（日によって目盛りが変わらないように）
+                chart(title, data, bar: bar, color: color, threshold: threshold)
+                    .chartYScale(domain: domain)
+                    .frame(height: 140)
             } else {
-                Chart {
-                    ForEach(data) { point in
-                        if bar {
-                            BarMark(x: .value("日", point.date, unit: .day), y: .value(title, point.value))
-                                .foregroundStyle(color)
-                        } else {
-                            LineMark(x: .value("日", point.date, unit: .day), y: .value(title, point.value))
-                                .foregroundStyle(color)
-                            PointMark(x: .value("日", point.date, unit: .day), y: .value(title, point.value))
-                                .foregroundStyle(color)
-                        }
-                    }
-                    if let threshold {
-                        RuleMark(y: .value("目安", threshold))
-                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4]))
-                            .foregroundStyle(.red)
-                    }
+                chart(title, data, bar: bar, color: color, threshold: threshold)
+                    .frame(height: 140)
+            }
+        }
+    }
+
+    private func chart(_ title: String, _ data: [DayPoint], bar: Bool, color: Color, threshold: Double?) -> some View {
+        Chart {
+            ForEach(data) { point in
+                if bar {
+                    BarMark(x: .value("日", point.date, unit: .day), y: .value(title, point.value))
+                        .foregroundStyle(color)
+                } else {
+                    LineMark(x: .value("日", point.date, unit: .day), y: .value(title, point.value))
+                        .foregroundStyle(color)
+                    PointMark(x: .value("日", point.date, unit: .day), y: .value(title, point.value))
+                        .foregroundStyle(color)
                 }
-                .frame(height: 140)
+            }
+            if let threshold {
+                RuleMark(y: .value("目安", threshold))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4]))
+                    .foregroundStyle(.red)
             }
         }
     }

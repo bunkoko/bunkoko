@@ -3,8 +3,20 @@ import SwiftUI
 struct HomeView: View {
     @State private var home: HomeResponse?
     @State private var errorMessage: String?
+    /// 今朝の体感（入れていなければ nil）
     @State private var feeling: Int?
+    /// 体感を入れる前に、昨夜の数字を見ることにした
+    @State private var revealNight = false
+    /// 昨日のふり返りを入れ忘れている
+    @State private var missingYesterday = false
+    @State private var now = Date()
     @AppStorage("health.authorizationRequested") private var healthRequested = false
+
+    private var hour: Int { Calendar.current.component(.hour, from: now) }
+    /// 朝の体感を聞く時間帯（4時〜18時）
+    private var isMorning: Bool { hour >= DayKey.rolloverHour && hour < 18 }
+    /// 1日のふり返りを聞く時間帯（17時〜翌4時）
+    private var isEvening: Bool { hour >= 17 || hour < DayKey.rolloverHour }
 
     var body: some View {
         NavigationStack {
@@ -18,14 +30,49 @@ struct HomeView: View {
                     }
                 }
 
-                if let night = home?.lastNight {
-                    LastNightSection(day: night)
-                } else if home != nil {
-                    Section("昨夜") { Text("まだ昨夜のデータがありません").foregroundStyle(.secondary) }
+                // 朝: 昨夜の数字を見る前に、体感を聞く（数字に点数が引っ張られないように）
+                if isMorning {
+                    Section {
+                        FeelingPicker(selected: $feeling)
+                    } header: {
+                        Text("今朝のすっきり度")
+                    } footer: {
+                        if feeling == nil {
+                            Text("昨夜の数字を見る前に入れると、数字に引っ張られずに記録できます")
+                        }
+                    }
                 }
 
-                Section("朝の体感（すっきり度）") {
-                    FeelingPicker(selected: $feeling)
+                if feeling != nil || revealNight || !isMorning {
+                    if let night = home?.lastNight {
+                        LastNightSection(day: night)
+                    } else if home != nil {
+                        Section("昨夜") { Text("まだ昨夜のデータがありません").foregroundStyle(.secondary) }
+                    }
+                } else {
+                    Section {
+                        Button("先に昨夜の数字を見る") { revealNight = true }
+                    }
+                }
+
+                // 夜: 今日の日中をふり返る
+                if isEvening {
+                    Section {
+                        DayCheckinForm(day: DayKey.activeDay(now))
+                    } header: {
+                        Text("今日のふり返り")
+                    } footer: {
+                        Text("入れた分はすぐに保存されます。どの項目も飛ばせます")
+                    }
+                }
+
+                // 朝: 昨日のふり返りを入れ忘れていたら、ここで入れられる
+                if isMorning && missingYesterday {
+                    Section("昨日のふり返り（まだ入っていません）") {
+                        DayCheckinForm(day: DayKey.adding(-1, to: DayKey.activeDay(now))) {
+                            missingYesterday = false
+                        }
+                    }
                 }
 
                 if let home {
@@ -52,9 +99,18 @@ struct HomeView: View {
     }
 
     private func load() async {
+        now = Date()
+        let today = Fmt.dateString(now)
+        feeling = await LogStore.shared.log(id: Recorder.feelingID(day: today))?.data.score
+        let yesterday = DayKey.adding(-1, to: DayKey.activeDay(now))
+        missingYesterday = await LogStore.shared.log(id: Recorder.checkinID(day: yesterday)) == nil
         do {
             home = try await APIClient.shared.home()
             errorMessage = nil
+            // 別の iPhone などで入れた体感も、サーバーにあれば使う
+            if feeling == nil, let night = home?.lastNight, night.date == today, let score = night.metrics.morning?.feeling {
+                feeling = Int(score)
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -99,20 +155,9 @@ struct FeelingPicker: View {
     @Binding var selected: Int?
 
     var body: some View {
-        HStack {
-            ForEach(1...5, id: \.self) { score in
-                Button {
-                    selected = score
-                    Task { await Recorder.morningFeeling(score) }
-                } label: {
-                    Text("\(score)")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .tint(selected == score ? .accentColor : .gray)
-            }
+        ScoreRow(title: "起きたときの感じ", low: "ぐったり", high: "すっきり", value: $selected) { score in
+            Task { await Recorder.morningFeeling(score) }
         }
-        Text("1 = ぐったり 〜 5 = すっきり").font(.caption).foregroundStyle(.secondary)
     }
 }
 

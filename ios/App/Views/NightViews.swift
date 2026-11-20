@@ -229,6 +229,12 @@ struct DaySummarySections: View {
 
     var body: some View {
         let m = day.metrics
+        Section("朝と、次の日中（この夜のあと）") {
+            MetricRow(label: "朝の体感", value: score(m.morning?.feeling))
+            MetricRow(label: "日中の調子", value: score(m.nextDay?.condition))
+            MetricRow(label: "日中の眠気", value: score(m.nextDay?.sleepiness))
+            MetricRow(label: "ストレス", value: score(m.nextDay?.stress))
+        }
         Section("睡眠") {
             MetricRow(label: "布団に入った", value: Fmt.time(m.sleep?.inBedStart))
             MetricRow(label: "寝ついた / 起きた", value: "\(Fmt.time(m.sleep?.onset)) / \(Fmt.time(m.sleep?.wake))")
@@ -261,11 +267,17 @@ struct DaySummarySections: View {
             MetricRow(label: "スマホを最後に使った", value: Fmt.time(m.behavior?.lastPhoneUseAt))
             MetricRow(label: "布団の中でスマホ", value: Fmt.duration(m.behavior?.phoneInBedMin))
         }
-        Section("日中") {
+        Section("日中（この夜の前）") {
             MetricRow(label: "歩数", value: Fmt.number(m.day?.steps, unit: "歩"))
             MetricRow(label: "日光（合計 / 午前）", value: "\(Fmt.duration(m.day?.daylightMin)) / \(Fmt.duration(m.day?.morningDaylightMin))")
             MetricRow(label: "ワークアウト", value: Fmt.duration(m.day?.workoutMin))
             MetricRow(label: "昼寝", value: Fmt.duration(m.day?.napMin))
+            MetricRow(label: "調子 / 眠気 / ストレス", value: "\(score(m.day?.condition)) / \(score(m.day?.sleepiness)) / \(score(m.day?.stress))")
         }
+    }
+
+    /// 1〜5 の点数（入れていなければ「—」）
+    private func score(_ value: Double?) -> String {
+        value.map { "\(Int($0))" } ?? "—"
     }
 }

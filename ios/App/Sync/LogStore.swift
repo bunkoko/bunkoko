@@ -2,7 +2,7 @@ import Foundation
 
 /// 記録の種類（サーバーの kind と同じ）
 enum LogKind: String, Codable {
-    case meal, morningFeeling, bath, caffeine, alcohol, charger, screenUsage
+    case meal, morningFeeling, dayCheckin, bath, caffeine, alcohol, charger, screenUsage
 }
 
 /// 端末の中の記録
@@ -53,6 +53,11 @@ actor LogStore {
         logs[index].deleted = true
         logs[index].uploaded = false
         save()
+    }
+
+    /// id で探す（取り消したものは返さない）
+    func log(id: String) -> LocalLog? {
+        logs.first { $0.id == id && !$0.deleted }
     }
 
     func recent(_ kind: LogKind, limit: Int = 20) -> [LocalLog] {

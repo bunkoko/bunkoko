@@ -34,10 +34,25 @@ struct RecordView: View {
     @State private var meals: [Meal] = []
     @State private var message: String?
     @State private var editing: Meal?
+    /// 1日のふり返りで、どの日の分を入れるか（0 = 今日、-1 = 昨日）
+    @State private var checkinOffset = 0
 
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Picker("ふり返る日", selection: $checkinOffset) {
+                        Text("今日").tag(0)
+                        Text("昨日").tag(-1)
+                    }
+                    .pickerStyle(.segmented)
+                    DayCheckinForm(day: DayKey.adding(checkinOffset, to: DayKey.activeDay()))
+                } header: {
+                    Text("1日のふり返り")
+                } footer: {
+                    Text("夜、寝る前に入れてください。入れ忘れた日は「昨日」で入れられます")
+                }
+
                 Section("食事") {
                     TextField("料理名（例: 豚骨ラーメン、餃子6個）", text: $mealText, axis: .vertical)
                     Picker("量", selection: $amount) {
