@@ -60,7 +60,7 @@ def grade_file(
     path: Path,
     llm: ChatLLM,
     prompts_dir: Path,
-    prompt: str = "grader_v2",
+    prompt: str = "grader_v3",
     *,
     redo: bool = False,
     worry_ids: set[str] | None = None,

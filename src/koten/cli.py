@@ -1585,7 +1585,7 @@ def eval_grade(
             Path(file),
             llm,
             s.config_dir.parent / "prompts",
-            s.section("eval").get("grader_prompt", "grader_v2"),
+            s.section("eval").get("grader_prompt", "grader_v3"),
             redo=redo,
             worry_ids=set(worry) if worry else None,
             log=typer.echo,
