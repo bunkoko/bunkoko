@@ -137,7 +137,7 @@ shortlist = 10                # LLM に最終選択させる候補の数
 [llm.grader]                  # 検索の評価の grader（2値）。Mac の Claude Code を呼ぶ（API キーは使わない）
 provider = "claude_cli"
 command = "claude"
-model = "sonnet"              # Claude Code の --model に渡す。2026-11-20 利用者の判断で haiku から（sonnet・opus でよい）。比べるときは eval grade --model haiku
+model = "opus"                # Claude Code の --model に渡す。2026-11-20 人との一致が Opus 0.48・Sonnet 0.36・Haiku 0.34（κ）で、いちばん近い Opus に。比べるときは eval grade --model sonnet
 extra_args = ["--safe-mode"]  # CLAUDE.md・MCP・プラグインを読まない（ログインはそのまま）
 timeout_sec = 300
 
