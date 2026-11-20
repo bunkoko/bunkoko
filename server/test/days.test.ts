@@ -126,6 +126,15 @@ describe("computeDay", () => {
     expect(metrics.quality).toEqual({ hasSleep: true, heartRateCoverage: 1, roomCoverage: 1, presenceAvailable: true, usable: true });
   });
 
+  it("朝の体感は 18時までに入れたものを使う", async () => {
+    seedNight();
+    db.sqlite.prepare(`DELETE FROM user_logs WHERE id = 'F-1'`).run();
+    insertLog("F-late", "morningFeeling", at(D, "15:30"), { score: 2 });
+    insertLog("F-evening", "morningFeeling", at(D, "19:00"), { score: 5 });
+    const metrics = await computeDay(db.d1, "me", D, settings, await loadRoles(db.d1, "me", {}));
+    expect(metrics.morning.feeling).toBe(2);
+  });
+
   it("1日のふり返りは、前の日の分を「前の日中」（要因）に、その日の分を「翌日」（結果）に入れる", async () => {
     seedNight();
     insertLog("Q-1", "dayCheckin", at(PREV, "22:00"), { day: PREV, condition: 2, sleepiness: 4, stress: 5 });

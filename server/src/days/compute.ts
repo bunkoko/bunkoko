@@ -229,6 +229,8 @@ export async function computeDay(
   const tz = settings.timeZone;
   const fetchFrom = localTimeOn(addDays(date, -2), "18:00", tz);
   const fetchTo = localTimeOn(date, "14:00", tz);
+  /** 朝の体感は、起きてから 18時までに入れたものを使う（アプリが朝の体感を聞くのも 18時まで） */
+  const feelingTo = localTimeOn(date, "18:00", tz);
 
   // --- 1. HealthKit の測った値（睡眠・体・心の状態・飲み物）
   const { results: sampleRows } = await db
@@ -377,7 +379,7 @@ export async function computeDay(
          LEFT JOIN meal_estimates AS a ON a.user_id = l.user_id AND a.log_id = l.id AND a.source = 'ai'
          WHERE l.user_id = ?1 AND l.deleted = 0 AND l.occurred_at >= ?2 AND l.occurred_at < ?3`,
       )
-      .bind(userId, Math.min(dayStart, bedRef - 12 * HOUR_MS), fetchTo),
+      .bind(userId, Math.min(dayStart, bedRef - 12 * HOUR_MS), feelingTo),
     // 1日のふり返り: 前の日（この夜の前の日中）と、その日（この夜のあとの日中）。忘れて翌日に入れた分も拾う
     db
       .prepare(
@@ -489,7 +491,7 @@ export async function computeDay(
   const charger = last(
     logsOf("charger", bedRef - 3 * HOUR_MS, sleepStart + HOUR_MS).filter((log) => log.data.state === "connected"),
   );
-  const feeling = last(logsOf("morningFeeling", (night?.wake ?? localTimeOn(date, "05:00", tz)) - HOUR_MS, fetchTo));
+  const feeling = last(logsOf("morningFeeling", (night?.wake ?? localTimeOn(date, "05:00", tz)) - HOUR_MS, feelingTo));
 
   // 同じ日のふり返りが複数あるときは、最後に記録したものを使う
   const checkins = new Map<string, DayCheckin>();
