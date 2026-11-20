@@ -157,10 +157,33 @@ def test_series_command_writes_the_daily_results_without_showing_them(tmp_path, 
     mod = _script("agents_series_test")
     out = mod.cmd_series(Namespace(root=str(root), data=str(data), out=str(tmp_path / "out")))
     want = M.evaluate(score, open_, close, placebo=0)
+    scored = score.dropna(how="all").index.max()                          # この作った点数は、最後の 6 日ぶんが無い（先の値動きから作るため）
     for key in ("M2a", "M2b"):
         got = pd.read_csv(out / f"d_{key}.csv", index_col=0, parse_dates=True)["d"]
-        assert np.allclose(got.to_numpy(), want[key]["d_daily"].to_numpy()) and len(got) == len(want[key]["d_daily"])
+        assert np.allclose(got.to_numpy(), want[key]["d_daily"][:scored].to_numpy()) and got.index[-1] == scored
     text = capsys.readouterr().out
     assert "M2a" in text and "%" not in text                              # 成績は画面に出さない（期間と日数だけ）
     assert "E1" in text and "J7" in text and not (out / "d_E1.csv").exists() and not (out / "d_J7.csv").exists()   # 材料の無いものは飛ばす
 
+
+
+def test_series_command_stops_at_the_last_day_with_scores(tmp_path):
+    """点数のファイルが値段の表より先に終わっていたら、その後は「持っていない 0」ではなく、記録が無い（E1・E2 と同じ切り方）。
+
+    自動実行が何日か止まった後に値段だけ新しくして書き出すと、終わった月に 0 や抜けていく途中の値が入ってしまう。
+    """
+    open_, close, score = _market(end="2013-12-31", n=60)
+    last = score.index[-45]                                              # 点数は 45 営業日前まで
+    score = score[score.index <= last]
+    root, data = tmp_path / "agents", tmp_path / "stocks"
+    root.mkdir()
+    data.mkdir()
+    score.to_csv(root / "selector_scores.csv")
+    close.to_csv(data / "jp_close.csv")
+    open_.to_csv(data / "jp_open.csv")
+    out = _script("agents_series_cut").cmd_series(Namespace(root=str(root), data=str(data), out=str(tmp_path / "out")))
+    want = M.evaluate(score, open_, close, placebo=0)
+    for key in ("M2a", "M2b"):
+        got = pd.read_csv(out / f"d_{key}.csv", index_col=0, parse_dates=True)["d"]
+        assert got.index[-1] == last and got.index[-1] < close.index[-1]
+        assert np.allclose(got.to_numpy(), want[key]["d_daily"][:last].to_numpy())     # 切る前の日は、判定と同じ数字のまま

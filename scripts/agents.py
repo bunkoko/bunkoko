@@ -1684,9 +1684,11 @@ def cmd_series(args) -> Path:
         print(f"  {key}: {d.index[0]:%Y-%m-%d}〜{d.index[-1]:%Y-%m-%d}（{len(d):,} 日）を書いた", flush=True)
 
     if p["selector"].exists():                                   # M2a・M2b: M2 の点数から（docs/agents.md 13.2 と同じ計算）
-        r = M.evaluate(wide(p["selector"]), open_, close, placebo=0)
+        score = wide(p["selector"])
+        scored = score.dropna(how="all").index.max()             # 点数のある最後の日まで（その後は「持っていない」のではなく、点数が無い）
+        r = M.evaluate(score, open_, close, placebo=0)
         for key in ("M2a", "M2b"):
-            save(key, r[key]["d_daily"])
+            save(key, r[key]["d_daily"][:scored])
     else:
         print(f"  M2a・M2b: 作れない（{p['selector'].name} が無い）", flush=True)
     if p["decisions_numbers"].exists() and p["ir_numbers"].exists():   # E1・E2: 書いてある買いの記録から（docs/agents.md 10.2 と同じ計算）

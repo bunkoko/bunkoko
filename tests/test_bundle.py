@@ -177,3 +177,234 @@ def test_to_monthly_starts_at_the_first_trade():
 def test_to_monthly_of_a_series_without_any_trade_is_empty():
     daily = pd.Series([0.0, 0.0], index=pd.to_datetime(["2024-01-10", "2024-02-10"]))
     assert B.to_monthly(daily).empty
+
+
+def test_yardstick_matches_a_plain_count_on_the_same_random_numbers():
+    """登録の文（4.3 の物差し 1）のとおりに 1 本ずつ数え直して、同じ乱数の並びでぴったり合うか。"""
+    for n_months, n_tries, n_worlds, seed in ((61, 30, 120, 3), (37, 7, 200, 9)):
+        rng = np.random.default_rng(seed)
+        ts, picked, passed = [], 0, 0
+        for _ in range(n_worlds):
+            x = rng.standard_normal((n_months, n_tries))
+            chosen = []
+            for j in range(n_tries):
+                s = pd.Series(x[:, j])
+                a, b = s.iloc[: n_months // 2], s.iloc[n_months // 2:]           # 奇数なら後半が 1 つ多い
+                if a.mean() > 0 and b.mean() > 0 and s.mean() / (s.std(ddof=1) / np.sqrt(n_months)) >= 1.65:
+                    chosen.append(x[:, j])
+            picked += len(chosen)
+            if not chosen:
+                ts.append(0.0)
+                continue
+            port = pd.Series(np.mean(chosen, axis=0))
+            t = port.mean() / (port.std(ddof=1) / np.sqrt(n_months))
+            ts.append(t)
+            a, b = port.iloc[: n_months // 2], port.iloc[n_months // 2:]
+            if a.mean() > 0 and b.mean() > 0 and t >= 1.65 and b.mean() / (b.std(ddof=1) / np.sqrt(len(b))) >= 1.65:
+                passed += 1
+        y = B.yardstick(n_months, n_tries, n_worlds, seed)
+        assert y["q50"] == pytest.approx(np.quantile(ts, 0.50), abs=1e-9) and y["q95"] == pytest.approx(np.quantile(ts, 0.95), abs=1e-9)
+        assert y["q90"] == pytest.approx(np.quantile(ts, 0.90), abs=1e-9)
+        assert y["pass_share"] == pytest.approx(passed / n_worlds) and y["picked_mean"] == pytest.approx(picked / n_worlds)
+
+
+def test_the_registered_numbers_have_not_moved():
+    """結果を見る前に決めた数（docs/bundle.md 4.3・2.2）。変えるときは、文書を先に直す。"""
+    assert (B.N_TRIES, B.N_WORLDS, B.SEED) == (100, 20_000, 20261120)
+    assert B.N_WORLDS_FAM == 5_000 and B.MIN_FAMILIES == 8
+    assert B.LAST_MONTH == pd.Timestamp("2026-11-30")
+    assert B.FAMILIES == {"A": ("EA",), "B": ("C2",), "C": ("carry", "combo"), "D": ("M2", "M2a", "M2b"), "E": ("E1", "E2"), "F": ("J7",),
+                          "G": ("C3",), "H": ("C1", "S1"), "I": ("W7",), "J": ("1C",), "K": ("M1",)}
+    assert B.SUBS == {"株の柱だけ": {f: B.FAMILIES[f] for f in "DEFGJK"}, "株以外の柱だけ": {f: B.FAMILIES[f] for f in "ABCI"},
+                      "今の口座で持てる柱だけ": {"A": ("EA",), "B": ("C2",), "D": ("M2b",), "E": ("E1",), "F": ("J7",)}}
+    assert (B.PRIOR_TRIALS, B.TRIAL) == (100, 101)
+
+
+# --------------------------------------------------------------------------- 物差し 2（4.3）: 柱の数と期間を、本物の束にそろえた世界
+FAM3 = {"X": ("x1", "x2"), "Y": ("y",), "Z": ("z",)}
+
+
+def shaped(seed=0):
+    """形だけ本物らしい系列: x1 は長い、x2 は遅れて始まる、y は持たない月（0）がある、z は短い。"""
+    rng = np.random.default_rng(seed)
+    x1 = pd.Series(0.02 * rng.standard_normal(150), index=months(150, "2005-01-31"))
+    x2 = pd.Series(0.02 * rng.standard_normal(100), index=months(100, "2009-03-31"))
+    y = pd.Series(0.03 * rng.standard_normal(120), index=months(120, "2007-07-31"))
+    y.iloc[[5, 6, 7, 30, 31, 80]] = 0.0
+    z = pd.Series(0.01 * rng.standard_normal(90), index=months(90, "2010-01-31"))
+    return {"x1": x1, "x2": x2, "y": y, "z": z}
+
+
+def composite(world, members):
+    """家族の中の系列を、値のある月ごとに平均したもの。"""
+    return pd.DataFrame({m: world[m] for m in members}).mean(axis=1)
+
+
+def passes_first_line(d):
+    a, b = d.iloc[: len(d) // 2], d.iloc[len(d) // 2:]
+    return bool(a.mean() > 0 and b.mean() > 0 and d.mean() / (d.std(ddof=1) / np.sqrt(len(d))) >= 1.65)
+
+
+def test_a_null_world_keeps_the_months_and_the_idle_months_of_the_real_series():
+    real = shaped()
+    pools = B.null_pools(real, FAM3, n_worlds=4, seed=1)
+    for w in range(4):
+        world = B.null_world(real, FAM3, pools, w)
+        assert set(world) == set(real)
+        for k, s in real.items():
+            assert world[k].index.equals(s.index)
+            assert ((world[k] == 0) == (s == 0)).all()            # 持たなかった月は 0 のまま、ほかの月は乱数
+        both = world["x1"].index.intersection(world["x2"].index)
+        assert world["x1"][both].equals(world["x2"][both])        # 家族の中の系列は同じ乱数
+        assert not np.allclose(world["x1"][both].to_numpy(), real["x1"][both].to_numpy())      # 本物の値は使っていない
+
+
+def test_every_family_of_a_null_world_passed_the_first_trial_line_on_its_own_period():
+    real = shaped()
+    pools = B.null_pools(real, FAM3, n_worlds=30, seed=2)
+    for w in range(30):
+        world = B.null_world(real, FAM3, pools, w)
+        assert all(passes_first_line(composite(world, ms)) for ms in FAM3.values())
+
+
+def test_null_worlds_differ_between_worlds_and_families_but_not_between_runs():
+    real = shaped()
+    a, b = B.null_pools(real, FAM3, 3, seed=5), B.null_pools(real, FAM3, 3, seed=5)
+    w0, w0b, w1 = B.null_world(real, FAM3, a, 0), B.null_world(real, FAM3, b, 0), B.null_world(real, FAM3, a, 1)
+    assert all(w0[k].equals(w0b[k]) for k in real)                # 同じ種なら同じ
+    assert not w0["z"].equals(w1["z"])                            # 世界ごとに別の乱数
+    twins = {"p": real["z"], "q": real["z"].copy()}               # 形のまったく同じ 2 家族でも、乱数は別
+    w = B.null_world(twins, {"P": ("p",), "Q": ("q",)}, B.null_pools(twins, {"P": ("p",), "Q": ("q",)}, 1, seed=5), 0)
+    assert abs(np.corrcoef(w["p"], w["q"])[0, 1]) < 0.5
+
+
+def test_a_family_with_no_trade_at_all_cannot_make_a_null_world():
+    real = shaped()
+    real["z"] = real["z"] * 0.0
+    with pytest.raises(B.base.NotReady, match="0"):
+        B.null_pools(real, FAM3, 2, seed=1)
+
+
+def _slow_families(series, families, n_worlds, seed, ref):
+    """物差し 2 を、登録の文（4.3）のとおりに 1 本ずつ数える（道具とは別の書き方。同じ乱数の並び）。"""
+    order = list(families)
+    present = {f: [m for m in ms if m in series] for f, ms in families.items() if any(m in series for m in ms)}
+    real = B.bundle(series, families)
+    worlds = [{} for _ in range(n_worlds)]
+    for f, ms in present.items():
+        rng = np.random.default_rng([seed, order.index(f)])       # 家族ごとに別の並び
+        idx = sorted(set().union(*[set(series[m].index) for m in ms]))
+        got = 0
+        while got < n_worlds:
+            noise = pd.Series(rng.standard_normal(len(idx)), index=idx)
+            members = {m: noise.reindex(series[m].index) * (series[m] != 0) for m in ms}
+            if passes_first_line(composite(members, ms)):
+                worlds[got].update(members)
+                got += 1
+    ts, first, by_ref = [], 0, 0
+    for world in worlds:
+        b = B.bundle(world, families).reindex(real.index).dropna()
+        st = B.stats(b)
+        ts.append(st["t"])
+        both = st["mean1"] > 0 and st["mean2"] > 0 and st["t2"] >= 1.65
+        first += bool(both and st["t"] >= 1.65)
+        by_ref += bool(both and st["t"] >= ref)
+    return {"q50": np.quantile(ts, 0.5), "q90": np.quantile(ts, 0.9), "q95": np.quantile(ts, 0.95),
+            "share_first": first / n_worlds, "share_ref": by_ref / n_worlds}
+
+
+def test_yardstick_of_families_matches_a_plain_count_on_the_same_random_numbers():
+    real = shaped()
+    got = B.yardstick_families(real, FAM3, n_worlds=60, seed=11, ref=2.5)
+    want = _slow_families(real, FAM3, 60, 11, 2.5)
+    for k, v in want.items():
+        assert got[k] == pytest.approx(v, abs=1e-9), k
+    assert got["n_worlds"] == 60
+
+
+def test_yardstick_of_families_uses_only_the_months_of_the_real_bundle():
+    """本物の束に無い月（本物の系列が動かず、値動きの大きさを測れない月）は、乱数の世界でも数えない。"""
+    rng = np.random.default_rng(3)
+    x = pd.Series(0.02 * rng.standard_normal(120), index=months(120))
+    y = pd.Series(0.02 * rng.standard_normal(120), index=months(120))
+    y.iloc[:48] = 0.01                                            # 最初の 4 年は同じ値が続く → 本物では、その間 y は使えない
+    z = pd.Series(0.02 * rng.standard_normal(60), index=months(60, "2015-01-31"))
+    s, fam = {"x": x, "y": y, "z": z}, {"X": ("x",), "Y": ("y",), "Z": ("z",)}
+    assert B.bundle(s, fam).index[0] == months(120)[49]           # 3 家族の半分 = 2 家族がそろうのは、y が動き出した後
+    got = B.yardstick_families(s, fam, n_worlds=40, seed=2, ref=2.5)
+    want = _slow_families(s, fam, 40, 2, 2.5)
+    assert got["q50"] == pytest.approx(want["q50"], abs=1e-9) and got["q95"] == pytest.approx(want["q95"], abs=1e-9)
+
+
+def test_yardstick_of_families_only_counts_the_families_that_are_there():
+    real = shaped()
+    del real["z"]
+    got = B.yardstick_families(real, FAM3, n_worlds=40, seed=11, ref=2.5)
+    want = _slow_families(real, FAM3, 40, 11, 2.5)
+    assert got["q95"] == pytest.approx(want["q95"], abs=1e-9)
+
+
+def test_yardstick_of_one_family_is_the_line_it_had_to_pass():
+    """1 家族だけなら、束 ＝ その系列。線（1.65）を通ったものだけなので、t 値の真ん中は 2 のあたり。"""
+    s = {"x": pd.Series(0.01 * np.random.default_rng(0).standard_normal(240), index=months(240))}
+    y = B.yardstick_families(s, {"X": ("x",)}, n_worlds=300, seed=4)
+    assert 1.6 < y["q50"] < 2.2 and y["q95"] > y["q50"]
+
+
+def test_yardstick_of_families_rises_with_the_number_of_families():
+    rng = np.random.default_rng(1)
+    s = {f"s{k}": pd.Series(0.01 * rng.standard_normal(150), index=months(150)) for k in range(6)}
+    two = B.yardstick_families({k: s[k] for k in ("s0", "s1")}, {"A": ("s0",), "B": ("s1",)}, n_worlds=150, seed=4)
+    six = B.yardstick_families(s, {chr(65 + k): (f"s{k}",) for k in range(6)}, n_worlds=150, seed=4)
+    assert six["q50"] > two["q50"] + 1.0                          # 柱が多いほど、効き目が無くても t 値は高く出る
+
+
+def test_yardstick_of_families_is_the_same_for_the_same_seed():
+    real = shaped()
+    assert B.yardstick_families(real, FAM3, 30, seed=7) == B.yardstick_families(real, FAM3, 30, seed=7)
+    assert B.yardstick_families(real, FAM3, 30, seed=7) != B.yardstick_families(real, FAM3, 30, seed=8)
+
+
+# --------------------------------------------------------------------------- 点検は、束と同じ月で数える（4.1）
+def test_bundle_can_be_asked_for_fewer_families_than_half():
+    s = {"x": swing(60, 0.01), "y": swing(54, 0.02, start="2010-07-31"), "z": swing(48, 0.01, start="2011-01-31")}
+    fam = {"X": ("x",), "Y": ("y",), "Z": ("z",)}
+    assert B.bundle(s, fam).index[0] == months(60)[18]            # ふつうは半分（2 家族）以上の月だけ
+    one = B.bundle(s, fam, need=1)
+    assert one.index[0] == months(60)[12] and one.loc[months(60)[12]] == pytest.approx(0.01)     # x しか使えない月は、x の値そのまま
+
+
+def test_leave_one_out_is_counted_on_the_months_of_the_whole_bundle():
+    """5 家族: 長い a・b と、4 年遅れて始まる c・d・e。束は 3 家族そろう月から。
+
+    c を抜いた 4 家族をそのまま束ねると「半分」が 2 家族になり、a・b だけの古い月まで入ってしまう（抜いた効果と期間の違いが混ざる）。
+    """
+    s = {"a": swing(120, 0.01) + 0.001, "b": swing(120, 0.02) + 0.002}
+    s.update({k: swing(72, 0.01, start="2014-01-31") + 0.001 for k in ("c", "d", "e")})
+    fam = {k.upper(): (k,) for k in s}
+    whole = B.bundle(s, fam)
+    out = B.leave_one_out(s, fam)
+    assert whole.index[0] == months(120)[60] and len(whole) == 60
+    assert (out["n"] == 60).all()
+
+
+def test_leave_one_out_keeps_every_month_of_the_bundle_even_when_half_would_not_be_reached():
+    """10 家族で、ちょうど半分（5 家族）しか使えない月。1 つ抜くと 4／9 で「半分」に届かないが、もとの束の月なので数える。"""
+    s = {f"l{k}": swing(100, 0.01) + 0.001 for k in range(5)}
+    s.update({f"s{k}": swing(40, 0.01, start="2015-01-31") + 0.001 for k in range(5)})
+    fam = {k.upper(): (k,) for k in s}
+    whole = B.bundle(s, fam)
+    assert whole.index[0] == months(100)[12]                      # 長い 5 家族だけで半分
+    assert (B.leave_one_out(s, fam)["n"] == len(whole)).all()
+
+
+# --------------------------------------------------------------------------- B2 のための控え（5 章）
+def test_sigma_for_b2_is_measured_on_the_last_36_months_of_each_series():
+    long = pd.concat([swing(20, 0.05), swing(36, 0.01, start="2011-09-30")])      # 古い 20 か月は荒い。最後の 36 か月は ±1%
+    gap = swing(40, 0.02)
+    gap = gap.drop(gap.index[[30, 31]])                           # 途中に無い月が 2 つ → 窓は暦の 36 か月（値は 34 個）
+    short = swing(8, 0.01)
+    sg = B.sigma_b2({"long": long, "gap": gap, "short": short})
+    assert sg["long"] == pytest.approx(0.01 * (36 / 35) ** 0.5)
+    assert sg["gap"] == pytest.approx(0.02 * (34 / 33) ** 0.5)
+    assert np.isnan(sg["short"])                                  # 値のある月が 12 に届かない

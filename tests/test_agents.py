@@ -459,6 +459,16 @@ def test_earnings_command_runs_end_to_end(tmp_path, capsys):
     assert abs(e1.resample("ME").sum().mean() - v.loc["E1", "mean"]) < 1e-9          # 月ごとに足すと、判定の表の平均と同じ
     assert (pd.read_csv(out / "d_E2.csv", index_col=0)["d"] == 0).all()               # ir_num は買っていないので 0 のまま
     assert (root / "decisions_numbers.csv").read_bytes() == before and "%" not in capsys.readouterr().out
+    # 値段の表だけが先まで続いていても、E1・E2 は買いの記録のある最後の日で切る（その後は「買っていない 0」ではなく、記録が無い）
+    more = pd.bdate_range(idx[-1] + pd.Timedelta(days=1), periods=30)
+    longer = pd.concat([close, pd.DataFrame(np.tile(close.iloc[-1].to_numpy(), (30, 1)), index=more, columns=cols)])
+    longer.to_csv(data / "jp_close.csv")
+    longer.to_csv(data / "jp_open.csv")
+    out2 = mod.cmd_series(Namespace(root=str(root), data=str(data), out=str(tmp_path / "series2")))
+    last = pd.to_datetime(dec["date"]).max()
+    for key in ("E1", "E2"):
+        got = pd.read_csv(out2 / f"d_{key}.csv", index_col=0, parse_dates=True)["d"]
+        assert got.index[-1] == last and last < more[0]
 
 
 # --------------------------------------------------------------------------- まだ入れていなかった項目（docs/agents.md 11 章）
