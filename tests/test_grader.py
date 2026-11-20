@@ -152,7 +152,7 @@ def test_grade_file_batches_per_worry_and_resumes(tmp_path):
     assert (r.graded, r.skipped, r.missing) == (3, 1, [])
     rows = {x["candidate_id"]: x for x in read_rows(path)}
     assert [rows[c]["llm_grade"] for c in ("y1", "n1", "y2", "n2")] == ["1", "0", "1", "1"]
-    assert rows["y1"]["llm_grader"] == "fake-grader/grader_v3" and rows["y1"]["llm_reason"]
+    assert rows["y1"]["llm_grader"] == "fake-grader/grader_v4" and rows["y1"]["llm_reason"]
     assert read_eval(path, "llm_grade") == {"W1": {"y1": 1, "n1": 0}, "W2": {"y2": 1, "n2": 1}}
     again = FakeGrader()
     assert grade_file(path, again, PROMPTS).graded == 0 and again.calls == 0
@@ -256,7 +256,9 @@ def test_grader_sees_the_context():
     ]
     text = _items_text(rows)
     assert "context：前の文。一節。後の文。" in text and text.count("context：") == 1
-    system, _ = load_prompt(PROMPTS, "grader_v3")
+    system, _ = load_prompt(PROMPTS, "grader_v4")
     assert "前後の文（context）" in system and "true にしない" in system
     # 悩みと反対の考え：別の見方になるなら true、反対の場面を描くだけ・責めるだけなら false
     assert "反対の考えを述べる一節" in system and "ただ描いているだけ" in system
+    # v4：共感だけで足りる・組織や歴史の説明は外す・比喩は一節だけで気持ちが浮かぶなら
+    assert "共感だけで true" in system and "組織・制度・歴史" in system and "比喩" in system

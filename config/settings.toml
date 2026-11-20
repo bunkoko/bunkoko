@@ -142,7 +142,7 @@ extra_args = ["--safe-mode"]  # CLAUDE.md・MCP・プラグインを読まない
 timeout_sec = 300
 
 [eval]
-grader_prompt = "grader_v3"   # prompts/<prompt>.md（v2：前後の文も見せる。v3：反対の考えの一節の扱い）
+grader_prompt = "grader_v4"   # prompts/<prompt>.md（v2：前後の文。v3：反対の考え。v4：共感だけで足りる・組織や歴史の説明は外す・比喩）
 
 [worries]                     # 悩みマスター（SPEC §9）
 prompt = "worries_v1"         # prompts/<prompt>.md
