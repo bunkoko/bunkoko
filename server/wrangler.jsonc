@@ -12,8 +12,9 @@
     {
       "binding": "DB",
       "database_name": "bunkoko",
-      // `npx wrangler d1 create bunkoko` で表示された database_id に置き換える
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      // `npx wrangler d1 create bunkoko --location apac` で作ったデータベース（2026-11-20、アジア太平洋）。
+      // 自分で作り直すときは、表示された database_id に置き換える
+      "database_id": "ce15c855-3803-48e0-a758-ac446574ccc0",
       "migrations_dir": "migrations"
     }
   ],
