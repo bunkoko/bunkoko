@@ -65,6 +65,11 @@ def test_past_test_uses_only_the_unseen_part_and_judges():
     assert r["events"] >= EP.MIN_EVENTS and r["months"] >= EP.MIN_MONTHS and r["end"] < pd.Timestamp("2014-01-15")
     assert r["verdict"] == "使えそう" and r["judge"]["placebo"] == 1.0 and abs(r["judge"]["threshold"] - 2.481) < 0.01
     assert r["two_day"] > 0.015 and r["seen_events"] > 0 and "seen" in r
+    # 束ねる検証（docs/bundle.md）が使う日ごとの系列: 月ごとに足すと、判定に使った月の系列と同じになる
+    from cfdbot import stocks as S
+    assert S.month_sum(r["daily"]).equals(r["d"]) and r["daily"].index[0] >= r["start"] and r["daily"].index[-1] <= r["end"]
+    # 偶然との比べをしなくても（placebo=0）、同じ系列が出る
+    assert EP.evaluate_past(disc, earn, open_, close, placebo=0)["daily"].equals(r["daily"])
     # 見た期間しか無ければ判定しない
     early = earn.assign(date="2009-06-01")
     r2 = EP.evaluate_past(disc, early, open_, close, placebo=5)
@@ -121,3 +126,24 @@ def test_diagnose_splits_groups_years_and_crowding():
     assert cr["events"].sum() == total + grp.loc["見た決算", "events"] and (cr["days"] > 0).all()
     assert g["big"]["k"] >= 1 and 0 < g["big"]["pos"] <= 1
     assert 2016 in g["by_year"].index and g["by_year"][("count", True)].loc[2010] > 0
+
+
+def test_series_command_writes_the_daily_result_of_the_past_test(tmp_path, capsys):
+    disc, open_, close = _world()
+    root, data = tmp_path / "agents", tmp_path / "stocks"
+    (root / "ir").mkdir(parents=True)
+    data.mkdir()
+    disc.assign(id="x", company="会社", url="", xbrl="").to_csv(root / "ir" / "disclosures.csv", index=False)
+    close.to_csv(data / "jp_close.csv")
+    open_.to_csv(data / "jp_open.csv")
+    earn = pd.DataFrame({"ticker": close.columns.repeat(2), "date": ["2014-01-15", "2015-01-15"] * len(close.columns)})
+    earn.to_csv(data / "jp_earnings.csv", index=False)
+    spec = importlib.util.spec_from_file_location("agents_series_j7", ROOT / "scripts" / "agents.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    out = mod.cmd_series(Namespace(root=str(root), data=str(data), out=str(tmp_path / "out")))
+    got = pd.read_csv(out / "d_J7.csv", index_col=0, parse_dates=True)["d"]
+    disc2 = pd.read_csv(root / "ir" / "disclosures.csv", dtype=str, keep_default_na=False)
+    want = EP.evaluate_past(disc2, earn, open_, close, placebo=0)["daily"]
+    assert np.allclose(got.to_numpy(), want.to_numpy()) and len(got) == len(want) and "%" not in capsys.readouterr().out
+

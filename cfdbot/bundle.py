@@ -22,13 +22,21 @@ BEYOND, LOOKS_GOOD, USELESS = "偶然を超えた", "良く見えるが、選ん
 
 # --------------------------------------------------------------------------- 月ごとにそろえる（3 章の 1）
 def to_monthly(daily: pd.Series) -> pd.Series:
-    """日ごとの成績を暦の月ごとに足す（複利にしない）。最後の日の属する月は終わっていないので落とす。間の、取引の無い月は 0。"""
+    """日ごとの成績を暦の月ごとに足す（複利にしない）。最後の日の属する月は終わっていないので落とす。間の、取引の無い月は 0。
+
+    始まりは、最初に値が 0 でなくなった日（まだ何も持っていない期間は入れない。元の検証の cfdbot.stocks.month_sum と同じ数え方）。
+    """
     s = pd.Series(daily).dropna().sort_index()
+    moved = np.flatnonzero(s.to_numpy() != 0)
+    if len(moved) == 0:
+        return pd.Series(dtype=float)
+    last_day = s.index[-1]
+    s = s.iloc[moved[0]:]
     m = s.groupby(pd.DatetimeIndex(s.index).map(base.month_end)).sum()
-    m = base.finished_months(m, s.index[-1])
+    m = base.finished_months(m, last_day)
     if m.empty:
         return m
-    last = base.month_end(pd.Timestamp(s.index[-1]).to_period("M").to_timestamp() - pd.Timedelta(days=1))   # 最後の日の月の、前の月
+    last = base.month_end(pd.Timestamp(last_day).to_period("M").to_timestamp() - pd.Timedelta(days=1))      # 最後の日の月の、前の月
     return base.fill_months(m, m.index[0], last)
 
 

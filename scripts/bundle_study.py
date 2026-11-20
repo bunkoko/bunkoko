@@ -1,5 +1,6 @@
 """束ねる検証 B1（docs/bundle.md）。残っている方法 11 家族を一緒に持つと、偶然を超えるか。判定は 1 回だけ。
 
+    python scripts/bundle_study.py --export    # 柱ごとの月の系列を、元の道具を動かして作る（数十分。成績は画面に出さない）
     python scripts/bundle_study.py --check     # 柱ごとの系列の期間・月の数・欠けだけを見る（成績は出さない。何度でもよい）
     python scripts/bundle_study.py             # 判定（1 回だけ）
 
@@ -28,6 +29,7 @@ def stop_if_done(marker: Path) -> None:
 
 def main(argv: list[str] | None = None, root: Path | None = None) -> Path | None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--export", action="store_true", help="柱ごとの月の系列を作って data/bundle/series に書く（判定はしない）")
     p.add_argument("--check", action="store_true", help="期間・月の数・欠けだけ見る（成績は出さない）")
     p.add_argument("--out", default=None, help="報告の保存先（既定 output/bundle）")
     args = p.parse_args(argv)
@@ -36,6 +38,16 @@ def main(argv: list[str] | None = None, root: Path | None = None) -> Path | None
 
     if not args.check:
         stop_if_done(marker)
+    if args.export:
+        from cfdbot import bundle_export as X
+
+        print("柱ごとの系列を作る（元の道具を順に動かす。数十分。判定はやり直さない・成績は画面に出さない）", flush=True)
+        status = X.export(root, log=lambda t: print(f"  {t}", flush=True))
+        print()
+        for k, v in status.items():
+            print(f"- {k}: {v}", flush=True)
+        print(f"\n成績はまだ何も計算していない。道具ごとの記録は {root / B.DIR / 'export'}。次は --check", flush=True)
+        return None
     ok, lines = B.check(folder)
     for t in lines:
         print(f"- {t}", flush=True)

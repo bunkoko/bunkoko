@@ -178,3 +178,9 @@ def test_crypto_study_writes_a_verdict_for_each_venue(tmp_path, monkeypatch):
     md = next((tmp_path / "out").glob("*/report.md")).read_text(encoding="utf-8")
     assert "GMOコイン 取引所（レバレッジ）: **" in md and "bitFlyer Crypto CFD: **" in md
     assert "選ぶ業者: **" in md
+    # 束ねる検証（docs/bundle.md）が使う、業者ごとの「暗号資産だけ」の日ごとの成績も残す
+    out = next((tmp_path / "out").glob("*/report.md")).parent
+    gmo = pd.read_csv(out / "returns_crypto_gmo.csv", index_col=0)["ret"]
+    bit = pd.read_csv(out / "returns_crypto_bitflyer.csv", index_col=0)["ret"]
+    assert len(gmo) > 2000 and len(gmo) == len(bit)
+    assert not np.allclose(gmo, bit) and np.corrcoef(gmo, bit)[0, 1] > 0.99      # 同じ売買で、コストだけが違う

@@ -168,9 +168,8 @@ def write(out_dir: Path, name: str, lines: list[str]) -> Path:
     return path
 
 
-def cmd_momentum(args, encoder=None) -> Path:
-    """1C: 文章で近い会社のモメンタム。"""
-    from cfdbot import stocks as S
+def momentum_setup(args, encoder=None, with_hash: bool = True) -> dict:
+    """1C の材料（近さの信号・月末の値段・判定の始まりの月）。判定の道具（momentum）と、系列の書き出し（series）が同じものを使う。"""
     from cfdbot.news_embed import HashEmbedder, make_embedder
 
     store = ED.Store(args.root)
@@ -181,12 +180,6 @@ def cmd_momentum(args, encoder=None) -> Path:
     text = section_text(store, meta, names, "business")
     empty = int(sum(1 for d in meta["docID"] if not text.get(d, "")))
     short = int(sum(1 for d in meta["docID"] if 0 < len(text.get(d, "")) < TS.MIN_CHARS))
-    lines: list[str] = []
-
-    def say(t: str = "") -> None:
-        print(t, flush=True)
-        lines.append(t)
-
     # 埋め込みの取っておき: float32 のまま。文章（前処理の後）の印とモデルが同じものだけ使い回す（初回と次で同じ近さになるように）
     cache = Path(args.root) / f"vecs_business_{MODEL}.npz"
     mark = {d: hashlib.sha256(text[d].encode("utf-8")).hexdigest()[:16] for d in meta["docID"] if text.get(d, "")}
@@ -212,13 +205,48 @@ def cmd_momentum(args, encoder=None) -> Path:
                 save()
         save()
     have = {d: have[d] for d in mark}                     # 本文の空の有報には近さが無い（その月はその会社の信号なし。古い有報に戻さない）
-    hashed = HashEmbedder(512)
-    hash_vec = {d: TS.doc_vector(text[d], hashed.encode) for d in mark}
+    hash_vec: dict[str, np.ndarray] = {}
+    if with_hash:                                         # 参考の列（AI を使わない近さ）。系列の書き出しでは要らない
+        hashed = HashEmbedder(512)
+        hash_vec = {d: TS.doc_vector(text[d], hashed.encode) for d in mark}
 
     mclose = month_prices(args)
     sig = TS.momentum_signals(meta, have, mclose, sectors=sectors)
-    sig_hash = TS.momentum_signals(meta, hash_vec, mclose)
+    sig_hash = TS.momentum_signals(meta, hash_vec, mclose) if with_hash else {}
     start = TS.first_month(sig["main"], mclose)
+    return {"meta": meta, "counts": counts, "empty": empty, "short": short, "mclose": mclose, "sig": sig, "sig_hash": sig_hash,
+            "start": start}
+
+
+def cmd_series(args, encoder=None) -> Path:
+    """束ねる検証（docs/bundle.md）のための書き出し: 1C の月の系列（判定のときと同じ決め方。コストの後）を d_1C.csv に書く。
+
+    判定はしない・成績の数字は画面に出さない（「動かし直さない」の決まりは、判定をやり直さないという意味で守る）。
+    """
+    m = momentum_setup(args, encoder, with_hash=False)
+    if m["start"] is None:
+        raise SystemExit(f"1C: 信号のある会社が {TS.MIN_FIRMS} 社そろった月がまだ無い。系列を作れない")
+    book = TS.monthly_book(m["sig"]["main"], m["mclose"], m["start"])
+    out = Path(args.out) / datetime.now().strftime("%Y%m%d-%H%M")
+    out.mkdir(parents=True, exist_ok=True)
+    book["d"].to_csv(out / "d_1C.csv", header=["d"])
+    print(f"1C: {book.index[0]:%Y-%m}〜{book.index[-1]:%Y-%m}（{len(book)} か月）を書いた。保存先: {out}（成績の数字は出していない）", flush=True)
+    return out
+
+
+def cmd_momentum(args, encoder=None) -> Path:
+    """1C: 文章で近い会社のモメンタム。"""
+    from cfdbot import stocks as S
+
+    m = momentum_setup(args, encoder)
+    meta, counts, empty, short = m["meta"], m["counts"], m["empty"], m["short"]
+    mclose, sig, sig_hash, start = m["mclose"], m["sig"], m["sig_hash"], m["start"]
+    lines: list[str] = []
+
+    def say(t: str = "") -> None:
+        print(t, flush=True)
+        lines.append(t)
+
     say("# 1C 文章で近い会社のモメンタム（月 1 回）")
     say("")
     say(f"作成: {datetime.now():%Y-%m-%d %H:%M}　決まり: docs/text_signals.md 3 章（結果を見る前に決めたもの）。試した数 {TS.TRIALS}"
@@ -341,7 +369,7 @@ def keep_awake() -> None:
 
 def main(argv: list[str] | None = None, getter=None, sleep=None, encoder=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("command", choices=["key", "check", "fetch", "status", "momentum", "lazy"])
+    p.add_argument("command", choices=["key", "check", "fetch", "status", "momentum", "lazy", "series"])
     p.add_argument("--root", default="data/edinet")
     p.add_argument("--data", default="data/stocks")
     p.add_argument("--out", default="output/edinet")
@@ -366,6 +394,8 @@ def main(argv: list[str] | None = None, getter=None, sleep=None, encoder=None):
         print(f"見つけた有報（今の TOPIX500）: {len(cand):,} 件、本文を取った: {len(idx):,} 件"
               + (f"（本文なし {int((idx['source'] == 'none').sum())} 件）" if len(idx) else ""))
         return None
+    if args.command == "series":                     # 束ねる検証（docs/bundle.md）のための書き出し。判定はしない
+        return cmd_series(args, encoder)
     if args.command in JUDGED:
         when, verdict, where = JUDGED[args.command]
         raise SystemExit(f"判定はもう 1 回計算してある（{when}: {verdict}。{where}）。1 回だけの決まりなので、動かし直さない")

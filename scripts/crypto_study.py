@@ -156,9 +156,11 @@ def cmd_check(args) -> None:
     say("| – " + row("今の 4 商品だけ", core_only))
     c0 = halves(core_only)
     verdicts = {}
+    alone = {}                                           # 業者ごとの「暗号資産だけ」の日ごとの成績（束ねる検証 docs/bundle.md が使う）
     for v, g in CRYPTO_VENUES.items():
         returns = pd.DataFrame({**core_r, **by_venue[v]}).sort_index()
         cls = portfolio(returns, crypto)
+        alone[v] = cls
         both = group_portfolio(returns, {"core": core, "crypto": crypto}, ["core", "crypto"])
         say(f"| {g.label} " + row("暗号資産だけ", cls))
         say(f"| {g.label} " + row("今の 4 商品＋暗号資産", both))
@@ -192,6 +194,8 @@ def cmd_check(args) -> None:
     out = Path(args.out) / datetime.now().strftime("%Y%m%d-%H%M")
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    for v, r in alone.items():
+        r.to_csv(out / f"returns_crypto_{v}.csv", header=["ret"])
     print(f"\n保存先: {out}/report.md")
 
 

@@ -452,6 +452,13 @@ def test_earnings_command_runs_end_to_end(tmp_path, capsys):
     assert {"score", "fc_rev", "kind"} <= set(num.columns) and num["fc_rev"].notna().sum() > 1000
     dec = pd.read_csv(root / "decisions_numbers.csv")
     assert {"selector", "combined_num", "e1"} <= set(dec["book"])                      # この市場は 1 日の開示が 5 社未満なので ir_num は買わない
+    # 束ねる検証（docs/bundle.md）のための書き出し: 書いてある買いの記録から、判定と同じ日ごとの成績を作る（学び直さない）
+    before = (root / "decisions_numbers.csv").read_bytes()
+    out = mod.cmd_series(Namespace(root=str(root), data=str(data), out=str(tmp_path / "series")))
+    e1 = pd.read_csv(out / "d_E1.csv", index_col=0, parse_dates=True)["d"]
+    assert abs(e1.resample("ME").sum().mean() - v.loc["E1", "mean"]) < 1e-9          # 月ごとに足すと、判定の表の平均と同じ
+    assert (pd.read_csv(out / "d_E2.csv", index_col=0)["d"] == 0).all()               # ir_num は買っていないので 0 のまま
+    assert (root / "decisions_numbers.csv").read_bytes() == before and "%" not in capsys.readouterr().out
 
 
 # --------------------------------------------------------------------------- まだ入れていなかった項目（docs/agents.md 11 章）

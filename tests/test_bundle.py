@@ -163,3 +163,17 @@ def test_leave_one_out_gives_the_bundle_without_that_family():
     # Z を抜くと x と y の束: 重さ 2/3・1/3、月は番号 12〜59 の 48 か月（＋と−が 24 ずつ）→ 平均は 2/3 × 0.002 + 1/3 × 0.004
     assert out.loc["Z", "n"] == 48 and out.loc["Z", "mean"] == pytest.approx(2 / 3 * 0.002 + 1 / 3 * 0.004)
     assert out.loc["X", "mean"] > out.loc["Z", "mean"]           # 儲けの大きい Z が残る束のほうが、平均は高い
+
+
+def test_to_monthly_starts_at_the_first_trade():
+    """まだ何も持っていない最初の期間（0 が続く日）は、系列に入れない（元の検証の数え方と同じ）。"""
+    daily = pd.Series([0.0, 0.0, 0.0, 0.02, 0.0, 0.01, 0.5],
+                      index=pd.to_datetime(["2024-01-10", "2024-01-20", "2024-02-05", "2024-03-07", "2024-04-11", "2024-05-13", "2024-06-03"]))
+    m = B.to_monthly(daily)
+    assert [f"{x:%Y-%m}" for x in m.index] == ["2024-03", "2024-04", "2024-05"]     # 1・2 月は始まる前。4 月は持っていて 0。6 月は終わっていない
+    assert m.tolist() == pytest.approx([0.02, 0.0, 0.01])
+
+
+def test_to_monthly_of_a_series_without_any_trade_is_empty():
+    daily = pd.Series([0.0, 0.0], index=pd.to_datetime(["2024-01-10", "2024-02-10"]))
+    assert B.to_monthly(daily).empty

@@ -132,7 +132,7 @@ def evaluate_past(disc: pd.DataFrame, earn: pd.DataFrame, open_: pd.DataFrame, c
     pnl = pnl[keep]
     d = S.month_sum(pnl["d"])
     months = len(d)
-    out.update(start=start, end=end, months=months, gross_ann=float(pnl["gross"].mean() * 252),
+    out.update(start=start, end=end, months=months, daily=pnl["d"], gross_ann=float(pnl["gross"].mean() * 252),
                net_ann=float(pnl["d"].mean() * 252), turnover=float(pnl["turnover"].mean()),
                zero_cost_ann=float(_pnl(ev, cc, 0.0)["d"][keep].mean() * 252))
     if len(ev) < MIN_EVENTS or months < MIN_MONTHS:

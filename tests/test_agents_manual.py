@@ -143,3 +143,24 @@ def test_manual_test_command_writes_a_report(tmp_path, capsys):
     assert "## 1. 判定" in text and "| M2a |" in text and "| M2b |" in text and "遅れ 5 日" in text
     assert text.splitlines()[2].startswith("**判定は最初の 1 回（2026-10-20: M2a・M2b まだ判断できない。docs/agents.md 13.5）。この実行は参考")
     assert H.COST == M.COST
+
+
+def test_series_command_writes_the_daily_results_without_showing_them(tmp_path, capsys):
+    """束ねる検証（docs/bundle.md）のための書き出し: 判定に使ったのと同じ日ごとの成績を、数字を画面に出さずにファイルへ。"""
+    open_, close, score = _market(end="2013-12-31", n=60)
+    root, data = tmp_path / "agents", tmp_path / "stocks"
+    root.mkdir()
+    data.mkdir()
+    score.to_csv(root / "selector_scores.csv")
+    close.to_csv(data / "jp_close.csv")
+    open_.to_csv(data / "jp_open.csv")
+    mod = _script("agents_series_test")
+    out = mod.cmd_series(Namespace(root=str(root), data=str(data), out=str(tmp_path / "out")))
+    want = M.evaluate(score, open_, close, placebo=0)
+    for key in ("M2a", "M2b"):
+        got = pd.read_csv(out / f"d_{key}.csv", index_col=0, parse_dates=True)["d"]
+        assert np.allclose(got.to_numpy(), want[key]["d_daily"].to_numpy()) and len(got) == len(want[key]["d_daily"])
+    text = capsys.readouterr().out
+    assert "M2a" in text and "%" not in text                              # 成績は画面に出さない（期間と日数だけ）
+    assert "E1" in text and "J7" in text and not (out / "d_E1.csv").exists() and not (out / "d_J7.csv").exists()   # 材料の無いものは飛ばす
+

@@ -168,3 +168,22 @@ def test_tool_refuses_when_the_result_is_already_written_in_the_program(tmp_path
     monkeypatch.setattr(B, "RESULT", {"date": "2026-12-01", "verdict": B.LOOKS_GOOD, "trial": 101})
     with pytest.raises(SystemExit, match="もう 1 回計算してある"):
         load_script().main([], root=tmp_path)
+
+
+def test_tool_export_writes_series_and_judges_nothing(tmp_path, capsys, monkeypatch):
+    from cfdbot import bundle_export as X
+
+    good = pd.Series([0.0123, -0.0045], index=pd.to_datetime(["2024-01-31", "2024-02-29"]))
+    monkeypatch.setattr(X, "SOURCES", {"trend": lambda ctx: {"EA": good}, "carry": lambda ctx: (_ for _ in ()).throw(X.ExportError("データが無い"))})
+    m = load_script()
+    assert m.main(["--export"], root=tmp_path) is None
+    out = capsys.readouterr().out
+    assert (tmp_path / B.SERIES_DIR / "EA.csv").exists() and not (tmp_path / B.MARKER).exists()
+    assert "EA: 書いた" in out and "carry: 作れなかった" in out and "--check" in out
+    assert "0.0123" not in out and "1.23" not in out
+
+
+def test_tool_export_is_refused_after_the_judgement(tmp_path, monkeypatch):
+    monkeypatch.setattr(B, "RESULT", {"date": "2026-12-01", "verdict": B.LOOKS_GOOD, "trial": 101})
+    with pytest.raises(SystemExit, match="もう 1 回計算してある"):
+        load_script().main(["--export"], root=tmp_path)

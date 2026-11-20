@@ -1661,6 +1661,58 @@ def cmd_premium(args) -> None:
     print(f"保存先: {out / 'premium.md'}")
 
 
+def cmd_series(args) -> Path:
+    """束ねる検証（docs/bundle.md）のための書き出し: M2a・M2b・E1・E2・J7 の日ごとの成績（コストの後）を d_<記号>.csv に書く。
+
+    判定はしない・学び直さない・成績の数字は画面に出さない。材料のファイルが無いものは飛ばす。
+    """
+    from cfdbot import earnings_premium as EP
+    from cfdbot.agents import evaluator as E
+    from cfdbot.agents import manual as M
+
+    p = paths(args.root)
+    data = Path(args.data)
+    open_, close = prices(data)
+    out = Path(args.out) / datetime.now().strftime("%Y%m%d-%H%M")
+    out.mkdir(parents=True, exist_ok=True)
+
+    def save(key: str, d: pd.Series) -> None:
+        if d.empty:
+            print(f"  {key}: 作れない（期間の中に日が無い）", flush=True)
+            return
+        d.to_csv(out / f"d_{key}.csv", header=["d"])
+        print(f"  {key}: {d.index[0]:%Y-%m-%d}〜{d.index[-1]:%Y-%m-%d}（{len(d):,} 日）を書いた", flush=True)
+
+    if p["selector"].exists():                                   # M2a・M2b: M2 の点数から（docs/agents.md 13.2 と同じ計算）
+        r = M.evaluate(wide(p["selector"]), open_, close, placebo=0)
+        for key in ("M2a", "M2b"):
+            save(key, r[key]["d_daily"])
+    else:
+        print(f"  M2a・M2b: 作れない（{p['selector'].name} が無い）", flush=True)
+    if p["decisions_numbers"].exists() and p["ir_numbers"].exists():   # E1・E2: 書いてある買いの記録から（docs/agents.md 10.2 と同じ計算）
+        dec = pd.read_csv(p["decisions_numbers"], parse_dates=["date"])
+        first = pd.read_csv(p["ir_numbers"], usecols=["date"], parse_dates=["date"])["date"].min()
+        last = dec["date"].max()                                 # 記録のある最後の日まで（その後は「買っていない」のではなく、記録が無い）
+        cc = E.returns(close)
+        for key, book, start in (("E1", "e1", first), ("E2", "ir_num", pd.Timestamp("2019-01-01"))):
+            d = E.book_pnl(E.to_matrix(dec, book, close.index, close.columns), cc)["d"]
+            save(key, d[(d.index >= start) & (d.index <= last)])
+    else:
+        print("  E1・E2: 作れない（decisions_numbers.csv か ir_numbers.csv が無い。./cfd agents earnings を 1 度動かしてある必要がある）", flush=True)
+    earn_path = data / "jp_earnings.csv"
+    if p["disclosures"].exists() and earn_path.exists():         # J7: 過去の検証と同じ、見ていない決算だけ（docs/earnings_premium.md 3 章）
+        disc = pd.read_csv(p["disclosures"], dtype=str, keep_default_na=False)
+        r = EP.evaluate_past(disc, pd.read_csv(earn_path), open_, close, placebo=0)
+        if "daily" in r:
+            save("J7", r["daily"])
+        else:
+            print("  J7: 作れない（使える決算が無い）", flush=True)
+    else:
+        print("  J7: 作れない（disclosures.csv か jp_earnings.csv が無い）", flush=True)
+    print(f"保存先: {out}（成績の数字は出していない）", flush=True)
+    return out
+
+
 def cmd_status(args) -> None:
     p = paths(args.root)
     for label, key, col in (("情報収集（開示）", "disclosures", "time"), ("IR 評価（点数）", "ir_scores", "date"),
@@ -2244,7 +2296,7 @@ def cmd_schedule(args) -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("command", choices=["collect", "ir", "select", "decide", "evaluate", "run", "status", "schedule", "earnings", "extra",
-                                        "check", "orders", "manual", "premium", "shap", "rank", "residual"])
+                                        "check", "orders", "manual", "premium", "shap", "rank", "residual", "series"])
     p.add_argument("--fetch", action="store_true", help="extra: 先に出来高・終値・株式分割を Yahoo から取る（1 秒に 1 社。取得済みは飛ばす）")
     p.add_argument("--reuse", action="store_true", help="extra: 入力を足した銘柄選定の点数が書いてあれば、学び直さずに使う")
     p.add_argument("--off", action="store_true", help="schedule: 自動実行を外す")
@@ -2289,7 +2341,8 @@ def main() -> None:
     args = p.parse_args()
     {"collect": cmd_collect, "ir": cmd_ir, "select": cmd_select, "decide": cmd_decide, "evaluate": cmd_evaluate,
      "run": cmd_run, "status": cmd_status, "schedule": cmd_schedule, "earnings": cmd_earnings, "extra": cmd_extra,
-     "check": cmd_check, "orders": cmd_orders, "manual": cmd_manual, "premium": cmd_premium, "shap": cmd_shap, "rank": cmd_rank, "residual": cmd_residual}[args.command](args)
+     "check": cmd_check, "orders": cmd_orders, "manual": cmd_manual, "premium": cmd_premium, "shap": cmd_shap, "rank": cmd_rank, "residual": cmd_residual,
+     "series": cmd_series}[args.command](args)
 
 
 if __name__ == "__main__":

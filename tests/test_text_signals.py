@@ -234,3 +234,25 @@ def test_judged_commands_stop_before_reading_anything(tmp_path):
             mod.main([cmd, *base])
     assert not (tmp_path / "out").exists()                                           # 報告は書かない
     mod.main(["status", *base])                                                      # ほかのコマンドは今までどおり
+
+
+def test_series_command_writes_the_judged_monthly_series_without_showing_results(tmp_path, capsys):
+    """束ねる検証（docs/bundle.md）のための書き出し: 判定はしない。止め（JUDGED）が入ったままでも動き、成績は画面に出さない。"""
+    import re
+
+    idx, tick, close, data, store = _world(tmp_path)
+    enc = HashEmbedder(256)
+    base = ["--root", str(tmp_path / "edinet"), "--data", str(data)]
+    mod = _script("edinet_series", "edinet.py")
+    out = mod.main(["series", *base, "--out", str(tmp_path / "s")], encoder=enc)
+    shown = capsys.readouterr().out
+    assert "%" not in shown and "t 値" not in shown and "判定" not in shown
+    d = pd.read_csv(out / "d_1C.csv", index_col=0, parse_dates=True)["d"]
+    ref = _script("edinet_series_ref", "edinet.py")
+    ref.JUDGED = {}                                                                  # 比べる相手: 判定の道具が同じデータで出す数字
+    text = ref.main(["momentum", *base, "--out", str(tmp_path / "m"), "--placebo", "10"], encoder=enc).read_text(encoding="utf-8")
+    months = int(re.search(r"（(\d+) か月。まだ終わっていない", text).group(1))
+    halves = re.search(r"① 前半 ([+-][0-9.]+)・後半 ([+-][0-9.]+)", text)
+    split = re.search(r"後半 (\d{4}-\d{2})〜", text).group(1)
+    assert len(d) == months
+    assert abs(d[d.index < split].mean() - float(halves.group(1))) < 1e-5 and abs(d[d.index >= split].mean() - float(halves.group(2))) < 1e-5
