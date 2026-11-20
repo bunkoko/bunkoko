@@ -126,29 +126,44 @@ export async function handleRequest(request: Request, env: Env, now = Date.now()
   return notFound();
 }
 
+/**
+ * 5分ごとの実行。SwitchBot のトークンがまだない（機器が届く前）ときや、取得に失敗したときも、
+ * 1日 = 1行の計算と通知は続ける（アプリから届いたデータだけでも計算できるため）
+ */
+export async function runScheduled(env: Env, now = Date.now()): Promise<void> {
+  const userId = userIdOf(env);
+  if (env.SWITCHBOT_TOKEN && env.SWITCHBOT_SECRET) {
+    try {
+      const result = await collect({ db: env.DB, client: createClient(env), userId });
+      if (result.errors.length > 0) {
+        console.warn("collector errors", JSON.stringify(result.errors));
+      }
+      console.log(
+        `collected ${result.devicesOk}/${result.devicesTotal} devices, ${result.readingsWritten} readings`,
+      );
+    } catch (error) {
+      console.error("collector failed", error instanceof Error ? error.message : String(error));
+    }
+  } else {
+    console.log("SwitchBot のトークンが未登録なので、センサーの取得は飛ばした");
+  }
+
+  // ついでに、計算待ちの日を数日分ずつ計算する
+  const settings = await getSettings(env.DB, userId, env.TIME_ZONE || "Asia/Tokyo");
+  const days = await processDayQueue(env.DB, userId, settings, now);
+  if (days.computed.length > 0) console.log(`computed days ${days.computed.join(", ")} (${days.remaining} left)`);
+
+  // 寝る前の確認・朝のレポート（送る時刻になっていれば）
+  const notified = await runNotifications(env.DB, userId, settings, apnsConfigFrom(env), now, (roles) => latestRoom(env.DB, userId, roles, now));
+  if (notified.bedtime === "sent" || notified.morning === "sent") console.log("notifications", JSON.stringify(notified));
+}
+
 export default {
   fetch(request, env) {
     return handleRequest(request, env);
   },
 
   async scheduled(_controller, env) {
-    const userId = userIdOf(env);
-    const result = await collect({ db: env.DB, client: createClient(env), userId });
-    if (result.errors.length > 0) {
-      console.warn("collector errors", JSON.stringify(result.errors));
-    }
-    console.log(
-      `collected ${result.devicesOk}/${result.devicesTotal} devices, ${result.readingsWritten} readings`,
-    );
-
-    // ついでに、計算待ちの日を数日分ずつ計算する
-    const settings = await getSettings(env.DB, userId, env.TIME_ZONE || "Asia/Tokyo");
-    const now = Date.now();
-    const days = await processDayQueue(env.DB, userId, settings, now);
-    if (days.computed.length > 0) console.log(`computed days ${days.computed.join(", ")} (${days.remaining} left)`);
-
-    // 寝る前の確認・朝のレポート（送る時刻になっていれば）
-    const notified = await runNotifications(env.DB, userId, settings, apnsConfigFrom(env), now, (roles) => latestRoom(env.DB, userId, roles, now));
-    if (notified.bedtime === "sent" || notified.morning === "sent") console.log("notifications", JSON.stringify(notified));
+    await runScheduled(env);
   },
 } satisfies ExportedHandler<Env>;
