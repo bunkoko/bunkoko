@@ -705,3 +705,59 @@ def test_extra_command_runs_end_to_end(tmp_path, capsys, monkeypatch):
     assert (data / "jp_volume.csv").exists() and (data / "jp_splits.csv").exists()
     mod.cmd_extra(Namespace(**{**vars(args), "reuse": True}))                           # 点数が書いてあれば学び直さない
     assert "銘柄選定（出来高を足した版）" not in capsys.readouterr().out
+
+
+def test_collector_skips_body_text_when_its_folder_is_not_reachable(tmp_path):
+    """本文の置き場所（text）を外付けのディスクへのリンクにしていて、つながっていない日は、本文を取りに行かず数字だけ取る。"""
+    disc = pd.DataFrame([("p1", "2026-10-08 15:30:00", "7203.T", "トヨタ", "決算短信", "", "x1.zip"),
+                         ("p2", "2026-10-09 15:30:00", "1332.T", "ニッスイ", "お知らせ", "", "")], columns=C.COLUMNS)
+    root, disk = tmp_path / "ir", tmp_path / "disk" / "ir_text"
+    root.mkdir()
+    (root / "text").symlink_to(disk)                                                  # 行き先がまだ無い ＝ ディスクがつながっていない
+    calls, logs = [], []
+
+    def get(url):
+        calls.append(url)
+        return _xbrl_zip() if url.endswith(".zip") else _pdf("hello")
+
+    got = C.collect_docs(disc, root, interval=0, get=get, log=logs.append)
+    assert got["text"] == 0 and got["xbrl"] == 1 and got["no_text_place"] == 1
+    assert calls == ["https://www2.jpx.co.jp/disc/72030/x1.zip"]                      # 本文（PDF）は 1 件も取りに行かない
+    assert any("本文の置き場所" in s for s in logs)
+    disk.mkdir(parents=True)                                                          # つながったら、次の回に取る
+    again = C.collect_docs(disc, root, interval=0, get=get, log=logs.append)
+    assert again["text"] == 2 and "no_text_place" not in again
+    assert (disk / "2026-10" / "p1.txt").read_text(encoding="utf-8") == "hello"
+
+
+def test_text_place_tells_where_the_body_text_goes(tmp_path):
+    plain = C.text_place(tmp_path / "a")
+    assert plain == {"path": str(tmp_path / "a" / "text"), "link": False, "ready": True}
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / "text").symlink_to(tmp_path / "gone" / "ir_text")
+    away = C.text_place(tmp_path / "b")
+    assert away["link"] and not away["ready"] and away["path"].endswith("gone/ir_text")
+
+
+def test_text_place_line_warns_when_the_disk_is_away(tmp_path):
+    assert C.text_place_line({"path": "data/agents/ir/text", "link": False, "ready": True}) == "本文の置き場所: data/agents/ir/text"
+    on = C.text_place_line({"path": "/Volumes/HDD/bunkoko/ir_text", "link": True, "ready": True})
+    off = C.text_place_line({"path": "/Volumes/HDD/bunkoko/ir_text", "link": True, "ready": False})
+    assert "/Volumes/HDD/bunkoko/ir_text" in on and "つながっている" in on and "⚠" not in on
+    assert off.startswith("⚠") and "つながっていない" in off
+
+
+def test_status_shows_where_the_body_text_is_kept(tmp_path, capsys):
+    import argparse
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location("agents_status_under_test", Path(__file__).resolve().parents[1] / "scripts" / "agents.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    ir = tmp_path / "agents" / "ir"
+    ir.mkdir(parents=True)
+    (ir / "text").symlink_to(tmp_path / "gone" / "ir_text")
+    mod.cmd_status(argparse.Namespace(root=str(tmp_path / "agents"), out=str(tmp_path / "out")))
+    out = capsys.readouterr().out
+    assert "本文の置き場所" in out and "つながっていない" in out

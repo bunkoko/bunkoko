@@ -189,8 +189,39 @@ def reparse_facts(root: Path) -> int:
     return n
 
 
+def text_root(root: Path) -> Path:
+    """本文の置き場所。外付けのディスクに置くときは、ここをそのフォルダへのリンクにする（docs/agents.md 10.1。2026-11-20 利用者の決め）。"""
+    return root / "text"
+
+
+def text_place(root: Path) -> dict:
+    """本文の置き場所の様子: path（リンクなら行き先）・link（リンクか）・ready（今、書けるか）。
+
+    リンクの行き先が無い（外付けのディスクがつながっていない）と ready は False。その日は本文を取りに行かない。
+    """
+    import os
+
+    p = text_root(root)
+    link = p.is_symlink()
+    try:
+        p.mkdir(parents=True, exist_ok=True)                    # 行き先の無いリンクは、ここで失敗する
+        ready = p.is_dir() and os.access(p, os.W_OK)
+    except OSError:
+        ready = False
+    return {"path": os.path.realpath(p) if link else str(p), "link": link, "ready": bool(ready)}
+
+
+def text_place_line(place: dict) -> str:
+    """本文の置き場所を 1 行で（./cfd agents status と、収集の記録に出す）。"""
+    if not place["link"]:
+        return f"本文の置き場所: {place['path']}"
+    if place["ready"]:
+        return f"本文の置き場所: {place['path']}（外付けのディスクへのリンク。つながっている）"
+    return f"⚠ 本文の置き場所: {place['path']}（外付けのディスクへのリンク。つながっていない。つながるまで本文は取らない）"
+
+
 def text_path(root: Path, row) -> Path:
-    return root / "text" / str(row.time)[:7] / f"{row.id}.txt"
+    return text_root(root) / str(row.time)[:7] / f"{row.id}.txt"
 
 
 def facts_path(root: Path, row) -> Path:
@@ -252,6 +283,12 @@ def _wait(started: float, interval: float) -> None:
 
 
 def _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done) -> dict[str, int]:
+    if pdf:
+        place = text_place(root)
+        if not place["ready"]:                                  # 書けない所へは取りに行かない（取っても残せない）。数字は取る
+            log(f"  ⚠ 本文の置き場所（{place['path']}）に書けない（外付けのディスクがつながっていない？）。今回は本文を取らず、数字だけ取る")
+            pdf = False
+            done["no_text_place"] = 1
     jobs = []
     for r in disc.itertuples(index=False):
         if pdf and not text_path(root, r).exists():

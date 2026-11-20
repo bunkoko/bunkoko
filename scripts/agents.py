@@ -178,6 +178,8 @@ def cmd_collect(args) -> None:
         if got.get("busy"):
             print("情報収集: ほかの書類の取得が動いているので、今回は取らない（次の回に取る）", flush=True)
         else:
+            if got.get("no_text_place"):
+                print("情報収集: " + C.text_place_line(C.text_place(ir_root)), flush=True)
             print(f"情報収集: 本文 +{got['text']}、数字 +{got['xbrl']}、まだ載っていない {got['missing']}、残り {got['left']}", flush=True)
 
 
@@ -1669,7 +1671,10 @@ def cmd_status(args) -> None:
         else:
             print(f"{label}: まだ無い")
     ir_root = p["disclosures"].parent
+    from cfdbot.agents import collector as C
+
     print(f"情報収集（本文）: {sum(1 for _ in ir_root.glob('text/*/*.txt')):,} 件、（決算の数字）: {sum(1 for _ in ir_root.glob('xbrl/*/*.csv')):,} 件")
+    print(C.text_place_line(C.text_place(ir_root)))
     if p["selector"].exists():
         d = pd.read_csv(p["selector"], usecols=[0]).iloc[:, 0]
         print(f"銘柄選定（点数）: {len(d):,} 日、{d.min()[:10]}〜{d.max()[:10]}")
