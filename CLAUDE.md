@@ -50,6 +50,7 @@
 - uv run koten facts build（HDD の書誌と config/facts.csv から、SSD の事実の表を作り直す）／ facts coverage ／ facts list --episode <ID>
 - uv run koten facts todo --episode <ID> → facts draft --episode <ID>（AI の下書き）→ facts review（下書きを読む）→ 人が別の資料で確かめ、CSV の accept に 1 → facts accept（--from を省くと最新の下書き）→ facts build → facts attach --episode <ID>（企画に事実を付け直す）→ script
 - uv run koten findings build（config/findings.csv の研究の一文を SSD に入れる。書き方は docs/findings.md）／ findings list
+- uv run koten sources page --drafts docs/research/2026-11-21-source-drafts.json（Claude が調べた統計・研究の下書きを、スマホで元の資料と見比べるページ data/sources-page.html に。アーティファクト「統計と研究の確かめ」に載せる）→ 人が押す → ページのデータベースの checks を JSON にして uv run koten sources merge --drafts docs/research/2026-11-21-source-drafts.json --from その JSON（確かめた行だけを stats.csv・findings.csv へ。民間の調査・有料の論文は人が書いた数字と言葉だけ。手順は docs/sources_check.md）
 - uv run koten ref check（config/ref_works.csv・ref_people.csv の資料を、関わった人全員の没年・団体名義・版・NDL の公開範囲で1冊ずつ判定する。書き込みはしない）
 - uv run koten ref build（台帳と、人が確かめた時代の解釈 renderings.csv・昔の辞書 dict_entries.csv から SSD の表を作り直す）→ ref show --word 普通 ／ --passage lunyu:1.1（手順は docs/ref_sources.md）
 - uv run koten ref fetch（台帳で使えると判定された古い英訳を Standard Ebooks と Project Gutenberg のミラー（sources.yaml の gutenberg.mirror）から net.py で取り、一節ごとに分けて HDD に置く）→ ref build

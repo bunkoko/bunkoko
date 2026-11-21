@@ -358,6 +358,21 @@ def load_stats(conn: sqlite3.Connection, csv_path: Path) -> int:
     """
     with csv_path.open(encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
+    problems = stats_problems(rows)
+    if problems:
+        raise StatsError(f"{csv_path} に問題があります：" + "、".join(problems))
+    with conn:
+        conn.execute("DELETE FROM stats")
+        conn.executemany(
+            f"INSERT INTO stats({', '.join(STATS_COLUMNS)}) "
+            f"VALUES ({', '.join('?' for _ in STATS_COLUMNS)})",
+            [[(r.get(c) or "").strip() or None for c in STATS_COLUMNS] for r in rows],
+        )
+    return len(rows)
+
+
+def stats_problems(rows: list[dict[str, str]]) -> list[str]:
+    """stats.csv の行の問題（何行目の何か）。空なら読み込める。"""
     problems = []
     seen = set()
     for i, r in enumerate(rows, start=2):
@@ -380,13 +395,4 @@ def load_stats(conn: sqlite3.Connection, csv_path: Path) -> int:
         if r.get("stat_id") in seen:
             problems.append(f"{i}行目：stat_id {r['stat_id']} が重複")
         seen.add(r.get("stat_id"))
-    if problems:
-        raise StatsError(f"{csv_path} に問題があります：" + "、".join(problems))
-    with conn:
-        conn.execute("DELETE FROM stats")
-        conn.executemany(
-            f"INSERT INTO stats({', '.join(STATS_COLUMNS)}) "
-            f"VALUES ({', '.join('?' for _ in STATS_COLUMNS)})",
-            [[(r.get(c) or "").strip() or None for c in STATS_COLUMNS] for r in rows],
-        )
-    return len(rows)
+    return problems

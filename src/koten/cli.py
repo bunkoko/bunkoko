@@ -2215,6 +2215,93 @@ def findings_list(
         typer.echo(f"    {r['citation']}")
 
 
+sources_app = typer.Typer(
+    no_args_is_help=True,
+    help="統計と研究の候補を、人がスマホで元の資料と見比べて台帳に入れる（D-034・D-035）",
+)
+app.add_typer(sources_app, name="sources")
+
+
+@sources_app.command("page")
+def sources_page(
+    drafts: Annotated[str, typer.Option(help="Claude が調べた下書き（JSON）")],
+    out: Annotated[str, typer.Option(help="書き出すページ（HTML）")] = "data/sources-page.html",
+) -> None:
+    """下書きを、スマホで「合っている／違う」を押すページ（HTML）にする。Claude が載せる。"""
+    from pathlib import Path
+
+    from koten.sources.check import SourcesError, build_page, page_items, read_drafts
+
+    try:
+        data = read_drafts(Path(drafts))
+        items = page_items(data)
+        html = build_page(data)
+    except (OSError, ValueError, KeyError, SourcesError) as e:
+        typer.secho(f"下書きを読めません：{e}", fg="red", err=True)
+        raise typer.Exit(2) from e
+    dest = Path(out)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(html, "utf-8")
+    kinds = {k: sum(1 for x in items if x["kind"] == k) for k in ("stat", "finding")}
+    leads = len(items) - kinds["stat"] - kinds["finding"]
+    typer.echo(
+        f"{dest} に、統計 {kinds['stat']}・研究 {kinds['finding']}・"
+        f"あなたが読む資料 {leads} 件のページを書きました"
+    )
+
+
+@sources_app.command("merge")
+def sources_merge(
+    drafts: Annotated[str, typer.Option(help="ページを作った下書き（JSON）")],
+    source: Annotated[str, typer.Option("--from", help="ページの結果（{キー: 文書} の JSON）")],
+    settings: SettingsOpt = None,
+) -> None:
+    """ページで「合っている」「入れる」を押した行だけを、config/stats.csv・findings.csv に書く。
+
+    書いたあとは `koten db init`（統計）と `koten findings build`（研究）で SSD に入れる。
+    """
+    import json
+    from pathlib import Path
+
+    from koten.sources.check import SourcesError, merge_checks, read_drafts
+
+    s = _settings(settings)
+    try:
+        data = read_drafts(Path(drafts))
+        checks = json.loads(Path(source).read_text("utf-8"))
+        if not isinstance(checks, dict):
+            raise SourcesError(f"{source} は {{キー: 文書}} の形ではありません")
+        res = merge_checks(data, checks, s.config_dir)
+    except (OSError, ValueError, KeyError, SourcesError) as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
+    typer.echo(
+        f"統計 {len(res.stats_added)} 行・研究 {len(res.findings_added)} 行を台帳に書きました"
+    )
+    for name, ids in (
+        ("統計", res.stats_added),
+        ("研究", res.findings_added),
+        ("外した古い統計", res.stats_removed),
+        ("違う・使わない", res.rejected),
+    ):
+        if ids:
+            typer.echo(f"  {name}：{'、'.join(ids)}")
+    for why in res.skipped:
+        typer.secho(f"  入れなかった：{why}", fg="yellow")
+    if res.unchecked:
+        typer.echo(f"  まだ押していない {res.unchecked} 件")
+    if res.unknown:
+        typer.secho(
+            f"  下書きに無い結果 {len(res.unknown)} 件は読みませんでした"
+            "（直す前の下書きの結果など）",
+            fg="yellow",
+        )
+    if res.stats_added or res.stats_removed:
+        typer.echo("統計を SSD に入れる：uv run koten db init")
+    if res.findings_added:
+        typer.echo("研究を SSD に入れる：uv run koten findings build")
+
+
 ref_app = typer.Typer(
     no_args_is_help=True, help="資料の台帳（時代の解釈・昔の辞書・古い訳）と、その本文"
 )

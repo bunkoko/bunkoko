@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>統計と研究の確かめ</title>
+<style>
+/* 1件ずつ：上に種類と進み具合、真ん中に台本に入る文と元の資料、下に同じ大きさの2つのボタン */
+:root {
+  --paper: #f4f5f2; --card: #ffffff; --ink: #1f2420; --muted: #5d665f; --rule: #d9ddd6;
+  --accent: #2e5d4b; --no: #6b4e4a; --warn: #8a5a12; --soft: #eef1ec;
+  --font-body: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #161a17; --card: #1f2420; --ink: #e8ece6; --muted: #a3ada5; --rule: #343b35;
+    --accent: #6fb595; --no: #c99a92; --warn: #e0b56a; --soft: #262c27; color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--paper); color: var(--ink); font-family: var(--font-body);
+  font-size: 16px; line-height: 1.7;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+}
+header {
+  position: sticky; top: 0; z-index: 2; background: var(--paper);
+  border-bottom: 1px solid var(--rule); padding: 10px 16px; display: grid; gap: 6px;
+}
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+h1 { font-size: 15px; margin: 0; font-weight: 600; }
+.pill { font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--rule); color: var(--muted); }
+.pill.ok { color: var(--accent); border-color: var(--accent); }
+.pill.ng { color: var(--no); border-color: var(--no); }
+select, input, textarea {
+  width: 100%; font: inherit; font-size: 16px; padding: 8px; border-radius: 8px;
+  border: 1px solid var(--rule); background: var(--card); color: var(--ink);
+}
+textarea { min-height: 5.5em; resize: vertical; }
+.bar { height: 4px; background: var(--rule); border-radius: 2px; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--accent); width: 0; }
+.count { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+main { max-width: 680px; margin: 0 auto; padding: 14px 16px 170px; display: grid; gap: 14px; }
+.card { background: var(--card); border: 1px solid var(--rule); border-radius: 12px; padding: 16px; display: grid; gap: 14px; }
+.kind { font-size: 13px; color: var(--muted); }
+.line { font-size: 18px; font-weight: 600; margin: 0; text-wrap: pretty; }
+.lines p { margin: 0 0 6px; font-size: 16px; }
+.lines p:first-child { font-weight: 600; font-size: 17px; }
+.label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 2px; }
+.evidence { font-family: ui-monospace, Menlo, monospace; font-size: 13px; background: var(--soft); padding: 8px; border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+.note { font-size: 14px; color: var(--warn); margin: 0; }
+.small { font-size: 14px; color: var(--muted); margin: 0; overflow-wrap: anywhere; }
+a.open {
+  display: block; text-align: center; padding: 12px; border-radius: 12px; border: 2px solid var(--accent);
+  color: var(--accent); font-weight: 700; text-decoration: none;
+}
+a.sub { color: var(--accent); overflow-wrap: anywhere; }
+.check { display: flex; gap: 10px; align-items: flex-start; font-size: 15px; }
+.check input { width: 22px; height: 22px; flex: none; margin-top: 3px; }
+.field { display: grid; gap: 2px; }
+.preview { font-size: 15px; background: var(--soft); padding: 8px; border-radius: 8px; margin: 0; }
+.state { font-size: 13px; color: var(--muted); margin: 0; }
+details { font-size: 15px; }
+details > div { display: grid; gap: 10px; margin-top: 10px; }
+details summary { cursor: pointer; color: var(--accent); }
+.actions {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 3; background: var(--paper);
+  border-top: 1px solid var(--rule); padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+  display: grid; gap: 8px;
+}
+.actions .main, .actions .sub { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-width: 680px; width: 100%; margin: 0 auto; }
+button { font: inherit; border-radius: 12px; border: 1px solid var(--rule); background: var(--card); color: var(--ink); padding: 10px; cursor: pointer; }
+button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+button:disabled { opacity: .45; cursor: default; }
+.yes, .no { font-size: 18px; font-weight: 700; padding: 16px 10px; color: #fff; border: 0; }
+.yes { background: var(--accent); }
+.no { background: var(--no); }
+@media (prefers-color-scheme: dark) { .yes, .no { color: #111; } }
+.chosen { outline: 3px solid var(--ink); outline-offset: 2px; }
+.why { font-size: 13px; color: var(--no); text-align: center; margin: 0; min-height: 1em; }
+.done { text-align: center; padding: 24px 8px; }
+@media (prefers-reduced-motion: no-preference) { .bar > i { transition: width .2s; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="row">
+    <h1>統計と研究の確かめ</h1>
+    <span id="save" class="pill">保存先に接続中…</span>
+  </div>
+  <label for="part" class="count" id="overall"></label>
+  <select id="part"></select>
+  <div class="bar"><i id="bar"></i></div>
+</header>
+<main id="main"></main>
+<div class="actions">
+  <p class="why" id="why"></p>
+  <div class="main">
+    <button class="no" id="no" type="button">違う</button>
+    <button class="yes" id="yes" type="button">合っている</button>
+  </div>
+  <div class="sub">
+    <button id="back" type="button">戻る</button>
+    <button id="skip" type="button">あとで</button>
+  </div>
+</div>
+<script>
+const ITEMS = /*__ITEMS__*/[];
+const MADE = /*__MADE__*/"";
+const PARTS = [
+  ["stat", "統計（国・公的機関）", "数字・単位・誰のうちの数か・調査の年が、元の資料と同じなら「合っている」。"],
+  ["finding", "研究（誰でも読める論文）", "論文の本文の「結果」で、一文・限界・調べた人を確かめ、取り下げ・訂正が無いのを見たら「合っている」。"],
+  ["private_survey", "民間の調査（あなたが読む）", "引用の決まりを読み、数字を1つ書いたら「入れる」。"],
+  ["paid_paper", "有料の論文（あなたが読む）", "本文を読んで、あなたの言葉で一文・限界・調べた人を書いたら「入れる」。"],
+].filter(([kind]) => ITEMS.some((it) => it.kind === kind));
+const $ = (id) => document.getElementById(id);
+const local = {};   // 押した結果 {キー: 文書}
+let db = null, dbState = "wait", part = "", cur = -1, loaded = false, picked = false;
+const history = [], later = new Set();
+
+// まだ送れていない結果と、書きかけの欄。元の資料を開いて戻ってきたときにページが読み直されても
+// 消えないように、このスマホ（localStorage）に置く
+const PENDING_KEY = "koten-sources-pending-v1", FORM_KEY = "koten-sources-form-v1";
+let pending = {}, forms = {}, storeOk = true, flushing = false, again = false, retryTimer = null;
+function loadLocal() {
+  try {
+    pending = JSON.parse(localStorage.getItem(PENDING_KEY) || "{}") || {};
+    forms = JSON.parse(localStorage.getItem(FORM_KEY) || "{}") || {};
+  } catch (e) { storeOk = false; pending = {}; forms = {}; }
+  for (const d of Object.values(pending)) if (d && d.k) local[d.k] = d;
+}
+function saveLocal() {
+  try {
+    localStorage.setItem(PENDING_KEY, JSON.stringify(pending));
+    localStorage.setItem(FORM_KEY, JSON.stringify(forms));
+    storeOk = true;
+  } catch (e) { storeOk = false; }
+}
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, r) => setTimeout(() => r(new Error("timeout")), ms))]);
+
+const verdict = (it) => (local[it.k] && local[it.k].v) || "";
+const inPart = () => ITEMS.map((it, i) => i).filter((i) => !part || ITEMS[i].kind === part);
+const isLead = (it) => it.kind === "private_survey" || it.kind === "paid_paper";
+
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") e.className = v;
+    else if (k === "checked") e.checked = !!v;
+    else if (k === "value") e.value = v;
+    else e.setAttribute(k, v);
+  }
+  for (const kid of kids) if (kid != null && kid !== "") e.append(kid);
+  return e;
+}
+
+// 欄の値：書きかけ（forms）→ 押した結果 → 下書きの値の順
+function form(it) {
+  if (!forms[it.k]) {
+    const prev = local[it.k] || {};
+    forms[it.k] = {
+      fix: { ...(it.f || {}), ...(prev.fix || {}), ...(prev.entry || {}) },
+      trend: !!prev.trend, read: !!prev.read, retr: !!prev.retr, terms: !!prev.terms,
+      note: prev.note || "",
+    };
+  }
+  return forms[it.k];
+}
+function setForm(it, path, value) {
+  const f = form(it);
+  if (path.startsWith("fix.")) f.fix[path.slice(4)] = value; else f[path] = value;
+  saveLocal();
+  updateButtons();
+}
+
+function nextOpen(from) {
+  const list = inPart();
+  const start = Math.max(0, list.indexOf(from) + 1);
+  const order = [...list.slice(start), ...list.slice(0, start)];
+  return order.find((i) => !verdict(ITEMS[i]) && !later.has(i)) ?? order.find((i) => !verdict(ITEMS[i])) ?? -1;
+}
+
+function renderSelect() {
+  const sel = $("part");
+  sel.replaceChildren(el("option", { value: "" }, `すべて（${ITEMS.filter(verdict).length}/${ITEMS.length}）`));
+  for (const [kind, name] of PARTS) {
+    const its = ITEMS.filter((it) => it.kind === kind);
+    sel.append(el("option", { value: kind }, `${name}（${its.filter(verdict).length}/${its.length}）`));
+  }
+  sel.value = part;
+}
+function renderCounts() {
+  const list = inPart();
+  const n = list.filter((i) => verdict(ITEMS[i])).length;
+  $("overall").textContent = `${part ? "この種類" : "全体"} ${n}/${list.length} 件を押しました${MADE ? `・下書き ${MADE}` : ""}`;
+  $("bar").style.width = list.length ? `${(n / list.length) * 100}%` : "0";
+}
+
+function input(it, path, label, opts = {}) {
+  const f = form(it);
+  const value = path.startsWith("fix.") ? (f.fix[path.slice(4)] ?? "") : (f[path] ?? "");
+  const id = `in-${path.replace(/\W/g, "_")}`;
+  const box = opts.long
+    ? el("textarea", { id, value })
+    : el("input", { id, value, type: "text", inputmode: opts.num ? "decimal" : "text", autocomplete: "off" });
+  if (opts.ph) box.setAttribute("placeholder", opts.ph);
+  box.addEventListener("input", () => { setForm(it, path, box.value); if (opts.onInput) opts.onInput(); });
+  return el("div", { class: "field" }, el("label", { class: "label", for: id }, label), box);
+}
+function choice(it, path, label, options) {
+  const f = form(it);
+  const id = `in-${path.replace(/\W/g, "_")}`;
+  const sel = el("select", { id });
+  for (const [v, text] of options) sel.append(el("option", { value: v }, text));
+  sel.value = f.fix[path.slice(4)] ?? options[0][0];
+  if (!f.fix[path.slice(4)]) f.fix[path.slice(4)] = sel.value;
+  sel.addEventListener("change", () => setForm(it, path, sel.value));
+  return el("div", { class: "field" }, el("label", { class: "label", for: id }, label), sel);
+}
+function tick(it, path, text) {
+  const id = `ck-${path}`;
+  const box = el("input", { type: "checkbox", id, checked: form(it)[path] });
+  box.addEventListener("change", () => setForm(it, path, box.checked));
+  return el("label", { class: "check", for: id }, box, el("span", {}, text));
+}
+function opener(url, text) {
+  return url ? el("a", { class: "open", href: url, target: "_blank", rel: "noopener noreferrer" }, text) : null;
+}
+function statLine(f) {
+  const v = `${f.value || "〇"}${f.unit || ""}`;
+  const where = f.survey ? `（${f.survey}${f.year ? `、${f.year}年` : ""}）` : "";
+  return `${f.label || "（何の数字か）"}は${v}${where}`;
+}
+
+function cardStat(it) {
+  const f = form(it);
+  const line = el("p", { class: "line" }, statLine(f.fix));
+  const kids = [
+    el("div", { class: "kind" }, `統計｜${it.theme}｜${it.id}`),
+    el("div", {}, el("span", { class: "label" }, "台本に入る文"), line),
+    opener(it.url, "元の資料を開く"),
+    el("div", {}, el("span", { class: "label" }, "どこにあるか"), el("p", { class: "small" }, [it.publisher, it.where, it.published && `発表 ${it.published}`].filter(Boolean).join("｜"))),
+  ];
+  if (it.evidence) kids.push(el("div", {}, el("span", { class: "label" }, "資料の中の文（調べ役が抜き出した行。元の資料と見比べる）"), el("pre", { class: "evidence" }, it.evidence)));
+  if (it.check_note) kids.push(el("p", { class: "note" }, `見直し役のメモ：${it.check_note}`));
+  if (it.replaces) kids.push(el("p", { class: "small" }, `「合っている」なら、今の台帳の ${it.replaces}（転載サイトを出典にした行）をこの行に差し替えます`));
+  if (it.trend) kids.push(tick(it, "trend", `増え方（${it.trend}）も元の資料で確かめた：${it.trend_note}`));
+  kids.push(el("details", {}, el("summary", {}, "数字や言い方を直す"), el("div", {},
+    input(it, "fix.label", "何の数字か（誰のうちの、何の割合か。数字は入れない）", { long: true, onInput: () => (line.textContent = statLine(form(it).fix)) }),
+    input(it, "fix.value", "数字", { num: true, onInput: () => (line.textContent = statLine(form(it).fix)) }),
+    input(it, "fix.unit", "単位（%・件・人・時間 など）", { onInput: () => (line.textContent = statLine(form(it).fix)) }),
+    input(it, "fix.year", "調査の年（西暦）", { num: true, onInput: () => (line.textContent = statLine(form(it).fix)) }),
+    input(it, "fix.survey", "調査の名前", { onInput: () => (line.textContent = statLine(form(it).fix)) }),
+    input(it, "note", "メモ（任意）"),
+  )));
+  return kids;
+}
+
+function cardFinding(it) {
+  const kids = [
+    el("div", { class: "kind" }, `研究｜${it.theme}｜${it.design}｜${it.id}`),
+    el("div", { class: "lines" }, el("span", { class: "label" }, "台本に入る形"), ...it.lines.map((t) => el("p", {}, t))),
+    opener(it.url, "論文を開く"),
+    el("div", {}, el("span", { class: "label" }, "書誌"), el("p", { class: "small" }, it.citation)),
+    el("div", {}, el("span", { class: "label" }, "ライセンス"), el("p", { class: "small" }, `${it.license}｜${it.license_evidence}`)),
+  ];
+  if (it.where) kids.push(el("div", {}, el("span", { class: "label" }, "結果の場所"), el("p", { class: "small" }, it.where)));
+  const meta = [it.effect && `効果の大きさ：${it.effect}`, it.replication && `追試：${it.replication}`, it.replication_note].filter(Boolean).join("｜");
+  if (meta) kids.push(el("p", { class: "small" }, meta));
+  if (it.check_note) kids.push(el("p", { class: "note" }, `見直し役のメモ：${it.check_note}`));
+  kids.push(
+    tick(it, "read", "論文の本文の「結果」で、一文・限界・調べた人が合っているのを確かめた"),
+    tick(it, "retr", "論文のページで、取り下げ（Retraction）・訂正（Correction）が付いていないのを見た"),
+    el("details", {}, el("summary", {}, "言い方を直す"), el("div", {},
+      input(it, "fix.claim_ja", "研究の一文（150字まで・1文）", { long: true }),
+      input(it, "fix.limits_ja", "限界（「ただ、この研究は、」に続く1文）", { long: true }),
+      input(it, "fix.population_ja", "調べた人（短い名詞の形）"),
+      input(it, "note", "メモ（任意。論文の文は貼らない）"),
+    )),
+  );
+  return kids;
+}
+
+function cardPrivate(it) {
+  const preview = el("p", { class: "preview" }, statLine(form(it).fix));
+  const re = () => (preview.textContent = statLine(form(it).fix));
+  return [
+    el("div", { class: "kind" }, `民間の調査｜${it.theme}`),
+    el("p", { class: "line" }, it.title),
+    el("p", { class: "small" }, [it.publisher, it.date].filter(Boolean).join("｜")),
+    it.why ? el("p", { class: "small" }, `合いそうな理由：${it.why}`) : null,
+    opener(it.url, "調査のページを開く"),
+    it.terms_url ? el("p", { class: "small" }, "引用の決まり：", el("a", { class: "sub", href: it.terms_url, target: "_blank", rel: "noopener noreferrer" }, it.terms_url)) : el("p", { class: "note" }, "引用の決まりのページは見つかっていません。サイトで探して、見つからなければ「使わない」"),
+    el("p", { class: "small" }, "決まりに「許可が要る」「非営利だけ」とあれば使いません。表やグラフは写さず、数字を1つだけ書きます。報告書の文はここに貼りません。"),
+    tick(it, "terms", "引用の決まりを読んだ（許可が要る・非営利だけ、ではなかった）"),
+    input(it, "fix.label", "何の数字か（誰のうちの、何の割合か。あなたの言葉で。数字は入れない）", { long: true, onInput: re }),
+    input(it, "fix.value", "数字", { num: true, onInput: re }),
+    input(it, "fix.unit", "単位（%・人 など）", { onInput: re }),
+    input(it, "fix.year", "調査をした年（西暦）", { num: true, onInput: re }),
+    input(it, "fix.survey", "調査の名前（会社の名前を入れる。語りで民間の調査と分かるように）", { onInput: re }),
+    input(it, "fix.url", "数字が載っているページの URL（会社自身のページ）"),
+    el("div", {}, el("span", { class: "label" }, "台本に入る文"), preview),
+  ];
+}
+
+function cardPaid(it) {
+  return [
+    el("div", { class: "kind" }, `有料の論文｜${it.theme}`),
+    el("p", { class: "line" }, it.title),
+    el("p", { class: "small" }, it.citation),
+    it.why ? el("p", { class: "small" }, `合いそうな理由：${it.why}`) : null,
+    opener(it.url, "論文のページを開く"),
+    el("p", { class: "note" }, "論文の文・要旨は、ここにもチャットにも貼りません。読んで、あなたの言葉で書きます。"),
+    input(it, "fix.claim_ja", "研究の一文（150字まで・1文。「〜な人ほど、〜な傾向がありました」）", { long: true }),
+    input(it, "fix.limits_ja", "限界（「ただ、この研究は、」に続く1文。「〜ません」「〜です」で終える）", { long: true }),
+    input(it, "fix.population_ja", "調べた人（「アメリカの会社員245人」のような短い形）"),
+    input(it, "fix.affiliation_ja", "語りで言う機関（「〇〇大学」）"),
+    input(it, "fix.authors_ja", "語りで言う著者（機関を言わないとき。「〇〇ら」）"),
+    choice(it, "fix.design", "研究の形", [["survey", "調査"], ["longitudinal", "長く追いかけた調査"], ["experiment", "実験"], ["field_experiment", "現場での実験"], ["meta_analysis", "多くの研究をまとめた分析"], ["review", "研究のまとめ"]]),
+    choice(it, "fix.effect_ja", "効果の大きさ（論文に書いてあれば）", [["", "分からない"], ["わずか", "わずか"], ["小さい", "小さい"], ["中くらい", "中くらい"], ["大きい", "大きい"]]),
+    choice(it, "fix.replication", "追試", [["not_tested", "まだ・分からない"], ["replicated", "再現した"], ["mixed", "まちまち"], ["failed", "再現しなかった（使わない）"]]),
+    input(it, "fix.replication_note", "追試をどこで確かめたか（再現した・まちまちのとき）"),
+    tick(it, "read", "本文の「結果」の節を読んで書いた"),
+    tick(it, "retr", "論文のページで、取り下げ・訂正が付いていないのを見た"),
+  ];
+}
+
+// 「合っている」「入れる」を押せるか。押せなければ理由を出す
+function blocker(it) {
+  const f = form(it), x = f.fix || {};
+  if (it.kind === "finding" && !(f.read && f.retr)) return "本文の結果と、取り下げ・訂正の2つに印を付けると押せます";
+  if (it.kind === "private_survey") {
+    if (!f.terms) return "引用の決まりを読んだ印を付けると押せます";
+    if (!(x.label || "").trim() || !/\d/.test(x.value || "") || !/^\d{4}$/.test((x.year || "").trim())) return "何の数字か・数字・調査の年（西暦4桁）を書くと押せます";
+  }
+  if (it.kind === "paid_paper") {
+    if (!(x.claim_ja || "").trim() || !(x.population_ja || "").trim()) return "研究の一文と、調べた人を書くと押せます";
+    if (!(x.affiliation_ja || "").trim() && !(x.authors_ja || "").trim()) return "語りで言う機関か著者を書くと押せます";
+    if (["mixed", "not_tested"].includes(x.replication) && !(x.limits_ja || "").trim()) return "追試がまちまち・まだのときは、限界を書くと押せます";
+    if (x.replication === "failed") return "再現しなかった研究は使いません（「使わない」を押す）";
+    if (!(f.read && f.retr)) return "本文の結果と、取り下げ・訂正の2つに印を付けると押せます";
+  }
+  return "";
+}
+function updateButtons() {
+  if (cur < 0) return;
+  const why = blocker(ITEMS[cur]);
+  $("yes").disabled = !!why;
+  $("why").textContent = why;
+}
+
+function render() {
+  renderSelect(); renderCounts();
+  const main = $("main");
+  if (cur < 0) {
+    const left = ITEMS.filter((it) => !verdict(it)).length;
+    main.replaceChildren(el("div", { class: "card done" },
+      el("p", { class: "line" }, part ? "この種類は全部押しました" : "全部押しました"),
+      left ? el("p", {}, `ほかの種類に、まだ押していないものが ${left} 件あります。上の一覧から選べます。`) : null,
+      el("p", {}, "押し終わったら、Claude のこの会話で「確かめた結果を取り込んで」と伝えてください。"),
+    ));
+    for (const id of ["yes", "no", "skip"]) $(id).disabled = true;
+    $("why").textContent = "";
+    $("back").disabled = !history.length;
+    return;
+  }
+  const it = ITEMS[cur];
+  const v = verdict(it);
+  const kids = it.kind === "stat" ? cardStat(it) : it.kind === "finding" ? cardFinding(it) : it.kind === "private_survey" ? cardPrivate(it) : cardPaid(it);
+  const lead = isLead(it);
+  const card = el("div", { class: "card" }, ...kids.filter(Boolean));
+  const hint = (PARTS.find(([k]) => k === it.kind) || [])[2] || "";
+  main.replaceChildren(
+    card,
+    el("p", { class: "state" }, v ? `押した結果：${v === "ok" ? (lead ? "入れる" : "合っている") : (lead ? "使わない" : "違う")}（押し直せます）` : "まだ押していません"),
+    el("p", { class: "state" }, hint),
+  );
+  $("yes").textContent = lead ? "入れる" : "合っている";
+  $("no").textContent = lead ? "使わない" : "違う";
+  $("yes").classList.toggle("chosen", v === "ok");
+  $("no").classList.toggle("chosen", v === "ng");
+  $("no").disabled = false; $("skip").disabled = false;
+  $("back").disabled = !history.length;
+  updateButtons();
+  window.scrollTo(0, 0);
+}
+
+function setSave(text, cls) { const s = $("save"); s.textContent = text; s.className = "pill" + (cls ? " " + cls : ""); }
+function showStatus() {
+  const n = Object.keys(pending).length;
+  const lose = storeOk ? "" : "。この画面を閉じると消えます";
+  if (!db) {
+    if (dbState === "wait") { setSave("保存先に接続中…"); return; }
+    setSave(n ? `未送信 ${n} 件：電波のある所で開き直すと送ります${lose}` : "保存先につながっていません（押した結果はこのスマホに置きます）", "ng");
+    return;
+  }
+  if (n && navigator.onLine === false) setSave(`圏外です。未送信 ${n} 件は電波が戻ると送ります${lose}`, "ng");
+  else if (flushing && n) setSave(`送信中…（未送信 ${n} 件）`);
+  else if (n) setSave(`未送信 ${n} 件：電波が戻ると送ります${lose}`, "ng");
+  else setSave("保存しました", "ok");
+}
+async function flush() {
+  if (!db) { showStatus(); return; }
+  if (flushing) { again = true; return; }
+  flushing = true; showStatus();
+  let failed = false;
+  try {
+    let keys;
+    while ((keys = Object.keys(pending)).length) {
+      const doc = pending[keys[0]];
+      await withTimeout(db.doc("checks/" + doc.k).set(doc), 10000);
+      if (pending[doc.k] && pending[doc.k].at === doc.at) delete pending[doc.k];
+      saveLocal();
+    }
+  } catch (e) { failed = true; }
+  flushing = false; showStatus();
+  clearTimeout(retryTimer);
+  if (again) { again = false; flush(); return; }
+  if (failed) retryTimer = setTimeout(flush, 15000);
+}
+window.addEventListener("online", () => flush());
+
+function answer(v) {
+  if (cur < 0) return;
+  const it = ITEMS[cur];
+  if (v === "ok" && blocker(it)) return;
+  const f = form(it);
+  const doc = { k: it.k, kind: it.kind, v, at: Date.now(), note: (f.note || "").trim() };
+  const lead = isLead(it);
+  const changed = {};
+  for (const [name, value] of Object.entries(f.fix || {})) {
+    const t = String(value ?? "").trim();
+    if (lead ? t : t !== String((it.f || {})[name] ?? "").trim()) changed[name] = t;
+  }
+  if (lead) doc.entry = changed; else doc.fix = changed;
+  if (it.kind === "stat") doc.trend = !!f.trend;
+  if (it.kind === "finding" || it.kind === "paid_paper") { doc.read = !!f.read; doc.retr = !!f.retr; }
+  if (it.kind === "private_survey") doc.terms = !!f.terms;
+  local[it.k] = doc; pending[it.k] = doc;
+  saveLocal(); flush();
+  history.push(cur); later.delete(cur);
+  cur = nextOpen(cur);
+  render();
+}
+
+function docsOf(snap) {
+  if (!snap) return [];
+  let list = Array.isArray(snap) ? snap : (snap.docs || snap.documents || snap.items || snap.results || []);
+  if (!Array.isArray(list)) list = Object.values(list);
+  return list.map((d) => (typeof d.data === "function" ? d.data() : (d.data !== undefined ? d.data : d)));
+}
+function applyChecks(snap) {
+  let mine = false;  // 今の1件が、ほかの所で押されて変わったか
+  for (const data of docsOf(snap)) {
+    if (data && data.k && (data.v === "ok" || data.v === "ng") && !pending[data.k]) {
+      if (local[data.k] && local[data.k].at === data.at) continue;
+      // 保存先に新しい結果があれば、欄も保存先の結果に合わせる
+      delete forms[data.k];
+      local[data.k] = data;
+      if (cur >= 0 && ITEMS[cur].k === data.k) mine = true;
+    }
+  }
+  if (!loaded) {
+    loaded = true;
+    if (!history.length && !picked) { cur = nextOpen(-1); mine = true; }
+  }
+  // 書いている途中の欄を消さないように、今の1件が変わらなければ数だけを直す
+  if (mine) render(); else { renderSelect(); renderCounts(); }
+}
+
+$("yes").addEventListener("click", () => answer("ok"));
+$("no").addEventListener("click", () => answer("ng"));
+$("skip").addEventListener("click", () => { if (cur < 0) return; later.add(cur); history.push(cur); cur = nextOpen(cur); render(); });
+$("back").addEventListener("click", () => { if (!history.length) return; cur = history.pop(); render(); });
+$("part").addEventListener("change", (e) => { part = e.target.value; picked = true; history.length = 0; later.clear(); cur = nextOpen(-1); render(); });
+
+loadLocal();
+cur = nextOpen(-1);
+render();
+const timer = setTimeout(() => { if (dbState === "wait") { dbState = "none"; showStatus(); render(); } }, 10000);
+(async () => {
+  try { db = window.claude && window.claude.use ? await window.claude.use("db") : null; } catch (e) { db = null; }
+  clearTimeout(timer);
+  if (!db) { dbState = "none"; showStatus(); render(); return; }
+  dbState = "ok";
+  if (Object.keys(pending).length) flush(); else setSave("保存できます", "ok");
+  const col = db.collection("checks");
+  try {
+    if (typeof col.onSnapshot === "function") col.onSnapshot(applyChecks, () => setSave("結果を読めませんでした（押した結果は保存されます）", "ng"));
+    else if (typeof col.get === "function") applyChecks(await col.get());
+  } catch (e) { setSave("結果を読めませんでした（押した結果は保存されます）", "ng"); }
+  if (!loaded) render();
+})();
+</script>
+</body>
+</html>
