@@ -32,6 +32,19 @@
    - 空のあいだは、確認画面に「承認できない理由」として出ます。
    - 確かめたことは、Claude に伝えて docs/decisions.md に書いてもらいます。
 
+## まず台本と音声だけで確かめる
+
+画面を作る前に、音声だけを作って聞けます。
+
+```sh
+cd /Users/bunkoko/koten
+uv run koten produce --episode E20261107-01 --to voice
+```
+
+- 最後に出る確認画面に、章ごとの音声と「通しで聞く」が並びます。台本の全文と、一節の原文と読み上げの表を見ながら聞きます。
+- 読み違いは config/readings.csv で直し、同じコマンドでやり直します。
+- 音声で良ければ、画面から先を作ります：`uv run koten produce --episode E20261107-01 --from visuals`
+
 ## 1回分を作る
 
 ```sh

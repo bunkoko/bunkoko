@@ -629,6 +629,18 @@ def step_review(
         else []
     )
     video = media / "render" / f"{episode_id}.mp4"
+    audio: list[dict[str, Any]] = []
+    if manifest is not None:
+        whole = join_voice(media, manifest)
+        audio.append({"title": "通しで聞く", "path": str(whole), "sec": manifest.total_sec})
+        audio += [
+            {
+                "title": f"{ch.chapter_id} {ch.title}",
+                "path": str(media / ch.wav),
+                "sec": ch.duration,
+            }
+            for ch in manifest.chapters
+        ]
     bundle = ReviewBundle(
         episode_id=episode_id,
         title=ep.resolver.resolve(ep.script.get("title") or ""),
@@ -645,11 +657,34 @@ def step_review(
         warnings=warnings,
         blockers=blockers,
         human_take=ep.script.get("human_take") or {},
+        audio=audio,
     )
     out = exports_dir(hdd, episode_id) / "review.html"
     build_review_html(bundle, out)
     log(f"確認画面：{out}")
     return out, blockers
+
+
+def join_voice(media: Path, manifest: VoiceManifest) -> Path:
+    """章ごとの音声をつないだ1本（voice/all.wav）。通しで聞くため。音声より古ければ作り直す。"""
+    import wave
+
+    out = media / "voice" / "all.wav"
+    src = [media / ch.wav for ch in manifest.chapters]
+    newest = max((p.stat().st_mtime for p in src if p.exists()), default=0)
+    if out.exists() and out.stat().st_mtime >= newest:
+        return out
+    tmp = out.with_suffix(".wav.part")
+    with wave.open(str(tmp), "wb") as w:
+        params = None
+        for p in src:
+            with wave.open(str(p), "rb") as r:
+                if params is None:
+                    params = r.getparams()
+                    w.setparams(params)
+                w.writeframes(r.readframes(r.getnframes()))
+    tmp.replace(out)
+    return out
 
 
 def _mmss(sec: float) -> str:

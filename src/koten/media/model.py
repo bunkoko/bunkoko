@@ -304,6 +304,8 @@ class ReviewBundle:
     warnings: list[str] = field(default_factory=list)  # 承認は止めない注意
     blockers: list[str] = field(default_factory=list)  # 承認できない理由（照合の保留・G7 など）
     human_take: dict[str, Any] = field(default_factory=dict)
+    # 音声の確かめ（画面の前に台本と音声だけで聞く）：title・path（絶対パス）・sec
+    audio: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _write_json(path: Path, data: Any) -> None:

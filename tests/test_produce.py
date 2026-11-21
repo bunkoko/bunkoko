@@ -216,3 +216,37 @@ def test_recent_photos_are_not_reused(env, tmp_path):
     with conn:
         conn.execute("UPDATE episodes SET state = 'discarded' WHERE episode_id = 'E0-0'")
     assert produce.recent_photos(conn, "E9") == {"p1.jpg"}
+
+
+def test_voice_only_check_page_has_audio(env, tmp_path):
+    """画面の前に、台本と音声だけで確かめる：確認画面に章ごとと通しの音声が出る。"""
+    eid = planned(env, "A", worry_id="W0001")
+    r, _ = run(env, eid)
+    assert r.state == "script_done"
+    s = _settings_for(env, tmp_path)
+    conn = connect(s.ssd_root)
+    client = VoicevoxClient(
+        ENDPOINT, 3, client=httpx.Client(transport=httpx.MockTransport(FakeEngine()))
+    )
+    m = produce.step_voice(s, conn, eid, client=client, log=lambda _: None)
+    page, blockers = produce.step_review(s, conn, eid, holds=[], log=lambda _: None)
+    html = page.read_text("utf-8")
+    media = media_dir(s.require_hdd(), eid)
+    whole = media / "voice" / "all.wav"
+    assert whole.exists() and html.count("<audio") == len(m.chapters) + 1
+    import wave
+
+    with wave.open(str(whole), "rb") as w:
+        assert abs(w.getnframes() / w.getframerate() - m.total_sec) < 0.01
+    assert any("状態が voiced" in b for b in blockers)  # 承認はまだ（画面と動画がこれから）
+
+
+def test_produce_to_checks_step_names(env, tmp_path):
+    s = _settings_for(env, tmp_path)
+    st = ["--settings", str(s.path)]
+    res = CliRunner().invoke(app, ["produce", "--episode", "E1", "--to", "audio", *st])
+    assert res.exit_code == 2 and "--to は" in res.output
+    res = CliRunner().invoke(
+        app, ["produce", "--episode", "E1", "--from", "render", "--to", "voice", *st]
+    )
+    assert res.exit_code == 2 and "前の段" in res.output

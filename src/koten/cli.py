@@ -3376,13 +3376,31 @@ def produce_cmd(
     start: Annotated[
         str, typer.Option("--from", help="ここから動かす（voice・visuals・render・kit・review）")
     ] = "voice",
+    stop: Annotated[
+        str,
+        typer.Option(
+            "--to",
+            help="ここまで動かす（例：voice なら音声だけ作り、確認画面で台本と音声を確かめる）",
+        ),
+    ] = "review",
     settings: SettingsOpt = None,
 ) -> None:
-    """台本のあとの段（音声 → 画面 → 組み立て → 公開用キット → 確認画面）を続けて動かす（M6）。"""
-    if start not in PRODUCE_STEPS:
-        typer.secho(f"--from は {'・'.join(PRODUCE_STEPS)} のどれか", fg="red", err=True)
+    """台本のあとの段（音声 → 画面 → 組み立て → 公開用キット → 確認画面）を続けて動かす（M6）。
+
+    --to で途中まで（--to voice で音声だけ）。途中までのときも、最後に確認画面を作る。
+    """
+    for name, step in (("--from", start), ("--to", stop)):
+        if step not in PRODUCE_STEPS:
+            typer.secho(f"{name} は {'・'.join(PRODUCE_STEPS)} のどれか", fg="red", err=True)
+            raise typer.Exit(2)
+    i, j = PRODUCE_STEPS.index(start), PRODUCE_STEPS.index(stop)
+    if i > j:
+        typer.secho("--from は --to より前の段にしてください", fg="red", err=True)
         raise typer.Exit(2)
-    _run_steps(episode, list(PRODUCE_STEPS[PRODUCE_STEPS.index(start) :]), settings)
+    steps = list(PRODUCE_STEPS[i : j + 1])
+    if steps[-1] != "review":
+        steps.append("review")
+    _run_steps(episode, steps, settings)
 
 
 @episode_app.command("take")

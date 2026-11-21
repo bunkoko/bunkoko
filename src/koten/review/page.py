@@ -106,6 +106,7 @@ def build_review_html(bundle: ReviewBundle, out_path: Path) -> Path:
     parts = [
         _header(bundle),
         _status(bundle),
+        _section("音声（台本と音声だけで確かめる）", _audio(bundle.audio, base)),
         _section("動画", _video(bundle.video, base)),
         _section("サムネイル", _thumbs(bundle.thumbnails, base)),
         _section("台本の全文", _script(bundle.script_lines)),
@@ -212,6 +213,26 @@ def _video(video: str | None, base: Path) -> str:
         f'{missing}<video controls preload="metadata" src="{url}"></video>\n'
         f'<p class="small">ファイル：<a href="{url}">{_e(Path(video).name)}</a>'
         "（読み違い・間・画面の切り替えを、音を出して確かめる）</p>"
+    )
+
+
+def _audio(items: list[dict[str, Any]], base: Path) -> str:
+    """章ごとの音声（と、通しの音声）。画面を作る前に、読み違いと間を耳で確かめる。"""
+    if not items:
+        return '<p class="none">音声がありません（koten voice）。</p>'
+    rows = []
+    for a in items:
+        url = _e(_rel_url(str(a.get("path") or ""), base))
+        sec = a.get("sec")
+        clock = f"（{_clock(float(sec))}）" if sec is not None else ""
+        rows.append(
+            f"<tr><td>{_e(a.get('title'))}{_e(clock)}</td>"
+            f'<td><audio controls preload="none" src="{url}"></audio></td></tr>'
+        )
+    return (
+        '<p class="small">読み違い・間・速さを、台本の全文と一節の表を見ながら聞いてください。'
+        "読みは config/readings.csv で直し、音声から作り直します。</p>\n"
+        "<table>\n" + "\n".join(rows) + "\n</table>"
     )
 
 
