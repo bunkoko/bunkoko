@@ -111,7 +111,7 @@ const ITEMS = /*__ITEMS__*/[];
 const MADE = /*__MADE__*/"";
 const PARTS = [
   ["stat", "統計（国・公的機関）", "数字・単位・誰のうちの数か・調査の年が、元の資料と同じなら「合っている」。"],
-  ["finding", "研究（誰でも読める論文）", "論文の本文の「結果」で、一文・限界・調べた人を確かめ、取り下げ・訂正が無いのを見たら「合っている」。"],
+  ["finding", "研究（誰でも読める論文）", "論文の本文の「結果」で、一文・限界・調べた人を確かめ、取り下げが無いのを見たら「合っている」。"],
   ["private_survey", "民間の調査（あなたが読む）", "引用の決まりを読み、数字を1つ書いたら「入れる」。"],
   ["paid_paper", "有料の論文（あなたが読む）", "本文を読んで、あなたの言葉で一文・限界・調べた人を書いたら「入れる」。"],
 ].filter(([kind]) => ITEMS.some((it) => it.kind === kind));
@@ -272,7 +272,7 @@ function cardFinding(it) {
   if (it.check_note) kids.push(el("p", { class: "note" }, `見直し役のメモ：${it.check_note}`));
   kids.push(
     tick(it, "read", "論文の本文の「結果」で、一文・限界・調べた人が合っているのを確かめた"),
-    tick(it, "retr", "論文のページで、取り下げ（Retraction）・訂正（Correction）が付いていないのを見た"),
+    tick(it, "retr", "論文のページで、取り下げ（Retraction）が無く、訂正（Correction）があっても結果に関わらないものだと見た"),
     el("details", {}, el("summary", {}, "言い方を直す"), el("div", {},
       input(it, "fix.claim_ja", "研究の一文（150字まで・1文）", { long: true }),
       input(it, "fix.limits_ja", "限界（「ただ、この研究は、」に続く1文）", { long: true }),
@@ -323,7 +323,7 @@ function cardPaid(it) {
     choice(it, "fix.replication", "追試", [["not_tested", "まだ・分からない"], ["replicated", "再現した"], ["mixed", "まちまち"], ["failed", "再現しなかった（使わない）"]]),
     input(it, "fix.replication_note", "追試をどこで確かめたか（再現した・まちまちのとき）"),
     tick(it, "read", "本文の「結果」の節を読んで書いた"),
-    tick(it, "retr", "論文のページで、取り下げ・訂正が付いていないのを見た"),
+    tick(it, "retr", "論文のページで、取り下げが無く、訂正があっても結果に関わらないものだと見た"),
   ];
 }
 

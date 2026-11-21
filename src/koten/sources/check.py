@@ -63,6 +63,12 @@ LEAD_FINDING = (
     "authors_ja",
 )
 ASCII_ID = re.compile(r"[a-z0-9][a-z0-9_]*$")
+REPLICATION_JA = {
+    "replicated": "再現した",
+    "mixed": "まちまち",
+    "not_tested": "まだ確かめていない",
+    "failed": "再現しなかった",
+}
 
 
 class SourcesError(ValueError):
@@ -161,7 +167,7 @@ def page_items(drafts: dict[str, Any]) -> list[dict[str, Any]]:
                 "url": f"https://doi.org/{f.doi}" if f.doi else f.url,
                 "where": d.get("where", ""),
                 "design": DESIGNS.get(f.design, f.design),
-                "replication": f.replication,
+                "replication": REPLICATION_JA.get(f.replication, f.replication),
                 "replication_note": f.replication_note,
                 "effect": f.effect_ja,
                 "check_note": d.get("check_note", ""),
