@@ -87,3 +87,21 @@ def test_check_passages_drops_sentences_not_in_the_article(tmp_path):
     dropped = check_passages(d, lambda url, rel: Path(page))
     assert [p["role"] for p in d["passages"]] == ["claim"] and dropped
     assert d["jump"].startswith("https://example.org/article#:~:text=Workers")
+
+
+def test_highlight_keeps_out_the_neighbouring_chart_and_reads_hours():
+    from koten.sources.locate import _pick_value
+
+    # 左の女性の図と右の男性の図が同じ高さ。「1.4」を「51.4」の中に見つけない
+    words = [
+        _w("51.4", 100, 200, 1),
+        _w("27.3", 200, 200, 1),
+        _w("男性20代", 300, 200, 2),
+        _w("65.8", 400, 200, 3),
+        _w("19.1", 450, 200, 3),
+        _w("13.6", 500, 200, 3),
+    ]
+    fills, marks = highlight(words, "男性20代 (n=1,546) 65.8 19.1 1.4 13.6", "65.8")
+    assert len(fills) == 1 and fills[0][0] >= 299 and marks[0][0] >= 399
+    # 「1時間54分」は表の「1.54」（時間.分）を囲む
+    assert _pick_value("家事関連0.481.071.54", "1時間54分", "") == (12, 16)

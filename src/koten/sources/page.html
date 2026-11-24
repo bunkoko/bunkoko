@@ -63,6 +63,9 @@ a.sub { color: var(--accent); overflow-wrap: anywhere; }
 .preview { font-size: 15px; background: var(--soft); padding: 8px; border-radius: 8px; margin: 0; }
 figure { margin: 0; display: grid; gap: 4px; }
 figure img { width: 100%; height: auto; border: 1px solid var(--rule); border-radius: 8px; background: #fff; }
+.zoomable { overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: 8px; }
+.zoomable img { cursor: zoom-in; }
+.zoomable.big img { width: auto; max-width: none; cursor: zoom-out; }
 figcaption { font-size: 13px; color: var(--muted); }
 .passage { margin: 0; font-size: 15px; line-height: 1.6; background: var(--soft); padding: 8px 10px; border-left: 3px solid var(--accent); border-radius: 4px; }
 .passage mark { background: #f3e2a9; color: #1f2420; padding: 0 1px; }
@@ -266,10 +269,17 @@ function cardStat(it) {
     el("div", { class: "kind" }, `統計｜${it.theme}｜${it.id}`),
     el("div", {}, el("span", { class: "label" }, "台本に入る文"), line),
   ];
-  if (it.img) {
+  if (it.zoom) {
     kids.push(el("figure", {},
-      el("img", { src: it.img, alt: `元の資料の${it.page}ページ`, loading: "lazy" }),
-      el("figcaption", {}, `元の資料の ${it.page} ページ目（PDF の通し番号）。黄色が数字の載った行、赤い枠が数字です`)));
+      el("img", { src: it.zoom, alt: `元の資料の${it.page}ページの数字のまわり`, loading: "lazy" }),
+      el("figcaption", {}, `数字のまわりを拡大（元の資料の ${it.page} ページ目）。赤い枠が数字、黄色が数字の載った行です`)));
+  }
+  if (it.img) {
+    const pic = el("img", { src: it.img, alt: `元の資料の${it.page}ページ`, loading: "lazy" });
+    const box = el("div", { class: "zoomable" }, pic);
+    pic.addEventListener("click", () => box.classList.toggle("big"));
+    kids.push(el("figure", {}, box,
+      el("figcaption", {}, `ページの中の場所（${it.page} ページ目・PDF の通し番号）。押すと大きくなり、横に動かせます`)));
   }
   kids.push(
     opener(it.jump || it.url, it.page ? `元の資料の ${it.page} ページを開く` : "元の資料を開く"),

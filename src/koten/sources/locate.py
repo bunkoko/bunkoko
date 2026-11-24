@@ -26,7 +26,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-DPI = 110
+DPI = 110  # ページの中の場所の画像の細かさ
+ZOOM_DPI = 200  # 拡大の画像の細かさ（ページはこの細かさで1回だけ描く）
+ZOOM_WIDTH = 760  # 拡大の幅（ZOOM_DPI の点。数字の左右の言葉と列が入る）
+ZOOM_ABOVE = 260  # 拡大で、印の上に残す高さ
+ZOOM_BELOW = 150
 MARGIN_ABOVE = 700  # 印の上に残す高さ（画像の点。表の題と列の見出しが入るように）
 MARGIN_BELOW = 260  # 印の下に残す高さ
 MIN_CHUNK = 6
@@ -176,6 +180,11 @@ def _lines(words: list[Word]) -> dict[int, list[int]]:
 Box = tuple[float, float, float, float]
 
 
+def _numbers(text: str) -> list[str]:
+    """語の中の数字（カンマを外す）。"""
+    return [n.replace(",", "") for n in NUMBER.findall(unicodedata.normalize("NFKC", text))]
+
+
 def _width(ch: str) -> float:
     """字の幅の見積もり（半角は全角の半分）。語の中のどこに字があるかを割り出すのに使う。"""
     return 0.5 if ord(ch) < 0x2E80 or 0xFF61 <= ord(ch) <= 0xFF9F else 1.0
@@ -225,6 +234,10 @@ def _pick_value(text: str, value: str, label: str) -> tuple[int, int] | None:
     """text の中の数字の場所。同じ数字が2つ以上あれば、ラベルの「」の言葉のすぐあとのものを選ぶ。"""
     v = norm(value)
     hits = [m.start() for m in re.finditer(re.escape(v), text)] if v else []
+    if not hits and (m := re.fullmatch(r"(\d+)時間(\d+)分", v)):
+        # 表では「1時間54分」を「1.54」（時間.分）と書くことがある
+        v = f"{m.group(1)}.{int(m.group(2)):02d}"
+        hits = [x.start() for x in re.finditer(re.escape(v), text)]
     if not hits:
         return None
     terms = [norm(t) for t in re.findall(r"「([^」]+)」", label or "")]
@@ -269,23 +282,25 @@ def highlight(
             line_text = "".join(norm(words[i].text) for i in idx).replace(",", "")
             if need_value and v not in line_text:
                 continue
-            score = sum(1 for n in set(nums) if n in line_text)
+            # 数字は1つずつ比べる（「1.4」を「51.4」の中に見つけない）
+            have = {n for i in idx for n in _numbers(words[i].text)}
+            score = len(set(nums) & have)
             if score > best_score:
                 best, best_score = line, score
         least = min(2, len(set(nums))) if need_value else min(3, len(set(nums)))
         if best is not None and best_score >= max(1, least):
-            keep = [
-                i
-                for i in rows[best]
-                if any(n in norm(words[i].text).replace(",", "") for n in set(nums))
-            ]
+            keep = [i for i in rows[best] if set(nums) & set(_numbers(words[i].text))]
             # 数字の語のあいだにある語（同じ表の列）も含め、行の左右の別の表は含めない
             xs = sorted(words[i].x0 for i in keep)
             inside = [i for i in rows[best] if xs and xs[0] <= words[i].x0 <= xs[-1]]
+            # 行の見出し（数字の左のすぐそばの、数字でない語）。左の別の表の数字は入れない
             label_words = [
                 i
                 for i in rows[best]
-                if i not in inside and xs and words[i].x1 <= xs[0] and words[i].x1 >= xs[0] - 200
+                if i not in inside
+                and xs
+                and xs[0] - 200 <= words[i].x1 <= xs[0]
+                and not _numbers(words[i].text)
             ]
             chosen = sorted(set(inside) | set(label_words[-1:]), key=lambda i: words[i].x0)
             span_text, span = _seq(words, chosen)
@@ -297,69 +312,73 @@ def highlight(
     return fills, marks
 
 
+def _ffmpeg(src: Path, filters: list[str], dest: Path) -> None:
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-i", str(src), "-vf", ",".join(filters) or "null"]
+        + ["-q:v", "4", str(dest)],
+        check=True,
+        capture_output=True,
+    )
+
+
 def render(
     pdf: Path,
     page: int,
-    rects: list[tuple[float, float, float, float]],
+    rects: list[Box],
     size: tuple[float, float],
     dest: Path,
-    marks: list[tuple[float, float, float, float]] | None = None,
+    marks: list[Box] | None = None,
+    zoom_dest: Path | None = None,
 ) -> None:
-    """ページを画像にし、四角に印を付けて、前後を切り出す（JPEG）。"""
+    """ページを画像にし、四角に印を付けて切り出す（JPEG）。
+
+    dest：ページの中の場所（幅はページのまま。上に表の見出しが入るように広く）
+    zoom_dest：数字のまわりの拡大（スマホで字が読める大きさ）。印が無ければ作らない
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
     png = dest.with_suffix(".page")
     subprocess.run(
-        [
-            "pdftoppm",
-            "-f",
-            str(page),
-            "-l",
-            str(page),
-            "-r",
-            str(DPI),
-            "-png",
-            "-singlefile",
-            str(pdf),
-            str(png),
-        ],
+        ["pdftoppm", "-f", str(page), "-l", str(page), "-r", str(ZOOM_DPI), "-png"]
+        + ["-singlefile", str(pdf), str(png)],
         check=True,
         capture_output=True,
     )
     src = Path(f"{png}.png")  # pdftoppm -singlefile は名前の後ろに .png を付ける
-    scale = DPI / 72
-    height = int(size[1] * scale)
-    filters = []
+    scale = ZOOM_DPI / 72
+    k = ZOOM_DPI / DPI
+    width, height = int(size[0] * scale), int(size[1] * scale)
+    draw = []
     for x0, y0, x1, y1 in rects:
         x, y = int(x0 * scale), int(y0 * scale)
         w, h = max(4, int((x1 - x0) * scale)), max(4, int((y1 - y0) * scale))
-        filters.append(f"drawbox=x={x}:y={y}:w={w}:h={h}:color=yellow@0.45:t=fill")
+        draw.append(f"drawbox=x={x}:y={y}:w={w}:h={h}:color=yellow@0.45:t=fill")
     for x0, y0, x1, y1 in marks or rects:
         x, y = int(x0 * scale), int(y0 * scale)
         w, h = max(4, int((x1 - x0) * scale)), max(4, int((y1 - y0) * scale))
-        filters.append(f"drawbox=x={x - 3}:y={y - 3}:w={w + 6}:h={h + 6}:color=red@0.85:t=3")
-    if rects:
-        # 上は広く残す（表の題と列の見出しが上にあるため）。下は少し
-        top = max(0, int(min(r[1] for r in rects) * scale) - MARGIN_ABOVE)
-        bottom = min(height, int(max(r[3] for r in rects) * scale) + MARGIN_BELOW)
-        filters.append(f"crop=iw:{bottom - top}:0:{top}")
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-v",
-            "error",
-            "-y",
-            "-i",
-            str(src),
-            "-vf",
-            ",".join(filters) or "null",
-            "-q:v",
-            "4",
-            str(dest),
-        ],
-        check=True,
-        capture_output=True,
-    )
-    src.unlink(missing_ok=True)
+        # 字の幅は見積もりなので、左右に少し広めに囲む
+        draw.append(f"drawbox=x={x - 12}:y={y - 5}:w={w + 24}:h={h + 10}:color=red@0.85:t=5")
+    try:
+        context = list(draw)
+        if rects:
+            # 上は広く残す（表の題と列の見出しが上にあるため）。下は少し
+            top = max(0, int(min(r[1] for r in rects) * scale - MARGIN_ABOVE * k))
+            bottom = min(height, int(max(r[3] for r in rects) * scale + MARGIN_BELOW * k))
+            context.append(f"crop=iw:{bottom - top}:0:{top}")
+        context.append(f"scale=trunc(iw/{k}/2)*2:-2")
+        _ffmpeg(src, context, dest)
+        if zoom_dest is not None and (marks or rects):
+            focus = marks or rects
+            fx0, fx1 = min(r[0] for r in focus) * scale, max(r[2] for r in focus) * scale
+            fy0, fy1 = min(r[1] for r in focus) * scale, max(r[3] for r in focus) * scale
+            half = max(ZOOM_WIDTH / 2, (fx1 - fx0) / 2 + 40)
+            mid = (fx0 + fx1) / 2
+            x0 = int(max(0, min(mid - half, width - 2 * half)))
+            x1 = int(min(width, x0 + 2 * half))
+            y0 = int(max(0, fy0 - ZOOM_ABOVE))
+            y1 = int(min(height, fy1 + ZOOM_BELOW))
+            _ffmpeg(src, [*draw, f"crop={x1 - x0}:{y1 - y0}:{x0}:{y0}"], zoom_dest)
+    finally:
+        src.unlink(missing_ok=True)
 
 
 def fragment_link(url: str, text: str) -> str:
@@ -372,7 +391,12 @@ def fragment_link(url: str, text: str) -> str:
         t = " ".join(words[:8])
     else:
         t = t[:20]
-    return f"{url.split('#')[0]}#:~:text={quote(t, safe='')}"
+    return f"{url.split('#')[0]}#:~:text={_fragment_quote(t)}"
+
+
+def _fragment_quote(text: str) -> str:
+    """文の断片のリンクの書き方：- と , と & は区切りに使われるので、符号にする。"""
+    return quote(text, safe="").replace("-", "%2D")
 
 
 def _cache_name(url: str, suffix: str) -> str:
@@ -387,6 +411,7 @@ def locate_stat(
     """統計の1行の該当ページを探して、d に page・img・jump・located を書く。戻り値は見つけ方。"""
     url = d.get("doc_url") or d["url"]
     d.pop("img", None)
+    d.pop("zoom", None)
     d.pop("page", None)
     path = fetch(url, _cache_name(url, ".bin"))
     head = path.read_bytes()[:5]
@@ -394,7 +419,7 @@ def locate_stat(
         text = article_text(path.read_text("utf-8", "replace"))
         span = original_span(text, d.get("evidence", ""))
         if span:
-            d["jump"] = f"{url.split('#')[0]}#:~:text={quote(span, safe='')}"
+            d["jump"] = f"{url.split('#')[0]}#:~:text={_fragment_quote(span)}"
             d["located"] = "html"
             return "html"
         d["jump"] = url
@@ -415,11 +440,17 @@ def locate_stat(
         words, d.get("evidence", ""), str(d.get("value", "")), d.get("label", "")
     )
     name = f"{d['stat_id']}.jpg"
-    render(path, page, rects, (width, height), img_dir / name, marks)
+    zoom = f"{d['stat_id']}-zoom.jpg"
+    (img_dir / zoom).unlink(missing_ok=True)
+    render(path, page, rects, (width, height), img_dir / name, marks, img_dir / zoom)
     d["page"] = page
     d["img"] = f"img/{name}"
+    if (img_dir / zoom).exists():
+        d["zoom"] = f"img/{zoom}"
+    else:
+        d.pop("zoom", None)
     d["jump"] = f"{url.split('#')[0]}#page={page}"
-    d["located"] = how if rects else "page"
+    d["located"] = ("parts" if how == "hint" else how) if rects else "page"
     return d["located"]
 
 

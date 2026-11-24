@@ -22,7 +22,8 @@
    "jump": "https://www.mhlw.go.jp/toukei/list/dl/r07-46-50_kekka-gaiyo02.pdf#page=1",
    "located": "whole",
    "page": 1,
-   "img": "img/anzen_r7_amount.jpg"
+   "img": "img/anzen_r7_amount.jpg",
+   "zoom": "img/anzen_r7_amount-zoom.jpg"
   },
   {
    "theme": "仕事の量",
@@ -43,7 +44,8 @@
    "jump": "https://www.mhlw.go.jp/toukei/list/dl/r07-46-50_kekka-gaiyo02.pdf#page=1",
    "located": "whole",
    "page": 1,
-   "img": "img/anzen_r7_amount_20s.jpg"
+   "img": "img/anzen_r7_amount_20s.jpg",
+   "zoom": "img/anzen_r7_amount_20s-zoom.jpg"
   },
   {
    "theme": "仕事の量",
@@ -64,7 +66,8 @@
    "jump": "https://www.mhlw.go.jp/toukei/itiran/roudou/monthly/r07/25cr/dl/pdf25cr.pdf#page=8",
    "located": "parts",
    "page": 8,
-   "img": "img/maikin_r7_overtime.jpg"
+   "img": "img/maikin_r7_overtime.jpg",
+   "zoom": "img/maikin_r7_overtime-zoom.jpg"
   },
   {
    "theme": "時間・忙しさ",
@@ -85,7 +88,8 @@
    "jump": "https://www.mhlw.go.jp/content/11801500/001728125.pdf#page=65",
    "located": "whole",
    "page": 65,
-   "img": "img/noryoku_r7_busy.jpg"
+   "img": "img/noryoku_r7_busy.jpg",
+   "zoom": "img/noryoku_r7_busy-zoom.jpg"
   },
   {
    "theme": "時間・忙しさ",
@@ -106,7 +110,8 @@
    "jump": "https://www.mhlw.go.jp/toukei/itiran/roudou/jikan/syurou/25/dl/gaiyou01.pdf#page=4",
    "located": "whole",
    "page": 4,
-   "img": "img/shuro_r7_leave.jpg"
+   "img": "img/shuro_r7_leave.jpg",
+   "zoom": "img/shuro_r7_leave-zoom.jpg"
   },
   {
    "theme": "職場の人間関係",
@@ -128,7 +133,8 @@
    "jump": "https://www.mhlw.go.jp/toukei/list/dl/r07-46-50_kekka-gaiyo02.pdf#page=1",
    "located": "whole",
    "page": 1,
-   "img": "img/anzen_r7_relations.jpg"
+   "img": "img/anzen_r7_relations.jpg",
+   "zoom": "img/anzen_r7_relations-zoom.jpg"
   },
   {
    "theme": "職場の人間関係",
@@ -149,7 +155,8 @@
    "jump": "https://www.mhlw.go.jp/toukei/itiran/roudou/koyou/doukou/26-2/dl/gaikyou.pdf#page=15",
    "located": "whole",
    "page": 15,
-   "img": "img/doukou_r7_relations_women.jpg"
+   "img": "img/doukou_r7_relations_women.jpg",
+   "zoom": "img/doukou_r7_relations_women-zoom.jpg"
   },
   {
    "theme": "いじめ・嫌がらせ",
@@ -170,7 +177,8 @@
    "jump": "https://www.mhlw.go.jp/content/11200000/001541298.pdf#page=21",
    "located": "whole",
    "page": 21,
-   "img": "img/hara_r5_powerhara.jpg"
+   "img": "img/hara_r5_powerhara.jpg",
+   "zoom": "img/hara_r5_powerhara-zoom.jpg"
   },
   {
    "theme": "いじめ・嫌がらせ",
@@ -191,7 +199,8 @@
    "jump": "https://www.mhlw.go.jp/content/11200000/001541298.pdf#page=18",
    "located": "whole",
    "page": 18,
-   "img": "img/hara_r5_silent.jpg"
+   "img": "img/hara_r5_silent.jpg",
+   "zoom": "img/hara_r5_silent-zoom.jpg"
   },
   {
    "theme": "いじめ・嫌がらせ",
@@ -213,7 +222,8 @@
    "jump": "https://www.mhlw.go.jp/content/11909000/001719720.pdf#page=1",
    "located": "whole",
    "page": 1,
-   "img": "img/funso_r7_bullying.jpg"
+   "img": "img/funso_r7_bullying.jpg",
+   "zoom": "img/funso_r7_bullying-zoom.jpg"
   },
   {
    "theme": "いじめ・嫌がらせ",
@@ -234,7 +244,8 @@
    "jump": "https://www.mext.go.jp/content/20260305-mxt_jidou02-100002753_3.pdf#page=2",
    "located": "whole",
    "page": 2,
-   "img": "img/mext_r6_ijime.jpg"
+   "img": "img/mext_r6_ijime.jpg",
+   "zoom": "img/mext_r6_ijime-zoom.jpg"
   },
   {
    "theme": "怒り",
@@ -255,7 +266,8 @@
    "jump": "https://www.mhlw.go.jp/toukei/list/dl/r07-46-50_kekka-gaiyo02.pdf#page=1",
    "located": "whole",
    "page": 1,
-   "img": "img/anzen_r7_complaint.jpg"
+   "img": "img/anzen_r7_complaint.jpg",
+   "zoom": "img/anzen_r7_complaint-zoom.jpg"
   },
   {
    "theme": "怒り",
@@ -276,7 +288,8 @@
    "jump": "https://www.mhlw.go.jp/content/11200000/001541298.pdf#page=21",
    "located": "whole",
    "page": 21,
-   "img": "img/hara_r5_customer.jpg"
+   "img": "img/hara_r5_customer.jpg",
+   "zoom": "img/hara_r5_customer-zoom.jpg"
   },
   {
    "theme": "失敗・責任",
@@ -298,7 +311,8 @@
    "located": "whole",
    "doc_url": "https://www.mhlw.go.jp/toukei/list/dl/r07-46-50_kekka-gaiyo02.pdf",
    "page": 1,
-   "img": "img/anzen_r7_failure_20s.jpg"
+   "img": "img/anzen_r7_failure_20s.jpg",
+   "zoom": "img/anzen_r7_failure_20s-zoom.jpg"
   },
   {
    "theme": "失敗・責任",
@@ -321,7 +335,8 @@
    "located": "whole",
    "doc_url": "https://www.mhlw.go.jp/toukei/list/dl/r07-46-50_kekka-gaiyo02.pdf",
    "page": 1,
-   "img": "img/anzen_r7_failure.jpg"
+   "img": "img/anzen_r7_failure.jpg",
+   "zoom": "img/anzen_r7_failure-zoom.jpg"
   },
   {
    "theme": "失敗・責任",
@@ -343,7 +358,8 @@
    "located": "whole",
    "doc_url": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/102cd8bd-3dc2-4d5a-ac7a-349e097e96fd/93f72af0/20260428_resources_research_kowaka_results_05.pdf",
    "page": 64,
-   "img": "img/kowaka_r7_work_mistake.jpg"
+   "img": "img/kowaka_r7_work_mistake.jpg",
+   "zoom": "img/kowaka_r7_work_mistake-zoom.jpg"
   },
   {
    "theme": "自信のなさ",
@@ -365,7 +381,8 @@
    "located": "whole",
    "doc_url": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/102cd8bd-3dc2-4d5a-ac7a-349e097e96fd/93f72af0/20260428_resources_research_kowaka_results_05.pdf",
    "page": 1,
-   "img": "img/kowaka_r7_not_satisfied.jpg"
+   "img": "img/kowaka_r7_not_satisfied.jpg",
+   "zoom": "img/kowaka_r7_not_satisfied-zoom.jpg"
   },
   {
    "theme": "自信のなさ",
@@ -387,7 +404,8 @@
    "located": "whole",
    "doc_url": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/d0d674d3-bf0a-4552-847c-e9af2c596d4e/3b48b9f7/20240620_policies_kodomo-research_02.pdf",
    "page": 89,
-   "img": "img/shogaikoku_r5_work_anxiety.jpg"
+   "img": "img/shogaikoku_r5_work_anxiety.jpg",
+   "zoom": "img/shogaikoku_r5_work_anxiety-zoom.jpg"
   },
   {
    "theme": "承認欲求",
@@ -409,7 +427,8 @@
    "located": "parts",
    "doc_url": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/d0d674d3-bf0a-4552-847c-e9af2c596d4e/3b48b9f7/20240620_policies_kodomo-research_02.pdf",
    "page": 22,
-   "img": "img/shogaikoku_r5_recognized.jpg"
+   "img": "img/shogaikoku_r5_recognized.jpg",
+   "zoom": "img/shogaikoku_r5_recognized-zoom.jpg"
   },
   {
    "theme": "承認欲求",
@@ -431,7 +450,8 @@
    "located": "parts",
    "doc_url": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/102cd8bd-3dc2-4d5a-ac7a-349e097e96fd/93f72af0/20260428_resources_research_kowaka_results_05.pdf",
    "page": 53,
-   "img": "img/kowaka_r7_valued.jpg"
+   "img": "img/kowaka_r7_valued.jpg",
+   "zoom": "img/kowaka_r7_valued-zoom.jpg"
   },
   {
    "theme": "嫉妬・比較",
@@ -453,7 +473,8 @@
    "located": "parts",
    "doc_url": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/d0d674d3-bf0a-4552-847c-e9af2c596d4e/3b48b9f7/20240620_policies_kodomo-research_02.pdf",
    "page": 23,
-   "img": "img/shogaikoku_r5_as_happy.jpg"
+   "img": "img/shogaikoku_r5_as_happy.jpg",
+   "zoom": "img/shogaikoku_r5_as_happy-zoom.jpg"
   },
   {
    "theme": "嫉妬・比較",
@@ -475,7 +496,8 @@
    "located": "whole",
    "doc_url": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/d0d674d3-bf0a-4552-847c-e9af2c596d4e/3b48b9f7/20240620_policies_kodomo-research_02.pdf",
    "page": 22,
-   "img": "img/shogaikoku_r5_doing_well.jpg"
+   "img": "img/shogaikoku_r5_doing_well.jpg",
+   "zoom": "img/shogaikoku_r5_doing_well-zoom.jpg"
   },
   {
    "theme": "怠け・習慣",
@@ -497,7 +519,8 @@
    "located": "whole",
    "doc_url": "https://www.mhlw.go.jp/content/11801500/001728125.pdf",
    "page": 65,
-   "img": "img/noryoku_r7_selfdev_busy.jpg"
+   "img": "img/noryoku_r7_selfdev_busy.jpg",
+   "zoom": "img/noryoku_r7_selfdev_busy-zoom.jpg"
   },
   {
    "theme": "怠け・習慣",
@@ -519,7 +542,8 @@
    "located": "whole",
    "doc_url": "https://www.bunka.go.jp/tokei_hakusho_shuppan/tokeichosa/kokugo_yoronchosa/pdf/94116401_01.pdf",
    "page": 31,
-   "img": "img/kokugo_r5_reading_devices.jpg"
+   "img": "img/kokugo_r5_reading_devices.jpg",
+   "zoom": "img/kokugo_r5_reading_devices-zoom.jpg"
   },
   {
    "theme": "転職の迷い",
@@ -540,7 +564,8 @@
    "jump": "https://www.mhlw.go.jp/toukei/list/dl/6-18c-r07-2-03.pdf#page=3",
    "located": "parts",
    "page": 3,
-   "img": "img/tenshoku_r7_satisfied.jpg"
+   "img": "img/tenshoku_r7_satisfied.jpg",
+   "zoom": "img/tenshoku_r7_satisfied-zoom.jpg"
   },
   {
    "theme": "転職の迷い",
@@ -561,7 +586,8 @@
    "jump": "https://www.mhlw.go.jp/toukei/list/dl/4-21c-jyakunenkoyou-r05_gaikyou.pdf#page=20",
    "located": "whole",
    "page": 20,
-   "img": "img/jakunen_r5_want_change.jpg"
+   "img": "img/jakunen_r5_want_change.jpg",
+   "zoom": "img/jakunen_r5_want_change-zoom.jpg"
   },
   {
    "theme": "転職の迷い",
@@ -582,7 +608,8 @@
    "jump": "https://www.mhlw.go.jp/content/001757256.pdf#page=1",
    "located": "whole",
    "page": 1,
-   "img": "img/shinsotsu_r5_univ_3yr.jpg"
+   "img": "img/shinsotsu_r5_univ_3yr.jpg",
+   "zoom": "img/shinsotsu_r5_univ_3yr-zoom.jpg"
   },
   {
    "theme": "働く意味",
@@ -603,7 +630,8 @@
    "jump": "https://www.mhlw.go.jp/toukei/itiran/roudou/koyou/keitai/24/dl/gaikyo.pdf#page=24",
    "located": "parts",
    "page": 24,
-   "img": "img/keitai_r6_yarigai_satisfied.jpg"
+   "img": "img/keitai_r6_yarigai_satisfied.jpg",
+   "zoom": "img/keitai_r6_yarigai_satisfied-zoom.jpg"
   },
   {
    "theme": "働く意味",
@@ -624,7 +652,8 @@
    "jump": "https://www.mhlw.go.jp/toukei/list/dl/6-18c-r07-2-03.pdf#page=1",
    "located": "whole",
    "page": 1,
-   "img": "img/tenshoku_r7_chose_for_work.jpg"
+   "img": "img/tenshoku_r7_chose_for_work.jpg",
+   "zoom": "img/tenshoku_r7_chose_for_work-zoom.jpg"
   },
   {
    "theme": "決断・迷い",
@@ -645,7 +674,8 @@
    "jump": "https://www.mhlw.go.jp/toukei/list/dl/4-21c-jyakunenkoyou-r05_gaikyou.pdf#page=21",
    "located": "parts",
    "page": 21,
-   "img": "img/jakunen_r5_unsure.jpg"
+   "img": "img/jakunen_r5_unsure.jpg",
+   "zoom": "img/jakunen_r5_unsure-zoom.jpg"
   },
   {
    "theme": "決断・迷い",
@@ -666,7 +696,8 @@
    "jump": "https://www.stat.go.jp/data/roudou/sokuhou/nen/dt/pdf/gaiyou.pdf#page=11",
    "located": "whole",
    "page": 11,
-   "img": "img/lfs_2025_wish_nonseeker.jpg"
+   "img": "img/lfs_2025_wish_nonseeker.jpg",
+   "zoom": "img/lfs_2025_wish_nonseeker-zoom.jpg"
   },
   {
    "theme": "将来への不安",
@@ -687,7 +718,8 @@
    "jump": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/102cd8bd-3dc2-4d5a-ac7a-349e097e96fd/aa3f07b7/20260428_resources_research_kowaka_results_07.pdf#page=9",
    "located": "parts",
    "page": 9,
-   "img": "img/kowaka_r7_no_hope.jpg"
+   "img": "img/kowaka_r7_no_hope.jpg",
+   "zoom": "img/kowaka_r7_no_hope-zoom.jpg"
   },
   {
    "theme": "将来への不安",
@@ -708,7 +740,8 @@
    "jump": "https://www.mhlw.go.jp/toukei/list/dl/6-18c-r07-2-02.pdf#page=1",
    "located": "whole",
    "page": 1,
-   "img": "img/tenshoku_r7_company_future.jpg"
+   "img": "img/tenshoku_r7_company_future.jpg",
+   "zoom": "img/tenshoku_r7_company_future-zoom.jpg"
   },
   {
    "theme": "将来への不安",
@@ -729,7 +762,8 @@
    "jump": "https://www.mhlw.go.jp/toukei/list/dl/r07-46-50_kekka-gaiyo02.pdf#page=1",
    "located": "parts",
    "page": 1,
-   "img": "img/anzen_r7_company_future.jpg"
+   "img": "img/anzen_r7_company_future.jpg",
+   "zoom": "img/anzen_r7_company_future-zoom.jpg"
   },
   {
    "theme": "学び・成長",
@@ -750,7 +784,8 @@
    "jump": "https://www.mhlw.go.jp/content/11801500/001728125.pdf#page=53",
    "located": "whole",
    "page": 53,
-   "img": "img/noryoku_r7_selfdev.jpg"
+   "img": "img/noryoku_r7_selfdev.jpg",
+   "zoom": "img/noryoku_r7_selfdev-zoom.jpg"
   },
   {
    "theme": "学び・成長",
@@ -771,7 +806,8 @@
    "jump": "https://www.mhlw.go.jp/content/11801500/001728125.pdf#page=65",
    "located": "whole",
    "page": 65,
-   "img": "img/noryoku_r7_selfdev_problem.jpg"
+   "img": "img/noryoku_r7_selfdev_problem.jpg",
+   "zoom": "img/noryoku_r7_selfdev_problem-zoom.jpg"
   },
   {
    "theme": "孤独",
@@ -792,7 +828,8 @@
    "jump": "https://www.e-stat.go.jp/stat-search/file-download?statInfId=000040442799&fileKind=2#page=7",
    "located": "whole",
    "page": 7,
-   "img": "img/tsunagari_r7_lonely_often.jpg"
+   "img": "img/tsunagari_r7_lonely_often.jpg",
+   "zoom": "img/tsunagari_r7_lonely_often-zoom.jpg"
   },
   {
    "theme": "孤独",
@@ -813,7 +850,8 @@
    "jump": "https://www.e-stat.go.jp/stat-search/file-download?statInfId=000040442799&fileKind=2#page=32",
    "located": "whole",
    "page": 32,
-   "img": "img/tsunagari_r7_no_talk_partner_lonely.jpg"
+   "img": "img/tsunagari_r7_no_talk_partner_lonely.jpg",
+   "zoom": "img/tsunagari_r7_no_talk_partner_lonely-zoom.jpg"
   },
   {
    "theme": "友人関係",
@@ -834,7 +872,8 @@
    "jump": "https://www.e-stat.go.jp/stat-search/file-download?statInfId=000040442799&fileKind=2#page=31",
    "located": "whole",
    "page": 31,
-   "img": "img/tsunagari_r7_consult_friends.jpg"
+   "img": "img/tsunagari_r7_consult_friends.jpg",
+   "zoom": "img/tsunagari_r7_consult_friends-zoom.jpg"
   },
   {
    "theme": "友人関係",
@@ -856,7 +895,8 @@
    "located": "whole",
    "page_hint": 9,
    "page": 9,
-   "img": "img/koureikokusai_r7_no_close_friend.jpg"
+   "img": "img/koureikokusai_r7_no_close_friend.jpg",
+   "zoom": "img/koureikokusai_r7_no_close_friend-zoom.jpg"
   },
   {
    "theme": "家族",
@@ -877,7 +917,8 @@
    "jump": "https://www.stat.go.jp/data/kokusei/2025/kekka/pdf/outline_01.pdf#page=37",
    "located": "whole",
    "page": 37,
-   "img": "img/kokusei_r7_single_household.jpg"
+   "img": "img/kokusei_r7_single_household.jpg",
+   "zoom": "img/kokusei_r7_single_household-zoom.jpg"
   },
   {
    "theme": "家族",
@@ -898,7 +939,8 @@
    "jump": "https://www.stat.go.jp/data/shakai/2021/pdf/youyakua.pdf#page=2",
    "located": "whole",
    "page": 2,
-   "img": "img/shakai_r3_husband_housework.jpg"
+   "img": "img/shakai_r3_husband_housework.jpg",
+   "zoom": "img/shakai_r3_husband_housework-zoom.jpg"
   },
   {
    "theme": "恋愛",
@@ -912,14 +954,16 @@
    "publisher": "内閣府男女共同参画局（委託先：株式会社マーケティング・コミュニケーションズ）",
    "url": "https://www.gender.go.jp/research/kenkyu/pdf/hyakunen_r03/03.pdf",
    "where": "令和3年度 報告書 第２章 ２．結婚・家族を取り巻く状況 (1) 現在の配偶者等の状況（男女・年代別の帯グラフ）、12ページ",
-   "evidence": "                          51.4                 27.3           19.8                                         65.8                       19.1         13.6",
+   "evidence": "男性20代 (n=1,546) 65.8 19.1 1.5 13.6",
    "trend": "",
    "trend_note": "",
    "check_note": "",
    "jump": "https://www.gender.go.jp/research/kenkyu/pdf/hyakunen_r03/03.pdf#page=4",
-   "located": "whole",
+   "located": "parts",
+   "page_hint": 4,
    "page": 4,
-   "img": "img/hyakunen_r3_no_partner_20s_men.jpg"
+   "img": "img/hyakunen_r3_no_partner_20s_men.jpg",
+   "zoom": "img/hyakunen_r3_no_partner_20s_men-zoom.jpg"
   },
   {
    "theme": "恋愛",
@@ -940,7 +984,8 @@
    "jump": "https://www.stat.go.jp/data/kokusei/2025/kekka/pdf/outline_01.pdf#page=32",
    "located": "whole",
    "page": 32,
-   "img": "img/kokusei_r7_unmarried_30s_men.jpg"
+   "img": "img/kokusei_r7_unmarried_30s_men.jpg",
+   "zoom": "img/kokusei_r7_unmarried_30s_men-zoom.jpg"
   },
   {
    "theme": "幸福",
@@ -963,7 +1008,8 @@
    "doc_url": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/102cd8bd-3dc2-4d5a-ac7a-349e097e96fd/93f72af0/20260428_resources_research_kowaka_results_05.pdf",
    "page_hint": 7,
    "page": 7,
-   "img": "img/kowaka_r7_happy.jpg"
+   "img": "img/kowaka_r7_happy.jpg",
+   "zoom": "img/kowaka_r7_happy-zoom.jpg"
   },
   {
    "theme": "幸福",
@@ -984,7 +1030,8 @@
    "jump": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/d0d674d3-bf0a-4552-847c-e9af2c596d4e/3b48b9f7/20240620_policies_kodomo-research_02.pdf#page=64",
    "located": "parts",
    "page": 64,
-   "img": "img/wagakuni_r5_happy_anxiety.jpg"
+   "img": "img/wagakuni_r5_happy_anxiety.jpg",
+   "zoom": "img/wagakuni_r5_happy_anxiety-zoom.jpg"
   },
   {
    "theme": "死生観",
@@ -1006,7 +1053,8 @@
    "located": "whole",
    "doc_url": "https://www.mhlw.go.jp/toukei/saikin/hw/jinkou/kakutei25/dl/05_gaikyouR07.pdf",
    "page": 4,
-   "img": "img/jinko_r7_deaths.jpg"
+   "img": "img/jinko_r7_deaths.jpg",
+   "zoom": "img/jinko_r7_deaths-zoom.jpg"
   },
   {
    "theme": "死生観",
@@ -1028,7 +1076,8 @@
    "located": "whole",
    "doc_url": "https://www.mhlw.go.jp/toukei/saikin/hw/life/life25/dl/life25-03.pdf",
    "page": 1,
-   "img": "img/seimei_r7_female_90.jpg"
+   "img": "img/seimei_r7_female_90.jpg",
+   "zoom": "img/seimei_r7_female_90-zoom.jpg"
   },
   {
    "theme": "老い",
@@ -1051,7 +1100,8 @@
    "doc_url": "https://www8.cao.go.jp/kourei/ishiki/r07/gaiyo/pdf/chapter2_7.pdf",
    "page_hint": 9,
    "page": 9,
-   "img": "img/kourei_r7_no_close_friend.jpg"
+   "img": "img/kourei_r7_no_close_friend.jpg",
+   "zoom": "img/kourei_r7_no_close_friend-zoom.jpg"
   },
   {
    "theme": "老い",
@@ -1074,7 +1124,8 @@
    "doc_url": "https://www8.cao.go.jp/kourei/ishiki/r07/gaiyo/pdf/chapter2_8.pdf",
    "page_hint": 1,
    "page": 1,
-   "img": "img/kourei_r7_ikigai_very.jpg"
+   "img": "img/kourei_r7_ikigai_very.jpg",
+   "zoom": "img/kourei_r7_ikigai_very-zoom.jpg"
   },
   {
    "theme": "誠実・嘘",
@@ -1097,7 +1148,8 @@
    "doc_url": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/102cd8bd-3dc2-4d5a-ac7a-349e097e96fd/93f72af0/20260428_resources_research_kowaka_results_05.pdf",
    "page_hint": 24,
    "page": 24,
-   "img": "img/kowaka_r7_honne_work.jpg"
+   "img": "img/kowaka_r7_honne_work.jpg",
+   "zoom": "img/kowaka_r7_honne_work-zoom.jpg"
   }
  ],
  "findings": [
@@ -1133,7 +1185,55 @@
    "verified_from": "",
    "retraction_checked_at": "",
    "checked_by": "",
-   "checked_at": ""
+   "checked_at": "",
+   "passages": [
+    {
+     "role": "claim",
+     "section": "Results > Antecedents of detachment > Work characteristics",
+     "text": "Results indicated that detachment from work correlated, on average, significantly negatively with job demands and significantly positively with job resources.",
+     "mark": [
+      "significantly negatively with job demands"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results > Antecedents of detachment > Work characteristics",
+     "text": "Only for relationships between quantitative demands and detachment and emotional demands and detachment the 95% PIs indicated a high chance that future studies will report negative correlations.",
+     "mark": [
+      "quantitative demands and detachment",
+      "high chance that future studies will report negative correlations"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion > Outcomes and antecedents of detachment > Antecedents",
+     "text": "First, we found that, on average, job demands negatively and job resources positively correlate with detachment from work. Mean effects were small sized.",
+     "mark": [
+      "Mean effects were small sized"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion > Limitations and future research directions",
+     "text": "So far, longitudinal data is rare and should be assessed more often in future studies.",
+     "mark": [
+      "longitudinal data is rare"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Results > Description of samples and measures",
+     "text": "Most samples were from Europe (k = 63).",
+     "mark": [
+      "Most samples were from Europe",
+      "k = 63"
+     ]
+    }
+   ],
+   "landing_url": "https://www.frontiersin.org/journals/psychology/articles/10.3389/fpsyg.2016.02072/full",
+   "fulltext_url": "https://pmc.ncbi.nlm.nih.gov/api/oai/v1/mh/?verb=GetRecord&identifier=oai:pubmedcentral.nih.gov:5233687&metadataPrefix=pmc",
+   "fragment": "Results indicated that detachment from work correlated",
+   "jump": "https://www.frontiersin.org/journals/psychology/articles/10.3389/fpsyg.2016.02072/full#:~:text=Results%20indicated%20that%20detachment%20from%20work%20correlated"
   },
   {
    "finding_id": "FN-detachment-offhours-2017",
@@ -1167,7 +1267,88 @@
    "verified_from": "",
    "retraction_checked_at": "",
    "checked_by": "",
-   "checked_at": ""
+   "checked_at": "",
+   "passages": [
+    {
+     "role": "claim",
+     "section": "Results – Outcomes of detachment",
+     "text": "In particular, detachment from work was positively associated with psychological (moderate effects with a range of 0.30 ≤ ≤ 0.36: lower exhaustion, higher life satisfaction, higher well-being, better sleep; small effect with r = −0.14: lower other burnout symptoms) and physical health (small effect: r = −0.23: lower physical discomfort).",
+     "mark": [
+      "positively associated with psychological",
+      "0.30 ≤ ≤ 0.36",
+      "higher life satisfaction, higher well-being",
+      "lower exhaustion"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results – Work-related activities during non-work time",
+     "text": "We found an average moderate and negative correlation between engagement in work-related activities during non-work time and detachment from work ( = −0.31, 95% CI [−0.38, −0.23]).",
+     "mark": [
+      "average moderate and negative correlation",
+      "work-related activities during non-work time",
+      "−0.31",
+      "95% CI [−0.38, −0.23]"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Methods – Study coding – Work-related activities during non-work time",
+     "text": "First, self-reports about time employees use for work-related activities during non-work time and second, self-reports about media or technology use for work-related activities during non-work time (e.g., work-related smartphone use during non-work time, work-related technology use).",
+     "mark": [
+      "time employees use for work-related activities",
+      "media or technology use",
+      "work-related smartphone use during non-work time"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion – Limitations and future research directions",
+     "text": "Second, our results are primarily based on individual-level and self-reported data (some exceptions are correlations to physiological data and sleep).",
+     "mark": [
+      "primarily based on individual-level and self-reported data"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion – Limitations and future research directions",
+     "text": "So far, longitudinal data is rare and should be assessed more often in future studies.",
+     "mark": [
+      "longitudinal data is rare"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion – Outcomes and antecedents of detachment (Outcomes)",
+     "text": "Heterogeneity of effect sizes was mainly moderate to high (except for physiological activation as outcome) and only for exhaustion and well-being as outcomes the chance that future studies find effects in similar direction was high.",
+     "mark": [
+      "Heterogeneity of effect sizes was mainly moderate to high",
+      "only for exhaustion and well-being"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Results – Work-related activities during non-work time",
+     "text": "We aggregated data from k = 17 studies (N = 4736; 21 effect sizes; a forest plot is depicted in the Supplementary Material).",
+     "mark": [
+      "k = 17 studies",
+      "N = 4736"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Results – Description of samples and measures",
+     "text": "Most samples were from Europe (k = 63).",
+     "mark": [
+      "Most samples were from Europe",
+      "k = 63"
+     ]
+    }
+   ],
+   "landing_url": "https://www.frontiersin.org/journals/psychology/articles/10.3389/fpsyg.2016.02072/full",
+   "fulltext_url": "https://www.frontiersin.org/journals/psychology/articles/10.3389/fpsyg.2016.02072/full",
+   "fragment": "In particular, detachment from work was positively associated with psychological",
+   "jump": "https://www.frontiersin.org/journals/psychology/articles/10.3389/fpsyg.2016.02072/full#:~:text=In%20particular%2C%20detachment%20from%20work%20was%20positively%20associated"
   },
   {
    "finding_id": "FN-coworker-support-2020",
@@ -1201,7 +1382,78 @@
    "verified_from": "",
    "retraction_checked_at": "",
    "checked_by": "",
-   "checked_at": ""
+   "checked_at": "",
+   "passages": [
+    {
+     "role": "claim",
+     "section": "Study 1 – Results and Discussion – Regression Analyses",
+     "text": "Across all outcomes (work environment and work-family interference/enhancement, job satisfaction), coworker support was associated with a more positive work environment, less work-life conflict, more work-life enhancement, and more job satisfaction.",
+     "mark": [
+      "coworker support was associated with",
+      "less work-life conflict",
+      "more job satisfaction"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Study 1 – Method – Measures – Coworker support",
+     "text": "A sample item is, “My coworkers listen to me when I need to talk about work-related problems.”",
+     "mark": [
+      "My coworkers listen to me when I need to talk about work-related problems"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Study 1 – Method – Measures – Work family interference and enhancement",
+     "text": "The first scale, work interference with family (α = 0.75), was measured with three items (sample item: “Job worries or problems distract me when I am not at work”).",
+     "mark": [
+      "work interference with family",
+      "Job worries or problems distract me when I am not at work"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "General Discussion – Strengths, Limitations, and Future Research",
+     "text": "First, Study 1 was cross-sectional. Study 2 was lagged, although we had only a 2-month waiting period between data collections. Thus, in the absence of experimental and additional longitudinal data, it is difficult to draw causal conclusions about the processes examined in the current study.",
+     "mark": [
+      "Study 1 was cross-sectional",
+      "only a 2-month waiting period",
+      "difficult to draw causal conclusions"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "General Discussion – Strengths, Limitations, and Future Research",
+     "text": "Third, another problem that must be addressed is the possibility that other factors (i.e., “third variables”) could also explain the effects of coworker support on work-family interference/enhancement, but these variables were not assessed.",
+     "mark": [
+      "“third variables”",
+      "were not assessed"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Study 1 – Method – Participants",
+     "text": "The sample comprised of 5,040 older adults (Mage = 60.17, SD = 8.19; 56.1% Female; 72% White, 14.7% Black/African American, 9.9% Hispanic, and 3.4% other race/ethnicities, MeanYears Of Education = 13.54, SD = 2.77) who completed the survey in either 2010 or 2012 (no participants completed data in both years).",
+     "mark": [
+      "5,040 older adults",
+      "Mage = 60.17",
+      "either 2010 or 2012"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Study 2 – Method – Participants",
+     "text": "Of the Time 1 participants, 626 participants completed a follow-up survey 8-weeks later that asked questions regarding burnout and work-family outcomes.",
+     "mark": [
+      "626 participants",
+      "8-weeks later"
+     ]
+    }
+   ],
+   "landing_url": "https://www.frontiersin.org/journals/psychology/articles/10.3389/fpsyg.2020.00819/full",
+   "fulltext_url": "https://pmc.ncbi.nlm.nih.gov/api/oai/v1/mh/?verb=GetRecord&identifier=oai:pubmedcentral.nih.gov:7214758&metadataPrefix=pmc",
+   "fragment": "Across all outcomes (work environment and work-family interference/enhancement",
+   "jump": "https://www.frontiersin.org/journals/psychology/articles/10.3389/fpsyg.2020.00819/full#:~:text=Across%20all%20outcomes%20%28work%20environment%20and%20work%2Dfamily%20interference%2Fenhancement"
   },
   {
    "finding_id": "FN-bullying-japan-2015",
@@ -1235,7 +1487,79 @@
    "retraction_checked_at": "",
    "checked_by": "",
    "checked_at": "",
-   "note": ""
+   "note": "",
+   "passages": [
+    {
+     "role": "claim",
+     "section": "Results: Association of social class indicators with experiencing workplace bullying",
+     "text": "The prevalence of workplace bullying was significantly elevated in the lower household income groups and in the lower SSS stratum.",
+     "mark": [
+      "significantly elevated",
+      "lower SSS stratum"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results: Association of social class indicators with experiencing workplace bullying",
+     "text": "After all variables were simultaneously entered in the model, household income and SSS remained significantly associated with workplace bullying (p = 0.017 and 0.002, respectively, Model 3).",
+     "mark": [
+      "SSS remained significantly associated",
+      "0.002",
+      "Model 3"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results: Association of social class indicators with witnessing workplace bullying",
+     "text": "The lower household income groups (OR = 3.25, 95%CI = 1.60–6.62) and lower SSS groups (OR = 3.67, 95%CI = 1.91–7.07) also had higher odds ratios of witnessing bullying at work.",
+     "mark": [
+      "lower SSS groups",
+      "OR = 3.67",
+      "witnessing bullying"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Limitations",
+     "text": "First, the study is cross-sectional, so we cannot draw causal influences regarding whether social class indicators leads to experiencing workplace bullying, or experiencing bullying determine his/her social class.",
+     "mark": [
+      "cross-sectional",
+      "cannot draw causal influences"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion",
+     "text": "In the present study, we did not attempt to provide a definition of bullying in the questionnaire, and thus all reports of experiencing or witnessing bullying are via self-report.",
+     "mark": [
+      "did not attempt to provide a definition of bullying",
+      "self-report"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Methods: Participants",
+     "text": "After excluding 751 respondents who were not active in the labor force at the time of the survey and 87 respondents who had missing responses on gender, age, education, household income, SSS, occupation, employment contract, company size, establishment size, or industry, the data from 1,546 respondents (809 men and 737 women) were analyzed.",
+     "mark": [
+      "not active in the labor force",
+      "1,546 respondents"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Methods: Participants",
+     "text": "A questionnaire survey was administered to a nationally representative community-based sample of 5,000 residents in Japan aged 20–60 years from November 2010 to February 2011.",
+     "mark": [
+      "residents in Japan",
+      "aged 20–60 years",
+      "November 2010 to February 2011"
+     ]
+    }
+   ],
+   "landing_url": "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0119435",
+   "fulltext_url": "https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0119435&type=manuscript",
+   "fragment": "The prevalence of workplace bullying was significantly elevated in",
+   "jump": "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0119435#:~:text=The%20prevalence%20of%20workplace%20bullying%20was%20significantly%20elevated"
   },
   {
    "finding_id": "FN-anger-reappraisal-2019",
@@ -1269,13 +1593,78 @@
    "verified_from": "",
    "retraction_checked_at": "",
    "checked_by": "",
-   "checked_at": ""
+   "checked_at": "",
+   "passages": [
+    {
+     "role": "claim",
+     "section": "Results > Effects of the first reappraisal and rumination manipulation",
+     "text": "In the reappraisal group, we found that there was a significant decrease in anger between Time 2 (M = 3.37) and Time 3 (M = 2.41; γ = -0.96, SE = 0.16, p < .001).",
+     "mark": [
+      "significant decrease in anger",
+      "M = 3.37",
+      "M = 2.41",
+      "p < .001"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results > Effects of the first reappraisal and rumination manipulation",
+     "text": "In the rumination group, there was no difference in anger between Time 2 (M = 2.87) and Time 3 (M = 2.90; γ = 0.03, SE = 0.15, p = .852).",
+     "mark": [
+      "no difference in anger",
+      "M = 2.87",
+      "M = 2.90",
+      "p = .852"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Materials and methods > Procedure",
+     "text": "The reappraisal instructions were: “Think about the angering event from the perspective of an outsider (someone that has the best intentions for all persons involved).",
+     "mark": [
+      "perspective of an outsider",
+      "best intentions for all persons involved"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion > Limitations and future directions",
+     "text": "First, our study did not include a control condition, so we were unable to truly probe the direction of our effects independently of the natural emotional processes at work.",
+     "mark": [
+      "did not include a control condition"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion > Limitations and future directions",
+     "text": "We investigated a recalled angering event using a lab paradigm, and thus, mean levels of anger experience were mild to moderate.",
+     "mark": [
+      "lab paradigm",
+      "mild to moderate"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Materials and methods > Participants",
+     "text": "Participants were 158 Belgian first-year psychology students who participated in return for partial course credit. We excluded the data of two participants who did not comply with event recall instructions, leaving a final sample of 156 participants (132 women; Mage = 18.55, SDage = 2.26, age range: 16–38).",
+     "mark": [
+      "158 Belgian first-year psychology students",
+      "156 participants",
+      "132 women",
+      "Mage = 18.55"
+     ]
+    }
+   ],
+   "landing_url": "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0209029",
+   "fulltext_url": "https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0209029&type=manuscript",
+   "fragment": "In the reappraisal group, we found that there was",
+   "jump": "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0209029#:~:text=In%20the%20reappraisal%20group%2C%20we%20found%20that%20there"
   },
   {
    "finding_id": "FN-near-miss-2019",
    "themes": "失敗・責任",
    "claim_ja": "研究費の審査でわずかに不採択になった若手研究者は、わずかに採択された人より、その後その研究費の申請から離れる人が多い一方、残った人は10年間、よく引用される論文を出す割合が高い傾向がありました",
-   "limits_ja": "アメリカの医学・生命科学の研究費の審査記録を比べたもので、差は小さく、のちの欧州と北米の追試では機関や分析の仕方によって結果が揺れていて、ほかの失敗や仕事にも当てはまるかは分かっていません",
+   "limits_ja": "アメリカの医学・生命科学の研究費の審査記録を比べたもので、ほかの分野の失敗や仕事にも当てはまるかは分かっていません",
    "effect_ja": "",
    "design": "longitudinal",
    "population_ja": "アメリカ国立衛生研究所（NIH）に研究費を申請した若手研究者1,184人（1990〜2005年）",
@@ -1303,7 +1692,74 @@
    "retraction_checked_at": "",
    "checked_by": "",
    "checked_at": "",
-   "note": ""
+   "note": "",
+   "passages": [
+    {
+     "role": "claim",
+     "section": "Results: Future career impact",
+     "text": "Comparing the two groups, we find near misses outperformed narrow wins significantly, by a factor of 21% (χ2-test p-value < 0.001, odds ratio = 1.25). This performance advantage persisted: We analyzed papers produced in the second five-year window (6–10 years after treatment), uncovering a similar gap (Fig. 2b, χ2-test p-value < 0.001, odds ratio = 1.19).",
+     "mark": [
+      "by a factor of 21%",
+      "odds ratio = 1.25",
+      "6–10 years after treatment",
+      "odds ratio = 1.19"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results: Screening hypothesis",
+     "text": "The RD analysis indicates that an early-career near miss on average led to a 12.6% chance of disappearing permanently from the NIH system over the next ten years (see Methods section).",
+     "mark": [
+      "12.6%",
+      "disappearing permanently from the NIH system",
+      "over the next ten years"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results: Future career impact",
+     "text": "These results document that, despite an early setback, near misses outperformed narrow wins over the longer run, conditional on remaining active in the NIH system.",
+     "mark": [
+      "near misses outperformed narrow wins over the longer run",
+      "conditional on remaining active in the NIH system"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion",
+     "text": "As with any RD analysis, the effect pertains to the specific population on which the experiment was conducted. While the RD approach allows us to expand our sample to a wider range of setbacks by controlling for evaluation scores, yielding the same conclusions (see Methods section), to what degree our findings may generalize substantially beyond near misses is a question we cannot yet answer conclusively.",
+     "mark": [
+      "the effect pertains to the specific population",
+      "generalize substantially beyond near misses",
+      "cannot yet answer conclusively"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Results: Future career impact",
+     "text": "Indeed, papers published by the near-miss group in the next two five-year periods attracted on average 19.4% (32.3 for near misses and 27.0 for narrow wins, t-test p-value < 0.001, Cohen’s d = 0.08) and 12.0% more citations (32.3 for near misses and 28.8 for narrow wins, t-test p-value < 0.001, Cohen’s d = 0.06) than those by the narrow-win group, respectively (Fig. 2c).",
+     "mark": [
+      "Cohen’s d = 0.08",
+      "Cohen’s d = 0.06",
+      "19.4%",
+      "12.0% more citations"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Introduction",
+     "text": "We combine the NIH grant database with the Web of Science data, tracing their NIH R01 grant applications between 1990 and 2005 together with research outputs by the PIs, measured by their publication and citation records (see Supplementary Note 1 for details). In total, our analyses yielded 561 narrow wins and 623 near misses around the payline.",
+     "mark": [
+      "NIH R01 grant applications between 1990 and 2005",
+      "561 narrow wins",
+      "623 near misses"
+     ]
+    }
+   ],
+   "landing_url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC6773762/",
+   "fulltext_url": "https://pmc.ncbi.nlm.nih.gov/api/oai/v1/mh/?verb=GetRecord&identifier=oai:pubmedcentral.nih.gov:6773762&metadataPrefix=pmc",
+   "fragment": "Comparing the two groups, we find near misses outperformed narrow wins",
+   "jump": "https://pmc.ncbi.nlm.nih.gov/articles/PMC6773762/#:~:text=Comparing%20the%20two%20groups%2C%20we%20find%20near%20misses"
   },
   {
    "finding_id": "FN-self-esteem-age-japan-2020",
@@ -1337,7 +1793,57 @@
    "retraction_checked_at": "",
    "checked_by": "",
    "checked_at": "",
-   "note": ""
+   "note": "",
+   "passages": [
+    {
+     "role": "claim",
+     "section": "Discussion > Summary of the Results and Implications",
+     "text": "Specifically, across the six cross-sectional surveys, the average level of self-esteem was low in adolescence, but then gradually continued to become higher from young adulthood to late adulthood.",
+     "mark": [
+      "across the six cross-sectional surveys",
+      "low in adolescence",
+      "continued to become higher from young adulthood to late adulthood"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Discussion > Summary of the Results and Implications",
+     "text": "Second, as expected, analyses showed that the average level of self-esteem continued to indicate an upward trend beyond the age of 50 in Japan.",
+     "mark": [
+      "upward trend beyond the age of 50"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion > Limitations and Future Directions",
+     "text": "But, in cross-sectional data, age differences involve cohort differences.",
+     "mark": [
+      "cross-sectional data",
+      "cohort differences"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion > Limitations and Future Directions",
+     "text": "Another limitation is that, although the sample sizes were relatively large for teens (n = 211), adults (n20s = 1,161, n30s = 970, n40s = 1,382, n50s = 1,056), and the elderly in their 60s (n = 1,031) and 70s (n = 253), the sample size for the elderly in their 80s was small (n = 49).",
+     "mark": [
+      "the sample size for the elderly in their 80s was small (n = 49)"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Method > Survey",
+     "text": "The sample sizes ranged from 763 to 1,331 and the total sample size was 6,113.",
+     "mark": [
+      "763 to 1,331",
+      "6,113"
+     ]
+    }
+   ],
+   "landing_url": "https://www.frontiersin.org/journals/public-health/articles/10.3389/fpubh.2020.00132/full",
+   "fulltext_url": "https://pmc.ncbi.nlm.nih.gov/api/oai/v1/mh/?verb=GetRecord&identifier=oai:pubmedcentral.nih.gov:7423839&metadataPrefix=pmc",
+   "fragment": "Specifically, across the six cross-sectional surveys, the average level of",
+   "jump": "https://www.frontiersin.org/journals/public-health/articles/10.3389/fpubh.2020.00132/full#:~:text=Specifically%2C%20across%20the%20six%20cross%2Dsectional%20surveys%2C%20the%20average"
   },
   {
    "finding_id": "FN-likes-posting-2021",
@@ -1371,7 +1877,78 @@
    "retraction_checked_at": "",
    "checked_by": "",
    "checked_at": "",
-   "note": ""
+   "note": "",
+   "passages": [
+    {
+     "role": "claim",
+     "section": "Results / Study 1",
+     "text": "Thus, increasing the average subjective reward rate from low to high reduced average latency between posts by ~18%, corresponding to ~8 h.",
+     "mark": [
+      "~18%",
+      "~8 h",
+      "reduced average latency between posts"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results / Study 2",
+     "text": "Thus, in these respective datasets, latencies between posts were 8%, 16%, and 18% shorter when the average reward rate was high rather than low.",
+     "mark": [
+      "8%, 16%, and 18% shorter",
+      "average reward rate was high"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results / Study 2",
+     "text": "To replicate and extend the results of Study 1, we collected data from three distinct social media sites (see Methods) which, in contrast to Instagram, focus on special interest topics (Men’s fashion, Women’s fashion, Gardening, respectively).",
+     "mark": [
+      "three distinct social media sites",
+      "Men’s fashion, Women’s fashion, Gardening"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion",
+     "text": "First, while our analysis of anonymous, real-world social media data precluded demographic characterization of users, it is possible that certain demographic factors, such as age, may moderate the effect of reward learning in online behavior.",
+     "mark": [
+      "anonymous",
+      "precluded demographic characterization of users",
+      "such as age"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion",
+     "text": "Although our data do not speak directly to whether intense social media use is maladaptive or addictive in nature, it suggests a new approach for asking such critical questions.",
+     "mark": [
+      "do not speak directly",
+      "maladaptive or addictive"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Results / Reward learning on social media",
+     "text": "We tested our hypothesis that online social behavior, in the form of posts, follows principles of reward learning theory in four independent social media datasets (see Methods) (total NObs = 1,046,857, NUsers = 4,168) with computational modeling.",
+     "mark": [
+      "four independent social media datasets",
+      "4,168"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Results / Reward learning on social media",
+     "text": "Finally, we conducted an online experiment (Study 3, NParticipants = 176), designed to mimic key aspects of social media platforms, in which we manipulated the social reward rate to verify its causal impact on response latencies.",
+     "mark": [
+      "online experiment",
+      "176"
+     ]
+    }
+   ],
+   "landing_url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC7910435/",
+   "fulltext_url": "https://pmc.ncbi.nlm.nih.gov/api/oai/v1/mh/?verb=GetRecord&identifier=oai:pubmedcentral.nih.gov:7910435&metadataPrefix=pmc",
+   "fragment": "Thus, increasing the average subjective reward rate from low",
+   "jump": "https://pmc.ncbi.nlm.nih.gov/articles/PMC7910435/#:~:text=Thus%2C%20increasing%20the%20average%20subjective%20reward%20rate%20from"
   },
   {
    "finding_id": "FN-upward-comparison-2026",
@@ -1405,7 +1982,76 @@
    "retraction_checked_at": "",
    "checked_by": "",
    "checked_at": "",
-   "note": ""
+   "note": "",
+   "passages": [
+    {
+     "role": "claim",
+     "section": "3.9 Social-evaluative negative emotions",
+     "text": "For social-evaluative negative emotions, upward comparison showed the largest average association in absolute magnitude among the five outcome categories examined ( = 0.458, 95% CI [0.406, 0.507], p < 0.001; k = 20; Figure 8).",
+     "mark": [
+      "social-evaluative negative emotions",
+      "largest average association",
+      "0.458",
+      "k = 20"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "3.7 WellBeing",
+     "text": "For wellbeing, higher levels of upward comparison were on average associated with lower levels of wellbeing ( = −0.310, 95% CI [−0.383, −0.234], p < 0.001; k = 15; Figure 6).",
+     "mark": [
+      "lower levels of wellbeing",
+      "−0.310",
+      "k = 15"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "3.8 Self-esteem",
+     "text": "For self-esteem, higher levels of upward comparison were on average associated with lower self-esteem ( = −0.251, 95% CI [−0.326, −0.173], p < 0.001; k = 25; Figure 7).",
+     "mark": [
+      "lower self-esteem",
+      "−0.251",
+      "k = 25"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "5 Limitations and future directions",
+     "text": "the included studies are predominantly cross-sectional, which precludes causal inferences (Zhang et al., 2023; Shang and Bao, 2025). While our theoretical framing is consistent with the possibility that upward comparison contributes to psychological maladjustment, it is also plausible that a reciprocal pattern exists, in which individuals with higher trait envy or depression may engage in more upward comparison (Verduyn et al., 2020).",
+     "mark": [
+      "predominantly cross-sectional",
+      "precludes causal inferences",
+      "reciprocal pattern",
+      "higher trait envy or depression may engage in more upward comparison"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "3.3 Quality assessment",
+     "text": "For sample selection (D1), a considerable proportion of studies (53.7%) were rated as unclear risk of bias and 9.3% as high risk, which directly reflects the field's heavy reliance on convenience sampling strategies—most samples were recruited from university student populations or online user groups, leading to insufficient sample representativeness.",
+     "mark": [
+      "convenience sampling",
+      "university student populations",
+      "online user groups"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "3.1 Overview of studies",
+     "text": "The final meta-analysis comprised 94 effect sizes drawn from 54 independent samples, with a total sample size of 36,583 participants. The dataset represented a diverse range of cultural backgrounds, comprising samples from both Western and Eastern countries, and covered developmental stages ranging from adolescence to adulthood.",
+     "mark": [
+      "54 independent samples",
+      "36,583 participants",
+      "Western and Eastern countries",
+      "adolescence to adulthood"
+     ]
+    }
+   ],
+   "landing_url": "https://www.frontiersin.org/journals/psychology/articles/10.3389/fpsyg.2026.1825169/full",
+   "fulltext_url": "https://www.frontiersin.org/journals/psychology/articles/10.3389/fpsyg.2026.1825169/full",
+   "fragment": "For social-evaluative negative emotions, upward comparison showed the largest",
+   "jump": "https://www.frontiersin.org/journals/psychology/articles/10.3389/fpsyg.2026.1825169/full#:~:text=For%20social%2Devaluative%20negative%20emotions%2C%20upward%20comparison%20showed%20the"
   },
   {
    "finding_id": "FN-procrastination-2016",
@@ -1439,7 +2085,72 @@
    "retraction_checked_at": "",
    "checked_by": "",
    "checked_at": "",
-   "note": ""
+   "note": "",
+   "passages": [
+    {
+     "role": "claim",
+     "section": "Results > Procrastination across the life span",
+     "text": "Post hoc analysis revealed that procrastination was highest in the youngest group (14 to 29 years) declining across the older age groups.",
+     "mark": [
+      "highest in the youngest group",
+      "14 to 29 years",
+      "declining across the older age groups"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results > Associations of procrastination with distress, perceived stress and life satisfaction",
+     "text": "All individual domains of life satisfaction were significantly negatively associated with procrastination (range from r = .13 to r = .31); the correlations between procrastination and satisfaction with work, respectively income were highest.",
+     "mark": [
+      "All individual domains of life satisfaction",
+      "significantly negatively associated",
+      "r = .13 to r = .31",
+      "work, respectively income were highest"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results > Associations of procrastination with distress, perceived stress and life satisfaction",
+     "text": "As Table 3 shows, all correlations were in the direction hypothesized and of low to moderate magnitude.",
+     "mark": [
+      "low to moderate magnitude"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion",
+     "text": "Yet, in a cross-sectional study, causality cannot be determined.",
+     "mark": [
+      "cross-sectional study",
+      "causality cannot be determined"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion",
+     "text": "Data were limited to self-report. Therefore the findings of the study can be considered valid for self-assessed procrastination, however, not necessarily to observable procrastinating behavior [6].",
+     "mark": [
+      "limited to self-report",
+      "self-assessed procrastination",
+      "not necessarily to observable procrastinating behavior"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Method > Participants",
+     "text": "The sample consisted of a total of 2,527 participants (1,350 women; 1,177 men) between the ages of 14 and 95 years who were recruited at 258 sample points, representing East and West Germany; the majority (79.9%) lived in the Western states of Germany.",
+     "mark": [
+      "2,527 participants",
+      "between the ages of 14 and 95 years",
+      "258 sample points",
+      "East and West Germany"
+     ]
+    }
+   ],
+   "landing_url": "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0148054",
+   "fulltext_url": "https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0148054&type=manuscript",
+   "fragment": "Post hoc analysis revealed that procrastination was highest",
+   "jump": "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0148054#:~:text=Post%20hoc%20analysis%20revealed%20that%20procrastination%20was%20highest"
   },
   {
    "finding_id": "FN-habit-days-2024",
@@ -1473,7 +2184,80 @@
    "retraction_checked_at": "",
    "checked_by": "",
    "checked_at": "",
-   "note": ""
+   "note": "",
+   "passages": [
+    {
+     "role": "claim",
+     "section": "3.3. Time to Reach Habit Formation (Results)",
+     "text": "Of the four studies reporting on the time to reach habit formation, Keller et al. [22] examined the formation of healthy eating habits and reported that habits were successfully formed in a median of 59 days (range: 4 to 335 days).",
+     "mark": [
+      "four studies",
+      "median of 59 days",
+      "4 to 335 days"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "3.3. Time to Reach Habit Formation (Results)",
+     "text": "Similarly, Lally et al. [5] examined the formation of healthy eating, water consumption or exercise habits and reported that the median time to reach 95% automaticity was 66 days (range: 18 to 254 days).",
+     "mark": [
+      "median time",
+      "66 days",
+      "18 to 254 days"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "3.3. Time to Reach Habit Formation (Results)",
+     "text": "Lastly, Fournier et al. [32] reported that forming the habit formation of daily stretching took a mean of 106 days and 154 days for morning and evening stretching, respectively.",
+     "mark": [
+      "mean of 106 days",
+      "154 days",
+      "daily stretching"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "4. Discussion (limitations paragraph)",
+     "text": "The small number of studies that focused explicitly on the duration of habit formation and variability in their study designs prevented us from conducting a meta-analysis for the duration to reach automaticity.",
+     "mark": [
+      "small number of studies",
+      "variability in their study designs",
+      "prevented us from conducting a meta-analysis"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "3.3. Time to Reach Habit Formation (Results)",
+     "text": "However, only 23% of the included participants reached the predetermined threshold for habit formation.",
+     "mark": [
+      "only 23%",
+      "predetermined threshold"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "4. Discussion (first paragraph)",
+     "text": "Our analysis included 20 studies with a total of 2601 participants, examining a range of health-related behaviours such as physical activity, sedentary behaviour reduction, drinking water, healthy nutrition and dental flossing.",
+     "mark": [
+      "20 studies",
+      "2601 participants",
+      "health-related behaviours"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "2.3. Eligibility Criteria (Methods)",
+     "text": "Population: Studies were included if they targeted adults over the age of 18 in the general population as well as clinical populations.",
+     "mark": [
+      "adults over the age of 18"
+     ]
+    }
+   ],
+   "landing_url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC11641623/",
+   "fulltext_url": "https://pmc.ncbi.nlm.nih.gov/api/oai/v1/mh/?verb=GetRecord&identifier=oai:pubmedcentral.nih.gov:11641623&metadataPrefix=pmc",
+   "fragment": "Of the four studies reporting on the time",
+   "jump": "https://pmc.ncbi.nlm.nih.gov/articles/PMC11641623/#:~:text=Of%20the%20four%20studies%20reporting%20on%20the%20time"
   },
   {
    "finding_id": "FN-job-change-satisfaction-2020",
@@ -1507,7 +2291,72 @@
    "retraction_checked_at": "",
    "checked_by": "",
    "checked_at": "",
-   "note": ""
+   "note": "",
+   "passages": [
+    {
+     "role": "claim",
+     "section": "Results",
+     "text": "Domain satisfaction was negatively related to relocation (Table 2, Model 1, OR .837, p < .001) and to job change (Table 3, Model 1, OR = .791, p < .001) in the following year.",
+     "mark": [
+      "negatively related",
+      "job change",
+      "OR = .791",
+      "in the following year"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results",
+     "text": "For both domains, the signs of the effects of life satisfaction on life events flipped from negative to positive if domain satisfaction was controlled for.",
+     "mark": [
+      "flipped from negative to positive",
+      "if domain satisfaction was controlled for"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results",
+     "text": "Note, however, that only the effect of life satisfaction on job change in the following year was significant (Table 3, Model 3, OR = 1.065, p = .031), but not the effect of life satisfaction on relocation (Table 2, Model 3, OR = 1.024, p = .205).",
+     "mark": [
+      "life satisfaction on job change",
+      "Table 3, Model 3",
+      "OR = 1.065",
+      "p = .031"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion",
+     "text": "A limitation of the analyzed data is that we cannot say for sure that the individuals actively initiated the changes within the life domains.",
+     "mark": [
+      "cannot say for sure",
+      "actively initiated"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Results",
+     "text": "The effects of life satisfaction were smaller than the effects of domain satisfaction, which is in line with the assumption that changes in the focal domain are more strongly related to domain satisfaction (see also S1 and S2 Tables for standardized estimates).",
+     "mark": [
+      "smaller than the effects of domain satisfaction",
+      "more strongly related to domain satisfaction"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Methods (Sample)",
+     "text": "The analyses were based on unbalanced longitudinal datasets of the SOEP waves 2004 to 2015 that contain information on the individuals and their households (N = 2,037–28,778).",
+     "mark": [
+      "SOEP",
+      "waves 2004 to 2015",
+      "N = 2,037–28,778"
+     ]
+    }
+   ],
+   "landing_url": "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0238992",
+   "fulltext_url": "https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0238992&type=manuscript",
+   "fragment": "Domain satisfaction was negatively related to relocation",
+   "jump": "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0238992#:~:text=Domain%20satisfaction%20was%20negatively%20related%20to%20relocation"
   },
   {
    "finding_id": "FN-meaningful-work-salary-2017",
@@ -1541,7 +2390,62 @@
    "retraction_checked_at": "",
    "checked_by": "",
    "checked_at": "",
-   "note": ""
+   "note": "",
+   "passages": [
+    {
+     "role": "claim",
+     "section": "Study 1 > Results",
+     "text": "For meaningful jobs, participants were willing to accept an average minimum salary of $32,666 (SD = $15,060). For meaningless jobs, the minimum acceptable salary averaged at $52,498 (SD = $28,470).",
+     "mark": [
+      "$32,666",
+      "$52,498",
+      "meaningful jobs",
+      "meaningless jobs"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Study 4 > Results",
+     "text": "In a replication of the Study 3 results, participants who experienced more meaningful work lives were significantly more likely to turn down another job with higher pay in order to stay with their current organization (r = 0.34, p < 0.001).",
+     "mark": [
+      "more meaningful work lives",
+      "turn down another job with higher pay",
+      "r = 0.34"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Study 1 > Discussion",
+     "text": "Most importantly, the study relied on participants’ self-reported minimum acceptable salary levels for different jobs. It is certainly possible that when faced with actual job offers, participants would be willing to accept salaries that are lower than the reported values, or even refuse to accept offers with larger salaries.",
+     "mark": [
+      "self-reported minimum acceptable salary",
+      "when faced with actual job offers"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Study 1 > Methods",
+     "text": "Amazon’s Mechanical Turk (Mason and Suri, 2011; Landers and Behrend, 2015) was used to recruit 245 participants from the United States.",
+     "mark": [
+      "Amazon’s Mechanical Turk",
+      "245 participants",
+      "United States"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Study 4 > Methods",
+     "text": "Once these 11 participants were removed, the final sample consisted of 430 participants, including 185 women, 240 men, 1 other, and 4 missing answers.",
+     "mark": [
+      "430 participants",
+      "final sample"
+     ]
+    }
+   ],
+   "landing_url": "https://www.frontiersin.org/journals/psychology/articles/10.3389/fpsyg.2017.01649/full",
+   "fulltext_url": "https://pmc.ncbi.nlm.nih.gov/api/oai/v1/mh/?verb=GetRecord&identifier=oai:pubmedcentral.nih.gov:5649195&metadataPrefix=pmc",
+   "fragment": "For meaningful jobs, participants were willing to accept an average",
+   "jump": "https://www.frontiersin.org/journals/psychology/articles/10.3389/fpsyg.2017.01649/full#:~:text=For%20meaningful%20jobs%2C%20participants%20were%20willing%20to%20accept"
   },
   {
    "finding_id": "FN-regret-life-rules-2016",
@@ -1575,7 +2479,69 @@
    "retraction_checked_at": "",
    "checked_by": "",
    "checked_at": "",
-   "note": ""
+   "note": "",
+   "passages": [
+    {
+     "role": "claim",
+     "section": "Results > Bivariate Analyses",
+     "text": "Participants also reported greater regret intensity when the regret was in a social life domain and when the regret contradicted their life rules.",
+     "mark": [
+      "greater regret intensity",
+      "contradicted their life rules"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results > Descriptive Statistics",
+     "text": "Slightly more of the regrets were for inactions (54%) as opposed to actions.",
+     "mark": [
+      "Slightly more",
+      "inactions (54%)"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results > Multiple Regression Analysis",
+     "text": "The two explanatory variables with the largest effects were whether or not the regret was in a social domain, and whether it contradicted the participant’s life rules.",
+     "mark": [
+      "largest effects",
+      "contradicted the participant’s life rules"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion (limitations of design)",
+     "text": "Although the sample initially invited to take part was selected randomly from the population of adult New Zealanders, the modest response rate means that the sample was not truly random.",
+     "mark": [
+      "adult New Zealanders",
+      "modest response rate",
+      "not truly random"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion (limitations of design)",
+     "text": "Furthermore, the theoretical propositions considered in this paper relate to causal influences on regret, but the study’s cross-sectional and correlational design makes it difficult to draw firm causal conclusions. Finally, the study used only self-report data, in effect assuming that participants were both willing and able to provide accurate information about their emotions and behavior.",
+     "mark": [
+      "cross-sectional and correlational design",
+      "difficult to draw firm causal conclusions",
+      "only self-report data"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Materials and Methods > Participants",
+     "text": "Within the resulting final sample of N = 500, participants ranged in age from 18 to 87 years, M = 47.3, SD = 15.2.",
+     "mark": [
+      "N = 500",
+      "18 to 87 years"
+     ]
+    }
+   ],
+   "landing_url": "https://www.frontiersin.org/journals/psychology/articles/10.3389/fpsyg.2016.01941/full",
+   "fulltext_url": "https://pmc.ncbi.nlm.nih.gov/api/oai/v1/mh/?verb=GetRecord&identifier=oai:pubmedcentral.nih.gov:5156700&metadataPrefix=pmc",
+   "fragment": "Participants also reported greater regret intensity when the regret",
+   "jump": "https://www.frontiersin.org/journals/psychology/articles/10.3389/fpsyg.2016.01941/full#:~:text=Participants%20also%20reported%20greater%20regret%20intensity%20when%20the"
   },
   {
    "finding_id": "FN-uncertainty-stress-2016",
@@ -1609,7 +2575,69 @@
    "retraction_checked_at": "",
    "checked_by": "",
    "checked_at": "",
-   "note": ""
+   "note": "",
+   "passages": [
+    {
+     "role": "claim",
+     "section": "Results: Current irreducible uncertainty predicts subjective stress",
+     "text": "As predicted, participants reported being most stressed when they believed the current state was high in irreducible uncertainty.",
+     "mark": [
+      "most stressed",
+      "high in irreducible uncertainty"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results: Current irreducible uncertainty predicts subjective stress",
+     "text": "All parameters were significantly greater than zero (single-sample t-tests on parameters from multiple regression: previous rating β=0.25, t44=7.60, P<0.001; shocks β=0.074, t44=3.58, P<0.001; irreducible uncertainty β=0.099, t44=3.22, P=0.0024).",
+     "mark": [
+      "irreducible uncertainty β=0.099",
+      "P=0.0024"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results: Physiological stress reflects uncertainty and surprise",
+     "text": "Two-way analysis of variance demonstrated that both pupil diameter and skin conductance were increased by irreducible uncertainty (pupil: F1,21=22.56, P<0.001, η2=0.051; skin conductance: F1,36=9.36, P=0.004, η2=0.104) and surprise (pupil: F1,21=20.71, P<0.001, η2=0.045; skin conductance: F1,36=12.40, P=0.001, η2=0.070), with no interaction (pupil: F1,21=0.51, P=0.48; skin conductance: F1,36=0.14, P=0.71).",
+     "mark": [
+      "both pupil diameter and skin conductance were increased by irreducible uncertainty",
+      "F1,21=22.56, P<0.001",
+      "F1,36=9.36, P=0.004"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion",
+     "text": "We do not claim that ours are exhaustive metrics of stress, nor that chronic stress necessarily behaves similarly to the acute stress examined here.",
+     "mark": [
+      "nor that chronic stress necessarily behaves similarly",
+      "acute stress examined here"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Results: Physiological stress reflects uncertainty and surprise",
+     "text": "As a first step in gaining insight into the role played by uncertainty, we epoched physiological responses (pupil diameter, n=22; skin conductance, n=37; see Methods) by trial, starting 2 s before an outcome was revealed.",
+     "mark": [
+      "pupil diameter, n=22",
+      "skin conductance, n=37"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Methods: Participants",
+     "text": "Participants (n=45, 25 females, aged 19–35 years) were recruited via the UCL Institute of Cognitive Neuroscience recruitment mailing list, and gave their written informed consent before beginning any experiments.",
+     "mark": [
+      "n=45",
+      "aged 19–35 years",
+      "UCL Institute of Cognitive Neuroscience"
+     ]
+    }
+   ],
+   "landing_url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC4820542/",
+   "fulltext_url": "https://pmc.ncbi.nlm.nih.gov/api/oai/v1/mh/?verb=GetRecord&identifier=oai:pubmedcentral.nih.gov:4820542&metadataPrefix=pmc",
+   "fragment": "As predicted, participants reported being most stressed when they believed",
+   "jump": "https://pmc.ncbi.nlm.nih.gov/articles/PMC4820542/#:~:text=As%20predicted%2C%20participants%20reported%20being%20most%20stressed%20when"
   },
   {
    "finding_id": "FN-deliberate-practice-2019",
@@ -1643,7 +2671,64 @@
    "retraction_checked_at": "",
    "checked_by": "",
    "checked_at": "",
-   "note": ""
+   "note": "",
+   "passages": [
+    {
+     "role": "claim",
+     "section": "Results — Accumulated practice alone (replication study analyses)",
+     "text": "However, the best violinists (M = 8224, 95% CI [6400, 10 048], range = 3978–14 664) had not accumulated significantly more practice alone by age 18 than the good violinists (M = 9844, 95% CI [6937, 12 751], range = 3120–21 268), t24 = −0.93, p = 0.364, d = −0.38.",
+     "mark": [
+      "had not accumulated significantly more practice alone by age 18",
+      "M = 8224",
+      "M = 9844",
+      "p = 0.364"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results — Accumulated practice alone (replication study analyses)",
+     "text": "The good violinists had accumulated significantly more practice alone by age 18 than the less accomplished violinists (M = 4558, 95% CI [3264, 5851], range = 2522–10 972), t16.57 = 3.26, p = 0.005, d = 1.33.",
+     "mark": [
+      "significantly more practice alone by age 18",
+      "less accomplished violinists",
+      "M = 4558",
+      "p = 0.005"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Methods — Sample size",
+     "text": "While our sample size is 33% larger than Ericsson et al.'s, it is still small.",
+     "mark": [
+      "33% larger",
+      "it is still small"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Methods — Materials and procedure",
+     "text": "Participants were then asked to estimate the number of hours per week they had practised alone with the violin for each year beginning with the age they first started practising to the present.",
+     "mark": [
+      "estimate the number of hours per week",
+      "for each year",
+      "to the present"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Methods — Participants (the less accomplished violinists)",
+     "text": "The Cleveland Institute of Music does not have a music education department and so we recruited violin students from the neighbouring music department at Case Western Reserve University.",
+     "mark": [
+      "Cleveland Institute of Music",
+      "violin students",
+      "Case Western Reserve University"
+     ]
+    }
+   ],
+   "landing_url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC6731745/",
+   "fulltext_url": "https://pmc.ncbi.nlm.nih.gov/api/oai/v1/mh/?verb=GetRecord&identifier=oai:pubmedcentral.nih.gov:6731745&metadataPrefix=pmc",
+   "fragment": "However, the best violinists (M = 8224",
+   "jump": "https://pmc.ncbi.nlm.nih.gov/articles/PMC6731745/#:~:text=However%2C%20the%20best%20violinists%20%28M%20%3D%208224"
   },
   {
    "finding_id": "FN-loneliness-age-2021",
@@ -1677,7 +2762,78 @@
    "retraction_checked_at": "",
    "checked_by": "",
    "checked_at": "",
-   "note": ""
+   "note": "",
+   "passages": [
+    {
+     "role": "claim",
+     "section": "Results",
+     "text": "Specifically, age was negatively associated with loneliness (β = −0.12, t = −24.81, p < .001, 95% CI [−0.145, −0.124]), with older people reporting less frequent loneliness than younger people.",
+     "mark": [
+      "β = −0.12",
+      "older people reporting less frequent loneliness than younger people"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results",
+     "text": "Gender was also negatively associated with loneliness (β = −0.08, t = −15.73, p < .001, 95% CI [−0.102, −0.076]), with men reporting more frequent loneliness than women.",
+     "mark": [
+      "β = −0.08",
+      "men reporting more frequent loneliness than women"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results",
+     "text": "Individualism was positively associated with loneliness (β = 0.06, t = 12.04, p < .001, 95% CI [0.055, 0.076], with people living in more individualistic societies reporting more frequent loneliness than people living in more collectivistic societies.",
+     "mark": [
+      "β = 0.06",
+      "more individualistic societies reporting more frequent loneliness"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion",
+     "text": "As already indicated, it must also be kept in mind that we used a large, but non-representative sample of participants who volunteered to speak about their feelings of loneliness that, importantly, complements and extends other studies that used more rigorous sampling procedures (ONS, 2018) Finally, it is important to acknowledge that the effects we found were very small, although consistent across all three loneliness dimensions.",
+     "mark": [
+      "non-representative sample",
+      "volunteered",
+      "the effects we found were very small"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion",
+     "text": "Because our data are cross-sectional, this pattern may not reflect developmental processes, but, instead, historical factors that differentially affected younger and older respondents, such as less stigma associated with (reporting) loneliness when younger (vs older) participants were growing up.",
+     "mark": [
+      "cross-sectional",
+      "may not reflect developmental processes"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Method",
+     "text": "Participants took part in an online survey launched on BBC Radio 4 and BBC World Service, and mentioned in several other media that picked up on the event.",
+     "mark": [
+      "online survey",
+      "BBC Radio 4 and BBC World Service"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Discussion",
+     "text": "We analysed the frequency of loneliness reported by 46,054 participants aged 16–99 years, living across 237 countries, islands, and territories, representing the full range of individualism-collectivism cultures, as defined by Hofstede (1997).",
+     "mark": [
+      "46,054 participants",
+      "aged 16–99 years",
+      "237 countries"
+     ]
+    }
+   ],
+   "landing_url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC7768187/",
+   "fulltext_url": "https://pmc.ncbi.nlm.nih.gov/api/oai/v1/mh/?verb=GetRecord&identifier=oai:pubmedcentral.nih.gov:7768187&metadataPrefix=pmc",
+   "fragment": "Specifically, age was negatively associated with loneliness",
+   "jump": "https://pmc.ncbi.nlm.nih.gov/articles/PMC7768187/#:~:text=Specifically%2C%20age%20was%20negatively%20associated%20with%20loneliness"
   },
   {
    "finding_id": "FN-friends-life-satisfaction-2018",
@@ -1711,7 +2867,59 @@
    "retraction_checked_at": "",
    "checked_by": "",
    "checked_at": "",
-   "note": ""
+   "note": "",
+   "passages": [
+    {
+     "role": "claim",
+     "section": "Results",
+     "text": "If the individual meets friends only a few times a year or does not have friends, then the probability of being satisfied decreases nearly 27%.",
+     "mark": [
+      "only a few times a year",
+      "does not have friends",
+      "nearly 27%"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results",
+     "text": "Moreover, if individuals are either quite satisfied or not satisfied with their friendship relationships, then the probability of being satisfied decreases 49 and 69%, respectively, compared to the same probability for individuals satisfied with their friendship relations.",
+     "mark": [
+      "quite satisfied or not satisfied",
+      "decreases 49 and 69%"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Concluding remarks",
+     "text": "Although in the current study the target variables follow a partially logical chronological order, the data derives from an observational study, and therefore, no causal relations can be inferred.",
+     "mark": [
+      "observational study",
+      "no causal relations can be inferred"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Concluding remarks",
+     "text": "This link is considered, by psychological literature, as a bidirectional dynamic process (Demir et al. 2015).",
+     "mark": [
+      "bidirectional dynamic process"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Data and methods",
+     "text": "The current study focuses on the most recent survey data (2012) and considers the life satisfaction of 25,190 individuals (ages 18–64).",
+     "mark": [
+      "(2012)",
+      "25,190 individuals",
+      "ages 18–64"
+     ]
+    }
+   ],
+   "landing_url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC5937874/",
+   "fulltext_url": "https://pmc.ncbi.nlm.nih.gov/api/oai/v1/mh/?verb=GetRecord&identifier=oai:pubmedcentral.nih.gov:5937874&metadataPrefix=pmc",
+   "fragment": "If the individual meets friends only a few times",
+   "jump": "https://pmc.ncbi.nlm.nih.gov/articles/PMC5937874/#:~:text=If%20the%20individual%20meets%20friends%20only%20a%20few"
   },
   {
    "finding_id": "FN-housework-fairness-2019",
@@ -1745,7 +2953,92 @@
    "retraction_checked_at": "",
    "checked_by": "",
    "checked_at": "",
-   "note": ""
+   "note": "",
+   "passages": [
+    {
+     "role": "claim",
+     "section": "Results > Multivariate analyses > Seemingly unrelated regression",
+     "text": "Providing additional support for Hypothesis 1.1, the results of the SUR indicate that housework and financial arrangements perceived as ego unfair were associated with significantly lower relationship satisfaction and sex frequency when compared with mostly fair arrangements (all ps < .001).",
+     "mark": [
+      "housework",
+      "perceived as ego unfair",
+      "significantly lower relationship satisfaction",
+      "all ps < .001"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Method > Measures > Independent variables",
+     "text": "To assess perceived fairness of the division of housework, respondents were asked: “Considering work/commute schedules, would you say the division of your household/childcare chores is fair?”",
+     "mark": [
+      "household/childcare chores",
+      "fair?"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Method > Measures > Independent variables",
+     "text": "The response categories included: “no, I do way too much of the work” and “no, I do somewhat more than I should” (coded as “perceived ego unfairness”); “no, my partner does way too much of the work” and “no, my partner does somewhat more than he/she should” (coded as “perceived unfairness for partner”); and “yes, it’s fair enough” (coded as “mostly fair”).",
+     "mark": [
+      "I do way too much of the work",
+      "I do somewhat more than I should",
+      "perceived ego unfairness",
+      "mostly fair"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion > Limitations",
+     "text": "These correlational data preclude our ability to make causal statements about the relationship between equity evaluations and relationship quality. For example, relationship quality might affect individuals’ reports of perceived fairness.",
+     "mark": [
+      "correlational data",
+      "causal statements",
+      "relationship quality might affect individuals’ reports of perceived fairness"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion > Limitations",
+     "text": "Although our sample was large, it was not probability-based. As is true of Internet samples in general, our collection of data from an Internet website yielded a non-representative convenience sample of respondents with relatively higher household incomes and educational levels when compared to the national population [73, 74].",
+     "mark": [
+      "not probability-based",
+      "non-representative convenience sample",
+      "relatively higher household incomes and educational levels"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Method > Data",
+     "text": "Data for this project come from the “Money, Sex & Love Survey” which was posted on NBCNews.com for ten days in 2008.",
+     "mark": [
+      "NBCNews.com",
+      "2008"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Method > Sample",
+     "text": "Because we were interested in how traditional versus emerging gender norms impacted evaluation of equity or non-equity in relationships, we restricted our sample to respondents in different-gender couples who live together.",
+     "mark": [
+      "different-gender couples who live together"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Method > Sample",
+     "text": "The final sample (N = 10,236) was 65% male, 89% married or remarried, and had an average age of 42.6 (SD = 11.8).",
+     "mark": [
+      "N = 10,236",
+      "65% male",
+      "89% married or remarried",
+      "42.6"
+     ]
+    }
+   ],
+   "landing_url": "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0214204",
+   "fulltext_url": "https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0214204&type=manuscript",
+   "fragment": "Providing additional support for Hypothesis 1.1, the results",
+   "jump": "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0214204#:~:text=Providing%20additional%20support%20for%20Hypothesis%201.1%2C%20the%20results"
   },
   {
    "finding_id": "FN-singles-pressure-2025",
@@ -1779,7 +3072,94 @@
    "retraction_checked_at": "",
    "checked_by": "",
    "checked_at": "",
-   "note": ""
+   "note": "",
+   "passages": [
+    {
+     "role": "claim",
+     "section": "Results > Outcomes and covariates > Psychological covariates > Ill-being",
+     "text": "The highest tier of ill-being included the three high-pressure profiles. Regardless of the specific variable used to index ill-being, the high-pressure profiles scored the highest and were not significantly different from each other.",
+     "mark": [
+      "highest tier of ill-being",
+      "three high-pressure profiles",
+      "scored the highest"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results > Outcomes and covariates > Psychological covariates > Ill-being",
+     "text": "The four measures of ill-being (anxiety, depression, loneliness, and chronic stress) were so closely related across profiles that they can be discussed together.",
+     "mark": [
+      "anxiety, depression, loneliness"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results > Extracted profiles",
+     "text": "Specifically, the nine profiles could be grouped into sets of three by romantic relationship goals (partner-seekers, casual-daters, and non-daters), then further divided again by perceived pressure to partner (low, medium, and high).",
+     "mark": [
+      "partner-seekers, casual-daters, and non-daters",
+      "perceived pressure to partner"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Materials and methods > Measures > Extrinsic factors (definition of 'pressure from others')",
+     "text": "Participants were asked how much pressure to partner, if any, they felt from their family, friends, and society at large.",
+     "mark": [
+      "pressure to partner",
+      "family, friends, and society at large"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion > Limitations",
+     "text": "First, as this study was not pre-registered and used an exploratory approach, replication is needed to confirm and extend the results. Data were collected in the latter half of the COVID-19 pandemic, before the Omicron variant.",
+     "mark": [
+      "not pre-registered",
+      "exploratory approach",
+      "COVID-19 pandemic"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion > Limitations",
+     "text": "Additionally, the cross-sectional nature of our data precludes causal conclusions about profile membership, outcomes, and covariates.",
+     "mark": [
+      "cross-sectional",
+      "precludes causal conclusions"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion > Limitations",
+     "text": "It was also exclusively American, and thus subject to Western cultural biases (e.g., WEIRD standards; Henrich et al., 2010).",
+     "mark": [
+      "exclusively American"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Materials and methods > Participants and procedures",
+     "text": "The present study is an exploratory analysis of a dataset collected in 2021 via Dynata. For prior studies using the same dataset, (see Walsh et al., 2022, 2023). The initial participant pool was filtered according to age and relationship status; prospective participants were allowed to take the survey if they indicated they were single and between 18 and 65 years old.",
+     "mark": [
+      "collected in 2021",
+      "they were single",
+      "between 18 and 65 years old"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Materials and methods > Participants and procedures",
+     "text": "This reduced the final sample size from 5,010 to 4,835 single adults.",
+     "mark": [
+      "4,835 single adults"
+     ]
+    }
+   ],
+   "landing_url": "https://www.frontiersin.org/journals/psychology/articles/10.3389/fpsyg.2025.1509349/full",
+   "fulltext_url": "https://pmc.ncbi.nlm.nih.gov/api/oai/v1/mh/?verb=GetRecord&identifier=oai:pubmedcentral.nih.gov:12318961&metadataPrefix=pmc",
+   "fragment": "The highest tier of ill-being included the three high-pressure profiles",
+   "jump": "https://www.frontiersin.org/journals/psychology/articles/10.3389/fpsyg.2025.1509349/full#:~:text=The%20highest%20tier%20of%20ill%2Dbeing%20included%20the%20three"
   },
   {
    "finding_id": "FN-gfs-japan-2025",
@@ -1813,7 +3193,59 @@
    "retraction_checked_at": "",
    "checked_by": "",
    "checked_at": "",
-   "note": ""
+   "note": "",
+   "passages": [
+    {
+     "role": "claim",
+     "section": "Results > Results on specific aspects of flourishing > Table 9 footnote b",
+     "text": "Japan has a number of relative areas for growth for which its self-report assessment was the lowest of the 22 countries, including life evaluation five years from now, optimism, freedom, mastery, meaning, purpose, relational contentment, satisfying relationships, social support, intimate friend, self-rated mental health, promoting good, delayed gratification, hope, gratitude",
+     "mark": [
+      "the lowest of the 22 countries",
+      "meaning, purpose, relational contentment, satisfying relationships",
+      "hope, gratitude"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results > Composite flourishing (Table 4)",
+     "text": "Without financial security, the highest means were reported in Indonesia (8.47), Mexico (8.19) and the Philippines (8.11); the lowest were in Japan (5.93), Turkey (6.59) and the United Kingdom (6.88).",
+     "mark": [
+      "the lowest were in Japan (5.93)"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion (limitations)",
+     "text": "With regard to limitations of the analyses presented in this Article, caution is needed in interpreting cross-national differences as these may be influenced by matters of translation75,76, different modes of assessment, differing interpretation of items and of response scales, and seasonal effects arising from data being collected in different countries at different times of the year.",
+     "mark": [
+      "caution is needed in interpreting cross-national differences",
+      "matters of translation",
+      "differing interpretation of items and of response scales"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion (limitations)",
+     "text": "Table 5 should thus be interpreted as simply providing ordered means across what are somewhat differentially interpreted items, not as ‘rankings.’",
+     "mark": [
+      "ordered means",
+      "not as ‘rankings.’"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Methods > Study population",
+     "text": "The study population consisted of 202,898 adults: ages 18–24 years (n = 27,007 (13%)); 25–29 years (n = 20,700 (10%)); 30–39 years (n = 40,256 (20%)); 40–49 years (n = 34,464 (17%)); 50–59 years (n = 31,793 (16%)); 60–69 years (n = 27,763 (14%)); 70–79 years (n = 16,776 (8.3%)); 80 or older (n = 4,119 (2.0%)); missing (n = 20 (<0.1%)).",
+     "mark": [
+      "202,898 adults",
+      "ages 18–24 years"
+     ]
+    }
+   ],
+   "landing_url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC12165845/",
+   "fulltext_url": "https://pmc.ncbi.nlm.nih.gov/api/oai/v1/mh/?verb=GetRecord&identifier=oai:pubmedcentral.nih.gov:12165845&metadataPrefix=pmc",
+   "fragment": "Japan has a number of relative areas for growth",
+   "jump": "https://pmc.ncbi.nlm.nih.gov/articles/PMC12165845/#:~:text=Japan%20has%20a%20number%20of%20relative%20areas%20for"
   },
   {
    "finding_id": "FN-prolific-liars-japan-2021",
@@ -1847,7 +3279,62 @@
    "retraction_checked_at": "",
    "checked_by": "",
    "checked_at": "",
-   "note": ""
+   "note": "",
+   "passages": [
+    {
+     "role": "claim",
+     "section": "Results",
+     "text": "The mode was zero (37.4% of participants reported that they did not lie in the past 24 hours), and 51.5% reported that they told one to five lies.",
+     "mark": [
+      "The mode was zero",
+      "37.4%",
+      "51.5%"
+     ]
+    },
+    {
+     "role": "claim",
+     "section": "Results",
+     "text": "Only 11.1% reported six or more lies; but this group accounted for 59.3% of total reported lies (536 out of 904 lies).",
+     "mark": [
+      "11.1%",
+      "six or more lies",
+      "59.3% of total reported lies",
+      "536 out of 904 lies"
+     ]
+    },
+    {
+     "role": "limits",
+     "section": "Discussion (limitations, second point)",
+     "text": "Second, the results of this study are based solely on lies reported by college students. To improve the generalizability of the results, a study obtaining lie reports from a broader sample could be conducted.",
+     "mark": [
+      "based solely on lies reported by college students",
+      "generalizability",
+      "broader sample"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Method (Participants)",
+     "text": "The initial sample included 340 undergraduate students (187 males, 153 females, Mage = 19.61 ±3.33 years) at two Japanese universities.",
+     "mark": [
+      "340 undergraduate students",
+      "two Japanese universities"
+     ]
+    },
+    {
+     "role": "population",
+     "section": "Method (Participants)",
+     "text": "After these exclusions, a total of 305 participants (174 males, 131 females, Mage = 19.39 ±3.31 years) were included in the analyses.",
+     "mark": [
+      "305 participants",
+      "174 males, 131 females"
+     ]
+    }
+   ],
+   "landing_url": "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0249815",
+   "fulltext_url": "https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0249815&type=manuscript",
+   "fragment": "The mode was zero (37.4% of participants reported",
+   "jump": "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0249815#:~:text=The%20mode%20was%20zero%20%2837.4%25%20of%20participants%20reported"
   }
  ],
  "leads": [

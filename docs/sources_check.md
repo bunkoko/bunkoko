@@ -68,7 +68,8 @@ Claude が新しく調べた下書きは、あなたが押さなくても、AI �
 - 該当箇所を探す：`KOTEN_CONTACT=… uv run koten sources locate --drafts docs/research/2026-11-21-source-drafts.json --passages 研究の文の JSON`
   - 統計：元の資料の PDF を net.py で取り（data/sources-cache）、写した行が載っているページを探して画像にし、行と数字に印を付けます（data/sources-img。Git に入れない）。表の行は、写した数字をいちばん多く含み、統計の数字も含む見た目の行を選びます。PDF の場所は doc_url（index のページを出典にした行）、文字を取り出せない PDF は page_hint のページを印なしで出します。
   - 研究：調べ役が写した結果の文が、論文の本文にそのままあるかを net.py で取り直して確かめ、無い文は外します。
-  - 道具：pdftotext・pdftoppm（poppler）と ffmpeg。ページを作るのは Claude の環境だけです。
+  - 道具：pdftotext・pdftoppm（poppler）と ffmpeg、日本語の PDF を読むための poppler-data（`apt-get install -y poppler-data`。無いと字が出ない・取り出せない）。ページを作るのは Claude の環境だけです。
+  - 画像は2枚：数字のまわりの拡大（赤い枠が数字、黄色が行）と、ページの中の場所（押すと大きくなる）。
 - ページを作る：`uv run koten sources page`（下書き全部）／ `--todo docs/checks/E20261107-01.json`（その回の行だけ。文と数字は今の台帳、場所と画像は下書きから）。画像はページの隣の img/ に置いて、アーティファクトに一緒に載せます。
 - 押した結果：ページのデータベースの checks/<キー>。キーは下書きの中身から作るので、文を直した行は押し直しになります。
 - 取り込む：データベースを JSON にして `uv run koten sources merge --from その JSON`（`--todo` を付けると、その回の行だけ。新しい候補をまとめて入れるときは `--accept-rest`）。

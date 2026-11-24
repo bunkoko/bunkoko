@@ -152,6 +152,7 @@ def page_items(drafts: dict[str, Any]) -> list[dict[str, Any]]:
                 "url": d.get("url", ""),
                 # 元の資料の該当ページ（koten sources locate）：画像・ページの番号・飛ぶリンク
                 "img": d.get("img", ""),
+                "zoom": d.get("zoom", ""),
                 "page": d.get("page") or "",
                 "jump": d.get("jump") or d.get("doc_url") or d.get("url", ""),
                 "where": d.get("where", ""),
