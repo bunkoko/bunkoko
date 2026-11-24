@@ -28,7 +28,7 @@ case "$cmd" in
           "$PY" -c "import sentence_transformers, torch, sklearn, yfinance, shap" 2>/dev/null \
             || echo "⚠ 毎日の自動実行に要る部品が入っていない（上のエラーを Claude に貼る）"
           "$PY" scripts/mt5_files.py install
-          echo "更新した。MT5 の MetaEditor で CfdCommodityEA と CfdExportBars をコンパイルし直す（F7）" ;;
+          echo "更新した（MetaEditor でのコンパイルが要るかは、上の「⚠ コンパイルが要る」か「コンパイル済みのまま」の行）" ;;
   where)  need_venv; exec "$PY" scripts/mt5_files.py where "$@" ;;
   mt5)    need_venv; exec "$PY" scripts/mt5_files.py install "$@" ;;
   data)   need_venv

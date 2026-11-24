@@ -29,7 +29,7 @@ sys.path.insert(0, str(ROOT))
 
 from cfdbot.events import load_events_csv  # noqa: E402
 from cfdbot.mt5files import (Terminal, build_presets, choose_terminal, fetch, find_terminals,  # noqa: E402
-                             install)
+                             install, needs_compile)
 from cfdbot.train.config import load_train_config  # noqa: E402
 from cfdbot.train.dataset import _parse_name  # noqa: E402
 
@@ -99,9 +99,13 @@ def cmd_install(args) -> None:
     print(f"MT5 のデータフォルダ: {term.data_dir}")
     for p in placed:
         print(f"  置いた: {_short(p, term)}")
+    stale = needs_compile(term)
+    if stale:
+        print(f"\n⚠ MetaEditor でコンパイルが要る（fn + F7）: {'・'.join(stale)}（コンパイル済みのファイルが無いか、置いたソースより古い）")
+    else:
+        print("\nEA とスクリプトは、コンパイル済みのまま（中身は変わっていない。コンパイルし直さなくてよい）")
     if not presets:
-        print("\nEA とスクリプトだけ置いた（学習後に --run を付けて実行するとプリセットも置く）。"
-              "次: MetaEditor で CfdCommodityEA と CfdExportBars をコンパイル（F7）")
+        print("EA とスクリプトだけ置いた（学習後に --run を付けて実行するとプリセットも置く）")
         return
     print("\nチャートと EA の対応（気配値表示の銘柄でチャートを開き、時間足を合わせて EA を貼る）:")
     charts = {p.name: _mt5_name(p.symbol, cfg.data.symbol_map, Path(cfg.data.dir)) for p in presets}

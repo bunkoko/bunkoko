@@ -193,3 +193,30 @@ def test_compare_all_diagnoses_tester_mistakes(tmp_path):
     assert len(ok) == 1 and "プリセット GOLD / D1" in ok[0]
     bad = " ".join(mod.diagnose(wrong, expected, DEFAULT_SYMBOL_MAP, 2609000))
     assert "WTI のプリセット" in bad and "2 回実行" in bad
+
+
+def test_compile_is_asked_only_when_the_source_is_newer_than_the_compiled_file(tmp_path):
+    """./cfd update のたびに「コンパイルし直す」と出ると、要らない「やること」になる（2026-11-24。EA は 10-06 から変わっていなかった）。
+
+    要るのは、コンパイル済みのファイル（.ex5）が無いか、置いたソース（.mq5）より古いときだけ。
+    """
+    import os
+
+    from cfdbot.mt5files import needs_compile
+
+    mql5, _ = _wine_terminal(tmp_path / "home")
+    term = find_terminals(home=tmp_path / "home")[0]
+    install(term, [], ROOT, None)
+    assert needs_compile(term) == ["CfdCommodityEA", "CfdExportBars"]         # まだ 1 度もコンパイルしていない
+    for sub, name in (("Experts", "CfdCommodityEA"), ("Scripts", "CfdExportBars")):
+        src = mql5 / sub / f"{name}.mq5"
+        ex5 = mql5 / sub / f"{name}.ex5"
+        ex5.write_bytes(b"x")
+        os.utime(ex5, (src.stat().st_mtime + 60, src.stat().st_mtime + 60))  # ソースを置いた後でコンパイルした
+    assert needs_compile(term) == []
+    install(term, [], ROOT, None)                                             # 同じ中身をもう一度置いても（update のたびに置く）
+    assert needs_compile(term) == []
+    ea = mql5 / "Experts" / "CfdCommodityEA.mq5"
+    newer = (mql5 / "Experts" / "CfdCommodityEA.ex5").stat().st_mtime + 3600
+    os.utime(ea, (newer, newer))                                              # ソースのほうが新しくなった（EA を直した）
+    assert needs_compile(term) == ["CfdCommodityEA"]

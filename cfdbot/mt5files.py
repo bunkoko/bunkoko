@@ -214,6 +214,22 @@ def build_presets(ea_dir: str | Path, events: list[Event], start: pd.Timestamp, 
     return out
 
 
+SOURCES = (("Experts", "CfdCommodityEA"), ("Scripts", "CfdExportBars"))      # MT5 に置く EA とスクリプト（MQL5 の下のフォルダ・名前）
+
+
+def needs_compile(term: Terminal) -> list[str]:
+    """MetaEditor でコンパイルが要るもの: コンパイル済みのファイル（.ex5）が無いか、置いてあるソース（.mq5）より古い。
+
+    ソースは元の更新時刻のまま置く（copy2）ので、中身が変わっていなければ、何度置き直しても「要る」にはならない。
+    """
+    out = []
+    for sub, name in SOURCES:
+        src, ex5 = term.mql5 / sub / f"{name}.mq5", term.mql5 / sub / f"{name}.ex5"
+        if src.exists() and (not ex5.exists() or ex5.stat().st_mtime < src.stat().st_mtime):
+            out.append(name)
+    return out
+
+
 def install(term: Terminal, presets: list[Preset], repo: Path, events_csv: Path | None) -> list[str]:
     """EA・スクリプト・プリセット・指標カレンダーを MT5 のフォルダに置く。置いた場所の一覧を返す。"""
     done = []
