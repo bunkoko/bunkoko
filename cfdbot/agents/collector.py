@@ -258,17 +258,49 @@ def docs_unlock(root: Path) -> None:
     (root / ".docs.lock").unlink(missing_ok=True)
 
 
+WANT_FILE = ".docs.wanted"                # 毎日の収集が「先に取らせて」と頼む印。過去分の取得は、これを見たら錠を放して待つ
+
+
+def wanted(root: Path) -> bool:
+    """毎日の収集が、錠が空くのを待っているか（印を置いた道具がもう動いていなければ、印は無視して消す）。"""
+    path = root / WANT_FILE
+    if not path.exists():
+        return False
+    try:
+        if _alive(int(path.read_text().strip() or 0)):
+            return True
+    except (OSError, ValueError):
+        pass
+    path.unlink(missing_ok=True)
+    return False
+
+
 def collect_docs(disc: pd.DataFrame, root: Path, pdf: bool = True, xbrl: bool = True, max_docs: int = 300, interval: float = INTERVAL,
-                 get: Callable[[str], bytes] | None = None, log: Callable[[str], None] = print) -> dict[str, int]:
+                 get: Callable[[str], bytes] | None = None, log: Callable[[str], None] = print, wait: float = 0.0,
+                 sleep: Callable[[float], None] = time.sleep) -> dict[str, int]:
     """disc の開示について、まだ無い本文（文字にしたもの）と数字を取って root（data/agents/ir）の下に保存する。
 
     PDF そのものは残さない。interval 秒に 1 件の速さで取る。取れなかったもの（まだ載っていない・消えた）は次の機会にまた試す。
-    ほかの取得が動いている間は何もしない（busy = 1 を返す）。
+    ほかの取得が動いている間は何もしない（busy = 1 を返す）。wait を渡すと、「先に取らせて」の印を置いて、その秒数まで錠が空くのを待つ
+    （過去の本文の取得は、印を見ると錠を放す。毎日の収集が、長い取得のせいで書類を取り損ねないように）。
     """
+    import os
+
     get = get or (lambda url: http_get(url, tries=1))
     done = {"text": 0, "xbrl": 0, "missing": 0}
     if not docs_lock(root):
-        return dict(done, left=0, busy=1)
+        if wait <= 0:
+            return dict(done, left=0, busy=1)
+        want, waited = root / WANT_FILE, 0.0
+        want.write_text(str(os.getpid()))
+        try:
+            while not docs_lock(root):
+                if waited >= wait:
+                    return dict(done, left=0, busy=1)
+                sleep(5.0)
+                waited += 5.0
+        finally:
+            want.unlink(missing_ok=True)
     try:
         return _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done)
     finally:
@@ -316,6 +348,161 @@ def _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done) -> 
             log(f"  書類 {k + 1}/{min(len(jobs), max_docs)}（本文 {done['text']}・数字 {done['xbrl']}・まだ無い {done['missing']}）")
         _wait(started, interval)
     done["left"] = max(len(jobs) - max_docs, 0)
+    return done
+
+
+# --------------------------------------------------------------------------- 過去の本文をまとめて取る（docs/agents.md 10.1。2026-11-24）
+MISS_FILE = "text_missing.csv"            # サイトに無かった書類（404）の控え。過去分では、もう取りに行かない
+QUIET_FROM, QUIET_TO = (7, 50), (8, 45)   # 毎朝 8:00 の収集に場所をゆずる時間（その機械の時計）。この間は取らない・錠も持たない
+HISTORY_CHUNK = 200                       # 1 度の錠で取る数（3 分ちょっと。終わるたびに錠を放す）
+REFUSED = (403, 429, 503)                 # サイトに断られた印。すぐ止める（続けて取りに行かない）
+MAX_FAILS = 10                            # 続けてこれだけ取れなければ止める（回線・サイトの不調）
+PDF_NEED_GB = 60                          # 原本も残すときに要る空き（見当: 9 万件 × 0.3MB ≒ 27GB の倍）
+
+
+def pdf_root(root: Path) -> Path:
+    """過去分の PDF の原本の置き場所: 本文の置き場所（リンクの行き先）のとなりの ir_pdf。"""
+    import os
+
+    return Path(os.path.realpath(text_root(root))).parent / "ir_pdf"
+
+
+def load_missing(root: Path) -> set[str]:
+    """サイトに無かった書類の id。"""
+    path = root / MISS_FILE
+    return set(path.read_text(encoding="utf-8").split()) if path.exists() else set()
+
+
+def in_quiet(t) -> bool:
+    """毎朝の収集に場所をゆずる時間か。"""
+    return QUIET_FROM <= (t.hour, t.minute) < QUIET_TO
+
+
+HISTORY_SKIP_DAYS = 7                     # 直近の開示は毎日の収集の持ち分（まだ載っていないことがあり、「無かった」と覚えてしまうため）
+
+
+def history_jobs(disc: pd.DataFrame, root: Path, since: str, until: str | None = None) -> list:
+    """since から後（until より前）の開示のうち、まだ本文が無く、「サイトに無かった」の控えにも無いもの。新しい順。"""
+    miss = load_missing(root)
+    df = disc[disc["time"] >= since]
+    if until is not None:
+        df = df[df["time"] < until]
+    df = df.sort_values("time", ascending=False, kind="stable")
+    return [r for r in df.itertuples(index=False) if r.id not in miss and not text_path(root, r).exists()]
+
+
+def history_until(now) -> str:
+    """過去分として取るのは、この日時より前の開示（直近 HISTORY_SKIP_DAYS 日は毎日の収集に任せる）。"""
+    from datetime import timedelta
+
+    return f"{now - timedelta(days=HISTORY_SKIP_DAYS):%Y-%m-%d %H:%M:%S}"
+
+
+def _save_history(root: Path, r, blob: bytes, keep_pdf: bool) -> None:
+    if not text_root(root).is_dir():                            # 取っている間にディスクが外れた（行き先の無いリンク）
+        raise OSError("本文の置き場所が無い")
+    if keep_pdf:
+        raw = pdf_root(root) / str(r.time)[:7] / f"{r.id}.pdf"
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        raw.write_bytes(blob)
+    path = text_path(root, r)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".part")
+    tmp.write_text(pdf_text(blob), encoding="utf-8")
+    tmp.replace(path)                                           # 本文のファイルがあることが「取った」印。書き終えてから名前を付ける（原本より後）
+
+
+def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: int | None = None, keep_pdf: bool = True,
+                         interval: float = INTERVAL, get: Callable[[str], bytes] | None = None, log: Callable[[str], None] = print,
+                         now=None, sleep: Callable[[float], None] = time.sleep, free: Callable[[str], int] | None = None) -> dict:
+    """過去の開示の本文（PDF の最初の数ページを文字にしたもの。毎日の収集と同じ形）を、新しい順にまとめて取る。
+
+    決まり: interval 秒に 1 件・同時に 1 本だけ（錠）。毎朝 8:00 の収集の時間（QUIET）は取らず、錠も持たない
+    （毎朝の収集は、ほかの取得が動いていると書類を取らずに終わる。決算の数字が抜けると、その日の E1 の記録が傷む）。
+    サイトに無かった書類（404）は控えて、次からは取りに行かない。断られたら（REFUSED）すぐ止める。
+    置き場所は外付けのディスクへのリンクであること（2026-11-20 利用者の決め）。keep_pdf なら原本もそのとなりに残す。
+    返すのは、取れた数（text）・サイトに無かった数（missing）・取れなかった数（failed）・残り（left）・止まった理由（stopped）。
+    """
+    import shutil
+    import urllib.error
+    from datetime import datetime
+
+    now = now or datetime.now
+    get = get or (lambda url: http_get(url, tries=1))
+    free = free or (lambda path: shutil.disk_usage(path).free)
+    done = {"text": 0, "missing": 0, "failed": 0, "left": 0, "stopped": None}
+    place = text_place(root)
+    if not place["link"]:
+        return dict(done, stopped="not_external")
+    if not place["ready"]:
+        return dict(done, stopped="no_text_place")
+    jobs = history_jobs(disc, root, since, history_until(now()))
+    done["left"] = len(jobs)
+    if keep_pdf and jobs and free(place["path"]) < PDF_NEED_GB * 2 ** 30:
+        return dict(done, stopped="no_space")
+    todo = len(jobs) if max_docs is None else min(len(jobs), max_docs)
+    i = fails = 0
+    told = False
+    while i < todo and not done["stopped"]:
+        t = now()
+        if in_quiet(t):
+            if not told:
+                log(f"  毎朝 8:00 の収集に場所をゆずる（{QUIET_TO[0]}:{QUIET_TO[1]:02d} まで休む）")
+                told = True
+            until = t.replace(hour=QUIET_TO[0], minute=QUIET_TO[1], second=0, microsecond=0)
+            sleep(max((until - t).total_seconds(), 1.0))
+            continue
+        told = False
+        if wanted(root):
+            log("  毎日の収集が待っているので、先に通す（30 秒待つ）")
+            sleep(30.0)
+            continue
+        if not docs_lock(root):
+            log("  ほかの書類の取得が動いている。1 分待つ")
+            sleep(60.0)
+            continue
+        try:
+            for r in jobs[i:min(i + HISTORY_CHUNK, todo)]:
+                if in_quiet(now()) or wanted(root):
+                    break
+                started = time.monotonic()
+                try:
+                    blob = get(doc_url(r.ticker, f"{r.id}.pdf"))
+                    if not blob.startswith(b"%PDF"):
+                        raise ValueError("PDF ではないものが返ってきた")
+                except urllib.error.HTTPError as e:
+                    if e.code in REFUSED:
+                        done["stopped"] = "refused"
+                        break
+                    if e.code in (404, 410):
+                        with open(root / MISS_FILE, "a", encoding="utf-8") as f:
+                            f.write(f"{r.id}\n")
+                        done["missing"] += 1
+                        fails = 0
+                    else:
+                        done["failed"] += 1
+                        fails += 1
+                except Exception:  # noqa: BLE001  回線が切れた・途中で切れた・PDF でない。次の機会にもう一度試す
+                    done["failed"] += 1
+                    fails += 1
+                else:
+                    fails = 0
+                    try:
+                        _save_history(root, r, blob, keep_pdf)
+                    except OSError:
+                        done["stopped"] = "disk"
+                        break
+                    done["text"] += 1
+                i += 1
+                if fails >= MAX_FAILS:
+                    done["stopped"] = "network"
+                    break
+                if i % HISTORY_CHUNK == 0:
+                    log(f"  過去の本文 {i:,}/{todo:,}（取れた {done['text']:,}・サイトに無い {done['missing']:,}・取れなかった {done['failed']:,}）")
+                _wait(started, interval)
+        finally:
+            docs_unlock(root)
+    done["left"] = len(jobs) - done["text"] - done["missing"]
     return done
 
 

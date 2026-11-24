@@ -119,9 +119,61 @@ def f2(x: float) -> str:
 
 
 # --------------------------------------------------------------------------- 情報収集
+TEXT_HISTORY_WHY = {   # 過去の本文の取得が止まった理由（利用者に伝える文）
+    "not_external": "本文の置き場所が、外付けの HDD へのリンクになっていない。先に「IR の文章を HDD に移して」（2026-11-20 利用者の決め: 本文は HDD に置く）。何も取っていない",
+    "no_text_place": "外付けの HDD がつながっていない。つないでから、同じコマンドで。何も取っていない",
+    "no_space": "HDD の空きが足りない（原本の PDF も残すには {need}GB ほど要る）。原本を残さないなら --no-pdf（利用者に確かめてから）。何も取っていない",
+    "refused": "サイトに断られた（403・429・503）。すぐ止めた。今日はもう取りに行かない。明日以降に同じコマンドで続きから（続くようなら指令役に知らせる）",
+    "network": "続けて取れなかった（回線かサイトの不調）。時間をおいて、同じコマンドで続きから",
+    "disk": "取っている間に HDD に書けなくなった（外れた・いっぱいになった）。直して、同じコマンドで続きから",
+}
+
+
+def keep_awake() -> None:
+    """長い取得の間、Mac を眠らせない（ふたを閉じると眠る）。caffeinate の無い機械では、そのまま続ける。"""
+    import os
+    import subprocess
+
+    try:
+        subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())])
+    except OSError:
+        pass
+
+
+def cmd_text_history(args) -> None:
+    """過去の開示の本文（2016-10〜）を、新しい順にまとめて取る（docs/agents.md 10.1）。取るだけで、判定はしない。
+
+    東証の上場会社情報サービスから、1 秒に 1 件・同時に 1 本。毎朝 8:00 の収集の時間（7:50〜8:45）は休む。止めても、同じコマンドで続きから。
+    """
+    from cfdbot.agents import collector as C
+
+    p = paths(args.root)
+    df = C.load_disclosures(p["disclosures"])
+    if df.empty:
+        sys.exit("開示の一覧が無い（先に ./cfd agents collect）")
+    ir_root = p["disclosures"].parent
+    keep_pdf = not args.no_pdf
+    place = C.text_place(ir_root)
+    jobs = len(C.history_jobs(df, ir_root, HISTORY_FROM, C.history_until(datetime.now()))) if place["ready"] else 0
+    todo = min(jobs, args.history_max) if args.history_max else jobs
+    print(f"過去の本文: {HISTORY_FROM[:7]} からの開示のうち、まだ本文の無い {jobs:,} 件" + (f"のうち {todo:,} 件" if todo < jobs else "")
+          + f"を、新しい順に {C.INTERVAL:g} 秒に 1 件ずつ取る（東証 上場会社情報サービス。同時に 1 本。見込み {todo * max(C.INTERVAL, 0.0) / 3600:.1f} 時間。"
+          "毎朝 7:50〜8:45 は休む）", flush=True)
+    print("過去の本文: " + C.text_place_line(place) + ("。原本の PDF も、となりの ir_pdf に残す" if keep_pdf else "。原本の PDF は残さない"), flush=True)
+    keep_awake()
+    got = C.collect_text_history(df, ir_root, HISTORY_FROM, max_docs=args.history_max or None, keep_pdf=keep_pdf,
+                                 interval=C.INTERVAL, log=lambda s: print(s, flush=True))
+    print(f"過去の本文: 取れた +{got['text']:,}、サイトに無い {got['missing']:,}、取れなかった {got['failed']:,}、残り {got['left']:,}", flush=True)
+    if got["stopped"]:
+        sys.exit("過去の本文: ⚠ " + TEXT_HISTORY_WHY[got["stopped"]].format(need=C.PDF_NEED_GB))
+    print("過去の本文: " + ("終わった" if not got["left"] else "ここまで。続きは同じコマンドで（取れなかったものは、もう一度試す）"), flush=True)
+
+
 def cmd_collect(args) -> None:
     from cfdbot.agents import collector as C
 
+    if getattr(args, "text_history", False):
+        return cmd_text_history(args)
     p = paths(args.root)
     uni = pd.read_csv(Path(args.data) / "universe_jp.csv")
     tickers = set(uni["ticker"])
@@ -174,7 +226,8 @@ def cmd_collect(args) -> None:
             since = (pd.Timestamp.now(tz=JST).tz_localize(None) - pd.Timedelta(days=args.docs_days)).strftime("%Y-%m-%d")
             want = df[df["time"] >= since]
             print(f"情報収集: 直近 {args.docs_days} 日の開示 {len(want):,} 件の本文と数字を、{C.INTERVAL:g} 秒に 1 件ずつ取る（東証 上場会社情報サービス）", flush=True)
-            got = C.collect_docs(want, ir_root, max_docs=args.max_docs, log=lambda s: print(s, flush=True))
+            got = C.collect_docs(want, ir_root, max_docs=args.max_docs, log=lambda s: print(s, flush=True),
+                                 wait=600)                      # 過去の本文の取得が動いていたら、頼んで先に通してもらう（10 分まで待つ）
         if got.get("busy"):
             print("情報収集: ほかの書類の取得が動いているので、今回は取らない（次の回に取る）", flush=True)
         else:
@@ -1728,7 +1781,14 @@ def cmd_status(args) -> None:
     from cfdbot.agents import collector as C
 
     print(f"情報収集（本文）: {sum(1 for _ in ir_root.glob('text/*/*.txt')):,} 件、（決算の数字）: {sum(1 for _ in ir_root.glob('xbrl/*/*.csv')):,} 件")
-    print(C.text_place_line(C.text_place(ir_root)))
+    place = C.text_place(ir_root)
+    print(C.text_place_line(place))
+    if p["disclosures"].exists() and place["ready"]:            # 過去の本文（./cfd agents collect --text-history）の進み具合
+        df = C.load_disclosures(p["disclosures"])
+        past = df[df["time"] >= HISTORY_FROM]
+        past = past[past["time"] < C.history_until(datetime.now())]          # 直近 7 日は毎日の収集の持ち分
+        left, miss = len(C.history_jobs(past, ir_root, HISTORY_FROM)), len(set(past["id"]) & C.load_missing(ir_root))
+        print(f"過去の本文（{HISTORY_FROM[:7]}〜）: 取ってある {len(past) - left - miss:,} 件・サイトに無い {miss:,} 件・残り {left:,} 件")
     if p["selector"].exists():
         d = pd.read_csv(p["selector"], usecols=[0]).iloc[:, 0]
         print(f"銘柄選定（点数）: {len(d):,} 日、{d.min()[:10]}〜{d.max()[:10]}")
@@ -2306,6 +2366,10 @@ def main() -> None:
     p.add_argument("--docs", action="store_true", help="collect: 本文（PDF）と決算の数字（XBRL）も取る")
     p.add_argument("--docs-days", type=int, default=7, help="collect --docs: さかのぼる日数")
     p.add_argument("--xbrl-history", action="store_true", help="collect: 過去の決算の数字（2016〜）を取る（時間がかかる）")
+    p.add_argument("--text-history", action="store_true",
+                   help="collect: 過去の開示の本文（2016-10〜）を、新しい順にまとめて取る（1 秒に 1 件。1〜2 晩。置き場所は外付けの HDD。止めても続きから）")
+    p.add_argument("--no-pdf", action="store_true", help="collect --text-history: 原本の PDF を残さない（既定は、本文のとなりの ir_pdf に残す）")
+    p.add_argument("--history-max", type=int, default=0, help="collect --text-history: 今回取る数の上限（0 = 全部。試しに少しだけ取るとき）")
     p.add_argument("--max-docs", type=int, default=300, help="collect: 1 回に取る書類の上限")
     p.add_argument("--root", default="data/agents")
     p.add_argument("--data", default="data/stocks")
