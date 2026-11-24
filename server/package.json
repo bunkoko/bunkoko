@@ -13,6 +13,7 @@
     "db:migrate:remote": "wrangler d1 migrations apply bunkoko --remote",
     "secrets": "tsx scripts/setup-secrets.ts",
     "switchbot": "tsx scripts/switchbot-cli.ts",
+    "admin": "tsx scripts/admin.ts",
     "mock:switchbot": "tsx scripts/mock-switchbot.ts"
   },
   "devDependencies": {

@@ -7,3 +7,5 @@ WEBHOOK_SECRET=
 ADMIN_TOKEN=
 APP_TOKEN=
 AI_TASK_TOKEN=
+# 公開したサーバーの URL（npm run admin・npm run switchbot で使う。Cloudflare には登録しない）
+SERVER_URL=

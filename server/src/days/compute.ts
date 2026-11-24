@@ -17,7 +17,7 @@ import {
   type SleepSegment,
 } from "./sleep";
 
-export const ALGO_VERSION = 2;
+export const ALGO_VERSION = 3;
 /** センサーの値を取る間隔（分）。「目安を超えた回数 × 5分」で時間にする */
 export const POLL_INTERVAL_MIN = 5;
 /** 人感センサー Pro の明るさ（1〜20）がこれ以上なら「明るい」 [TBD: 実データで調整] */
@@ -26,6 +26,11 @@ export const BRIGHT_LIGHT_LEVEL = 5;
 export const PLUG_ON_WATTS = 2;
 /** 「使える夜」とみなす、睡眠中のデータの割合 */
 export const MIN_COVERAGE = 0.7;
+/**
+ * Watch を着けていたかを見る区切り（分）。Watch は睡眠中も数分おきにしか心拍を測らないので、
+ * 5分ごとの区切りで見ると、着けていても「データが少ない」になってしまう。15分の区切りに1つでも心拍があれば「着けていた」とみなす
+ */
+export const COVERAGE_WINDOW_MIN = 15;
 
 const SAMPLE_TYPES = [
   "sleepAnalysis",
@@ -427,8 +432,10 @@ export async function computeDay(
   const heartRate = buckets.filter((bucket) => bucket.type === "heartRate" && bucket.bucket_minutes === 5);
   const sleepHr = night ? heartRate.filter((bucket) => bucket.bucket_start >= night.onset && bucket.bucket_start < night.wake) : [];
   const preHr = heartRate.filter((bucket) => bucket.bucket_start >= preStart && bucket.bucket_start < bedRef);
-  const expectedBuckets = night ? (night.wake - night.onset) / (5 * MINUTE_MS) : 0;
-  const heartRateCoverage = night && expectedBuckets > 0 ? Math.min(1, sleepHr.length / expectedBuckets) : null;
+  const coverageWindowMs = COVERAGE_WINDOW_MIN * MINUTE_MS;
+  const expectedWindows = night ? Math.ceil((night.wake - night.onset) / coverageWindowMs) : 0;
+  const coveredWindows = night ? new Set(sleepHr.map((bucket) => Math.floor((bucket.bucket_start - night.onset) / coverageWindowMs))).size : 0;
+  const heartRateCoverage = night && expectedWindows > 0 ? Math.min(1, coveredWindows / expectedWindows) : null;
 
   const hourStart = Math.floor(dayStart / HOUR_MS) * HOUR_MS;
   const noon = localTimeOn(addDays(date, -1), "12:00", tz);

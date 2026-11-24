@@ -23,6 +23,7 @@ if (!token || !secret) {
 
 let co2 = 650;
 let calls = 0;
+let webhookUrls: string[] = [];
 
 function currentStatus(deviceId: string) {
   const status = STATUSES[deviceId];
@@ -65,6 +66,19 @@ createServer((request, response) => {
     return status
       ? send(200, { statusCode: 100, message: "success", body: status })
       : send(200, { statusCode: 152, message: "device not found", body: {} });
+  }
+  // Webhook の送り先の登録・確認・削除（本物と同じく、送り先は1つだけ）
+  if (url.pathname.startsWith("/v1.1/webhook/")) {
+    let raw = "";
+    request.on("data", (chunk) => (raw += chunk));
+    request.on("end", () => {
+      const body = raw ? (JSON.parse(raw) as { url?: string }) : {};
+      if (url.pathname === "/v1.1/webhook/setupWebhook" && body.url) webhookUrls = [body.url];
+      if (url.pathname === "/v1.1/webhook/deleteWebhook") webhookUrls = webhookUrls.filter((item) => item !== body.url);
+      const result = url.pathname === "/v1.1/webhook/queryWebhook" ? { urls: webhookUrls } : {};
+      send(200, { statusCode: 100, message: "success", body: result });
+    });
+    return;
   }
   return send(404, { message: "not found" });
 }).listen(port, "127.0.0.1", () => {

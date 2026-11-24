@@ -77,30 +77,46 @@
 ## 3. SwitchBot とつなぐ（機器が届いたら）
 
 1. SwitchBot アプリで、ハブ3 → 各センサーの順に登録する。各機器の設定で「クラウドサービス」をオンにする。
-2. トークンとシークレットを発行する（アプリのバージョン 9.0 以降）:
-   「プロフィール」→「設定」→「アプリについて」→「アプリバージョン」を **10回タップ** →「開発者向けオプション」→ トークンとシークレットが表示される
-3. `server/.dev.vars` をテキストエディタで開き（`open -e .dev.vars`）、`SWITCHBOT_TOKEN=` と `SWITCHBOT_SECRET=` のあとに書き込んで保存する（このファイルは Git に含まれない）。
-4. サーバーに登録する（2章の合言葉は変わらない）:
+   **名前の付け方**（このツールは、機器の種類と名前から役割を決める）:
+   - 開閉センサー: 窓に付けたものは名前に「**窓**」、ドアに付けたものは「**ドア**」を入れる
+   - プラグミニ: 加湿空気清浄機につないだものは名前に「**加湿**」、テレビにつないだものは「**テレビ**」を入れる
+   - ほかの機器（ハブ3・CO2センサー・人感センサー Pro・シーリングライト・カーテン）は、種類で決まるので名前は自由
+2. サーバーの URL を、手元のコマンド用に保存する（秘密ではない値なので、Cloudflare には登録しない）:
    ```sh
-   npm run secrets
+   npm run secrets -- --set SERVER_URL https://bunkoko-server.<あなたの名前>.workers.dev
    ```
-5. トークンが正しいか確かめる（機器の一覧が出れば OK）:
+3. トークンとシークレットを登録する（アプリのバージョン 9.0 以降）:
+   「プロフィール」→「設定」→「アプリについて」→「アプリバージョン」を **10回タップ** →「開発者向けオプション」で、トークンとシークレットが出る。
+   1つずつコピーして、Mac で実行する（クリップボードから読み取って登録する。値は画面に出ない）:
+   ```sh
+   npm run secrets -- --paste SWITCHBOT_TOKEN    # トークンをコピーしてから
+   npm run secrets -- --paste SWITCHBOT_SECRET   # シークレットをコピーしてから
+   ```
+4. トークンが正しいか、名前から役割が決まったかを確かめる:
    ```sh
    npm run switchbot -- devices
    ```
-6. **Webhook を登録する**（在床・開閉の変化を正確な時刻で受け取るため）。`<URL>` は手順 2-5 の URL、`<WEBHOOK_SECRET>` は `.dev.vars` の `WEBHOOK_SECRET` の値:
+   「役割なし（名前を見直す）」と出た機器は、SwitchBot アプリで名前を直してから、もう一度実行する。
+5. **Webhook を登録する**（在床・開閉の変化を正確な時刻で受け取るため）。送り先は `.dev.vars` の SERVER_URL と WEBHOOK_SECRET から作る（合言葉は画面に出ない）:
    ```sh
-   npm run switchbot -- webhook-setup https://<URL>/webhooks/switchbot/<WEBHOOK_SECRET>
-   npm run switchbot -- webhook-query    # 登録した URL が表示されれば OK
+   npm run switchbot -- webhook-setup
+   npm run switchbot -- webhook-query    # 登録した送り先が出れば OK（合言葉の部分は <WEBHOOK_SECRET> と出る）
    ```
-7. すぐに1回取得してみる（`<ADMIN_TOKEN>` は `.dev.vars` の `ADMIN_TOKEN` の値）:
+6. すぐに1回取得して、結果を見る:
    ```sh
-   curl -X POST "https://<URL>/admin/collect?refresh=1" -H "Authorization: Bearer <ADMIN_TOKEN>"
+   npm run admin -- collect
+   npm run admin -- summary
    ```
-   `"devicesOk": 9, "devicesTotal": 9` のように表示されれば完了。以降は5分ごとに自動で記録される。
+   `collect` で `"devicesOk": 9, "devicesTotal": 9` のように出れば完了。以降は5分ごとに自動で記録される。`summary` で、機器ごとの役割と最新の値が見られる。
 
 ## 4. 動いているか確かめる
 
+```sh
+npm run admin -- summary     # 機器ごとの役割と最新の値、直近の取得結果、Webhook の数、API の利用回数
+npm run admin -- days        # 1日 = 1行の表の要点（直近7日。期間は npm run admin -- days 2026-12-01 2026-12-07）
+```
+
+`curl` で直接見るときは（`<ADMIN_TOKEN>` は `.dev.vars` の値）:
 ```sh
 curl "https://<URL>/admin/summary" -H "Authorization: Bearer <ADMIN_TOKEN>"
 ```
@@ -115,9 +131,9 @@ curl "https://<URL>/admin/summary" -H "Authorization: Bearer <ADMIN_TOKEN>"
 計算した 1日 = 1行の表を見る（iPhone アプリからデータが届くようになってから）:
 ```sh
 curl "https://<URL>/admin/days?from=2026-12-01&to=2026-12-07" -H "Authorization: Bearer <ADMIN_TOKEN>"
-# 計算方法を変えたときなどに、期間の日をすべて計算し直す
-curl -X POST "https://<URL>/admin/days/requeue?from=2026-12-01&to=2026-12-07" -H "Authorization: Bearer <ADMIN_TOKEN>"
-curl -X POST "https://<URL>/admin/days/process?max=10" -H "Authorization: Bearer <ADMIN_TOKEN>"
+# 計算方法を変えたときなどに、期間の日をすべて計算し直す（最大400日）
+npm run admin -- requeue 2026-12-01 2026-12-07
+npm run admin -- process 10
 ```
 計算待ちの日は、5分ごとの実行のついでに4日分ずつ計算される。
 

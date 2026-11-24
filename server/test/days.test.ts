@@ -182,6 +182,18 @@ describe("computeDay", () => {
     expect(metrics.quality).toEqual({ hasSleep: false, heartRateCoverage: null, roomCoverage: null, presenceAvailable: false, usable: false });
   });
 
+  it("心拍が数分おきにしか記録されていなくても、着けていた夜は「使える夜」にする", async () => {
+    seedNight();
+    // 5分ごとの区切りのうち、半分にしか心拍がない（Watch が10分おきに測った）
+    const rows = db.sqlite.prepare(`SELECT bucket_start FROM health_buckets WHERE type = 'heartRate' ORDER BY bucket_start`).all() as { bucket_start: number }[];
+    rows.forEach((row, index) => {
+      if (index % 2 === 1) db.sqlite.prepare(`DELETE FROM health_buckets WHERE type = 'heartRate' AND bucket_start = ?`).run(row.bucket_start);
+    });
+    const metrics = await computeDay(db.d1, "me", D, settings, await loadRoles(db.d1, "me", {}));
+    expect(metrics.quality.heartRateCoverage).toBe(1);
+    expect(metrics.quality.usable).toBe(true);
+  });
+
   it("睡眠中に Watch のデータが少ない夜は「使えない夜」にする", async () => {
     seedNight();
     db.sqlite.prepare(`DELETE FROM health_buckets WHERE type = 'heartRate' AND bucket_start >= ?`).run(at(D, "02:00"));
