@@ -203,7 +203,7 @@ function renderSelect() {
 function renderCounts() {
   const list = inPart();
   const n = list.filter((i) => verdict(ITEMS[i])).length;
-  $("overall").textContent = `${part ? "この種類" : "全体"} ${n}/${list.length} 件を押しました${MADE ? `・下書き ${MADE}` : ""}`;
+  $("overall").textContent = `${part ? "この種類" : "全体"} ${n}/${list.length} 件を押しました${MADE ? (MADE.startsWith("回 ") ? `・${MADE.slice(2)} で使った行` : `・下書き ${MADE}`) : ""}`;
   $("bar").style.width = list.length ? `${(n / list.length) * 100}%` : "0";
 }
 

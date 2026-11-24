@@ -67,6 +67,13 @@ DESIGNS = {
     "review": "研究のまとめ",
 }
 REPLICATION = ("replicated", "mixed", "not_tested", "failed")
+# 追試の言葉（確認画面・台本の表示用）
+REPLICATION_JA = {
+    "replicated": "再現した",
+    "mixed": "まちまち",
+    "not_tested": "まだ確かめていない",
+    "failed": "再現しなかった",
+}
 EFFECTS = ("", "わずか", "小さい", "中くらい", "大きい")
 VERIFIED_FROM = ("full_text", "abstract", "press_release")
 # verified：人が本文で確かめた。ai_checked：AI（調べ役と見直し役）が CC BY・CC0 の本文で確かめた

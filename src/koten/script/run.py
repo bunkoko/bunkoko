@@ -21,7 +21,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 
 from koten.facts.store import text_sha
-from koten.findings import FINDING_ROLES
+from koten.findings import FINDING_ROLES, REPLICATION_JA
 from koten.script import gates
 from koten.script.data import EpisodeData
 from koten.script.placeholders import Resolver
@@ -187,9 +187,7 @@ def run_script(
         allowed_r = set(used_refs) | offered_r
         offered_fn = set(chapter.get("finding_ids") or []) if use_findings else set()
         # 研究は脇役。古典の章などでは、前の章で使った研究も指せない（D-034）
-        allowed_fn = (
-            set(used_findings) | offered_fn if chapter["role"] in FINDING_ROLES else set()
-        )
+        allowed_fn = set(used_findings) | offered_fn if chapter["role"] in FINDING_ROLES else set()
         feedback: list[str] | None = None
         passed: tuple | None = None  # G1・G3 が通ったいちばん新しい版（書き直しで悪くしない）
         for attempt in range(cfg.retries + 1):
@@ -571,7 +569,7 @@ def render(script: dict[str, Any], resolver: Resolver) -> list[str]:
     fns = list(dict.fromkeys(f for ch in script["chapters"] for f in ch.get("findings", [])))
     if fns:
         lines.append(
-            "\n研究の一文（人が本文で確かめた文。語りが限界を落としていないか、"
+            "\n研究の一文（台帳の文。語りが限界を落としていないか、"
             "調べた人より広く言っていないかを見る）："
         )
         for fid in fns:
@@ -579,8 +577,14 @@ def render(script: dict[str, Any], resolver: Resolver) -> list[str]:
             if f is None:
                 lines.append(f"  {fid}：（使えなくなった研究）")
                 continue
-            lines.append(f"  {fid}：{f['source_label']}「{f['claim_ja']}」")
-            lines.append(f"      調べた人：{f['population_ja']}　追試：{f['replication']}")
+            who = (
+                "人が本文で確かめた"
+                if f.get("status") == "verified"
+                else "AI が確かめた。承認の前に人が確かめる：koten sources todo"
+            )
+            lines.append(f"  {fid}（{who}）：{f['source_label']}「{f['claim_ja']}」")
+            rep = REPLICATION_JA.get(f.get("replication") or "", f.get("replication") or "")
+            lines.append(f"      調べた人：{f['population_ja']}　追試：{rep}")
             if f.get("limits_ja"):
                 lines.append(f"      限界：{f['limits_ja']}")
             if f.get("effect_ja"):

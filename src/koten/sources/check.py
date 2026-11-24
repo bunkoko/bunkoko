@@ -43,6 +43,7 @@ from koten.findings import (
     EFFECTS,
     FINDINGS_FILE,
     REPLICATION,
+    REPLICATION_JA,
     Finding,
     FindingsError,
     read_findings,
@@ -71,12 +72,6 @@ LEAD_FINDING = (
     "authors_ja",
 )
 ASCII_ID = re.compile(r"[a-z0-9][a-z0-9_]*$")
-REPLICATION_JA = {
-    "replicated": "再現した",
-    "mixed": "まちまち",
-    "not_tested": "まだ確かめていない",
-    "failed": "再現しなかった",
-}
 
 
 class SourcesError(ValueError):
