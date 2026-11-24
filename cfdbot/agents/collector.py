@@ -14,6 +14,7 @@ import re
 import time
 import zipfile
 import unicodedata
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Callable
@@ -42,6 +43,29 @@ def http_get(url: str, tries: int = 3, timeout: int = 60) -> bytes:
                 raise
             time.sleep(5 * (k + 1))
     raise RuntimeError(url)
+
+
+def fail_reason(e: BaseException) -> str | None:
+    """書類を取れなかった理由を短く（HTTP 502・時間切れ・つながらない…）。「サイトに無い」（404・410）は None。"""
+    import socket
+
+    if isinstance(e, urllib.error.HTTPError):
+        return None if e.code in (404, 410) else f"HTTP {e.code}"
+    if isinstance(e, (TimeoutError, socket.timeout)) or "timed out" in str(e).lower():
+        return "時間切れ"
+    if isinstance(e, urllib.error.URLError):
+        return f"つながらない（{str(e.reason)[:40]}）"
+    if isinstance(e, ValueError) and str(e).startswith("PDF ではない"):
+        return str(e)[:90]
+    return f"{type(e).__name__}（{str(e)[:40]}）"
+
+
+def reason_summary(reasons: list[str]) -> str:
+    """理由ごとの数（出てきた順）: 「HTTP 502 ×6、時間切れ ×4」。"""
+    count: dict[str, int] = {}
+    for r in reasons:
+        count[r] = count.get(r, 0) + 1
+    return "、".join(f"{r} ×{n}" for r, n in count.items())
 
 
 def ticker_of(code: str) -> str:
@@ -374,14 +398,19 @@ def _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done) -> 
             jobs.append(("text", r, doc_url(r.ticker, f"{r.id}.pdf"), text_path(root, r)))
         if xbrl and r.xbrl and not facts_path(root, r).exists():
             jobs.append(("xbrl", r, doc_url(r.ticker, r.xbrl), facts_path(root, r)))
+    odd: list[str] = []                                         # 「まだ載っていない」（404）とは別の、取れなかった理由
     for k, (kind, r, url, path) in enumerate(jobs[:max_docs]):
         if kind == "text" and not pdf:                          # 途中で本文を書けなくなった。その後の本文は取りに行かない
             continue
         started = time.monotonic()
         try:
             blob = get(url)
-        except Exception:  # noqa: BLE001
-            done["missing"] += 1
+        except Exception as e:  # noqa: BLE001
+            why = fail_reason(e)
+            if why is None:
+                done["missing"] += 1
+            else:
+                odd.append(why)
             _wait(started, interval)
             continue
         if kind == "text":
@@ -404,6 +433,9 @@ def _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done) -> 
             log(f"  書類 {k + 1}/{min(len(jobs), max_docs)}（本文 {done['text']}・数字 {done['xbrl']}・まだ無い {done['missing']}）")
         _wait(started, interval)
     done["left"] = max(len(jobs) - max_docs, 0)
+    if odd:                                                     # 決算の数字が抜けているおそれがあるので、数と理由を出す
+        done["failed"], done["why"] = len(odd), reason_summary(odd)
+        log(f"  ⚠ 取れなかった {len(odd)} 件（{done['why']}）。「まだ載っていない」とは別（サイトに断られた・回線やサイトの不調）。次の回にもう一度試す")
     return done
 
 
@@ -413,6 +445,7 @@ QUIET_FROM, QUIET_TO = (7, 50), (8, 45)   # 毎朝 8:00 の収集に場所をゆ
 HISTORY_CHUNK = 200                       # 1 度の錠で取る数（3 分ちょっと。終わるたびに錠を放す）
 REFUSED = (403, 429, 503)                 # サイトに断られた印。すぐ止める（続けて取りに行かない）
 MAX_FAILS = 10                            # 続けてこれだけ取れなければ止める（回線・サイトの不調）
+FAIL_WAIT, FAIL_WAIT_MAX = 15.0, 300.0    # 取れなかったら、次を試す前にあける間（秒）。続けて取れないたびに倍にする（15・30・60…5 分まで）
 PDF_EACH_MB = 0.6                         # 原本 1 件に見ておく大きさ（測っていない見当。0.3〜1MB の幅の中ほど。9 万件で 55GB ほど）
 PDF_KEEP_FREE_GB = 5                      # HDD に必ず残しておく空き（いっぱいにしない。毎日の収集の本文も、同じ HDD に書く）
 
@@ -634,6 +667,7 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
     i = fails = 0
     told = False
     spent = {"n": 0, "all": 0.0, "get": 0.0, "save": 0.0}     # この回に、1 件ずつにかかった時間（秒。待ちも入れる）
+    recent: list[str] = []                                      # 続けて取れなかった理由（取れたら空に戻す）
     while i < todo and not done["stopped"]:
         t = now()
         if in_quiet(t):
@@ -668,27 +702,32 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
                 try:
                     blob = get(doc_url(r.ticker, f"{r.id}.pdf"))
                     if not blob.startswith(b"%PDF"):
-                        raise ValueError("PDF ではないものが返ってきた")
+                        head = "".join(c if c.isprintable() else " " for c in blob[:50].decode("ascii", "replace"))
+                        raise ValueError(f"PDF ではないものが返ってきた（{head.strip()}）")
                 except urllib.error.HTTPError as e:
                     blob = None
                     if e.code in REFUSED:
-                        done["stopped"] = "refused"
+                        done["stopped"], done["why"] = "refused", f"HTTP {e.code}"
                         break
                     if e.code in (404, 410):
                         with open(root / MISS_FILE, "a", encoding="utf-8") as f:
                             f.write(f"{r.id}\n")
                         done["missing"] += 1
                         fails = 0
+                        recent.clear()
                     else:
                         done["failed"] += 1
                         fails += 1
-                except Exception:  # noqa: BLE001  回線が切れた・途中で切れた・PDF でない。次の機会にもう一度試す
+                        recent.append(f"HTTP {e.code}")
+                except Exception as e:  # noqa: BLE001  回線が切れた・途中で切れた・PDF でない。次の機会にもう一度試す
                     blob = None
                     done["failed"] += 1
                     fails += 1
+                    recent.append(fail_reason(e) or type(e).__name__)
                 fetched = time.monotonic()
                 if blob is not None:
                     fails = 0
+                    recent.clear()
                     try:
                         _save_history(root, r, blob, keep_pdf)
                     except OSError:
@@ -698,9 +737,17 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
                 saved = time.monotonic()
                 i += 1
                 if fails >= MAX_FAILS:
-                    done["stopped"] = "network"
+                    done["stopped"], done["why"] = "network", reason_summary(recent)
                     break
                 _wait(started, interval)
+                if fails:                                       # 取れなかった: 間をあけてから次を試す（たたみかけない。少しの不調なら、止まらずに済む）
+                    pause = min(FAIL_WAIT * 2 ** (fails - 1), FAIL_WAIT_MAX)
+                    log(f"  取れなかった（{recent[-1]}）。{pause:.0f} 秒あけて次を試す（続けて {fails} 件目）")
+                    waited = 0.0
+                    while waited < pause and not wanted(root) and not in_quiet(now()):      # 待つ間も、毎日の収集が来たらすぐゆずる
+                        step = min(5.0, pause - waited)
+                        sleep(step)
+                        waited += step
                 spent["n"] += 1
                 spent["all"] += time.monotonic() - started
                 spent["get"] += fetched - started

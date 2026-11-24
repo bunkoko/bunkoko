@@ -126,8 +126,8 @@ TEXT_HISTORY_WHY = {   # 過去の本文の取得が止まった理由（利用�
     "no_text_place": "外付けの HDD がつながっていないか、つながっているのに書けない（上の「本文の置き場所」の行を見る）。直してから、同じコマンドで。何も取っていない",
     "no_space": "HDD の空きが足りない（原本の PDF も残すには、これから取る分で {need:,.0f}GB ほど要る。今の空きは {free:,.0f}GB。{keep}GB は空けておく決まり）。"
                 "HDD の空きを作るか、原本を残さないなら --no-pdf（利用者に確かめてから）。取ってある分はそのまま残っている",
-    "refused": "サイトに断られた（403・429・503）。すぐ止めた。今日はもう取りに行かない。明日以降に同じコマンドで続きから（続くようなら指令役に知らせる）",
-    "network": "続けて取れなかった（回線かサイトの不調）。時間をおいて、同じコマンドで続きから",
+    "refused": "サイトに断られた（{why}）。すぐ止めた。今日はもう取りに行かない。明日以降に同じコマンドで続きから（続くようなら指令役に知らせる）",
+    "network": "続けて取れなかった（{why}）。回線かサイトの不調。間をあけながら試したが、だめだった。時間をおいて、まず 1 件だけ試す（--history-max 1）。取れたら同じコマンドで続きから",
     "disk": "取っている間に HDD に書けなくなった（外れた・いっぱいになった）。直して、同じコマンドで続きから",
 }
 
@@ -220,7 +220,8 @@ def _text_history(args, C, df, ir_root) -> None:
                                  interval=C.INTERVAL, log=lambda s: print(s, flush=True))
     print(f"過去の本文: 取れた +{got['text']:,}、サイトに無い {got['missing']:,}、取れなかった {got['failed']:,}、残り {got['left']:,}", flush=True)
     if got["stopped"]:
-        sys.exit("過去の本文: ⚠ " + TEXT_HISTORY_WHY[got["stopped"]].format(need=got.get("need_gb", 0.0), free=got.get("free_gb", 0.0), keep=C.PDF_KEEP_FREE_GB))
+        sys.exit("過去の本文: ⚠ " + TEXT_HISTORY_WHY[got["stopped"]].format(need=got.get("need_gb", 0.0), free=got.get("free_gb", 0.0), keep=C.PDF_KEEP_FREE_GB,
+                                                                             why=got.get("why") or "理由は分からない"))
     print("過去の本文: " + ("終わった" if not got["left"] else "ここまで。続きは同じコマンドで（取れなかったものは、もう一度試す）"), flush=True)
 
 
@@ -293,7 +294,10 @@ def cmd_collect(args) -> None:
         if got.get("busy"):
             print("情報収集: ほかの書類の取得が動いているので、今回は取らない（次の回に取る）", flush=True)
         else:
-            print(f"情報収集: 本文 +{got['text']}、数字 +{got['xbrl']}、まだ載っていない {got['missing']}、残り {got['left']}", flush=True)
+            bad = f"、取れなかった {got['failed']}（{got['why']}）" if got.get("failed") else ""
+            print(f"情報収集: 本文 +{got['text']}、数字 +{got['xbrl']}、まだ載っていない {got['missing']}{bad}、残り {got['left']}", flush=True)
+            if got.get("failed"):
+                print("情報収集: ⚠ 取れなかった書類がある（「まだ載っていない」とは別。決算の数字が抜けているおそれ。続くようなら指令役に知らせる）", flush=True)
 
 
 # --------------------------------------------------------------------------- IR 評価

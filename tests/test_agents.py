@@ -1,3 +1,4 @@
+import urllib.error
 from pathlib import Path
 
 import numpy as np
@@ -124,7 +125,7 @@ def test_collector_collects_docs_slowly_and_resumes(tmp_path):
     def get(url):
         calls.append(url)
         if "p3" in url:
-            raise OSError("404")                                                      # 当日の分はまだ載っていない
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)             # 当日の分はまだ載っていない
         return _xbrl_zip() if url.endswith(".zip") else _pdf("hello")
 
     got = C.collect_docs(disc, tmp_path, interval=0, get=get, log=lambda s: None)
@@ -724,6 +725,30 @@ def test_extra_command_runs_end_to_end(tmp_path, capsys, monkeypatch):
     assert (data / "jp_volume.csv").exists() and (data / "jp_splits.csv").exists()
     mod.cmd_extra(Namespace(**{**vars(args), "reuse": True}))                           # 点数が書いてあれば学び直さない
     assert "銘柄選定（出来高を足した版）" not in capsys.readouterr().out
+
+
+def test_daily_collection_tells_failures_apart_from_not_yet_posted(tmp_path):
+    """「まだ載っていない」（404）と「取れなかった」（断られた・回線やサイトの不調）は別。
+
+    後のほうは決算の数字が抜けているおそれがあるので、数と理由を出す（前は、どちらも「まだ載っていない」に数えていた）。
+    """
+    disc = pd.DataFrame([("p1", "2026-10-08 15:30:00", "7203.T", "トヨタ", "決算短信", "", "x1.zip"),
+                         ("p2", "2026-10-09 15:30:00", "1332.T", "ニッスイ", "お知らせ", "", ""),
+                         ("p3", "2026-10-09 16:00:00", "6758.T", "ソニー", "決算短信", "", "x3.zip")], columns=C.COLUMNS)
+    logs = []
+
+    def get(url):
+        if url.endswith("p1.pdf"):
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)             # まだ載っていない
+        if url.endswith("x1.zip"):
+            raise urllib.error.HTTPError(url, 403, "Forbidden", {}, None)             # 断られた
+        if url.endswith("p2.pdf"):
+            raise TimeoutError("timed out")
+        return _xbrl_zip() if url.endswith(".zip") else _pdf("hello")
+
+    got = C.collect_docs(disc, tmp_path, interval=0, get=get, log=logs.append)
+    assert got["missing"] == 1 and got["failed"] == 2 and got["why"] == "HTTP 403 ×1、時間切れ ×1" and got["text"] == 1 and got["xbrl"] == 1
+    assert sum(s.strip().startswith("⚠") and "取れなかった 2 件" in s and "HTTP 403" in s for s in logs) == 1
 
 
 def test_collector_skips_body_text_when_its_folder_is_not_reachable(tmp_path):

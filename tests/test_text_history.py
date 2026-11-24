@@ -354,6 +354,7 @@ def fast(monkeypatch):
     monkeypatch.setattr(C, "PDF_EACH_MB", 0.0, raising=False)     # 試験の置き場所の空きは問わない
     monkeypatch.setattr(C, "PDF_KEEP_FREE_GB", 0, raising=False)
     monkeypatch.setattr(C, "in_quiet", lambda t: False)           # 試験を朝に流しても休まない
+    monkeypatch.setattr(C, "FAIL_WAIT", 0.0, raising=False)       # 取れなかったときの間（本物は 15 秒から）を、試験では待たない
 
 
 def test_tool_takes_the_past_texts_and_tells_what_it_did(tmp_path, capsys, monkeypatch, fast):
@@ -749,3 +750,94 @@ def test_pdf_reader_does_not_fill_the_log_with_notes_about_odd_files(caplog):
     with caplog.at_level(logging.DEBUG):
         logging.getLogger("pypdf._reader").warning("Multiple definitions in dictionary at byte 0x1 for key /Info")
     assert "Multiple definitions" not in caplog.text
+
+
+# --------------------------------------------------------------------------- 取れなかった理由を残す・続けて取れないときは間をあける
+# 2026-11-24: 実物で「続けて取れなかった」で止まったが、記録に理由が無く、サイトに断られたのか回線なのかが分からなかった
+MANY = [(f"q{k:02d}", f"2024-01-{k + 1:02d} 15:00:00", "7203.T", "トヨタ", "お知らせ", "", "") for k in range(25)]
+
+
+def test_history_waits_longer_after_each_failure_and_tells_why(tmp_path):
+    """続けて取れないときは、間をあけてから次を試す（サイトが困っているときに、たたみかけない）。止まるときは、理由を伝える。"""
+    root, _ = hdd(tmp_path)
+    clock, at, logs = noon(), [], []
+
+    def get(url):
+        at.append(clock.t)
+        if len(at) <= 6:
+            raise http_error(url, 502)
+        raise TimeoutError("timed out")
+
+    got = run(root, get, rows=MANY, clock=clock, log=logs.append)
+    assert got["stopped"] == "network" and len(at) == C.MAX_FAILS and got["left"] == 25
+    assert [(at[k + 1] - at[k]).total_seconds() for k in range(len(at) - 1)] == [15, 30, 60, 120, 240, 300, 300, 300, 300]
+    assert got["why"] == "HTTP 502 ×6、時間切れ ×4"
+    assert sum("取れなかった（HTTP 502）" in s for s in logs) == 6 and not (root / ".docs.lock").exists()
+
+
+def test_history_gets_through_a_short_outage(tmp_path):
+    """少しの間の不調（Mac が眠りから覚めた直後・回線の一瞬の切れ）では止まらない。取れなかった分は、次の回にもう一度試す。"""
+    root, _ = hdd(tmp_path)
+    calls = []
+
+    def get(url):
+        calls.append(url)
+        if 2 <= len(calls) <= 4:
+            raise OSError("Network is unreachable")
+        return _pdf("a")
+
+    got = run(root, get, rows=MANY[:8])
+    assert got["stopped"] is None and got["text"] == 5 and got["failed"] == 3 and got["left"] == 3 and "why" not in got
+
+
+def test_history_gives_way_to_the_daily_collection_even_while_waiting(tmp_path):
+    """間をあけて待っている最中でも、毎日の収集が来たら、すぐ錠を放して先に通す（決算の数字を取る回を待たせない）。"""
+    import os
+
+    root, _ = hdd(tmp_path)
+    clock = noon()
+    calls, seen = [], []
+
+    def get(url):
+        calls.append(url)
+        if len(calls) <= 5:
+            raise OSError("Network is unreachable")                 # 5 回続けて取れない → 次は 4 分待つところ
+        return _pdf("a")
+
+    real_sleep = clock.sleep
+
+    def sleep(seconds):
+        if len(calls) == 5 and not seen:
+            (root / C.WANT_FILE).write_text(str(os.getpid()))       # 待っている最中に、毎日の収集が「先に取らせて」と頼んだ
+            seen.append("asked")
+        elif seen == ["asked"]:
+            seen.append((seconds, C.docs_lock(root)))               # 次の待ちは「先に通す」の 30 秒で、その間は錠が空いている
+            C.docs_unlock(root)
+            (root / C.WANT_FILE).unlink(missing_ok=True)
+        real_sleep(seconds)
+
+    clock.sleep = sleep
+    started = clock.t
+    got = run(root, get, rows=MANY[:8], clock=clock)
+    assert seen[1] == (30.0, True) and got["text"] == 3
+    assert (clock.t - started).total_seconds() < 15 + 30 + 60 + 120 + 240       # 4 分の待ちを、最後まで待たずに切り上げた
+
+
+def test_history_says_what_came_back_instead_of_a_pdf(tmp_path):
+    root, _ = hdd(tmp_path)
+    logs = []
+    got = run(root, lambda url: b"<html><title>Access Denied</title>" if "p2" in url else _pdf("a"), log=logs.append)
+    assert got["failed"] == 1 and any("PDF ではない" in s and "Access Denied" in s for s in logs)
+
+
+def test_tool_tells_why_the_fetch_could_not_go_on(tmp_path, capsys, monkeypatch, fast):
+    root, _, _ = world(tmp_path)
+    monkeypatch.setattr(C, "MAX_FAILS", 2)
+
+    def get(url, tries=1):
+        raise http_error(url, 500)
+
+    monkeypatch.setattr(C, "http_get", get)
+    with pytest.raises(SystemExit) as stop:
+        load_script().cmd_collect(ns(root))
+    assert "続けて取れなかった" in str(stop.value) and "HTTP 500 ×2" in str(stop.value)
