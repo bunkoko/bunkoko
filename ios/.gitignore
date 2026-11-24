@@ -6,3 +6,6 @@ DerivedData/
 xcuserdata/
 *.xcuserstate
 .DS_Store
+# XcodeGen が project.yml の info から作る（project.yml を直せば作り直される）
+App/Info.plist
+ActivityMonitor/Info.plist
