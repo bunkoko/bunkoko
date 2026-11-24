@@ -253,7 +253,8 @@ SERIES_DIR, MARKER = DIR / "series", DIR / "B1_DONE.json"   # 柱ごとの月の
 SEAL = "EXPORT_DONE.json"                                   # 書き出しが最後まで終わった印（SERIES_DIR の中。系列ごとの様子とファイルの指紋）
 PRIOR_TRIALS, TRIAL = 100, 101                              # 登録した日までに試した数と、B1 の通し番号（6 章）
 THRESHOLD_REF = expected_max_z(TRIAL)                       # 参考の列だけが使う線（今までの数え方）
-RESULT: dict = {}                                           # 1 回計算して docs/bundle.md 8 章に書いたら、ここにも書く（{"date":…, "verdict":…, "trial": 101}）
+RESULT: dict = {"date": "2026-11-24", "verdict": "良く見えるが、選んだ分と区別できない", "trial": 101}
+# 1 回計算して docs/bundle.md 8 章に書いたら、ここにも書く（{"date":…, "verdict":…, "trial": 101}）
 # 登録の表（2.2）の「記録の期間」: 月の系列にしたときの始まりと終わり（終わりが None のものは、書き出した月の前の月まで）
 EXPECTED: dict[str, tuple[str, str | None]] = {
     "EA": ("2001-01", None), "C2": ("2014-09", None), "carry": ("1986-03", "2024-03"), "combo": ("1987-01", "2024-03"),

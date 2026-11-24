@@ -403,3 +403,13 @@ def test_tool_export_is_refused_after_the_judgement(tmp_path, monkeypatch):
     monkeypatch.setattr(B, "RESULT", {"date": "2026-12-01", "verdict": B.LOOKS_GOOD, "trial": 101})
     with pytest.raises(SystemExit, match="もう 1 回計算してある"):
         load_script().main(["--export"], root=tmp_path)
+
+
+def test_result_is_recorded():
+    """2026-11-24 に 1 回計算した（docs/bundle.md 8 章）。プログラムに書いた結果（autouse で空にする前の値）を、ファイルから読んで確かめる。"""
+    import ast
+    from pathlib import Path
+    src = Path(B.__file__).read_text(encoding="utf-8")
+    node = next(n for n in ast.parse(src).body if isinstance(n, ast.AnnAssign) and getattr(n.target, "id", "") == "RESULT")
+    rec = ast.literal_eval(node.value)
+    assert rec == {"date": "2026-11-24", "verdict": B.LOOKS_GOOD, "trial": 101}
