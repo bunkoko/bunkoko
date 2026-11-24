@@ -46,6 +46,33 @@ def _require_input(path, previous: str) -> None:
         raise typer.Exit(2)
 
 
+LATEST = ("latest", "最新")
+
+
+def _connect_ssd(settings: str | None):
+    from koten.db import connect
+
+    return connect(_settings(settings).ssd_root)
+
+
+def _episode_id(episode: str, conn) -> str:
+    """--episode latest（か「最新」）を、いちばん新しい回の ID にする（取り消した回は除く）。
+
+    回の ID は企画を作るまで分からないので、続けて打つコマンドを ID なしで書けるようにする。
+    """
+    if episode.strip().lower() not in LATEST:
+        return episode
+    row = conn.execute(
+        "SELECT episode_id FROM episodes WHERE state != 'discarded' "
+        "ORDER BY created_at DESC, episode_id DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        typer.secho("回がまだありません（koten plan が先）", fg="red", err=True)
+        raise typer.Exit(2)
+    typer.echo(f"いちばん新しい回：{row[0]}")
+    return row[0]
+
+
 def _check_source(source: str) -> None:
     if source not in SUPPORTED_SOURCES:
         typer.secho(
@@ -1673,7 +1700,9 @@ def eval_agreement(
 
 @app.command()
 def script(
-    episode: Annotated[str, typer.Option(help="回の ID（例：E20261101-01）")],
+    episode: Annotated[
+        str, typer.Option(help="回の ID（例：E20261101-01。latest でいちばん新しい回）")
+    ],
     show: Annotated[
         bool, typer.Option(help="作らずに、保存済みの台本を差し込んだ形で出す")
     ] = False,
@@ -1693,6 +1722,7 @@ def script(
 
     s = _settings(settings)
     conn = connect(s.ssd_root)
+    episode = _episode_id(episode, conn)
     if show:
         row = conn.execute(
             "SELECT state, state_msg, script_json FROM episodes WHERE episode_id = ?", (episode,)
@@ -1863,7 +1893,7 @@ def facts_coverage(settings: SettingsOpt = None) -> None:
 
 @facts_app.command("todo")
 def facts_todo(
-    episode: Annotated[str, typer.Option(help="回の ID")],
+    episode: Annotated[str, typer.Option(help="回の ID（latest でいちばん新しい回）")],
     settings: SettingsOpt = None,
 ) -> None:
     """回で読む作品・作者について、事実の数と、調べるときの手がかり（URL）を出す。"""
@@ -1874,6 +1904,7 @@ def facts_todo(
     from koten.facts.select import canonical
 
     conn = connect(_settings(settings).ssd_root)
+    episode = _episode_id(episode, conn)
     row = conn.execute("SELECT plan_json FROM episodes WHERE episode_id = ?", (episode,)).fetchone()
     if row is None:
         typer.secho(f"{episode} という回はありません", fg="red", err=True)
@@ -1910,7 +1941,7 @@ def facts_todo(
 
 @facts_app.command("attach")
 def facts_attach(
-    episode: Annotated[str, typer.Option(help="回の ID")],
+    episode: Annotated[str, typer.Option(help="回の ID（latest でいちばん新しい回）")],
     force: Annotated[bool, typer.Option(help="script_done などの回にも付け直す")] = False,
     settings: SettingsOpt = None,
 ) -> None:
@@ -1924,6 +1955,7 @@ def facts_attach(
 
     s = _settings(settings)
     conn = connect(s.ssd_root)
+    episode = _episode_id(episode, conn)
     row = conn.execute(
         "SELECT state, plan_json FROM episodes WHERE episode_id = ?", (episode,)
     ).fetchone()
@@ -2438,7 +2470,7 @@ def sources_locate(
 
 @sources_app.command("todo")
 def sources_todo(
-    episode: Annotated[str, typer.Option(help="回の ID")],
+    episode: Annotated[str, typer.Option(help="回の ID（latest でいちばん新しい回）")],
     out: Annotated[
         str | None, typer.Option(help="書き出す先（省くと docs/checks/<回>.json）")
     ] = None,
@@ -2458,8 +2490,10 @@ def sources_todo(
     from koten.media.produce import ProduceError, load_episode, unchecked_sources
 
     s = _settings(settings)
+    conn = connect(s.ssd_root)
+    episode = _episode_id(episode, conn)
     try:
-        ep = load_episode(connect(s.ssd_root), s.ssd_root, episode)
+        ep = load_episode(conn, s.ssd_root, episode)
     except (ProduceError, KeyError, ValueError) as e:
         typer.secho(f"回を読めません：{e}", fg="red", err=True)
         raise typer.Exit(2) from e
@@ -2720,7 +2754,7 @@ def ref_fetch(
 
 @ref_app.command("attach")
 def ref_attach(
-    episode: Annotated[str, typer.Option(help="回の ID")],
+    episode: Annotated[str, typer.Option(help="回の ID（latest でいちばん新しい回）")],
     chapter: Annotated[str, typer.Option(help="章の ID（例：ch2。koten plan の出力にある）")],
     ref_id: Annotated[
         list[str], typer.Option("--id", help="語釈（J-…）か解釈（I-…）の ID。くり返し指定できる")
@@ -2741,6 +2775,7 @@ def ref_attach(
 
     s = _settings(settings)
     conn = connect(s.ssd_root)
+    episode = _episode_id(episode, conn)
     row = conn.execute(
         "SELECT state, plan_json FROM episodes WHERE episode_id = ?", (episode,)
     ).fetchone()
@@ -3196,13 +3231,14 @@ def check_run(
 
 @check_app.command("status")
 def check_status(
-    episode: Annotated[str, typer.Option(help="回の ID")],
+    episode: Annotated[str, typer.Option(help="回の ID（latest でいちばん新しい回）")],
     settings: SettingsOpt = None,
 ) -> None:
     """照合の判定の数と、公開を保留する理由を出す（保留があれば終了コード 1）。"""
     from koten.check.compare import VERDICTS
     from koten.check.store import summary
 
+    episode = _episode_id(episode, _connect_ssd(settings))
     conn, current = _episode_claims(_settings(settings), episode)
     counts = summary(conn, episode)
     names = {**VERDICTS, "resolved": "解いた保留"}
@@ -3220,7 +3256,7 @@ def check_status(
 
 @check_app.command("resolve")
 def check_resolve(
-    episode: Annotated[str, typer.Option(help="回の ID")],
+    episode: Annotated[str, typer.Option(help="回の ID（latest でいちばん新しい回）")],
     key: Annotated[str, typer.Option(help="台本から消えた文の記録の ID（例：ch2-s3#1）")],
     note: Annotated[str, typer.Option(help="解く理由（60字まで）")],
     by: Annotated[str | None, typer.Option(help="解いた人")] = None,
@@ -3229,6 +3265,7 @@ def check_resolve(
     """台本から消えた文の、照合の保留を解く（文が残っているときは、直して照合し直す）。"""
     from koten.check.store import resolve_gone
 
+    episode = _episode_id(episode, _connect_ssd(settings))
     conn, current = _episode_claims(_settings(settings), episode)
     checker = by or os.environ.get("KOTEN_CHECKER", "").strip() or "owner"
     try:
@@ -3566,6 +3603,7 @@ def _run_steps(episode: str, steps: list[str], settings: str | None) -> None:
 
     s = _settings(settings)
     conn = connect(s.ssd_root)
+    episode = _episode_id(episode, conn)
     try:
         for step in steps:
             typer.secho(f"── {step}", bold=True)
@@ -3595,7 +3633,7 @@ def _run_steps(episode: str, steps: list[str], settings: str | None) -> None:
 
 @app.command("voice")
 def voice_cmd(
-    episode: Annotated[str, typer.Option(help="回の ID")],
+    episode: Annotated[str, typer.Option(help="回の ID（latest でいちばん新しい回）")],
     settings: SettingsOpt = None,
 ) -> None:
     """台本を VOICEVOX で読み上げ、章ごとの音声と時刻を HDD の media/<回>/voice/ に作る（M6）。"""
@@ -3604,7 +3642,7 @@ def voice_cmd(
 
 @app.command("visuals")
 def visuals_cmd(
-    episode: Annotated[str, typer.Option(help="回の ID")],
+    episode: Annotated[str, typer.Option(help="回の ID（latest でいちばん新しい回）")],
     settings: SettingsOpt = None,
 ) -> None:
     """カード（引用・章タイトル・統計）と自分の写真から、画面の切り替え（ショット）を作る（M6）。"""
@@ -3613,7 +3651,7 @@ def visuals_cmd(
 
 @app.command("render")
 def render_cmd(
-    episode: Annotated[str, typer.Option(help="回の ID")],
+    episode: Annotated[str, typer.Option(help="回の ID（latest でいちばん新しい回）")],
     settings: SettingsOpt = None,
 ) -> None:
     """ffmpeg で章ごとの動画をつなぎ、完成した mp4 を作る。G7（尺）を確かめる（M6）。"""
@@ -3622,7 +3660,7 @@ def render_cmd(
 
 @app.command("kit")
 def kit_cmd(
-    episode: Annotated[str, typer.Option(help="回の ID")],
+    episode: Annotated[str, typer.Option(help="回の ID（latest でいちばん新しい回）")],
     settings: SettingsOpt = None,
 ) -> None:
     """説明欄・チャプター・字幕（SRT）・サムネイル3枚を作る（M6）。"""
@@ -3631,7 +3669,7 @@ def kit_cmd(
 
 @app.command("review")
 def review_cmd(
-    episode: Annotated[str, typer.Option(help="回の ID")],
+    episode: Annotated[str, typer.Option(help="回の ID（latest でいちばん新しい回）")],
     settings: SettingsOpt = None,
 ) -> None:
     """確認画面（HDD の exports/<回>/review.html）を作る。承認は koten episode approve（M6）。"""
@@ -3640,7 +3678,7 @@ def review_cmd(
 
 @app.command("produce")
 def produce_cmd(
-    episode: Annotated[str, typer.Option(help="回の ID")],
+    episode: Annotated[str, typer.Option(help="回の ID（latest でいちばん新しい回）")],
     start: Annotated[
         str, typer.Option("--from", help="ここから動かす（voice・visuals・render・kit・review）")
     ] = "voice",
@@ -3673,7 +3711,7 @@ def produce_cmd(
 
 @episode_app.command("take")
 def episode_take(
-    episode: Annotated[str, typer.Option(help="回の ID")],
+    episode: Annotated[str, typer.Option(help="回の ID（latest でいちばん新しい回）")],
     text: Annotated[str | None, typer.Option(help="人の一言（文字。読み上げる）")] = None,
     audio: Annotated[
         str | None,
@@ -3690,6 +3728,7 @@ def episode_take(
     from koten.review.actions import ReviewError, set_human_take
 
     conn = connect(_settings(settings).ssd_root)
+    episode = _episode_id(episode, conn)
     try:
         take = set_human_take(conn, episode, text=text, audio_path=audio, skip=skip)
     except ReviewError as e:
@@ -3706,7 +3745,7 @@ def episode_take(
 
 @episode_app.command("approve")
 def episode_approve(
-    episode: Annotated[str, typer.Option(help="回の ID")],
+    episode: Annotated[str, typer.Option(help="回の ID（latest でいちばん新しい回）")],
     note: Annotated[str, typer.Option(help="確認のメモ")] = "",
     settings: SettingsOpt = None,
 ) -> None:
@@ -3718,6 +3757,7 @@ def episode_approve(
 
     s = _settings(settings)
     conn = connect(s.ssd_root)
+    episode = _episode_id(episode, conn)
     try:
         ep = produce.load_episode(conn, s.ssd_root, episode)
         _, current = _episode_claims(s, episode)
@@ -3734,7 +3774,7 @@ def episode_approve(
 
 @episode_app.command("reject")
 def episode_reject(
-    episode: Annotated[str, typer.Option(help="回の ID")],
+    episode: Annotated[str, typer.Option(help="回の ID（latest でいちばん新しい回）")],
     note: Annotated[str, typer.Option(help="直すところ（必ず書く）")],
     to: Annotated[
         str,
@@ -3747,6 +3787,7 @@ def episode_reject(
     from koten.review.actions import ReviewError, reject
 
     conn = connect(_settings(settings).ssd_root)
+    episode = _episode_id(episode, conn)
     try:
         reject(conn, episode, note=note, to_state=to)
     except ReviewError as e:

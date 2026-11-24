@@ -44,7 +44,7 @@
 - uv run koten eval grade（Claude Code の判定役が llm_grade 列を埋める。既定は opus、--model sonnet・haiku で替える。基準は prompts/grader_v4.md）→ uv run koten eval agreement
 - スマホで点を付けるとき：Mac で eval export → tests/eval/retrieval.csv を GitHub に入れる → Claude が uv run koten eval page（--review で見直す行を指定）でページを作り、アーティファクト「検索の評価」に載せる → 人がスマホで押す → Claude がページのデータベースの grades を読んで JSON にし、uv run koten eval merge --from その JSON で grade 列に書いて GitHub に入れる（docs/decisions.md 2026-11-08）
 - uv run koten eval retrieval（--by llm で LLM の点を使う。--rerank-model でリランカーを1つずつ足して比べる。export にも同じ指定をして、上に上がった一節にも点を付ける）
-- uv run koten plan --worry W0001 --format A（保存）→ uv run koten script --episode E20261101-01 → --show で読む
+- uv run koten plan --worry W0001 --format A（保存）→ uv run koten script --episode E20261101-01 → --show で読む。回の ID の代わりに --episode latest と書くと、いちばん新しい回（取り消した回は除く）。人に渡すコマンドは latest で書けば ID が要らない
 - uv run koten episode list ／ uv run koten episode discard --episode <ID>（試しの回を取り消す）
 - uv run koten produce --episode E…（M6：台本のあと、音声 → 画面 → 組み立て → 公開用キット → 確認画面を続けて。--from render などで途中から、--to voice で音声だけ（確認画面で台本と音声を聞く）。段ごとに koten voice・visuals・render・kit・review も）→ HDD の exports/<回>/review.html を開く → koten episode take --episode E… --text …（人の一言。--audio・--skip）→ koten episode approve --episode E…（承認。差し戻しは reject --to script_done --note …）。作りは docs/m6_design.md
 - uv run koten forget-works --changed（正規化で本文が変わった作品。--apply で付加情報を取り除き、augment で作り直す）
