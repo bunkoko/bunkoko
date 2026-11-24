@@ -410,7 +410,67 @@ QUIET_FROM, QUIET_TO = (7, 50), (8, 45)   # 毎朝 8:00 の収集に場所をゆ
 HISTORY_CHUNK = 200                       # 1 度の錠で取る数（3 分ちょっと。終わるたびに錠を放す）
 REFUSED = (403, 429, 503)                 # サイトに断られた印。すぐ止める（続けて取りに行かない）
 MAX_FAILS = 10                            # 続けてこれだけ取れなければ止める（回線・サイトの不調）
-PDF_NEED_GB = 60                          # 原本も残すときに要る空き（見当: 9 万件 × 0.3MB ≒ 27GB の倍）
+PDF_EACH_MB = 0.6                         # 原本 1 件に見ておく大きさ（見当 0.3MB の倍。9 万件で 55GB ほど）
+PDF_KEEP_FREE_GB = 5                      # HDD に必ず残しておく空き（いっぱいにしない。毎日の収集の本文も、同じ HDD に書く）
+
+
+HISTORY_LOCK = ".text_history.lock"       # 過去の本文の取得が、動いている間ずっと持つ印（中身は道具の番号）
+
+
+def history_hold(root: Path):
+    """過去の本文の取得は 1 本だけ: 動いている間ずっと持つ印を取る。取れたら、持ち続けるためのファイルを返す。もう動いていれば None。
+
+    書類の錠（.docs.lock）が守るのは「同時に 1 本」だけで、区切りごとに放す。2 本目が動くと、2 本が交代で同じ書類を取りに行ってしまう。
+    印は OS の錠（flock）なので、道具が止められても・機械が落ちても残らない（番号だけ同じになった別の道具と取り違えない）。
+    """
+    import fcntl
+    import os
+
+    root.mkdir(parents=True, exist_ok=True)
+    f = open(root / HISTORY_LOCK, "a+", encoding="utf-8")  # noqa: SIM115  持ち続けるために開いたままにする
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    f.seek(0)
+    f.truncate()
+    f.write(str(os.getpid()))
+    f.flush()
+    return f
+
+
+def history_release(hold) -> None:
+    """印を放す（番号も消す）。"""
+    try:
+        hold.seek(0)
+        hold.truncate()
+        hold.flush()
+    finally:
+        hold.close()
+
+
+def history_running(root: Path) -> int | None:
+    """過去の本文の取得が今動いていれば、その道具の番号（読めなければ 0）。動いていなければ None。"""
+    import fcntl
+
+    path = root / HISTORY_LOCK
+    if not path.exists():
+        return None
+    try:
+        f = open(path, encoding="utf-8")  # noqa: SIM115
+    except OSError:                                             # 見た直後に消えた ＝ 動いていない
+        return None
+    with f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except OSError:                                         # だれかが持っている ＝ 動いている
+            try:
+                return int(f.read().strip() or 0)
+            except ValueError:
+                return 0
+        fcntl.flock(f, fcntl.LOCK_UN)
+    return None
 
 
 def pdf_root(root: Path) -> Path:
@@ -418,6 +478,14 @@ def pdf_root(root: Path) -> Path:
     import os
 
     return Path(os.path.realpath(text_root(root))).parent / "ir_pdf"
+
+
+def pdf_need(n_docs: int) -> int:
+    """原本も残して n_docs 件取るのに要る空き（バイト）: 1 件 PDF_EACH_MB の見当 ＋ 残しておく PDF_KEEP_FREE_GB。
+
+    件数に合わせる（全部なら 60GB ほど）。途中で止めて続きから取るとき、残りが少しなのに全部の分を求めて止まらないように。
+    """
+    return int(n_docs * PDF_EACH_MB * 2 ** 20) + PDF_KEEP_FREE_GB * 2 ** 30
 
 
 def load_missing(root: Path) -> set[str]:
@@ -487,9 +555,21 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
         return dict(done, stopped="no_text_place")
     jobs = history_jobs(disc, root, since, history_until(now()))
     done["left"] = len(jobs)
-    if keep_pdf and jobs and free(place["path"]) < PDF_NEED_GB * 2 ** 30:
-        return dict(done, stopped="no_space")
     todo = len(jobs) if max_docs is None else min(len(jobs), max_docs)
+
+    def room() -> int | None:
+        """置き場所の空き（バイト）。ディスクが外れていて測れなければ None。"""
+        try:
+            return free(place["path"])
+        except OSError:
+            return None
+
+    if keep_pdf and todo:
+        have = room()
+        if have is None:
+            return dict(done, stopped="disk")
+        if have < pdf_need(todo):
+            return dict(done, stopped="no_space", need_gb=pdf_need(todo) / 2 ** 30, free_gb=have / 2 ** 30)
     i = fails = 0
     told = False
     while i < todo and not done["stopped"]:
@@ -513,6 +593,13 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
         try:
             for r in jobs[i:min(i + HISTORY_CHUNK, todo)]:
                 if in_quiet(now()) or wanted(root):
+                    break
+                have = room() if keep_pdf else 0
+                if have is None:                                # 書類と書類の間で、ディスクが外れた
+                    done["stopped"] = "disk"
+                    break
+                if keep_pdf and have < PDF_KEEP_FREE_GB * 2 ** 30:                     # 原本が見当より大きかった・ほかのものが増えた。いっぱいにしない
+                    done.update(stopped="no_space", need_gb=pdf_need(todo - i) / 2 ** 30, free_gb=have / 2 ** 30)
                     break
                 started = time.monotonic()
                 try:
@@ -547,7 +634,9 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
                     done["stopped"] = "network"
                     break
                 if i % HISTORY_CHUNK == 0:
-                    log(f"  過去の本文 {i:,}/{todo:,}（取れた {done['text']:,}・サイトに無い {done['missing']:,}・取れなかった {done['failed']:,}）")
+                    left = room() if keep_pdf else None
+                    space = f"・HDD の空き {left / 2 ** 30:,.0f}GB" if left is not None else ""
+                    log(f"  過去の本文 {i:,}/{todo:,}（取れた {done['text']:,}・サイトに無い {done['missing']:,}・取れなかった {done['failed']:,}{space}）")
                 _wait(started, interval)
         finally:
             docs_unlock(root)

@@ -221,9 +221,71 @@ def test_history_needs_the_external_disk(tmp_path):
 def test_history_checks_the_free_space_before_keeping_the_originals(tmp_path):
     root, _ = hdd(tmp_path)
     called = []
-    small = run(root, lambda url: called.append(url) or _pdf("a"), free=lambda p: 10 * 2 ** 30)
-    assert small["stopped"] == "no_space" and called == []
-    assert run(root, lambda url: called.append(url) or _pdf("a"), free=lambda p: 10 * 2 ** 30, keep_pdf=False)["text"] == 3
+    small = run(root, lambda url: called.append(url) or _pdf("a"), free=lambda p: 4 * 2 ** 30)          # 残しておく 5GB にも届かない
+    assert small["stopped"] == "no_space" and called == [] and round(small["free_gb"]) == 4 and small["need_gb"] > 5
+    assert run(root, lambda url: called.append(url) or _pdf("a"), free=lambda p: 4 * 2 ** 30, keep_pdf=False)["text"] == 3
+
+
+def test_history_asks_for_space_only_for_what_is_left(tmp_path):
+    """要る空きは、これから取る件数に合わせる。途中で止めて続きから取るとき、残りが少しなのに「60GB 要る」と止まらないように。"""
+    assert 55 < C.pdf_need(92_000) / 2 ** 30 < 62                 # 全部（9 万件ほど）なら 60GB ほど
+    assert C.pdf_need(20) / 2 ** 30 < 5.1                         # 試しの 20 件なら、残しておく分とほぼ同じ
+    root, _ = hdd(tmp_path)
+    assert run(root, lambda url: _pdf("a"), free=lambda p: 10 * 2 ** 30)["text"] == 3
+
+
+def test_history_stops_before_the_disk_is_full(tmp_path):
+    """原本の大きさは見当なので、取っている間も空きを見る。HDD をいっぱいにしない（毎日の収集の本文も、同じ HDD に書く）。"""
+    root, _ = hdd(tmp_path)
+    space, calls = [100 * 2 ** 30], []
+
+    def get(url):
+        calls.append(url)
+        space[0] = 4 * 2 ** 30                                    # 1 件取ったところで、空きが 5GB を切った
+        return _pdf("a")
+
+    got = run(root, get, free=lambda p: space[0])
+    assert got["stopped"] == "no_space" and got["text"] == 1 and got["left"] == 2 and len(calls) == 1
+    assert round(got["free_gb"]) == 4
+    assert run(root, get, free=lambda p: space[0], keep_pdf=False)["text"] == 2          # 原本を残さなければ、続きを取れる
+
+
+def test_history_stops_plainly_when_the_disk_cannot_even_be_measured(tmp_path):
+    """書類と書類の間でディスクが外れると、空きを見る所で分かる。道具ごと落ちずに、「書けなくなった」として止まる。"""
+    root, _ = hdd(tmp_path)
+    asked, calls = [], []
+
+    def free(path):
+        asked.append(path)
+        if len(asked) >= 3:                                       # 始めの確かめと 1 件目の前は見えた。2 件目の前には、もう見えない
+            raise FileNotFoundError(path)
+        return 100 * 2 ** 30
+
+    got = run(root, lambda url: calls.append(url) or _pdf("a"), free=free)
+    assert got["stopped"] == "disk" and got["text"] == 1 and len(calls) == 1 and not (root / ".docs.lock").exists()
+
+
+def test_history_does_not_break_when_the_mark_file_vanishes(tmp_path, monkeypatch):
+    root = tmp_path / "ir"
+    root.mkdir()
+    (root / C.HISTORY_LOCK).write_text("1")
+    real = open
+
+    def gone(path, *a, **kw):
+        if str(path).endswith(C.HISTORY_LOCK):
+            raise FileNotFoundError(path)                         # 見た直後に消えた
+        return real(path, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", gone)
+    assert C.history_running(root) is None
+
+
+def test_history_tells_the_free_space_as_it_goes(tmp_path, monkeypatch):
+    root, _ = hdd(tmp_path)
+    monkeypatch.setattr(C, "HISTORY_CHUNK", 2)
+    logs = []
+    run(root, lambda url: _pdf("a"), free=lambda p: 123 * 2 ** 30, log=logs.append)
+    assert any("過去の本文 2/3" in s and "HDD の空き 123GB" in s for s in logs)
 
 
 def test_history_waits_while_another_fetch_holds_the_lock(tmp_path):
@@ -289,7 +351,8 @@ def ns(root, **kw):
 @pytest.fixture
 def fast(monkeypatch):
     monkeypatch.setattr(C, "INTERVAL", 0.0)                       # 試験では待たない（決まりは 1 秒に 1 件）
-    monkeypatch.setattr(C, "PDF_NEED_GB", 0)                      # 試験の置き場所の空きは問わない
+    monkeypatch.setattr(C, "PDF_EACH_MB", 0.0, raising=False)     # 試験の置き場所の空きは問わない
+    monkeypatch.setattr(C, "PDF_KEEP_FREE_GB", 0, raising=False)
     monkeypatch.setattr(C, "in_quiet", lambda t: False)           # 試験を朝に流しても休まない
 
 
@@ -323,6 +386,17 @@ def test_tool_says_why_it_stopped(tmp_path, capsys, monkeypatch, fast):
     with pytest.raises(SystemExit, match="断られた"):
         load_script().cmd_collect(ns(root))
     assert "残り 3" in capsys.readouterr().out
+
+
+def test_tool_says_how_much_space_is_missing(tmp_path, capsys, monkeypatch, fast):
+    root, _, _ = world(tmp_path)
+    monkeypatch.setattr(C, "PDF_KEEP_FREE_GB", 10 ** 7, raising=False)          # どの機械でも足りない大きさ
+    called = []
+    monkeypatch.setattr(C, "http_get", lambda url, tries=1: called.append(url) or _pdf("a"))
+    with pytest.raises(SystemExit) as stop:
+        load_script().cmd_collect(ns(root))
+    said = str(stop.value)
+    assert "空きが足りない" in said and "今の空き" in said and "--no-pdf" in said and called == []
 
 
 def test_tool_can_do_a_small_trial_first(tmp_path, capsys, monkeypatch, fast):
@@ -476,3 +550,122 @@ def test_a_killed_run_leaves_no_half_written_text(tmp_path, monkeypatch):
     monkeypatch.setattr(C.Path, "replace", real)
     assert not list((root / "text").glob("*/*.txt")) and not (root / ".docs.lock").exists()
     assert run(root, lambda url: _pdf("a"), keep_pdf=False)["text"] == 3
+
+
+# --------------------------------------------------------------------------- 途中で止める・続きから取る・2 本目は始めない
+def test_only_one_history_fetch_can_hold_the_mark(tmp_path):
+    """過去分の取得は 1 本だけ。動いている間ずっと印を持ち、終わると（止められても）OS が外す。"""
+    root = tmp_path / "ir"
+    assert C.history_running(root) is None
+    hold = C.history_hold(root)
+    assert hold is not None and C.history_hold(root) is None                    # 2 本目は持てない
+    assert C.history_running(root) == __import__("os").getpid()
+    C.history_release(hold)
+    assert C.history_running(root) is None
+    again = C.history_hold(root)                                                # 外れたら、また持てる
+    assert again is not None
+    C.history_release(again)
+
+
+def test_a_mark_left_by_a_dead_fetch_does_not_count(tmp_path):
+    """止められた・機械が落ちた後に、番号だけ残っていても「動いている」と数えない（別の道具が同じ番号になっていても、取り違えない）。"""
+    root = tmp_path / "ir"
+    root.mkdir()
+    (root / C.HISTORY_LOCK).write_text(str(__import__("os").getpid()))          # 今動いている別の道具（この試験）の番号が残っている
+    assert C.history_running(root) is None
+    hold = C.history_hold(root)
+    assert hold is not None
+    C.history_release(hold)
+
+
+def test_tool_does_not_start_a_second_copy(tmp_path, capsys, monkeypatch, fast):
+    """2 本目が動くと、同じ書類を 2 度ずつ取りに行ってしまう（錠が守るのは「同時に 1 本」だけ）。動いている間は、始めない。"""
+    root, ir, _ = world(tmp_path)
+    called = []
+    monkeypatch.setattr(C, "http_get", lambda url, tries=1: called.append(url) or _pdf("a"))
+    hold = C.history_hold(ir)                                                   # 1 本目が動いている
+    try:
+        with pytest.raises(SystemExit, match="もう動いている"):
+            load_script().cmd_collect(ns(root))
+        assert called == [] and C.history_running(ir) is not None               # 1 本目の印はそのまま
+    finally:
+        C.history_release(hold)
+    load_script().cmd_collect(ns(root))                                         # 1 本目が終われば、始められる
+    assert "終わった" in capsys.readouterr().out and C.history_running(ir) is None
+
+
+def test_tool_stops_when_asked_and_goes_on_next_time(tmp_path, capsys, monkeypatch, fast):
+    """長い取得は、途中で止められる（Mac を持ち出す・HDD を外す前に）。止める合図で止まり、取った分は残り、次は続きから。"""
+    import os
+    import signal
+
+    root, ir, _ = world(tmp_path)
+    outer = []
+
+    def outside(*_):                                                            # 道具が合図を受け取らなければ、ここに来る（試験ごと止まらないように）
+        outer.append("outer")
+
+    before = signal.signal(signal.SIGTERM, outside)
+    try:
+        calls = []
+
+        def get(url, tries=1):
+            calls.append(url.rsplit("/", 1)[1])
+            if len(calls) == 2:
+                os.kill(os.getpid(), signal.SIGTERM)                            # 2 件目を取っている途中で「止めて」
+            return _pdf("a")
+
+        monkeypatch.setattr(C, "http_get", get)
+        m = load_script()
+        m.cmd_collect(ns(root))
+        out = capsys.readouterr().out
+        assert outer == [] and "頼まれて止めた" in out and "続きは" in out and "⚠" not in out
+        assert 1 <= len(list((ir / "text").glob("*/*.txt"))) <= 2                # 取った分は残っている
+        assert not (ir / ".docs.lock").exists() and C.history_running(ir) is None
+        assert signal.getsignal(signal.SIGTERM) is outside                      # 合図の受け取り方を、元に戻している
+        m.cmd_collect(ns(root))                                                 # 同じコマンドで続きから
+        assert "終わった" in capsys.readouterr().out and len(list((ir / "text").glob("*/*.txt"))) == 3
+        assert len(calls) <= 4                                                  # 取ってあるものは取り直さない
+    finally:
+        signal.signal(signal.SIGTERM, before)
+
+
+def test_stop_command_stops_the_running_fetch_and_nothing_else(tmp_path, capsys, fast):
+    import os
+    import subprocess
+    import sys
+
+    root, ir, _ = world(tmp_path)
+    m = load_script()
+    stop = ns(root, text_history=False, text_history_stop=True)
+    m.cmd_collect(stop)
+    assert "動いていない" in capsys.readouterr().out                             # 止めるものが無い
+    (ir / C.HISTORY_LOCK).write_text(str(os.getpid()))                          # 前の取得が残した番号と、たまたま同じ番号の別の道具（この試験）
+    m.cmd_collect(stop)
+    assert "動いていない" in capsys.readouterr().out                             # 取り違えて止めない（止めていたら、この試験ごと落ちる）
+    code = ("import sys, time; from pathlib import Path; from cfdbot.agents import collector as C; "
+            "hold = C.history_hold(Path(sys.argv[1])); print('ready', flush=True); time.sleep(60)")
+    fetch = subprocess.Popen([sys.executable, "-c", code, str(ir)], stdout=subprocess.PIPE, text=True,
+                             cwd=str(__import__("pathlib").Path(__file__).resolve().parents[1]))
+    try:
+        assert fetch.stdout.readline().strip() == "ready" and C.history_running(ir) == fetch.pid
+        m.cmd_collect(stop)
+        out = capsys.readouterr().out
+        assert "止めた" in out and "続きは" in out and "取り出して" in out
+        assert fetch.wait(timeout=10) is not None and C.history_running(ir) is None
+    finally:
+        fetch.kill()
+        fetch.wait()
+
+
+def test_status_tells_whether_the_history_fetch_is_running(tmp_path, capsys, monkeypatch, fast):
+    root, ir, _ = world(tmp_path)
+    m = load_script()
+    m.cmd_status(ns(root, out=str(tmp_path / "out")))
+    assert "取得は今: 止まっている" in capsys.readouterr().out
+    hold = C.history_hold(ir)
+    try:
+        m.cmd_status(ns(root, out=str(tmp_path / "out")))
+        assert "取得は今: 動いている" in capsys.readouterr().out
+    finally:
+        C.history_release(hold)

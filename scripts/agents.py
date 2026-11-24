@@ -4,6 +4,8 @@
     python scripts/agents.py collect              # 情報収集（毎日。直近 5 日分の一覧）
     python scripts/agents.py collect --docs       # ＋本文（PDF を文字にしたもの）と決算の数字（XBRL）。直近 7 日分を 1 秒に 1 件で取る
     python scripts/agents.py collect --xbrl-history --max-docs 40000   # 過去の決算の数字（2016-10〜。1 秒に 1 件なので 6〜7 時間）
+    python scripts/agents.py collect --text-history       # 過去の開示の本文（2016-10〜。1 秒に 1 件。1〜2 晩。外付けの HDD へ。動かせるのは 1 本だけ）
+    python scripts/agents.py collect --text-history-stop  # それを止める（取った分は残る。続きは --text-history で）
     python scripts/agents.py ir                   # IR 評価
     python scripts/agents.py select               # 銘柄選定
     python scripts/agents.py decide               # 判断
@@ -122,7 +124,8 @@ def f2(x: float) -> str:
 TEXT_HISTORY_WHY = {   # 過去の本文の取得が止まった理由（利用者に伝える文）
     "not_external": "本文の置き場所が、外付けの HDD へのリンクになっていない。先に「IR の文章を HDD に移して」（2026-11-20 利用者の決め: 本文は HDD に置く）。何も取っていない",
     "no_text_place": "外付けの HDD がつながっていないか、つながっているのに書けない（上の「本文の置き場所」の行を見る）。直してから、同じコマンドで。何も取っていない",
-    "no_space": "HDD の空きが足りない（原本の PDF も残すには {need}GB ほど要る）。原本を残さないなら --no-pdf（利用者に確かめてから）。何も取っていない",
+    "no_space": "HDD の空きが足りない（原本の PDF も残すには、これから取る分で {need:,.0f}GB ほど要る。今の空きは {free:,.0f}GB。{keep}GB は空けておく決まり）。"
+                "HDD の空きを作るか、原本を残さないなら --no-pdf（利用者に確かめてから）。取ってある分はそのまま残っている",
     "refused": "サイトに断られた（403・429・503）。すぐ止めた。今日はもう取りに行かない。明日以降に同じコマンドで続きから（続くようなら指令役に知らせる）",
     "network": "続けて取れなかった（回線かサイトの不調）。時間をおいて、同じコマンドで続きから",
     "disk": "取っている間に HDD に書けなくなった（外れた・いっぱいになった）。直して、同じコマンドで続きから",
@@ -145,6 +148,8 @@ def cmd_text_history(args) -> None:
 
     東証の上場会社情報サービスから、1 秒に 1 件・同時に 1 本。毎朝 8:00 の収集の時間（7:50〜8:45）は休む。止めても、同じコマンドで続きから。
     """
+    import signal
+
     from cfdbot.agents import collector as C
 
     p = paths(args.root)
@@ -152,6 +157,56 @@ def cmd_text_history(args) -> None:
     if df.empty:
         sys.exit("開示の一覧が無い（先に ./cfd agents collect）")
     ir_root = p["disclosures"].parent
+    hold = C.history_hold(ir_root)
+    if hold is None:
+        sys.exit(f"過去の本文: もう動いている（番号 {C.history_running(ir_root)}）。2 本目は始めない（同じ書類を 2 度取りに行かないように）。"
+                 "進み具合は ./cfd agents status、止めるのは ./cfd agents collect --text-history-stop")
+
+    def asked(*_):                                              # 止める合図（--text-history-stop・kill）。きりのよい所で止まる
+        raise KeyboardInterrupt
+
+    try:
+        old = signal.signal(signal.SIGTERM, asked)
+    except ValueError:                                          # 主の糸でないときは、受け取り方を変えられない
+        old = None
+    try:
+        _text_history(args, C, df, ir_root)
+    except KeyboardInterrupt:
+        print("過去の本文: 頼まれて止めた。取った分はそのまま残っている（進み具合は ./cfd agents status）。続きは、同じコマンドで（取ってあるものは飛ばす）", flush=True)
+    finally:
+        if old is not None:
+            signal.signal(signal.SIGTERM, old)
+        C.history_release(hold)
+
+
+STOP_WAIT = 60                            # 止める合図の後、止まるのを待つ秒数
+
+
+def cmd_text_history_stop(args) -> None:
+    """過去の本文の取得を止める。取った分はそのまま残る。続きは --text-history で（取ってあるものは飛ばす）。"""
+    import os
+    import signal
+
+    from cfdbot.agents import collector as C
+
+    ir_root = paths(args.root)["disclosures"].parent
+    pid = C.history_running(ir_root)
+    if pid is None:
+        print("過去の本文: 動いていない（止めるものが無い）", flush=True)
+        return
+    if pid <= 0:
+        sys.exit("過去の本文: ⚠ 動いているが、道具の番号が読めない。少し待って、もう一度")
+    os.kill(pid, signal.SIGTERM)
+    for _ in range(STOP_WAIT * 2):
+        if C.history_running(ir_root) is None:
+            print("過去の本文: 止めた。取った分はそのまま残っている。続きは、同じ取得のコマンドで（取ってあるものは飛ばす）。"
+                  "HDD を外すときは、Finder で取り出してから", flush=True)
+            return
+        time.sleep(0.5)
+    sys.exit(f"過去の本文: ⚠ 止める合図を送ったが、まだ動いている（番号 {pid}）。1 分ほどおいて、もう一度")
+
+
+def _text_history(args, C, df, ir_root) -> None:
     keep_pdf = not args.no_pdf
     place = C.text_place(ir_root)
     jobs = len(C.history_jobs(df, ir_root, HISTORY_FROM, C.history_until(datetime.now()))) if place["ready"] else 0
@@ -165,13 +220,15 @@ def cmd_text_history(args) -> None:
                                  interval=C.INTERVAL, log=lambda s: print(s, flush=True))
     print(f"過去の本文: 取れた +{got['text']:,}、サイトに無い {got['missing']:,}、取れなかった {got['failed']:,}、残り {got['left']:,}", flush=True)
     if got["stopped"]:
-        sys.exit("過去の本文: ⚠ " + TEXT_HISTORY_WHY[got["stopped"]].format(need=C.PDF_NEED_GB))
+        sys.exit("過去の本文: ⚠ " + TEXT_HISTORY_WHY[got["stopped"]].format(need=got.get("need_gb", 0.0), free=got.get("free_gb", 0.0), keep=C.PDF_KEEP_FREE_GB))
     print("過去の本文: " + ("終わった" if not got["left"] else "ここまで。続きは同じコマンドで（取れなかったものは、もう一度試す）"), flush=True)
 
 
 def cmd_collect(args) -> None:
     from cfdbot.agents import collector as C
 
+    if getattr(args, "text_history_stop", False):
+        return cmd_text_history_stop(args)
     if getattr(args, "text_history", False):
         return cmd_text_history(args)
     p = paths(args.root)
@@ -1791,7 +1848,8 @@ def cmd_status(args) -> None:
         past = df[df["time"] >= HISTORY_FROM]
         past = past[past["time"] < C.history_until(datetime.now())]          # 直近 7 日は毎日の収集の持ち分
         left, miss = len(C.history_jobs(past, ir_root, HISTORY_FROM)), len(set(past["id"]) & C.load_missing(ir_root))
-        print(f"過去の本文（{HISTORY_FROM[:7]}〜）: 取ってある {len(past) - left - miss:,} 件・サイトに無い {miss:,} 件・残り {left:,} 件")
+        now = "動いている" if C.history_running(ir_root) is not None else "止まっている"
+        print(f"過去の本文（{HISTORY_FROM[:7]}〜）: 取ってある {len(past) - left - miss:,} 件・サイトに無い {miss:,} 件・残り {left:,} 件。取得は今: {now}")
     if p["selector"].exists():
         d = pd.read_csv(p["selector"], usecols=[0]).iloc[:, 0]
         print(f"銘柄選定（点数）: {len(d):,} 日、{d.min()[:10]}〜{d.max()[:10]}")
@@ -2371,6 +2429,8 @@ def main() -> None:
     p.add_argument("--xbrl-history", action="store_true", help="collect: 過去の決算の数字（2016〜）を取る（時間がかかる）")
     p.add_argument("--text-history", action="store_true",
                    help="collect: 過去の開示の本文（2016-10〜）を、新しい順にまとめて取る（1 秒に 1 件。1〜2 晩。置き場所は外付けの HDD。止めても続きから）")
+    p.add_argument("--text-history-stop", action="store_true",
+                   help="collect: 動いている過去の本文の取得（--text-history）を止める（取った分は残る。続きは --text-history で）")
     p.add_argument("--no-pdf", action="store_true", help="collect --text-history: 原本の PDF を残さない（既定は、本文のとなりの ir_pdf に残す）")
     p.add_argument("--history-max", type=int, default=0, help="collect --text-history: 今回取る数の上限（0 = 全部。試しに少しだけ取るとき）")
     p.add_argument("--max-docs", type=int, default=300, help="collect: 1 回に取る書類の上限")
