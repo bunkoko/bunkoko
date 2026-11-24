@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -27,9 +29,12 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from cfdbot import mt5files  # noqa: E402
 from cfdbot.events import load_events_csv  # noqa: E402
-from cfdbot.mt5files import (Terminal, build_presets, choose_terminal, fetch, find_terminals,  # noqa: E402
-                             install, needs_compile)
+from cfdbot.mt5files import (Terminal, build_presets, choose_terminal, compile_state, fetch, find_terminals,  # noqa: E402
+                             install, source_changed_at)
+
+SOURCE_STATE = ROOT / mt5files.SOURCE_STATE                     # 置いたソースの中身の覚え（機械ごと。data/ の下なのでコミットされない）
 from cfdbot.train.config import load_train_config  # noqa: E402
 from cfdbot.train.dataset import _parse_name  # noqa: E402
 
@@ -99,11 +104,15 @@ def cmd_install(args) -> None:
     print(f"MT5 のデータフォルダ: {term.data_dir}")
     for p in placed:
         print(f"  置いた: {_short(p, term)}")
-    stale = needs_compile(term)
-    if stale:
-        print(f"\n⚠ MetaEditor でコンパイルが要る（fn + F7）: {'・'.join(stale)}（コンパイル済みのファイルが無いか、置いたソースより古い）")
+    since = source_changed_at(ROOT, SOURCE_STATE, term.mql5, now=time.time())
+    notes = compile_state(term, since)
+    if notes:                                                   # 時刻ではなく、中身が変わったかで見分ける（cfdbot/mt5files.py の source_changed_at）
+        print("\n⚠ MetaEditor でコンパイルが要る（fn + F7）:")
+        for name, why in notes.items():
+            print(f"  {name}: {why}")
     else:
-        print("\nEA とスクリプトは、コンパイル済みのまま（中身は変わっていない。コンパイルし直さなくてよい）")
+        last = f"{datetime.fromtimestamp(max(since.values())):%Y-%m-%d}" if since else "前"
+        print(f"\nEA とスクリプトは、コンパイル済みのまま（中身は {last} から変わっていない。コンパイルし直さなくてよい）")
     if not presets:
         print("EA とスクリプトだけ置いた（学習後に --run を付けて実行するとプリセットも置く）")
         return

@@ -217,17 +217,94 @@ def build_presets(ea_dir: str | Path, events: list[Event], start: pd.Timestamp, 
 SOURCES = (("Experts", "CfdCommodityEA"), ("Scripts", "CfdExportBars"))      # MT5 に置く EA とスクリプト（MQL5 の下のフォルダ・名前）
 
 
-def needs_compile(term: Terminal) -> list[str]:
-    """MetaEditor でコンパイルが要るもの: コンパイル済みのファイル（.ex5）が無いか、置いてあるソース（.mq5）より古い。
+SOURCE_STATE = Path("data") / "mt5" / "sources.json"       # 置いたソースの中身の印と、その中身になった時刻（機械ごとの覚え。コミットしない）
 
-    ソースは元の更新時刻のまま置く（copy2）ので、中身が変わっていなければ、何度置き直しても「要る」にはならない。
+
+def last_commit_time(repo: Path, src: Path) -> float | None:
+    """src の今の中身を入れた記録（git commit）の時刻。記録から分からなければ None（git の記録が無い・記録に無い中身に書き換えてある）。"""
+    import subprocess
+
+    def git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=30, check=False)
+
+    try:
+        rel = str(Path(src).resolve().relative_to(Path(repo).resolve()))
+        state = git("status", "--porcelain", "--", rel)
+        if state.returncode != 0 or state.stdout.strip():       # git の管理の外・記録と違う中身
+            return None
+        out = git("log", "-1", "--format=%ct", "--", rel).stdout.strip()
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    return float(out) if out.isdigit() else None
+
+
+def source_changed_at(repo: Path, state_path: Path, mql5: Path, now: float, first_seen=None) -> dict[str, float]:
+    """MT5 に置くソースごとの「今の中身になった時刻」（名前 → 時刻）。中身の印を state_path に覚えておく。
+
+    前に置いたものと中身が同じなら、覚えてある時刻のまま（ファイルの更新時刻が変わっても動かない。別の枝に切り替えて戻すと、
+    中身が同じでも更新時刻だけ新しくなる）。中身が変わっていたら now。初めて見るソースは first_seen(src)
+    （既定: その中身を入れた記録の時刻。分からなければ、ソースの更新時刻）。
     """
-    out = []
+    import hashlib
+    import json
+
+    first_seen = first_seen or (lambda src: last_commit_time(repo, src))
+    try:
+        state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    out, changed = {}, False
+    for sub, name in SOURCES:
+        src = Path(repo) / "mql5" / sub / f"{name}.mq5"
+        if not src.exists():
+            continue
+        sha = hashlib.sha256(src.read_bytes()).hexdigest()
+        key = str(Path(mql5) / sub / f"{name}.mq5")
+        rec = state.get(key)
+        if not (isinstance(rec, dict) and "sha" in rec and isinstance(rec.get("since"), (int, float))):
+            when = first_seen(src)
+            rec, changed = {"sha": sha, "since": float(when if when is not None else src.stat().st_mtime)}, True
+        elif rec["sha"] != sha:
+            rec, changed = {"sha": sha, "since": float(now)}, True
+        state[key] = rec
+        out[name] = float(rec["since"])
+    if changed:
+        Path(state_path).parent.mkdir(parents=True, exist_ok=True)
+        tmp = Path(state_path).with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(state_path)
+    return out
+
+
+def compile_state(term: Terminal, since: dict[str, float] | None = None) -> dict[str, str]:
+    """MetaEditor でコンパイルが要るものと、その理由（名前 → 理由）。要らなければ空。
+
+    要るのは、コンパイル済みのファイル（.ex5）が無いか、ソースが今の中身になった時刻（since）より古いとき。
+    since が無いソースは、置いてあるソース（.mq5）の更新時刻で比べる。
+    """
+    from datetime import datetime
+
+    def day(ts: float) -> str:
+        return f"{datetime.fromtimestamp(ts):%Y-%m-%d %H:%M}"
+
+    out = {}
     for sub, name in SOURCES:
         src, ex5 = term.mql5 / sub / f"{name}.mq5", term.mql5 / sub / f"{name}.ex5"
-        if src.exists() and (not ex5.exists() or ex5.stat().st_mtime < src.stat().st_mtime):
-            out.append(name)
+        if not src.exists():
+            continue
+        when = (since or {}).get(name, src.stat().st_mtime)
+        if not ex5.exists():
+            out[name] = "コンパイル済みのファイルが無い"
+        elif ex5.stat().st_mtime < when:
+            out[name] = f"ソースの中身が {day(when)} に新しくなった（コンパイル済みのファイルは {day(ex5.stat().st_mtime)} のもの）"
     return out
+
+
+def needs_compile(term: Terminal, since: dict[str, float] | None = None) -> list[str]:
+    """MetaEditor でコンパイルが要るものの名前（理由は compile_state）。"""
+    return list(compile_state(term, since))
 
 
 def install(term: Terminal, presets: list[Preset], repo: Path, events_csv: Path | None) -> list[str]:

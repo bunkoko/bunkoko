@@ -220,3 +220,108 @@ def test_compile_is_asked_only_when_the_source_is_newer_than_the_compiled_file(t
     newer = (mql5 / "Experts" / "CfdCommodityEA.ex5").stat().st_mtime + 3600
     os.utime(ea, (newer, newer))                                              # ソースのほうが新しくなった（EA を直した）
     assert needs_compile(term) == ["CfdCommodityEA"]
+
+
+def _toy_repo(tmp_path) -> Path:
+    """mql5 の 2 つのソースだけを持つ、作り物のリポジトリ。"""
+    from cfdbot.mt5files import SOURCES
+
+    repo = tmp_path / "repo"
+    for sub, name in SOURCES:
+        (repo / "mql5" / sub).mkdir(parents=True)
+        (repo / "mql5" / sub / f"{name}.mq5").write_bytes((ROOT / "mql5" / sub / f"{name}.mq5").read_bytes())
+    return repo
+
+
+def test_compile_is_asked_only_when_the_source_content_changed_after_the_compile(tmp_path):
+    """比べるのは「ソースが今の中身になった時刻」と、コンパイル済みのファイルの時刻。ソースの更新時刻では比べない。
+
+    2026-11-24（2 回目の誤報）: Mac で別の枝に切り替えて戻した日（10-21）に、中身が同じままソースの時刻だけ新しくなっていて、
+    10-07 にコンパイルした EA が「古い」と数えられた。
+    """
+    import os
+
+    from cfdbot.mt5files import SOURCES, compile_state, needs_compile, source_changed_at
+
+    repo = _toy_repo(tmp_path)
+    mql5, _ = _wine_terminal(tmp_path / "home")
+    term = find_terminals(home=tmp_path / "home")[0]
+    state, t0 = tmp_path / "data" / "mt5" / "sources.json", 1_760_000_000.0
+
+    def never(src):
+        raise AssertionError("覚えがあるソースは、記録を調べ直さない")
+
+    install(term, [], repo, None)
+    since = source_changed_at(repo, state, term.mql5, now=t0, first_seen=lambda src: t0 - 1000)      # 初めて見る: その中身が入った記録の時刻
+    assert since == {"CfdCommodityEA": t0 - 1000, "CfdExportBars": t0 - 1000}
+    assert needs_compile(term, since) == ["CfdCommodityEA", "CfdExportBars"]                        # まだ 1 度もコンパイルしていない
+    assert "無い" in compile_state(term, since)["CfdCommodityEA"]
+    for sub, name in SOURCES:
+        ex5 = mql5 / sub / f"{name}.ex5"
+        ex5.write_bytes(b"x")
+        os.utime(ex5, (t0 - 500, t0 - 500))                                                         # 中身が入った後でコンパイルした
+    assert needs_compile(term, since) == []
+    for sub, name in SOURCES:
+        os.utime(repo / "mql5" / sub / f"{name}.mq5", (t0 + 5000, t0 + 5000))                       # 時刻だけ新しくなった（別の枝に切り替えて戻した）
+    install(term, [], repo, None)
+    since = source_changed_at(repo, state, term.mql5, now=t0 + 6000, first_seen=never)
+    assert since == {"CfdCommodityEA": t0 - 1000, "CfdExportBars": t0 - 1000}                       # 中身は同じなので、時刻は動かない
+    assert needs_compile(term, since) == [] and compile_state(term, since) == {}
+    ea = repo / "mql5" / "Experts" / "CfdCommodityEA.mq5"
+    ea.write_bytes(ea.read_bytes() + b"\n// fixed\n")                                             # EA の中身を直した
+    install(term, [], repo, None)
+    since = source_changed_at(repo, state, term.mql5, now=t0 + 7000, first_seen=never)
+    assert since == {"CfdCommodityEA": t0 + 7000, "CfdExportBars": t0 - 1000}
+    assert needs_compile(term, since) == ["CfdCommodityEA"] and "新しくなった" in compile_state(term, since)["CfdCommodityEA"]
+    os.utime(mql5 / "Experts" / "CfdCommodityEA.ex5", (t0 + 8000, t0 + 8000))                       # コンパイルし直した
+    since = source_changed_at(repo, state, term.mql5, now=t0 + 9000, first_seen=never)
+    assert needs_compile(term, since) == []
+
+
+def test_first_look_uses_the_time_the_content_was_recorded(tmp_path):
+    """初めて見る機械（覚えが無い）では、その中身を入れた記録（git commit）の時刻を使う。記録から分からなければ、ソースの更新時刻。"""
+    import os
+    import subprocess
+
+    from cfdbot.mt5files import last_commit_time, source_changed_at
+
+    here = last_commit_time(ROOT, ROOT / "mql5" / "Experts" / "CfdCommodityEA.mq5")
+    assert here is not None and here > 1.75e9                                                       # このリポジトリでは分かる
+    repo = _toy_repo(tmp_path)
+    ea = repo / "mql5" / "Experts" / "CfdCommodityEA.mq5"
+    assert last_commit_time(repo, ea) is None                                                       # git の記録が無いフォルダ
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
+           "GIT_AUTHOR_DATE": "2026-10-06T15:46:00+0000", "GIT_COMMITTER_DATE": "2026-10-06T15:46:00+0000"}
+    for cmd in (["init", "-q"], ["add", "-A"], ["-c", "commit.gpgsign=false", "commit", "-q", "-m", "x"]):
+        subprocess.run(["git", "-C", str(repo), *cmd], check=True, env=env, capture_output=True)
+    assert last_commit_time(repo, ea) == 1791301560.0
+    os.utime(ea, (1.8e9, 1.8e9))                                                                    # 時刻だけ新しくなっても、記録の時刻のまま
+    mql5, _ = _wine_terminal(tmp_path / "home")
+    since = source_changed_at(repo, tmp_path / "s.json", mql5, now=1.9e9)
+    assert since["CfdCommodityEA"] == 1791301560.0
+    ea.write_bytes(ea.read_bytes() + b"\n// local edit\n")                                        # 記録に無い中身（手元で書き換えた）は、記録からは分からない
+    assert last_commit_time(repo, ea) is None
+    os.utime(ea, (1.85e9, 1.85e9))
+    assert source_changed_at(repo, tmp_path / "other.json", mql5, now=1.9e9)["CfdCommodityEA"] == 1.85e9
+
+
+def test_install_command_says_whether_a_compile_is_needed(tmp_path, capsys, monkeypatch):
+    import importlib.util
+    import sys
+
+    import cfdbot.mt5files as M
+
+    spec = importlib.util.spec_from_file_location("mt5_files_script", ROOT / "scripts" / "mt5_files.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mql5, _ = _wine_terminal(tmp_path / "home")
+    monkeypatch.setattr(mod, "SOURCE_STATE", tmp_path / "state" / "sources.json")
+    monkeypatch.setattr(sys, "argv", ["mt5_files.py", "install", "--mql5", str(mql5)])
+    mod.main()
+    out = capsys.readouterr().out
+    assert "⚠ MetaEditor でコンパイルが要る" in out and "CfdCommodityEA: コンパイル済みのファイルが無い" in out
+    for sub, name in M.SOURCES:
+        (mql5 / sub / f"{name}.ex5").write_bytes(b"x")                                              # 今コンパイルした
+    mod.main()
+    out = capsys.readouterr().out
+    assert "コンパイル済みのまま" in out and "⚠" not in out and "から変わっていない" in out
