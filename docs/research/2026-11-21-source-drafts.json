@@ -748,7 +748,7 @@
    "trend": "",
    "check_note": "",
    "jump": "https://www.mhlw.go.jp/content/11801500/001728125.pdf#page=53",
-   "located": "parts",
+   "located": "whole",
    "page": 53,
    "img": "img/noryoku_r7_selfdev.jpg"
   },
@@ -769,7 +769,7 @@
    "trend": "",
    "check_note": "",
    "jump": "https://www.mhlw.go.jp/content/11801500/001728125.pdf#page=65",
-   "located": "page",
+   "located": "whole",
    "page": 65,
    "img": "img/noryoku_r7_selfdev_problem.jpg"
   },
@@ -853,7 +853,7 @@
    "trend_note": "",
    "check_note": "同じ数字を、友人関係と老いの2つのテーマで使えるように2行にしています。",
    "jump": "https://www8.cao.go.jp/kourei/ishiki/r07/zentai/pdf/chapter2_7.pdf#page=9",
-   "located": "page",
+   "located": "whole",
    "page_hint": 9,
    "page": 9,
    "img": "img/koureikokusai_r7_no_close_friend.jpg"
@@ -896,7 +896,7 @@
    "trend": "増加",
    "check_note": "",
    "jump": "https://www.stat.go.jp/data/shakai/2021/pdf/youyakua.pdf#page=2",
-   "located": "page",
+   "located": "whole",
    "page": 2,
    "img": "img/shakai_r3_husband_housework.jpg"
   },
@@ -1047,7 +1047,7 @@
    "trend": "",
    "check_note": "同じ数字を、友人関係と老いの2つのテーマで使えるように2行にしています。",
    "jump": "https://www8.cao.go.jp/kourei/ishiki/r07/gaiyo/pdf/chapter2_7.pdf#page=9",
-   "located": "page",
+   "located": "whole",
    "doc_url": "https://www8.cao.go.jp/kourei/ishiki/r07/gaiyo/pdf/chapter2_7.pdf",
    "page_hint": 9,
    "page": 9,
@@ -1070,7 +1070,7 @@
    "trend": "",
    "check_note": "",
    "jump": "https://www8.cao.go.jp/kourei/ishiki/r07/gaiyo/pdf/chapter2_8.pdf#page=1",
-   "located": "page",
+   "located": "parts",
    "doc_url": "https://www8.cao.go.jp/kourei/ishiki/r07/gaiyo/pdf/chapter2_8.pdf",
    "page_hint": 1,
    "page": 1,

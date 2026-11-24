@@ -27,7 +27,8 @@ from typing import Any
 from urllib.parse import quote
 
 DPI = 110
-MARGIN = 320  # 印の上下に残す高さ（画像の点）
+MARGIN_ABOVE = 700  # 印の上に残す高さ（画像の点。表の題と列の見出しが入るように）
+MARGIN_BELOW = 260  # 印の下に残す高さ
 MIN_CHUNK = 6
 
 
@@ -87,8 +88,16 @@ def _chunks(text: str, size: int = 10) -> list[str]:
     return sorted(dict.fromkeys(parts), key=lambda p: not re.search(r"\d", p))
 
 
+def clean_evidence(evidence: str) -> str:
+    """調べ役が写した行から、調べ役のことわり書き（「（PDFの…写した）」など）を外す。"""
+    return re.sub(
+        r"[（(][^（）()]*(?:写した|PDF|ＰＤＦ|注：)[^（）()]*[）)]\s*$", "", evidence or ""
+    )
+
+
 def find_page(pages: list[str], evidence: str, value: str) -> tuple[int, str] | None:
     """evidence が載っているページ（1 から）と、見つけ方（whole：行のまま・parts：断片）。"""
+    evidence = clean_evidence(evidence)
     target = norm(evidence)
     normed = [norm(p) for p in pages]
     if len(target) >= MIN_CHUNK:
@@ -164,59 +173,127 @@ def _lines(words: list[Word]) -> dict[int, list[int]]:
     return {n: sorted(r, key=lambda i: words[i].x0) for n, r in enumerate(rows)}
 
 
-def _rect(ws: list[Word]) -> tuple[float, float, float, float]:
-    return (
-        min(w.x0 for w in ws) - 2,
-        min(w.y0 for w in ws) - 2,
-        max(w.x1 for w in ws) + 2,
-        max(w.y1 for w in ws) + 2,
-    )
+Box = tuple[float, float, float, float]
+
+
+def _width(ch: str) -> float:
+    """字の幅の見積もり（半角は全角の半分）。語の中のどこに字があるかを割り出すのに使う。"""
+    return 0.5 if ord(ch) < 0x2E80 or 0xFF61 <= ord(ch) <= 0xFF9F else 1.0
+
+
+def _char_box(w: Word, first: int, last: int) -> Box:
+    """語の中の first〜last 文字目（元の字の番号）の四角。字の幅で割り振って見積もる。"""
+    widths = [_width(c) for c in w.text] or [1.0]
+    total = sum(widths)
+    left = w.x0 + (w.x1 - w.x0) * sum(widths[:first]) / total
+    right = w.x0 + (w.x1 - w.x0) * sum(widths[: last + 1]) / total
+    return (left - 1, w.y0 - 2, right + 1, w.y1 + 2)
+
+
+def _seq(words: list[Word], order: list[int]) -> tuple[str, list[tuple[int, int]]]:
+    """語を order の順につないだ探すための文字と、1字ごとの（語の番号, 語の中の元の字の番号）。"""
+    text, where = "", []
+    for i in order:
+        for j, ch in enumerate(words[i].text):
+            n = norm(ch)
+            text += n
+            where += [(i, j)] * len(n)
+    return text, where
+
+
+def _boxes(words: list[Word], chars: list[tuple[int, int]]) -> list[Box]:
+    """当たった字の四角を、見た目の行ごとに1つにまとめる。"""
+    by_word: dict[int, list[int]] = {}
+    for i, j in chars:
+        by_word.setdefault(i, []).append(j)
+    out = []
+    for idx in _lines(words).values():
+        parts = [_char_box(words[i], min(by_word[i]), max(by_word[i])) for i in idx if i in by_word]
+        if parts:
+            out.append(
+                (
+                    min(x[0] for x in parts),
+                    min(x[1] for x in parts),
+                    max(x[2] for x in parts),
+                    max(x[3] for x in parts),
+                )
+            )
+    return out
+
+
+def _pick_value(text: str, value: str, label: str) -> tuple[int, int] | None:
+    """text の中の数字の場所。同じ数字が2つ以上あれば、ラベルの「」の言葉のすぐあとのものを選ぶ。"""
+    v = norm(value)
+    hits = [m.start() for m in re.finditer(re.escape(v), text)] if v else []
+    if not hits:
+        return None
+    terms = [norm(t) for t in re.findall(r"「([^」]+)」", label or "")]
+    best = None
+    for t in terms:
+        for m in re.finditer(re.escape(t), text) if t else []:
+            after = [h for h in hits if h >= m.end()]
+            if after and (best is None or after[0] - m.end() < best[1]):
+                best = (after[0], after[0] - m.end())
+    start = best[0] if best else hits[0]
+    return start, start + len(v)
 
 
 def highlight(
-    words: list[Word], evidence: str, value: str
-) -> tuple[list[tuple[float, float, float, float]], list[tuple[float, float, float, float]]]:
-    """印を付ける四角：（黄色で塗る行, 赤で囲む数字）。
+    words: list[Word], evidence: str, value: str, label: str = ""
+) -> tuple[list[Box], list[Box]]:
+    """印を付ける四角：（黄色で塗る所, 赤で囲む数字）。
 
-    1. 写した行がそのままあれば、その行を塗る
-    2. 無ければ（表の行など）、写した行の数字をいちばん多く含み、統計の数字も含む行を塗る
-    数字（value）は、塗った行の中で赤く囲む。
+    1. 写した行がそのままあれば、その字だけを塗る（語の途中で始まり・終わる行も字の幅で割り出す）
+    2. 無ければ（表の行など）、写した行の数字をいちばん多く含み、統計の数字も含む見た目の行を選び、
+       写した数字を含む語だけを塗る（同じ行の別の表を塗らない）
+    数字（value）は、塗った所の中で赤く囲む。同じ数字が2つあれば、ラベルの「」の言葉のあとのもの。
     """
-    chars: list[int] = []
-    text = ""
-    for i, w in enumerate(words):
-        t = norm(w.text)
-        text += t
-        chars += [i] * len(t)
-    target = norm(evidence)
-    picked: set[int] = set()
-    if len(target) >= MIN_CHUNK and (at := text.find(target)) >= 0:
-        picked.update(chars[at : at + len(target)])
+    flow, flow_at = _seq(words, list(range(len(words))))
+    target = norm(clean_evidence(evidence))
+    span: list[tuple[int, int]] = []
+    span_text = ""
+    if len(target) >= MIN_CHUNK and (at := flow.find(target)) >= 0:
+        span, span_text = flow_at[at : at + len(target)], target
     else:
-        nums = [n.replace(",", "") for n in NUMBER.findall(norm(evidence))]
+        # 数字は空白を残したまま取り出す（空白を取ると「8.2 33.4」が「8.233.4」になる）
+        nums = [
+            n.replace(",", "")
+            for n in NUMBER.findall(unicodedata.normalize("NFKC", clean_evidence(evidence)))
+        ]
         v = norm(value).replace(",", "")
-        best, best_score = None, 0
         rows = _lines(words)
+        # 統計の数字がページに同じ形で無いとき（「1時間54分」が表では「1.54」）は数字の多さで選ぶ
+        need_value = bool(v) and v in flow.replace(",", "")
+        best, best_score = None, 0
         for line, idx in rows.items():
             line_text = "".join(norm(words[i].text) for i in idx).replace(",", "")
-            if v and v not in line_text:
+            if need_value and v not in line_text:
                 continue
             score = sum(1 for n in set(nums) if n in line_text)
             if score > best_score:
                 best, best_score = line, score
-        if best is not None and best_score >= min(2, len(set(nums))):
-            picked.update(rows[best])
-    if not picked:
+        least = min(2, len(set(nums))) if need_value else min(3, len(set(nums)))
+        if best is not None and best_score >= max(1, least):
+            keep = [
+                i
+                for i in rows[best]
+                if any(n in norm(words[i].text).replace(",", "") for n in set(nums))
+            ]
+            # 数字の語のあいだにある語（同じ表の列）も含め、行の左右の別の表は含めない
+            xs = sorted(words[i].x0 for i in keep)
+            inside = [i for i in rows[best] if xs and xs[0] <= words[i].x0 <= xs[-1]]
+            label_words = [
+                i
+                for i in rows[best]
+                if i not in inside and xs and words[i].x1 <= xs[0] and words[i].x1 >= xs[0] - 200
+            ]
+            chosen = sorted(set(inside) | set(label_words[-1:]), key=lambda i: words[i].x0)
+            span_text, span = _seq(words, chosen)
+    if not span:
         return [], []
-    fills = []
-    for idx in _lines(words).values():
-        ws = [words[i] for i in idx if i in picked]
-        if ws:
-            fills.append(_rect(ws))
-    v = norm(value).replace(",", "")
-    marks = [
-        _rect([words[i]]) for i in sorted(picked) if v and v in norm(words[i].text).replace(",", "")
-    ]
+    fills = _boxes(words, span)
+    hit = _pick_value(span_text, str(value), label)
+    marks = _boxes(words, span[hit[0] : hit[1]]) if hit else []
     return fills, marks
 
 
@@ -261,8 +338,9 @@ def render(
         w, h = max(4, int((x1 - x0) * scale)), max(4, int((y1 - y0) * scale))
         filters.append(f"drawbox=x={x - 3}:y={y - 3}:w={w + 6}:h={h + 6}:color=red@0.85:t=3")
     if rects:
-        top = max(0, int(min(r[1] for r in rects) * scale) - MARGIN)
-        bottom = min(height, int(max(r[3] for r in rects) * scale) + MARGIN)
+        # 上は広く残す（表の題と列の見出しが上にあるため）。下は少し
+        top = max(0, int(min(r[1] for r in rects) * scale) - MARGIN_ABOVE)
+        bottom = min(height, int(max(r[3] for r in rects) * scale) + MARGIN_BELOW)
         filters.append(f"crop=iw:{bottom - top}:0:{top}")
     subprocess.run(
         [
@@ -333,7 +411,9 @@ def locate_stat(
         return "none"
     page, how = hit
     words, width, height = page_words(path, page)
-    rects, marks = highlight(words, d.get("evidence", ""), str(d.get("value", "")))
+    rects, marks = highlight(
+        words, d.get("evidence", ""), str(d.get("value", "")), d.get("label", "")
+    )
     name = f"{d['stat_id']}.jpg"
     render(path, page, rects, (width, height), img_dir / name, marks)
     d["page"] = page
