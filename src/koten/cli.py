@@ -2367,6 +2367,75 @@ def sources_merge(
         typer.echo("研究を SSD に入れる：uv run koten findings build")
 
 
+@sources_app.command("locate")
+def sources_locate(
+    drafts: Annotated[str, typer.Option(help="下書き（JSON）。見つけた場所を書き足す")],
+    passages: Annotated[
+        str | None,
+        typer.Option(help="研究の結果の文（調べ役が論文から写したもの。JSON の配列）"),
+    ] = None,
+    img: Annotated[str, typer.Option(help="該当ページの画像を置く所")] = "data/sources-img",
+    cache: Annotated[str, typer.Option(help="取った資料を置く所")] = "data/sources-cache",
+    settings: SettingsOpt = None,
+) -> None:
+    """元の資料の該当箇所を探す：統計は PDF の該当ページの画像に印を付け、研究は結果の文を確かめる。
+
+    資料は net.py で取る（間隔を空け、同じ URL は取り直さない）。
+    pdftotext・pdftoppm・ffmpeg を使う。
+    """
+    import json
+    from collections import Counter
+    from pathlib import Path
+
+    from koten.sources.locate import check_passages, locate_stat
+
+    s = _settings(settings)
+    path = Path(drafts)
+    data = json.loads(path.read_text("utf-8"))
+    fetcher = _make_fetcher(s, Path(cache))
+
+    def fetch(url: str, rel: str) -> Path:
+        return fetcher.fetch(url, rel)[0]
+
+    how: Counter[str] = Counter()
+    missing = []
+    for d in data.get("stats", []):
+        try:
+            got = locate_stat(d, fetch, Path(img))
+        except Exception as e:  # 1件の失敗で全部を止めない（資料が開けない・壊れた PDF など）
+            d["located"] = got = "none"
+            d["jump"] = d.get("doc_url") or d["url"]
+            missing.append(f"{d['stat_id']}（{type(e).__name__}）")
+        how[got] += 1
+        if got == "none" and not any(m.startswith(d["stat_id"]) for m in missing):
+            missing.append(d["stat_id"])
+    if passages:
+        found = {p["finding_id"]: p for p in json.loads(Path(passages).read_text("utf-8"))}
+        for d in data.get("findings", []):
+            p = found.get(d["finding_id"])
+            if not p:
+                continue
+            for k in ("passages", "landing_url", "fulltext_url", "fragment"):
+                if p.get(k):
+                    d[k] = p[k]
+            try:
+                dropped = check_passages(d, fetch)
+            except Exception as e:
+                d["passages"] = []
+                dropped = [f"本文を取れない（{type(e).__name__}）"]
+            for t in dropped:
+                typer.secho(f"  {d['finding_id']}：本文に無い文を外した：{t}", fg="yellow")
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n", "utf-8")
+    words = {"whole": "行に印", "parts": "行に印", "html": "文に飛ぶ", "page": "ページだけ"}
+    words |= {"hint": "ページだけ", "none": "見つからない"}
+    typer.echo("統計：" + "・".join(f"{words.get(k, k)} {n}" for k, n in sorted(how.items())))
+    if missing:
+        typer.secho(f"  見つからない：{'、'.join(missing)}", fg="yellow")
+    n = sum(1 for d in data.get("findings", []) if d.get("passages"))
+    if passages:
+        typer.echo(f"研究：結果の文が本文にあった {n} 件")
+
+
 @sources_app.command("todo")
 def sources_todo(
     episode: Annotated[str, typer.Option(help="回の ID")],

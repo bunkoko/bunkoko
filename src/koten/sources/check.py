@@ -150,6 +150,10 @@ def page_items(drafts: dict[str, Any]) -> list[dict[str, Any]]:
                 "publisher": d.get("publisher", ""),
                 "published": d.get("published", ""),
                 "url": d.get("url", ""),
+                # 元の資料の該当ページ（koten sources locate）：画像・ページの番号・飛ぶリンク
+                "img": d.get("img", ""),
+                "page": d.get("page") or "",
+                "jump": d.get("jump") or d.get("doc_url") or d.get("url", ""),
                 "where": d.get("where", ""),
                 "evidence": d.get("evidence", ""),
                 "trend": d.get("trend", "") if d.get("trend") in TRENDS else "",
@@ -173,6 +177,12 @@ def page_items(drafts: dict[str, Any]) -> list[dict[str, Any]]:
                 "license": d.get("license", ""),
                 "license_evidence": d.get("license_evidence", ""),
                 "url": f"https://doi.org/{f.doi}" if f.doi else f.url,
+                # 論文の結果の文（本文にそのままあると確かめた文）と、その文に飛ぶリンク
+                "passages": [
+                    {k: x.get(k) for k in ("role", "section", "text", "mark")}
+                    for x in d.get("passages") or []
+                ],
+                "jump": d.get("jump") or (f"https://doi.org/{f.doi}" if f.doi else f.url),
                 "where": d.get("where", ""),
                 "design": DESIGNS.get(f.design, f.design),
                 "replication": REPLICATION_JA.get(f.replication, f.replication),

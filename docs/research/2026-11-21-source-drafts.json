@@ -18,7 +18,11 @@
    "replaces": "rodo_r7_amount",
    "trend": "",
    "trend_note": "",
-   "check_note": "前回（令和6年）は43.2%で、今回は下がっています（増えたとは言いません）。"
+   "check_note": "前回（令和6年）は43.2%で、今回は下がっています（増えたとは言いません）。",
+   "jump": "https://www.mhlw.go.jp/toukei/list/dl/r07-46-50_kekka-gaiyo02.pdf#page=1",
+   "located": "whole",
+   "page": 1,
+   "img": "img/anzen_r7_amount.jpg"
   },
   {
    "theme": "仕事の量",
@@ -35,7 +39,11 @@
    "evidence": "20～29歳 100.0 72.0 (100.0) ( 51.6) ( 21.8) ( 26.1) ( 16.7)",
    "trend": "",
    "trend_note": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/toukei/list/dl/r07-46-50_kekka-gaiyo02.pdf#page=1",
+   "located": "whole",
+   "page": 1,
+   "img": "img/anzen_r7_amount_20s.jpg"
   },
   {
    "theme": "仕事の量",
@@ -52,7 +60,11 @@
    "evidence": "一般労働者 時間 ％ 時間 ％ 時間 ％ 日 日 ／ 調 査 産 業 計 160.5 -1.0 147.3 -1.0 13.2 -2.0 19.2 -0.2",
    "trend": "",
    "trend_note": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/toukei/itiran/roudou/monthly/r07/25cr/dl/pdf25cr.pdf#page=8",
+   "located": "parts",
+   "page": 8,
+   "img": "img/maikin_r7_overtime.jpg"
   },
   {
    "theme": "時間・忙しさ",
@@ -69,7 +81,11 @@
    "evidence": "「正社員」、「正社員以外」ともに「仕事が忙しくて自己啓発の余裕がない」（正社員58.5%、正社員以外36.1%）の割合が最も高く",
    "trend": "",
    "trend_note": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/content/11801500/001728125.pdf#page=65",
+   "located": "whole",
+   "page": 65,
+   "img": "img/noryoku_r7_busy.jpg"
   },
   {
    "theme": "時間・忙しさ",
@@ -86,7 +102,11 @@
    "evidence": "取得率は 66.9％（同 65.3％）と昭和 59年以降最も高くなっている。",
    "trend_note": "候補：同じ表の取得率は、平成31年調査52.4%（平成30年調査51.1%）→令和2年56.3%→令和3年56.6%→令和4年58.3%→令和5年62.1%→令和6年65.3%→令和7年66.9%と、見えた7回は毎回上がっている（各年の syurou/19〜25/dl/houdou.pdf で確認）。「昭和59年以降過去最高」と書かれているのは令和2年〜令和7年調査で、平成31年調査の報道発表資料にはその書き方は無い。第2図の注のとおり調査対象の範囲は平成20年と平成27年に変わっている。令和6年の概況の訂正（2025-10-24）は年間休日総数の説明文の数値で、取得率には関わらない。人が第2図の推移を確かめてから trend にする",
    "trend": "増加",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/toukei/itiran/roudou/jikan/syurou/25/dl/gaiyou01.pdf#page=4",
+   "located": "whole",
+   "page": 4,
+   "img": "img/shuro_r7_leave.jpg"
   },
   {
    "theme": "職場の人間関係",
@@ -104,7 +124,11 @@
    "replaces": "rodo_r7_relations",
    "trend": "",
    "trend_note": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/toukei/list/dl/r07-46-50_kekka-gaiyo02.pdf#page=1",
+   "located": "whole",
+   "page": 1,
+   "img": "img/anzen_r7_relations.jpg"
   },
   {
    "theme": "職場の人間関係",
@@ -121,7 +145,11 @@
    "evidence": "女性は「その他の個人的理由」23.8％を除くと「労働時間、休日等の労働条件が悪かった」12.9％が最も多く、次いで「職場の人間関係が好ましくなかった」11.5％となっている。",
    "trend": "",
    "trend_note": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/toukei/itiran/roudou/koyou/doukou/26-2/dl/gaikyou.pdf#page=15",
+   "located": "whole",
+   "page": 15,
+   "img": "img/doukou_r7_relations_women.jpg"
   },
   {
    "theme": "いじめ・嫌がらせ",
@@ -138,7 +166,11 @@
    "evidence": "過去 3 年間に勤務先で受けたハラスメントとしては、パワハラ、セクハラ、顧客等からの著しい迷惑行為の中ではパワハラ(19.3%)が最も高く",
    "trend": "",
    "trend_note": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/content/11200000/001541298.pdf#page=21",
+   "located": "whole",
+   "page": 21,
+   "img": "img/hara_r5_powerhara.jpg"
   },
   {
    "theme": "いじめ・嫌がらせ",
@@ -155,7 +187,11 @@
    "evidence": "パワハラ、セクハラを受けた後の行動としては、「何もしなかった」(それぞれ 36.9%、51.7%)が最も多く",
    "trend": "",
    "trend_note": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/content/11200000/001541298.pdf#page=18",
+   "located": "whole",
+   "page": 18,
+   "img": "img/hara_r5_silent.jpg"
   },
   {
    "theme": "いじめ・嫌がらせ",
@@ -173,7 +209,11 @@
    "replaces": "funso_r7_harassment",
    "trend": "",
    "trend_note": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/content/11909000/001719720.pdf#page=1",
+   "located": "whole",
+   "page": 1,
+   "img": "img/funso_r7_bullying.jpg"
   },
   {
    "theme": "いじめ・嫌がらせ",
@@ -190,7 +230,11 @@
    "evidence": "小・中・高等学校及び特別支援学校におけるいじめの認知件数は769,0２２件（前年度732,568件）であり、前年度から３６，４５４件（５．0％）増加し、過去最多となった。",
    "trend": "",
    "trend_note": "",
-   "check_note": "子どもの数字です。働く人の悩みの回では、学校のいじめの回想などに限って使います。"
+   "check_note": "子どもの数字です。働く人の悩みの回では、学校のいじめの回想などに限って使います。",
+   "jump": "https://www.mext.go.jp/content/20260305-mxt_jidou02-100002753_3.pdf#page=2",
+   "located": "whole",
+   "page": 2,
+   "img": "img/mext_r6_ijime.jpg"
   },
   {
    "theme": "怒り",
@@ -207,7 +251,11 @@
    "evidence": "合 計 3) ( 39.5) ( 22.1) ( 2.9) ( 7.6) ( 20.5) ( 11.1) 32.1",
    "trend": "",
    "trend_note": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/toukei/list/dl/r07-46-50_kekka-gaiyo02.pdf#page=1",
+   "located": "whole",
+   "page": 1,
+   "img": "img/anzen_r7_complaint.jpg"
   },
   {
    "theme": "怒り",
@@ -224,7 +272,11 @@
    "evidence": "次いで顧客等からの著しい迷惑行為 (10.8%)、セクハラ(6.3%)と続いた(図表 17 参照)。",
    "trend": "",
    "trend_note": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/content/11200000/001541298.pdf#page=21",
+   "located": "whole",
+   "page": 21,
+   "img": "img/hara_r5_customer.jpg"
   },
   {
    "theme": "失敗・責任",
@@ -241,7 +293,12 @@
    "evidence": "20～29歳 ( 60.8) ( 20.5) ( 2.9) ( 4.5) ( 14.5) ( 12.3) 27.6",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/toukei/list/dl/r07-46-50_kekka-gaiyo02.pdf#page=1",
+   "located": "whole",
+   "doc_url": "https://www.mhlw.go.jp/toukei/list/dl/r07-46-50_kekka-gaiyo02.pdf",
+   "page": 1,
+   "img": "img/anzen_r7_failure_20s.jpg"
   },
   {
    "theme": "失敗・責任",
@@ -259,7 +316,12 @@
    "trend_note": "",
    "replaces": "rodo_r7_failure",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/toukei/list/dl/r07-46-50_kekka-gaiyo02.pdf#page=1",
+   "located": "whole",
+   "doc_url": "https://www.mhlw.go.jp/toukei/list/dl/r07-46-50_kekka-gaiyo02.pdf",
+   "page": 1,
+   "img": "img/anzen_r7_failure.jpg"
   },
   {
    "theme": "失敗・責任",
@@ -276,7 +338,12 @@
    "evidence": "“仕事・職場について”では（図表 2-2-7-2-7）、「仕事上でのミス」（23.7％）が最も多く",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/102cd8bd-3dc2-4d5a-ac7a-349e097e96fd/93f72af0/20260428_resources_research_kowaka_results_05.pdf#page=64",
+   "located": "whole",
+   "doc_url": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/102cd8bd-3dc2-4d5a-ac7a-349e097e96fd/93f72af0/20260428_resources_research_kowaka_results_05.pdf",
+   "page": 64,
+   "img": "img/kowaka_r7_work_mistake.jpg"
   },
   {
    "theme": "自信のなさ",
@@ -293,7 +360,12 @@
    "evidence": "“自分自身に満足している”（43.2％）が約４割",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/102cd8bd-3dc2-4d5a-ac7a-349e097e96fd/93f72af0/20260428_resources_research_kowaka_results_05.pdf#page=1",
+   "located": "whole",
+   "doc_url": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/102cd8bd-3dc2-4d5a-ac7a-349e097e96fd/93f72af0/20260428_resources_research_kowaka_results_05.pdf",
+   "page": 1,
+   "img": "img/kowaka_r7_not_satisfied.jpg"
   },
   {
    "theme": "自信のなさ",
@@ -310,7 +382,12 @@
    "evidence": "きちんと仕事ができるか(n=1089) 27.5 43.3 19.4 9.8 70.8 29.2",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/d0d674d3-bf0a-4552-847c-e9af2c596d4e/3b48b9f7/20240620_policies_kodomo-research_02.pdf#page=89",
+   "located": "whole",
+   "doc_url": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/d0d674d3-bf0a-4552-847c-e9af2c596d4e/3b48b9f7/20240620_policies_kodomo-research_02.pdf",
+   "page": 89,
+   "img": "img/shogaikoku_r5_work_anxiety.jpg"
   },
   {
    "theme": "承認欲求",
@@ -327,7 +404,12 @@
    "evidence": "周りの人に認められている と感じる(n=1089) 8.2 33.4 34.2 16.3 7.9 41.6 24.2",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/d0d674d3-bf0a-4552-847c-e9af2c596d4e/3b48b9f7/20240620_policies_kodomo-research_02.pdf#page=22",
+   "located": "parts",
+   "doc_url": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/d0d674d3-bf0a-4552-847c-e9af2c596d4e/3b48b9f7/20240620_policies_kodomo-research_02.pdf",
+   "page": 22,
+   "img": "img/shogaikoku_r5_recognized.jpg"
   },
   {
    "theme": "承認欲求",
@@ -344,7 +426,12 @@
    "evidence": "他の人とちがっていても、同じで も、私を大切にしてくれる 7.7 19.2 72.9 92.0",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/102cd8bd-3dc2-4d5a-ac7a-349e097e96fd/93f72af0/20260428_resources_research_kowaka_results_05.pdf#page=53",
+   "located": "parts",
+   "doc_url": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/102cd8bd-3dc2-4d5a-ac7a-349e097e96fd/93f72af0/20260428_resources_research_kowaka_results_05.pdf",
+   "page": 53,
+   "img": "img/kowaka_r7_valued.jpg"
   },
   {
    "theme": "嫉妬・比較",
@@ -361,7 +448,12 @@
    "evidence": "周りの人たちと同じくらい 幸せだと思う(n=1089) 9.7 30.6 33.3 16.4 9.9 40.3 26.4",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/d0d674d3-bf0a-4552-847c-e9af2c596d4e/3b48b9f7/20240620_policies_kodomo-research_02.pdf#page=23",
+   "located": "parts",
+   "doc_url": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/d0d674d3-bf0a-4552-847c-e9af2c596d4e/3b48b9f7/20240620_policies_kodomo-research_02.pdf",
+   "page": 23,
+   "img": "img/shogaikoku_r5_as_happy.jpg"
   },
   {
    "theme": "嫉妬・比較",
@@ -378,7 +470,12 @@
    "evidence": "「周りの人たちと同じくらい、それなりにうまくいっている」（44.7％）となっている",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/d0d674d3-bf0a-4552-847c-e9af2c596d4e/3b48b9f7/20240620_policies_kodomo-research_02.pdf#page=22",
+   "located": "whole",
+   "doc_url": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/d0d674d3-bf0a-4552-847c-e9af2c596d4e/3b48b9f7/20240620_policies_kodomo-research_02.pdf",
+   "page": 22,
+   "img": "img/shogaikoku_r5_doing_well.jpg"
   },
   {
    "theme": "怠け・習慣",
@@ -395,7 +492,12 @@
    "evidence": "「仕事が忙しくて自己啓発の余裕がない」（正社員58.5%、正社員以外36.1%）の割合が最も高く",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/content/11801500/001728125.pdf#page=65",
+   "located": "whole",
+   "doc_url": "https://www.mhlw.go.jp/content/11801500/001728125.pdf",
+   "page": 65,
+   "img": "img/noryoku_r7_selfdev_busy.jpg"
   },
   {
    "theme": "怠け・習慣",
@@ -412,7 +514,12 @@
    "evidence": "「情報機器（携帯電話、スマートフォン、タブレット、パソコン、ゲーム機等）で時間が取られる」が43.6％で最も高く",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.bunka.go.jp/tokei_hakusho_shuppan/tokeichosa/kokugo_yoronchosa/pdf/94116401_01.pdf#page=31",
+   "located": "whole",
+   "doc_url": "https://www.bunka.go.jp/tokei_hakusho_shuppan/tokeichosa/kokugo_yoronchosa/pdf/94116401_01.pdf",
+   "page": 31,
+   "img": "img/kokugo_r5_reading_devices.jpg"
   },
   {
    "theme": "転職の迷い",
@@ -429,7 +536,11 @@
    "evidence": "総数 1) 100.0 54.7 21.6 33.1 34.3 10.7 7.3 3.4 0.3 44.0（表14の列：転職者計／「満足」又は「やや満足」①／満足／やや満足／どちらでもない／「不満」又は「やや不満」②／やや不満／不満／不明／満足度D.I.）",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/toukei/list/dl/6-18c-r07-2-03.pdf#page=3",
+   "located": "parts",
+   "page": 3,
+   "img": "img/tenshoku_r7_satisfied.jpg"
   },
   {
    "theme": "転職の迷い",
@@ -446,7 +557,11 @@
    "evidence": "若年正社員が、現在の会社から今後「転職したいと思っている」割合は 31.2％、「転職したいと思っていない」割合は 30.3％となっている。",
    "trend_note": "候補：表18で、平成25年25.7%→平成30年27.6%→令和5年31.2%と、見える3回すべてで上がっている。平成25年の値は再集計値（概況の注(5)）。問いの言い方が3回で同じかは調査票で確かめる",
    "trend": "増加",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/toukei/list/dl/4-21c-jyakunenkoyou-r05_gaikyou.pdf#page=20",
+   "located": "whole",
+   "page": 20,
+   "img": "img/jakunen_r5_want_change.jpg"
   },
   {
    "theme": "転職の迷い",
@@ -463,7 +578,11 @@
    "evidence": "就職後３年以内の離職率は、新規高卒就職者が 36.9％（前年度と比較して 1.0 ポイント低下）、新規大学卒就職者が 31.2％（同 2.6 ポイント低下）となりました。",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/content/001757256.pdf#page=1",
+   "located": "whole",
+   "page": 1,
+   "img": "img/shinsotsu_r5_univ_3yr.jpg"
   },
   {
    "theme": "働く意味",
@@ -480,7 +599,11 @@
    "evidence": "正社員／仕事の内容・やりがい 100.0 69.1 21.1 9.1 60.0 ( 58.8)（列：全労働者計／「満足」又は「やや満足」(A)／どちらでもない／「不満」又は「やや不満」(B)／満足度D.I.(A)-(B)、( )は令和元年調査）",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/toukei/itiran/roudou/koyou/keitai/24/dl/gaikyo.pdf#page=24",
+   "located": "parts",
+   "page": 24,
+   "img": "img/keitai_r6_yarigai_satisfied.jpg"
   },
   {
    "theme": "働く意味",
@@ -497,7 +620,11 @@
    "evidence": "転職者が現在の勤め先を選んだ理由（３つまでの複数回答）をみると、「仕事の内容・職種に満足がいくから」が 40.2％で最も多く、次いで「自分の技能・能力が活かせるから」が 38.4％、「労働条件（賃金以外）がよいから」が 23.1％となっている（表 13-1）。",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/toukei/list/dl/6-18c-r07-2-03.pdf#page=1",
+   "located": "whole",
+   "page": 1,
+   "img": "img/tenshoku_r7_chose_for_work.jpg"
   },
   {
    "theme": "決断・迷い",
@@ -514,7 +641,11 @@
    "evidence": "総数 1) 100.0 31.2 30.3 37.8 0.6（表18の列：若年正社員計／転職したいと思っている／転職したいと思っていない／わからない／不明）",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/toukei/list/dl/4-21c-jyakunenkoyou-r05_gaikyou.pdf#page=21",
+   "located": "parts",
+   "page": 21,
+   "img": "img/jakunen_r5_unsure.jpg"
   },
   {
    "theme": "決断・迷い",
@@ -531,7 +662,11 @@
    "evidence": "転職等希望者のうち、求職者数は2025年平均で360万人と、前年に比べ16万人の増加、非求職者数は663万人と７万人の増加となった。",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.stat.go.jp/data/roudou/sokuhou/nen/dt/pdf/gaiyou.pdf#page=11",
+   "located": "whole",
+   "page": 11,
+   "img": "img/lfs_2025_wish_nonseeker.jpg"
   },
   {
    "theme": "将来への不安",
@@ -548,7 +683,11 @@
    "evidence": "令和７年 (8,012) 23.6 45.2 22.8 8.2 0.2 68.8 31.0（列：ｎ／希望がある／どちらかといえば希望がある／どちらかといえば希望がない／希望がない／無回答／明るい希望がある（計）／明るい希望がない（計））",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/102cd8bd-3dc2-4d5a-ac7a-349e097e96fd/aa3f07b7/20260428_resources_research_kowaka_results_07.pdf#page=9",
+   "located": "parts",
+   "page": 9,
+   "img": "img/kowaka_r7_no_hope.jpg"
   },
   {
    "theme": "将来への不安",
@@ -565,7 +704,11 @@
    "evidence": "次に、「自己都合」による離職理由（３つまでの複数回答）をみると、「賃金が低かったから」が 25.5％で最も多く、次いで「会社の将来に不安を感じたから」が 25.2％、「満足のいく仕事内容でなかったから」が 24.7％となっている。",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/toukei/list/dl/6-18c-r07-2-02.pdf#page=1",
+   "located": "whole",
+   "page": 1,
+   "img": "img/tenshoku_r7_company_future.jpg"
   },
   {
    "theme": "将来への不安",
@@ -582,7 +725,11 @@
    "evidence": "合計 3) ( 39.5) ( 22.1) ( 2.9) ( 7.6) ( 20.5) ( 11.1) 32.1（列：仕事の失敗、責任の発生等／顧客、取引先等からのクレーム／事故や災害の体験／雇用の安定性／会社の将来性／その他の事柄／強い不安…と感じる事柄がない。( )は「ある」労働者を100とした割合）",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/toukei/list/dl/r07-46-50_kekka-gaiyo02.pdf#page=1",
+   "located": "parts",
+   "page": 1,
+   "img": "img/anzen_r7_company_future.jpg"
   },
   {
    "theme": "学び・成長",
@@ -599,7 +746,11 @@
    "evidence": "令和６年度に自己啓発を行った者は労働者全体で35.5%であり、正社員で43.3%、正社員以外で15.9%と、正社員以外で自己啓発を行った者の割合が低くなっている。（PDFの文字間の空白を詰めて写した）",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/content/11801500/001728125.pdf#page=53",
+   "located": "parts",
+   "page": 53,
+   "img": "img/noryoku_r7_selfdev.jpg"
   },
   {
    "theme": "学び・成長",
@@ -616,7 +767,11 @@
    "evidence": "自己啓発を行う上で問題があるとした者は、「労働者全体」で78.8%であり、「正社員」では82.8%、「正社員以外」では68.6%であった。（PDFの文字間の空白を詰めて写した）",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/content/11801500/001728125.pdf#page=65",
+   "located": "page",
+   "page": 65,
+   "img": "img/noryoku_r7_selfdev_problem.jpg"
   },
   {
    "theme": "孤独",
@@ -633,7 +788,11 @@
    "evidence": "孤独感が「しばしばある・常にある」と回答した人の割合は4.5％、「時々ある」が",
    "trend": "",
    "trend_note": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.e-stat.go.jp/stat-search/file-download?statInfId=000040442799&fileKind=2#page=7",
+   "located": "whole",
+   "page": 7,
+   "img": "img/tsunagari_r7_lonely_often.jpg"
   },
   {
    "theme": "孤独",
@@ -650,7 +809,11 @@
    "evidence": "が「いる」では2.5％、「いない」では25.0％となっている。",
    "trend": "",
    "trend_note": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.e-stat.go.jp/stat-search/file-download?statInfId=000040442799&fileKind=2#page=32",
+   "located": "whole",
+   "page": 32,
+   "img": "img/tsunagari_r7_no_talk_partner_lonely.jpg"
   },
   {
    "theme": "友人関係",
@@ -667,7 +830,11 @@
    "evidence": "ねたところ、「家族・親族」と回答した割合が92.9％と最も高く、次いで、「友人・知人」(58.9％)、",
    "trend": "",
    "trend_note": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.e-stat.go.jp/stat-search/file-download?statInfId=000040442799&fileKind=2#page=31",
+   "located": "whole",
+   "page": 31,
+   "img": "img/tsunagari_r7_consult_friends.jpg"
   },
   {
    "theme": "友人関係",
@@ -684,7 +851,12 @@
    "evidence": "はいない」（37.9％）が、欧米３か国（アメリカ 16.9％、ドイツ 14.8％、スウェーデン 14.0％）に比べ",
    "trend": "",
    "trend_note": "",
-   "check_note": "同じ数字を、友人関係と老いの2つのテーマで使えるように2行にしています。"
+   "check_note": "同じ数字を、友人関係と老いの2つのテーマで使えるように2行にしています。",
+   "jump": "https://www8.cao.go.jp/kourei/ishiki/r07/zentai/pdf/chapter2_7.pdf#page=9",
+   "located": "page",
+   "page_hint": 9,
+   "page": 9,
+   "img": "img/koureikokusai_r7_no_close_friend.jpg"
   },
   {
    "theme": "家族",
@@ -701,7 +873,11 @@
    "evidence": "2368 万９千世帯（一般世帯の 41.4％）、",
    "trend_note": "同じ表で 2010年32.4%→2015年34.6%→2020年38.0%→2025年41.4% と毎回上がっている。「一人暮らしの世帯の割合は増え続けています」の候補。1990年までさかのぼる推移は、元の表で人が確かめる。",
    "trend": "増加",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.stat.go.jp/data/kokusei/2025/kekka/pdf/outline_01.pdf#page=37",
+   "located": "whole",
+   "page": 37,
+   "img": "img/kokusei_r7_single_household.jpg"
   },
   {
    "theme": "家族",
@@ -718,7 +894,11 @@
    "evidence": "家事関連                0.48           1.00     1.07    1.23            1.54     7.41     7.27         7.41      7.34        7.28",
    "trend_note": "同じ表で夫の家事関連時間は 0.48→1.00→1.07→1.23→1.54（2001年から2021年まで5回）と毎回増えている。「夫の家事・育児の時間は増え続けています」の候補。妻は 7.41→7.27→7.41→7.34→7.28 で、増え続けてはいない。",
    "trend": "増加",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.stat.go.jp/data/shakai/2021/pdf/youyakua.pdf#page=2",
+   "located": "page",
+   "page": 2,
+   "img": "img/shakai_r3_husband_housework.jpg"
   },
   {
    "theme": "恋愛",
@@ -735,7 +915,11 @@
    "evidence": "                          51.4                 27.3           19.8                                         65.8                       19.1         13.6",
    "trend": "",
    "trend_note": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.gender.go.jp/research/kenkyu/pdf/hyakunen_r03/03.pdf#page=4",
+   "located": "whole",
+   "page": 4,
+   "img": "img/hyakunen_r3_no_partner_20s_men.jpg"
   },
   {
    "theme": "恋愛",
@@ -752,7 +936,11 @@
    "evidence": "30 ～ 34      3,273,933   1,761,319     1,444,641      67,962    11       100.0       53.8      44.1    2.1",
    "trend": "",
    "trend_note": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.stat.go.jp/data/kokusei/2025/kekka/pdf/outline_01.pdf#page=32",
+   "located": "whole",
+   "page": 32,
+   "img": "img/kokusei_r7_unmarried_30s_men.jpg"
   },
   {
    "theme": "幸福",
@@ -769,7 +957,13 @@
    "evidence": "「そう思う」という回答が 41.5％で、「どちらかといえば、そう思う」（44.7％）を合わせると、肯定的な回答が８割半を占める。／図表の行：全 体 (8,012) 41.5 44.7 9.7 3.7 86.3 13.5（右の2列が『自分が幸せだと思う（計）』『自分が幸せだと思わない（計）』）",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/102cd8bd-3dc2-4d5a-ac7a-349e097e96fd/93f72af0/20260428_resources_research_kowaka_results_05.pdf#page=7",
+   "located": "parts",
+   "doc_url": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/102cd8bd-3dc2-4d5a-ac7a-349e097e96fd/93f72af0/20260428_resources_research_kowaka_results_05.pdf",
+   "page_hint": 7,
+   "page": 7,
+   "img": "img/kowaka_r7_happy.jpg"
   },
   {
    "theme": "幸福",
@@ -786,7 +980,11 @@
    "evidence": "幸せがずっと続くと、いつ不幸せが訪れるかと、不安になるかもしれない (n=1089) 25.8 41.1 23.4 9.6 66.9 33.1（右の2列が『あてはまる（計）』『あてはまらない（計）』）",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/d0d674d3-bf0a-4552-847c-e9af2c596d4e/3b48b9f7/20240620_policies_kodomo-research_02.pdf#page=64",
+   "located": "parts",
+   "page": 64,
+   "img": "img/wagakuni_r5_happy_anxiety.jpg"
   },
   {
    "theme": "死生観",
@@ -803,7 +1001,12 @@
    "evidence": "死亡数は 158 万 9533 人で、前年の 160 万 5378 人より 1 万 5845 人減少し、５年ぶりの減少となった。",
    "trend_note": "",
    "trend": "",
-   "check_note": "数そのものは背景だけに使う候補です。印刷は「158 万 9533 人」。"
+   "check_note": "数そのものは背景だけに使う候補です。印刷は「158 万 9533 人」。",
+   "jump": "https://www.mhlw.go.jp/toukei/saikin/hw/jinkou/kakutei25/dl/05_gaikyouR07.pdf#page=4",
+   "located": "whole",
+   "doc_url": "https://www.mhlw.go.jp/toukei/saikin/hw/jinkou/kakutei25/dl/05_gaikyouR07.pdf",
+   "page": 4,
+   "img": "img/jinko_r7_deaths.jpg"
   },
   {
    "theme": "死生観",
@@ -820,7 +1023,12 @@
    "evidence": "同様に、75歳まで生存する者の割合は男76.0％、女88.1％、90歳まで生存する者の割合は男26.7％、女50.8％となっている。",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.mhlw.go.jp/toukei/saikin/hw/life/life25/dl/life25-03.pdf#page=1",
+   "located": "whole",
+   "doc_url": "https://www.mhlw.go.jp/toukei/saikin/hw/life/life25/dl/life25-03.pdf",
+   "page": 1,
+   "img": "img/seimei_r7_female_90.jpg"
   },
   {
    "theme": "老い",
@@ -837,7 +1045,13 @@
    "evidence": "第 10 回をみると、日本では、「親しい友人が２人以上いる」（42.3％）が最も高いが、欧米３か国（アメリカ：68.5％、ドイツ：68.3％、スウェーデン：71.6％）に比べると低く、一方で「親しい友人はいない」（37.9％）が、欧米３か国（アメリカ 16.9％、ドイツ 14.8％、スウェーデン 14.0％）に比べて高い。",
    "trend_note": "",
    "trend": "",
-   "check_note": "同じ数字を、友人関係と老いの2つのテーマで使えるように2行にしています。"
+   "check_note": "同じ数字を、友人関係と老いの2つのテーマで使えるように2行にしています。",
+   "jump": "https://www8.cao.go.jp/kourei/ishiki/r07/gaiyo/pdf/chapter2_7.pdf#page=9",
+   "located": "page",
+   "doc_url": "https://www8.cao.go.jp/kourei/ishiki/r07/gaiyo/pdf/chapter2_7.pdf",
+   "page_hint": 9,
+   "page": 9,
+   "img": "img/kourei_r7_no_close_friend.jpg"
   },
   {
    "theme": "老い",
@@ -854,7 +1068,13 @@
    "evidence": "第 10 回をみると、欧米３か国では、「大変感じている」（アメリカ：43.5％、ドイツ：26.4％、スウェーデン：51.6％）が、日本（22.8％）に比べて高い。（図表 2-8-1-1）",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www8.cao.go.jp/kourei/ishiki/r07/gaiyo/pdf/chapter2_8.pdf#page=1",
+   "located": "page",
+   "doc_url": "https://www8.cao.go.jp/kourei/ishiki/r07/gaiyo/pdf/chapter2_8.pdf",
+   "page_hint": 1,
+   "page": 1,
+   "img": "img/kourei_r7_ikigai_very.jpg"
   },
   {
    "theme": "誠実・嘘",
@@ -871,7 +1091,13 @@
    "evidence": "一方、『そう思わない（計）』という回答の割合が高いのは、“他の人には言えない本音を話せることがある”（62.4％）、“いつもつながりを感じている”（53.2％）、“何でも悩みを相談できる人がいる”（52.3％）であり…／図表の行：他の人には言えない本音を話せることがある 12.2 24.3 31.6 30.9 36.6 62.4（n=7,082）",
    "trend_note": "",
    "trend": "",
-   "check_note": ""
+   "check_note": "",
+   "jump": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/102cd8bd-3dc2-4d5a-ac7a-349e097e96fd/93f72af0/20260428_resources_research_kowaka_results_05.pdf#page=24",
+   "located": "parts",
+   "doc_url": "https://www.cfa.go.jp/assets/contents/node/basic_page/field_ref_resources/102cd8bd-3dc2-4d5a-ac7a-349e097e96fd/93f72af0/20260428_resources_research_kowaka_results_05.pdf",
+   "page_hint": 24,
+   "page": 24,
+   "img": "img/kowaka_r7_honne_work.jpg"
   }
  ],
  "findings": [

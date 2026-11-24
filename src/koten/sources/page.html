@@ -61,6 +61,12 @@ a.sub { color: var(--accent); overflow-wrap: anywhere; }
 .check input { width: 22px; height: 22px; flex: none; margin-top: 3px; }
 .field { display: grid; gap: 2px; }
 .preview { font-size: 15px; background: var(--soft); padding: 8px; border-radius: 8px; margin: 0; }
+figure { margin: 0; display: grid; gap: 4px; }
+figure img { width: 100%; height: auto; border: 1px solid var(--rule); border-radius: 8px; background: #fff; }
+figcaption { font-size: 13px; color: var(--muted); }
+.passage { margin: 0; font-size: 15px; line-height: 1.6; background: var(--soft); padding: 8px 10px; border-left: 3px solid var(--accent); border-radius: 4px; }
+.passage mark { background: #f3e2a9; color: #1f2420; padding: 0 1px; }
+.passage small { display: block; font-size: 12px; color: var(--muted); margin-bottom: 2px; }
 .state { font-size: 13px; color: var(--muted); margin: 0; }
 details { font-size: 15px; }
 details > div { display: grid; gap: 10px; margin-top: 10px; }
@@ -110,8 +116,8 @@ button:disabled { opacity: .45; cursor: default; }
 const ITEMS = /*__ITEMS__*/[];
 const MADE = /*__MADE__*/"";
 const PARTS = [
-  ["stat", "統計（国・公的機関）", "数字・単位・誰のうちの数か・調査の年が、元の資料と同じなら「合っている」。"],
-  ["finding", "研究（誰でも読める論文）", "論文の本文の「結果」で、一文・限界・調べた人を確かめ、取り下げが無いのを見たら「合っている」。"],
+  ["stat", "統計（国・公的機関）", "画像の赤い枠の数字と、誰のうちの数か・調査の年が、台本に入る文と同じなら「合っている」。"],
+  ["finding", "研究（誰でも読める論文）", "論文の該当の文で、一文・限界・調べた人を確かめ、取り下げが無いのを見たら「合っている」。"],
   ["private_survey", "民間の調査（あなたが読む）", "引用の決まりを読み、数字を1つ書いたら「入れる」。"],
   ["paid_paper", "有料の論文（あなたが読む）", "本文を読んで、あなたの言葉で一文・限界・調べた人を書いたら「入れる」。"],
 ].filter(([kind]) => ITEMS.some((it) => it.kind === kind));
@@ -234,16 +240,42 @@ function statLine(f) {
   return `${f.label || "（何の数字か）"}は${v}${where}`;
 }
 
+// 文の中の印（mark）を <mark> にする。印は文にそのままある短い文字だけ
+function marked(text, marks) {
+  const p = document.createElement("span");
+  const spans = [];
+  for (const m of marks || []) {
+    let at = m ? text.indexOf(m) : -1;
+    while (at >= 0) { spans.push([at, at + m.length]); at = text.indexOf(m, at + m.length); }
+  }
+  spans.sort((a, b) => a[0] - b[0]);
+  let pos = 0;
+  for (const [a, b] of spans) {
+    if (a < pos) continue;
+    p.append(text.slice(pos, a), el("mark", {}, text.slice(a, b)));
+    pos = b;
+  }
+  p.append(text.slice(pos));
+  return p;
+}
+
 function cardStat(it) {
   const f = form(it);
   const line = el("p", { class: "line" }, statLine(f.fix));
   const kids = [
     el("div", { class: "kind" }, `統計｜${it.theme}｜${it.id}`),
     el("div", {}, el("span", { class: "label" }, "台本に入る文"), line),
-    opener(it.url, "元の資料を開く"),
-    el("div", {}, el("span", { class: "label" }, "どこにあるか"), el("p", { class: "small" }, [it.publisher, it.where, it.published && `発表 ${it.published}`].filter(Boolean).join("｜"))),
   ];
-  if (it.evidence) kids.push(el("div", {}, el("span", { class: "label" }, "資料の中の文（調べ役が抜き出した行。元の資料と見比べる）"), el("pre", { class: "evidence" }, it.evidence)));
+  if (it.img) {
+    kids.push(el("figure", {},
+      el("img", { src: it.img, alt: `元の資料の${it.page}ページ`, loading: "lazy" }),
+      el("figcaption", {}, `元の資料の ${it.page} ページ目（PDF の通し番号）。黄色が数字の載った行、赤い枠が数字です`)));
+  }
+  kids.push(
+    opener(it.jump || it.url, it.page ? `元の資料の ${it.page} ページを開く` : "元の資料を開く"),
+    el("div", {}, el("span", { class: "label" }, "どこにあるか"), el("p", { class: "small" }, [it.publisher, it.where, it.published && `発表 ${it.published}`].filter(Boolean).join("｜"))),
+  );
+  if (it.evidence) kids.push(el("details", {}, el("summary", {}, "調べ役が写した行"), el("div", {}, el("pre", { class: "evidence" }, it.evidence))));
   if (it.check_note) kids.push(el("p", { class: "note" }, `見直し役のメモ：${it.check_note}`));
   if (it.replaces) kids.push(el("p", { class: "small" }, `「合っている」なら、今の台帳の ${it.replaces}（転載サイトを出典にした行）をこの行に差し替えます`));
   if (it.trend) kids.push(tick(it, "trend", `増え方（${it.trend}）も元の資料で確かめた：${it.trend_note}`));
@@ -262,16 +294,23 @@ function cardFinding(it) {
   const kids = [
     el("div", { class: "kind" }, `研究｜${it.theme}｜${it.design}｜${it.id}`),
     el("div", { class: "lines" }, el("span", { class: "label" }, "台本に入る形"), ...it.lines.map((t) => el("p", {}, t))),
-    opener(it.url, "論文を開く"),
+  ];
+  if ((it.passages || []).length) {
+    const ROLE = { claim: "結果", limits: "限界", population: "調べた人" };
+    kids.push(el("div", {}, el("span", { class: "label" }, "論文の該当の文（英語の原文。印は数字と大事な言葉）"),
+      ...it.passages.map((p) => el("p", { class: "passage" }, el("small", {}, `${ROLE[p.role] || p.role}｜${p.section || ""}`), marked(p.text, p.mark)))));
+  }
+  kids.push(
+    opener(it.jump || it.url, (it.passages || []).length ? "論文の該当の文を開く（開くと印が付きます）" : "論文を開く"),
     el("div", {}, el("span", { class: "label" }, "書誌"), el("p", { class: "small" }, it.citation)),
     el("div", {}, el("span", { class: "label" }, "ライセンス"), el("p", { class: "small" }, `${it.license}｜${it.license_evidence}`)),
-  ];
-  if (it.where) kids.push(el("div", {}, el("span", { class: "label" }, "結果の場所"), el("p", { class: "small" }, it.where)));
+  );
+  if (it.where) kids.push(el("details", {}, el("summary", {}, "調べ役のメモ（結果の場所と数字）"), el("div", {}, el("p", { class: "small" }, it.where))));
   const meta = [it.effect && `効果の大きさ：${it.effect}`, it.replication && `追試：${it.replication}`, it.replication_note].filter(Boolean).join("｜");
   if (meta) kids.push(el("p", { class: "small" }, meta));
   if (it.check_note) kids.push(el("p", { class: "note" }, `見直し役のメモ：${it.check_note}`));
   kids.push(
-    tick(it, "read", "論文の本文の「結果」で、一文・限界・調べた人が合っているのを確かめた"),
+    tick(it, "read", "論文の該当の文（か本文の「結果」）で、一文・限界・調べた人が合っているのを確かめた"),
     tick(it, "retr", "論文のページで、取り下げ（Retraction）が無く、訂正（Correction）があっても結果に関わらないものだと見た"),
     el("details", {}, el("summary", {}, "言い方を直す"), el("div", {},
       input(it, "fix.claim_ja", "研究の一文（150字まで・1文）", { long: true }),

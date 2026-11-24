@@ -10,7 +10,8 @@
   - CC_BY にできるのは、ただの CC BY（4.0 などの版はどれでも）だけです。CC0 は CC0 だけです。この2つの論文は、本文を使ってかまいません。
   - CC BY-NC・CC BY-ND・CC BY-SA・CC BY-NC-ND・CC BY-NC-SA、無料で読めても表示が無いもの、分からないものは、全部 COPYRIGHTED にして、有料の論文と同じに扱います（本文も要旨も保存せず、クラウドの AI に貼りません）。
 - 台本で使えるのは、次の全部を満たす行だけです。
-  - status が verified
+  - status が verified（人が本文で確かめた）か ai_checked（AI の調べ役と見直し役が CC BY・CC0 の本文で確かめた。2026-11-24 利用者）
+    - ai_checked の研究を回で使ったら、承認の前に人が確かめます（確認画面で止まる。手順は docs/sources_check.md）。有料の論文は AI が読めないので ai_checked にできません
   - verified_from が full_text（論文の本文の「結果」の節で確かめた。要旨や発表文だけなら draft のまま）
   - retraction_checked_at に、取り下げ・訂正を確かめた日がある
   - replication が failed（大きな追試で再現しなかった）でない
@@ -37,7 +38,7 @@
 | retraction_checked_at | 取り下げ・訂正を確かめた日（2026-11-05 の形。論文が出たあと・今日まで） | 2026-11-05 |
 | verified_from | full_text・abstract・press_release | full_text |
 | checked_by・checked_at | 確かめた人と日 | オーナー・2026-11-05 |
-| status | verified・draft | verified |
+| status | verified（人が確かめた）・ai_checked（AI が確かめた。CC BY・CC0 だけ）・draft | verified |
 | note | メモ（200字まで。論文の文を貼らない） | |
 
 - 語りでは、出典が「ミシガン大学の調査（2019年）」のように入ります（affiliation_ja か authors_ja ＋ design の言葉 ＋ 年）。考え方は「ボリーノらが示した考え方（2015年）」、多くの研究をまとめた分析は「ミシガン大学による、多くの研究をまとめた分析（2019年）」、研究のまとめは「ミシガン大学による研究のまとめ（2019年）」になります（大学の公式の考えや、まとめた研究が全部その大学のもののように聞こえないように）。
