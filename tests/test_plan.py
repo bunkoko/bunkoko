@@ -105,7 +105,8 @@ def test_plan_a(env):
     assert len(set(_works(plan))) == len(plan["selection"])  # 別々の作品
     assert plan["selected_by"] == "llm" and all(s["reason"] for s in plan["selection"])
     context = next(c for c in plan["chapters"] if c["role"] == "context")
-    assert context["stat_ids"] == []  # 嫉妬・比較の統計は stats.csv に無い
+    # 嫉妬・比較の統計（こども家庭庁の若者の意識調査）を2つまで
+    assert context["stat_ids"] == ["shogaikoku_r5_as_happy", "shogaikoku_r5_doing_well"]
     classic = [c for c in plan["chapters"] if c["role"] == "classic"]
     assert 3 <= len(classic) <= 5
 
@@ -175,8 +176,18 @@ def test_plan_c(env):
     assert 4 <= len(plan["selection"]) <= 6
     assert len(set(_works(plan))) == len(plan["selection"])
     context = next(c for c in plan["chapters"] if c["role"] == "context")
-    assert context["stat_ids"] == []  # 孤独の統計は、値を転記するまで stats.csv に無い
-    assert make_planner(env)._stats_for(["仕事の量"]) == ["rodo_r7_amount"]
+    # 孤独の統計（内閣府の人々のつながりに関する基礎調査）を2つまで
+    assert context["stat_ids"] == [
+        "tsunagari_r7_lonely_often",
+        "tsunagari_r7_no_talk_partner_lonely",
+    ]
+    # 人が元の資料で確かめた行を先に使う（仕事の量は、3行とも人が確かめた）
+    assert make_planner(env)._stats_for(["仕事の量"]) == ["anzen_r7_amount", "anzen_r7_amount_20s"]
+    # 人が確かめた行が無いテーマは、AI が確かめた行を ID の順に
+    assert make_planner(env)._stats_for(["いじめ・嫌がらせ"]) == [
+        "funso_r7_bullying",
+        "hara_r5_powerhara",
+    ]
 
 
 def test_plan_d(env):

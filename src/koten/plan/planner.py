@@ -21,6 +21,7 @@ from typing import Any
 import yaml
 
 from koten.authors import author_label
+from koten.db import HUMAN_CHECKER
 from koten.embed.encoder import Encoder
 from koten.facts.select import recently_used, select_facts
 from koten.facts.store import fact_shas
@@ -580,10 +581,12 @@ class Planner:
         if not themes:
             return []
         marks = ",".join("?" for _ in themes)
+        # 人が元の資料で確かめた行を先に使う（AI が確かめた行は、回で使うと承認の前に確かめが要る）
         rows = self.conn.execute(
             f"SELECT stat_id FROM stats WHERE theme IN ({marks}) "
-            "AND COALESCE(status, '') = '' ORDER BY stat_id",
-            themes,
+            "AND COALESCE(status, '') = '' "
+            "ORDER BY COALESCE(checked_by, '') = ? DESC, stat_id",
+            [*themes, HUMAN_CHECKER],
         ).fetchall()
         return [r[0] for r in rows][:2]
 

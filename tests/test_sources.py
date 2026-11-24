@@ -282,4 +282,110 @@ def test_cli_page_and_merge(config_dir, tmp_path):
         ],
     )
     assert res.exit_code == 0, res.output
-    assert "統計 1 行" in res.output and "koten db init" in res.output
+    assert "人が確かめた行：統計 1" in res.output and "koten db init" in res.output
+
+
+def test_accept_rest_adds_ai_checked_rows_but_keeps_human_ones(config_dir):
+    other = {**STAT, "stat_id": "anzen_r6_failure", "label": "失敗の割合", "replaces": ""}
+    drafts = {**_drafts(), "stats": [STAT, other]}
+    # 人が押した行・押していない行・違うを押した行
+    checks = {stat_key(STAT): {"v": "ok", "at": _at("2026-11-23")}}
+    res = merge_checks(drafts, checks, config_dir, accept_rest=True)
+    assert res.stats_added == ["anzen_r6_amount"] and res.stats_ai == ["anzen_r6_failure"]
+    assert res.findings_ai == ["FN-lonely-2021"] and not res.findings_added
+    rows = _stats(config_dir)
+    assert rows["anzen_r6_amount"]["checked_by"] == "オーナー"
+    ai = rows["anzen_r6_failure"]
+    # AI の行は下書きの日付、増え方は書かない（人が確かめたときだけ）
+    assert (ai["checked_by"], ai["checked_at"], ai["trend"]) == (
+        "AI（調べ役と見直し役）",
+        "2026-11-21",
+        "",
+    )
+    f = read_findings(config_dir)[0]
+    assert f.status == "ai_checked" and f.usable and not f.human_verified
+    assert f.retraction_checked_at == "2026-11-21"
+    # 民間の調査・有料の論文は、押していなければ入れない
+    assert "priv_persol_growth" not in rows
+    # もう一度 AI で入れ直しても、人が確かめた行は上書きしない
+    res = merge_checks(drafts, {}, config_dir, accept_rest=True)
+    assert res.stats_ai == ["anzen_r6_failure"]
+    assert _stats(config_dir)["anzen_r6_amount"]["checked_by"] == "オーナー"
+    # 違うを押した行は入れない
+    (config_dir / "stats.csv").write_text(
+        "stat_id,theme,label,value,unit,survey,year,url,trend,trend_note,status\n", "utf-8"
+    )
+    res = merge_checks(drafts, {stat_key(other): {"v": "ng"}}, config_dir, accept_rest=True)
+    assert "anzen_r6_failure" not in _stats(config_dir) and res.rejected == ["anzen_r6_failure"]
+
+
+def test_ai_checked_needs_an_open_license(config_dir):
+    from koten.findings import FindingsError
+
+    row = {
+        **FINDING,
+        "license": "COPYRIGHTED",
+        "status": "ai_checked",
+        "verified_from": "full_text",
+    }
+    row.update(checked_by="AI", checked_at="2026-11-21", retraction_checked_at="2026-11-21")
+    from koten.findings import COLUMNS
+    from koten.sources.check import _csv_text
+
+    (config_dir / "findings.csv").write_text(_csv_text(COLUMNS, [row]), "utf-8")
+    with pytest.raises(FindingsError, match="CC BY・CC0"):
+        read_findings(config_dir)
+
+
+def test_todo_page_uses_the_ledger_text_and_the_draft_location(config_dir):
+    from koten.sources.check import todo_drafts
+
+    merge_checks(_drafts(), {}, config_dir, accept_rest=True)
+    # 台帳の数字を人が直したあとでも、ページは台帳の形（動画で言っている形）を出す
+    text = (config_dir / "stats.csv").read_text("utf-8").replace(",43.2,", ",43.1,")
+    (config_dir / "stats.csv").write_text(text, "utf-8")
+    todo = {"episode_id": "E1", "stats": ["anzen_r6_amount"], "findings": ["FN-lonely-2021"]}
+    data = todo_drafts(_drafts(), todo, config_dir)
+    s = data["stats"][0]
+    assert s["value"] == "43.1" and s["evidence"] == "仕事の量 43.2" and not s["replaces"]
+    assert data["findings"][0]["status"] == "ai_checked" and data["made"] == "回 E1"
+    with pytest.raises(SourcesError, match="台帳に無い"):
+        todo_drafts(_drafts(), {"stats": ["nope"]}, config_dir)
+    # 押したら人が確かめた行になる
+    page = page_items(data)
+    checks = {
+        page[0]["k"]: {"v": "ok", "at": _at("2026-11-24")},
+        page[1]["k"]: {"v": "ok", "at": _at("2026-11-24"), "read": True, "retr": True},
+    }
+    res = merge_checks(data, checks, config_dir)
+    assert res.stats_added == ["anzen_r6_amount"] and res.findings_added == ["FN-lonely-2021"]
+    assert _stats(config_dir)["anzen_r6_amount"]["value"] == "43.1"
+    assert read_findings(config_dir)[0].human_verified
+
+
+def test_unchecked_sources_lists_cited_rows_without_a_human_check():
+    from types import SimpleNamespace
+
+    from koten.media.produce import unchecked_sources
+
+    script = {
+        "chapters": [
+            {
+                "chapter_id": "ch1",
+                "segments": [
+                    {"seg_id": "a", "kind": "stat", "visual": {"ref": "s_ai"}},
+                    {"seg_id": "b", "kind": "stat", "visual": {"ref": "s_human"}},
+                    {"seg_id": "c", "kind": "narration", "findings": ["FN-ai", "FN-human"]},
+                ],
+            }
+        ]
+    }
+    data = SimpleNamespace(
+        stats={
+            "s_ai": {"checked_by": "AI（調べ役と見直し役）"},
+            "s_human": {"checked_by": "オーナー"},
+            "s_unused": {"checked_by": ""},
+        },
+        findings={"FN-ai": {"status": "ai_checked"}, "FN-human": {"status": "verified"}},
+    )
+    assert unchecked_sources(SimpleNamespace(script=script, data=data)) == ["s_ai", "FN-ai"]

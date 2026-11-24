@@ -12,6 +12,7 @@ import csv
 import re
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 SCHEMA_VERSION = 8
 
@@ -103,7 +104,9 @@ CREATE TABLE IF NOT EXISTS stats (
     url TEXT NOT NULL,
     trend TEXT,                          -- 増加・減少（同じ調査・同じ設問で人が確かめた）
     trend_note TEXT,                     -- 移り変わりの根拠（年の範囲と、同じ設問であること）
-    status TEXT                          -- 空は使う。保留は企画に出さない（規約を確かめるまで）
+    status TEXT,                         -- 空は使う。保留は企画に出さない（規約を確かめるまで）
+    checked_by TEXT,                     -- オーナー（人が元の資料で確かめた）か AI
+    checked_at TEXT                      -- 確かめた日
 );
 
 -- 背景の事実（koten facts build が HDD の書誌と config の CSV から作り直す）
@@ -313,7 +316,17 @@ def connect(ssd_root: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
-    _add_missing_columns(conn, "stats", {"trend": "TEXT", "trend_note": "TEXT", "status": "TEXT"})
+    _add_missing_columns(
+        conn,
+        "stats",
+        {
+            "trend": "TEXT",
+            "trend_note": "TEXT",
+            "status": "TEXT",
+            "checked_by": "TEXT",
+            "checked_at": "TEXT",
+        },
+    )
     _add_missing_columns(conn, "checks", {"shiyaku_id": "TEXT"})
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)", (SCHEMA_VERSION,)
@@ -346,8 +359,22 @@ STATS_COLUMNS = [
     "trend",
     "trend_note",
     "status",
+    "checked_by",
+    "checked_at",
 ]
 TRENDS = ("増加", "減少")
+# 人が元の資料で確かめた行の checked_by。それ以外（AI が確かめた行・書いた人の記録が無い行）は、
+# 回で使ったら承認の前に人が確かめる（koten sources todo）
+HUMAN_CHECKER = "オーナー"
+AI_CHECKER = "AI（調べ役と見直し役）"
+
+
+def human_checked(row: dict[str, Any] | sqlite3.Row) -> bool:
+    """統計の行を、人が元の資料で確かめたか。"""
+    value = row["checked_by"] if "checked_by" in row.keys() else ""
+    return (value or "").strip() == HUMAN_CHECKER
+
+
 STAT_STATUSES = ("", "保留")  # 空は使う。保留は読み込むが企画に出さない
 
 
@@ -392,6 +419,10 @@ def stats_problems(rows: list[dict[str, str]]) -> list[str]:
             problems.append(f"{i}行目：trend を書いたら trend_note（根拠）も書く")
         if (r.get("status") or "").strip() not in STAT_STATUSES:
             problems.append(f"{i}行目：status は空（使う）か 保留 にする")
+        if (r.get("checked_by") or "").strip() and not re.fullmatch(
+            r"[0-9]{4}-[0-9]{2}-[0-9]{2}", (r.get("checked_at") or "").strip()
+        ):
+            problems.append(f"{i}行目：checked_by を書いたら checked_at（2026-11-21 の形）も書く")
         if r.get("stat_id") in seen:
             problems.append(f"{i}行目：stat_id {r['stat_id']} が重複")
         seen.add(r.get("stat_id"))

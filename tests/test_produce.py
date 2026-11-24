@@ -19,6 +19,7 @@ from koten.config import DEFAULT_CONFIG_DIR, load_settings
 from koten.db import connect
 from koten.media import produce
 from koten.media.model import MANIFEST, media_dir
+from koten.media.prepare import used_ids
 from koten.render.ffmpeg import probe_duration
 from koten.voice.voicevox import VoicevoxClient
 from tests.m4_corpus import build
@@ -164,11 +165,29 @@ def test_produce_from_script_to_approval(env, tmp_path, monkeypatch):
         conn.execute("SELECT state FROM episodes WHERE episode_id = ?", (eid,)).fetchone()[0]
         == "rendered"
     )
+    # この回で使った統計・研究を人が元の資料で確かめるまで、承認できない
+    used = used_ids(
+        json.loads(
+            conn.execute(
+                "SELECT script_json FROM episodes WHERE episode_id = ?", (eid,)
+            ).fetchone()[0]
+        )
+    )
+    res = CliRunner().invoke(
+        app, ["episode", "approve", "--episode", eid, "--settings", str(s2.path)]
+    )
+    if used["stats"] or used["findings"]:
+        assert res.exit_code == 2 and "人が元の資料で確かめていない" in res.output, res.output
+    with conn:
+        conn.execute("UPDATE stats SET checked_by = 'オーナー', checked_at = '2026-11-24'")
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'findings'").fetchone():
+            conn.execute("UPDATE findings SET status = 'verified'")
     # クレジットを書いたら、説明欄を作り直すまで承認できない
     res = CliRunner().invoke(
         app, ["episode", "approve", "--episode", eid, "--settings", str(s2.path)]
     )
     assert res.exit_code == 2 and "クレジットが無い" in res.output, res.output
+    assert "人が元の資料で確かめていない" not in res.output
     produce.step_kit(s2, conn, eid, log=logs.append)
     assert "音声：VOICEVOX:テスト" in (media / "kit" / "description.txt").read_text("utf-8")
     res = CliRunner().invoke(
@@ -250,3 +269,27 @@ def test_produce_to_checks_step_names(env, tmp_path):
         app, ["produce", "--episode", "E1", "--from", "render", "--to", "voice", *st]
     )
     assert res.exit_code == 2 and "前の段" in res.output
+
+
+def test_stale_segments_catch_text_changed_after_voice(env, tmp_path):
+    """音声のあとで台帳の文（統計の数字・研究の一文など）が変わったら、承認の前に気づく。"""
+    eid = planned(env, "A", worry_id="W0001")
+    r, _ = run(env, eid)
+    assert r.state == "script_done"
+    s = _settings_for(env, tmp_path)
+    conn = connect(s.ssd_root)
+    client = VoicevoxClient(
+        ENDPOINT, 3, client=httpx.Client(transport=httpx.MockTransport(FakeEngine()))
+    )
+    produce.step_voice(s, conn, eid, client=client, log=lambda _: None)
+    media = media_dir(s.require_hdd(), eid)
+    ep = produce.load_episode(conn, s.ssd_root, eid)
+    assert produce.stale_segments(s, ep, media) == []
+    # 音声に入った文と、今の台帳で差し込んだ文が違う段落を数える
+    from koten.media.model import VoiceManifest
+
+    m = VoiceManifest.load(media / MANIFEST)
+    seg = m.chapters[0].segments[0]
+    seg.display = seg.display + "（前の文）"
+    m.save(media / MANIFEST)
+    assert produce.stale_segments(s, ep, media) == [seg.seg_id]

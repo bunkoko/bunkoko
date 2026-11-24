@@ -161,7 +161,7 @@ def chapter(*texts, stat_after=None):
     if stat_after is not None:
         segs.insert(
             stat_after + 1,
-            {"seg_id": "ch9-st", "kind": "stat", "text": "{{stat:rodo_r7_amount}}"},
+            {"seg_id": "ch9-st", "kind": "stat", "text": "{{stat:anzen_r7_amount}}"},
         )
     return {"chapter_id": "ch9", "role": "context", "segments": segs}
 
@@ -170,8 +170,8 @@ def load(env):  # noqa: F811
     eid = planned(env, "C", theme="孤独")
     conn = connect(env.ssd_root)
     data = EpisodeData.load(conn, env.ssd_root, eid)
-    row = conn.execute("SELECT * FROM stats WHERE stat_id = 'rodo_r7_amount'").fetchone()
-    data.stats["rodo_r7_amount"] = dict(row)
+    row = conn.execute("SELECT * FROM stats WHERE stat_id = 'anzen_r7_amount'").fetchone()
+    data.stats["anzen_r7_amount"] = dict(row)
     return data
 
 
@@ -288,7 +288,7 @@ def test_trend_only_next_to_a_checked_trend(env):  # noqa: F811
     text = "こうした相談は、増え続けています。"
     ch = chapter(text, stat_after=0)
     assert evidence(gates.g1_chapter(ch, data, []))  # trend の無い統計の隣
-    data.stats["rodo_r7_amount"]["trend"] = "増加"
+    data.stats["anzen_r7_amount"]["trend"] = "増加"
     assert evidence(gates.g1_chapter(ch, data, [])) == []
     down = chapter("こうした相談は、減り続けています。", stat_after=0)
     assert evidence(gates.g1_chapter(down, data, []))  # 向きが違う
@@ -448,7 +448,7 @@ def test_bad_plan_question_is_not_used(env):  # noqa: F811
 def test_stat_held_after_planning_is_not_used(env):  # noqa: F811
     """企画のあとで保留にした統計は、台本で使わず、人の確認（G6）を立てる（D-035）。"""
     conn = connect(env.ssd_root)
-    row = dict(conn.execute("SELECT * FROM stats WHERE stat_id = 'rodo_r7_amount'").fetchone())
+    row = dict(conn.execute("SELECT * FROM stats WHERE stat_id = 'anzen_r7_amount'").fetchone())
     row.update(stat_id="nf_x", theme="嫉妬・比較")
     cols = ", ".join(row)
     with conn:

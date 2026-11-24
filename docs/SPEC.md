@@ -409,12 +409,14 @@ yet → planned → script_done → voice_done → image_done → composed → r
 
 **stats.csv の初期値**（重みは人が決め、下の数値はその根拠として持つ）
 
+2026-11-21 に出典を元の資料（厚生労働省）に差し替え、統計は約50行に増えた（config/stats.csv・docs/sources_check.md）。下の表は初めのころの行。
+
 | stat_id | テーマ | 内容 | 値 | 出典 |
 |---|---|---|---|---|
-| rodo_r7_amount | 仕事の量 | 強い不安・ストレスの内容（労働安全衛生調査、令和7年） | 39.5% | [労働新聞](https://www.rodo.co.jp/series/225471/) |
-| rodo_r7_failure | 失敗・責任 | 同上 | 39.5% | [労働新聞](https://www.rodo.co.jp/series/225471/) |
-| rodo_r7_relations | 職場の人間関係 | 同上。前年から6.8ポイント増 | 32.9% | [労働新聞](https://www.rodo.co.jp/series/225471/) |
-| funso_r7_harassment | いじめ・嫌がらせ | 民事上の個別労働紛争の相談件数（令和7年度、14年連続最多） | 55,614件 | [厚生労働省](https://www.mhlw.go.jp/stf/houdou/newpage_00235.html) |
+| anzen_r7_amount | 仕事の量 | 強い不安・悩み・ストレスがある労働者のうち、内容に「仕事の量」を挙げた割合（労働安全衛生調査（実態調査）、令和7年） | 39.5% | [厚生労働省](https://www.mhlw.go.jp/toukei/list/dl/r07-46-50_kekka-gaiyo02.pdf) |
+| anzen_r7_failure | 失敗・責任 | 同上。「仕事の失敗、責任の発生等」 | 39.5% | 同上 |
+| anzen_r7_relations | 職場の人間関係 | 同上。「対人関係（セクハラ・パワハラを含む）」 | 32.9% | 同上 |
+| funso_r7_bullying | いじめ・嫌がらせ | 民事上の個別労働紛争の相談のうち「いじめ・嫌がらせ」の件数（令和7年度、14年連続最多） | 55,614件 | [厚生労働省](https://www.mhlw.go.jp/content/11909000/001719720.pdf) |
 | nf_2026_future | 将来への不安 | 17〜19歳で「自国の将来は良くなる」と答えた割合 | 16% | [日本財団](https://webtan.impress.co.jp/r/prtimes/items/000000511.000025872) |
 | gakujo_2025_jobchange | 転職の迷い | 20代の転職希望者で「転職すべきか迷った」割合 | 7割超 | [学情](https://service.gakujo.ne.jp/wp-content/uploads/2025/08/250901-rekatsuenq.pdf) |
 | cao_loneliness | 孤独 | 孤独感は若年・中年層で高く、20代は男女とも高い | 報告書から転記（転記するまで stats.csv に入れない。2026-10-25） | [内閣府](https://www.cao.go.jp/kodoku_koritsu/torikumi/yushikisha_arikata/dai5/pdf/siryou1-1.pdf) |
@@ -451,8 +453,8 @@ yet → planned → script_done → voice_done → image_done → composed → r
       "target_sec": 90,
       "segments": [
         {"seg_id": "ch1-s1", "kind": "stat",
-         "text": "{{stat:rodo_r7_relations}}",
-         "visual": {"type": "chart", "ref": "rodo_r7_relations"}}
+         "text": "{{stat:anzen_r7_relations}}",
+         "visual": {"type": "chart", "ref": "anzen_r7_relations"}}
       ]
     },
     {

@@ -247,8 +247,8 @@ def test_g1_detects_names_and_stat_numbers(env):
     data = EpisodeData.load(conn, env.ssd_root, eid)
     cid = data.plan["selection"][0]["candidate_id"]
     title = data.candidates[cid]["title"]
-    row = conn.execute("SELECT * FROM stats WHERE stat_id = 'rodo_r7_amount'").fetchone()
-    stat = data.stats["rodo_r7_amount"] = dict(row)
+    row = conn.execute("SELECT * FROM stats WHERE stat_id = 'anzen_r7_amount'").fetchone()
+    stat = data.stats["anzen_r7_amount"] = dict(row)
     chapter = {
         "chapter_id": "ch9",
         "segments": [

@@ -2167,10 +2167,16 @@ def findings_build(settings: SettingsOpt = None) -> None:
         raise typer.Exit(2) from e
     build_findings(connect(s.ssd_root), findings)
     usable = sum(f.usable for f in findings)
+    ai_only = sum(f.usable and not f.human_verified for f in findings)
     typer.echo(
         f"研究の一文 {len(findings)}件（台本で使える {usable}件・"
         f"使わない {len(findings) - usable}件）"
     )
+    if ai_only:
+        typer.echo(
+            f"  台本で使える行のうち {ai_only}件は AI が確かめた行です"
+            "（回で使ったら、承認の前に人が確かめる：koten sources todo）"
+        )
     for f in findings:
         if not f.usable:
             why = (
@@ -2190,7 +2196,10 @@ def findings_list(
     theme: Annotated[str | None, typer.Option(help="テーマ（config/themes.yaml の言葉）")] = None,
     settings: SettingsOpt = None,
 ) -> None:
-    """SSD の研究の表を、出典・一文・限界と一緒に見る。"""
+    """SSD の研究の表を、出典・一文・限界と一緒に見る。
+
+    ○ は人が確かめた行、△ は AI が確かめた行（回で使ったら承認の前に人が確かめる）、× は使わない行。
+    """
     from koten.db import connect
 
     conn = connect(_settings(settings).ssd_root)
@@ -2204,7 +2213,7 @@ def findings_list(
     for r in rows:
         if theme and theme not in r["themes"].split(";"):
             continue
-        mark = "○" if r["usable"] else "×"
+        mark = ("○" if r["status"] == "verified" else "△") if r["usable"] else "×"
         typer.echo(f"{mark} {r['finding_id']}［{r['themes']}］{r['source_label']}")
         typer.echo(f"    {r['source_label']}では、{r['claim_ja']}。")
         # 台本に入る形のまま見せる（おかしな日本語なら台帳を直す）
@@ -2221,19 +2230,54 @@ sources_app = typer.Typer(
 )
 app.add_typer(sources_app, name="sources")
 
+DraftsOpt = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--drafts",
+        help="Claude が調べた下書き（JSON）。何度でも書ける。省くと docs/research の下書き全部",
+    ),
+]
+TodoOpt = Annotated[
+    str | None,
+    typer.Option(
+        help="回で使った、人がまだ確かめていない行の一覧（koten sources todo が書く JSON）。"
+        "書くと、その行だけのページにする"
+    ),
+]
+
+
+def _source_drafts(drafts: list[str] | None, todo: str | None, s: Settings):
+    import json
+    from pathlib import Path
+
+    from koten.config import REPO_ROOT
+    from koten.sources.check import DRAFTS_GLOB, collect_drafts, todo_drafts
+
+    paths = [Path(x) for x in drafts] if drafts else sorted(REPO_ROOT.glob(DRAFTS_GLOB))
+    data = collect_drafts(paths)
+    if todo:
+        data = todo_drafts(data, json.loads(Path(todo).read_text("utf-8")), s.config_dir)
+    return data
+
 
 @sources_app.command("page")
 def sources_page(
-    drafts: Annotated[str, typer.Option(help="Claude が調べた下書き（JSON）")],
+    drafts: DraftsOpt = None,
+    todo: TodoOpt = None,
     out: Annotated[str, typer.Option(help="書き出すページ（HTML）")] = "data/sources-page.html",
+    settings: SettingsOpt = None,
 ) -> None:
-    """下書きを、スマホで「合っている／違う」を押すページ（HTML）にする。Claude が載せる。"""
+    """下書きを、スマホで「合っている／違う」を押すページ（HTML）にする。Claude が載せる。
+
+    元の資料の該当ページの画像（koten sources locate が作る）は、ページの隣の img/ に置く。
+    """
     from pathlib import Path
 
-    from koten.sources.check import SourcesError, build_page, page_items, read_drafts
+    from koten.sources.check import SourcesError, build_page, page_items
 
+    s = _settings(settings)
     try:
-        data = read_drafts(Path(drafts))
+        data = _source_drafts(drafts, todo, s)
         items = page_items(data)
         html = build_page(data)
     except (OSError, ValueError, KeyError, SourcesError) as e:
@@ -2248,39 +2292,60 @@ def sources_page(
         f"{dest} に、統計 {kinds['stat']}・研究 {kinds['finding']}・"
         f"あなたが読む資料 {leads} 件のページを書きました"
     )
+    images = [x["img"] for x in items if x.get("img")]
+    if images:
+        typer.echo(f"該当ページの画像 {len(images)} 枚（ページの隣の img/ に置いて載せる）")
 
 
 @sources_app.command("merge")
 def sources_merge(
-    drafts: Annotated[str, typer.Option(help="ページを作った下書き（JSON）")],
     source: Annotated[str, typer.Option("--from", help="ページの結果（{キー: 文書} の JSON）")],
+    drafts: DraftsOpt = None,
+    todo: TodoOpt = None,
+    accept_rest: Annotated[
+        bool,
+        typer.Option(
+            help="押していない統計と CC BY の研究を、AI が確かめた行として入れる"
+            "（回で使ったら、承認の前に人が確かめる）"
+        ),
+    ] = False,
     settings: SettingsOpt = None,
 ) -> None:
-    """ページで「合っている」「入れる」を押した行だけを、config/stats.csv・findings.csv に書く。
+    """ページで押した結果を、config/stats.csv・findings.csv に書く。
 
     書いたあとは `koten db init`（統計）と `koten findings build`（研究）で SSD に入れる。
     """
     import json
     from pathlib import Path
 
-    from koten.sources.check import SourcesError, merge_checks, read_drafts
+    from koten.sources.check import SourcesError, merge_checks
 
     s = _settings(settings)
+    if accept_rest and todo:
+        typer.secho("--todo（回で使った行の確かめ）と --accept-rest は一緒に使えません", fg="red")
+        raise typer.Exit(2)
     try:
-        data = read_drafts(Path(drafts))
+        data = _source_drafts(drafts, todo, s)
         checks = json.loads(Path(source).read_text("utf-8"))
         if not isinstance(checks, dict):
             raise SourcesError(f"{source} は {{キー: 文書}} の形ではありません")
-        res = merge_checks(data, checks, s.config_dir)
+        res = merge_checks(data, checks, s.config_dir, accept_rest=accept_rest)
     except (OSError, ValueError, KeyError, SourcesError) as e:
         typer.secho(str(e), fg="red", err=True)
         raise typer.Exit(2) from e
     typer.echo(
-        f"統計 {len(res.stats_added)} 行・研究 {len(res.findings_added)} 行を台帳に書きました"
+        f"人が確かめた行：統計 {len(res.stats_added)}・研究 {len(res.findings_added)}"
+        + (
+            f"／AI が確かめた行：統計 {len(res.stats_ai)}・研究 {len(res.findings_ai)}"
+            if accept_rest
+            else ""
+        )
     )
     for name, ids in (
-        ("統計", res.stats_added),
-        ("研究", res.findings_added),
+        ("人が確かめた統計", res.stats_added),
+        ("人が確かめた研究", res.findings_added),
+        ("AI が確かめた統計", res.stats_ai),
+        ("AI が確かめた研究", res.findings_ai),
         ("外した古い統計", res.stats_removed),
         ("違う・使わない", res.rejected),
     ):
@@ -2288,18 +2353,65 @@ def sources_merge(
             typer.echo(f"  {name}：{'、'.join(ids)}")
     for why in res.skipped:
         typer.secho(f"  入れなかった：{why}", fg="yellow")
-    if res.unchecked:
+    if res.unchecked and not accept_rest:
         typer.echo(f"  まだ押していない {res.unchecked} 件")
     if res.unknown:
         typer.secho(
             f"  下書きに無い結果 {len(res.unknown)} 件は読みませんでした"
-            "（直す前の下書きの結果など）",
+            "（直す前の下書きの結果や、ほかの回の確かめなど）",
             fg="yellow",
         )
-    if res.stats_added or res.stats_removed:
+    if res.stats_added or res.stats_ai or res.stats_removed:
         typer.echo("統計を SSD に入れる：uv run koten db init")
-    if res.findings_added:
+    if res.findings_added or res.findings_ai:
         typer.echo("研究を SSD に入れる：uv run koten findings build")
+
+
+@sources_app.command("todo")
+def sources_todo(
+    episode: Annotated[str, typer.Option(help="回の ID")],
+    out: Annotated[
+        str | None, typer.Option(help="書き出す先（省くと docs/checks/<回>.json）")
+    ] = None,
+    settings: SettingsOpt = None,
+) -> None:
+    """回で使った統計・研究のうち、人がまだ元の資料で確かめていない行を書き出す（SSD だけを読む）。
+
+    GitHub に入れて Claude に渡すと、その行だけの確かめのページができる。
+    """
+    import json
+    from datetime import date
+    from pathlib import Path
+
+    from koten.config import REPO_ROOT
+    from koten.db import connect
+    from koten.media.prepare import used_ids
+    from koten.media.produce import ProduceError, load_episode, unchecked_sources
+
+    s = _settings(settings)
+    try:
+        ep = load_episode(connect(s.ssd_root), s.ssd_root, episode)
+    except (ProduceError, KeyError, ValueError) as e:
+        typer.secho(f"回を読めません：{e}", fg="red", err=True)
+        raise typer.Exit(2) from e
+    left = set(unchecked_sources(ep))
+    used = used_ids(ep.script)
+    todo = {
+        "episode_id": episode,
+        "made": date.today().isoformat(),
+        "stats": [x for x in used["stats"] if x in left],
+        "findings": [x for x in used["findings"] if x in left],
+    }
+    if not todo["stats"] and not todo["findings"]:
+        typer.echo("この回で使った統計・研究は、どれも人が確かめ済みです")
+        return
+    dest = Path(out) if out else REPO_ROOT / "docs" / "checks" / f"{episode}.json"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(json.dumps(todo, ensure_ascii=False, indent=1) + "\n", "utf-8")
+    typer.echo(
+        f"{dest} に、確かめが要る統計 {len(todo['stats'])}・研究 {len(todo['findings'])} 件を"
+        "書きました。GitHub に入れて、Claude に「この回の確かめのページを作って」と伝える"
+    )
 
 
 ref_app = typer.Typer(

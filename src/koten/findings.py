@@ -6,7 +6,8 @@ config/findings.csv（人が書く）→ koten findings build → SSD の findin
 
 - 有料の論文（license が COPYRIGHTED）は、本文も要旨も保存せず、クラウドの AI に渡さない。
   台帳に持つのは書誌と、人が本文の結果の節を読んで書いた一文・限界・効果の大きさだけ
-- 台本で使えるのは status が verified で、本文（full_text）で確かめ、取り下げ・訂正を確かめ、
+- 台本で使えるのは status が verified（人が確かめた）か ai_checked（AI が CC BY・CC0 の本文で
+  確かめた。回で使ったら承認の前に人が確かめる）で、本文（full_text）で確かめ、取り下げ・訂正を確かめ、
   追試で再現しなかった（failed）ものでない行だけ。要旨や発表文だけで確かめた行は draft のまま
 - 追試がまちまち・まだの研究は、限界（limits_ja）を必ず書く。判定役が、語りがそれを越えて
   いないか（言いすぎ・相関を原因と言う・調べた人より広く言う）を見る
@@ -53,7 +54,7 @@ COLUMNS = [
     "verified_from",  # full_text・abstract・press_release（台本で使えるのは full_text だけ）
     "checked_by",
     "checked_at",
-    "status",  # verified・draft
+    "status",  # verified（人が確かめた）・ai_checked（AI が確かめた）・draft
     "note",
 ]
 DESIGNS = {
@@ -68,7 +69,11 @@ DESIGNS = {
 REPLICATION = ("replicated", "mixed", "not_tested", "failed")
 EFFECTS = ("", "わずか", "小さい", "中くらい", "大きい")
 VERIFIED_FROM = ("full_text", "abstract", "press_release")
-STATUSES = ("verified", "draft")
+# verified：人が本文で確かめた。ai_checked：AI（調べ役と見直し役）が CC BY・CC0 の本文で確かめた
+# （台本で使えるが、回で使ったら承認の前に人が確かめる。koten sources todo）。draft：使わない
+STATUSES = ("verified", "ai_checked", "draft")
+USABLE_STATUSES = ("verified", "ai_checked")
+OPEN_LICENSES = ("CC_BY", "CC0")
 LICENSES = ("CC0", "CC_BY", "COPYRIGHTED")
 # 研究の一文を渡す章（古典の章には渡さない。企画と G1 の両方で使う）
 FINDING_ROLES = {"context", "research", "summary", "worry_block", "compare"}
@@ -139,11 +144,16 @@ class Finding:
     def usable(self) -> bool:
         """台本で使えるか（verified・本文で確かめた・取り下げを確かめた・再現しなかったものでない）。"""
         return (
-            self.status == "verified"
+            self.status in USABLE_STATUSES
             and self.verified_from == "full_text"
             and bool(self.retraction_checked_at)
             and self.replication != "failed"
         )
+
+    @property
+    def human_verified(self) -> bool:
+        """人が本文で確かめたか（AI だけが確かめた行は、回で使ったら承認の前に人が確かめる）。"""
+        return self.status == "verified"
 
     def source_label(self) -> str:
         """語りで言う出典（「ハーバード大学などの調査（2023年）」「ボリーノらが示した考え方（2015年）」）。
@@ -289,9 +299,7 @@ def read_findings(config_dir: Path) -> list[Finding]:
             )
         for col, text in (("claim_ja", claim), ("limits_ja", limits), ("population_ja", pop)):
             if len(ASCII_WORDS.findall(text)) > len(text) * 0.3:
-                problems.append(
-                    f"{where}：{col} は自分の日本語で書く（論文の文を写さない。D-034）"
-                )
+                problems.append(f"{where}：{col} は自分の日本語で書く（論文の文を写さない。D-034）")
         for col, most in (
             ("limits_ja", LIMITS_MAX),
             ("population_ja", POPULATION_MAX),
@@ -330,7 +338,12 @@ def read_findings(config_dir: Path) -> list[Finding]:
             problems.append(f"{where}：affiliation_ja か authors_ja（語りで言う名前）が要る")
         if v["replication"] in ("mixed", "not_tested") and not limits:
             problems.append(f"{where}：追試がまちまち・まだの研究は limits_ja（限界）を書く")
-        if v["status"] == "verified":
+        if v["status"] == "ai_checked" and v["license"] not in OPEN_LICENSES:
+            problems.append(
+                f"{where}：AI が確かめた行（ai_checked）にできるのは CC BY・CC0 の論文だけ"
+                "（有料の論文は人が本文を読んで verified にする）"
+            )
+        if v["status"] in USABLE_STATUSES:
             if v["verified_from"] != "full_text":
                 problems.append(
                     f"{where}：verified にできるのは本文（結果の節）で確かめた行だけ"

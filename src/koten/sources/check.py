@@ -36,17 +36,25 @@ from zoneinfo import ZoneInfo
 
 import yaml
 
-from koten.db import STATS_COLUMNS, TRENDS, stats_problems
+from koten.db import AI_CHECKER, HUMAN_CHECKER, STATS_COLUMNS, TRENDS, stats_problems
 from koten.findings import COLUMNS as FINDING_COLUMNS
-from koten.findings import DESIGNS, EFFECTS, REPLICATION, Finding, FindingsError, read_findings
+from koten.findings import (
+    DESIGNS,
+    EFFECTS,
+    FINDINGS_FILE,
+    REPLICATION,
+    Finding,
+    FindingsError,
+    read_findings,
+)
 from koten.script.placeholders import format_stat
 
 TEMPLATE = Path(__file__).with_name("page.html")
 ITEMS_MARK = "/*__ITEMS__*/[]"
 MADE_MARK = '/*__MADE__*/""'
 # stats.csv の列。読み込み（STATS_COLUMNS）のあとに、確かめた場所・人・日・メモを足す
-STATS_FILE_COLUMNS = [*STATS_COLUMNS, "where", "checked_by", "checked_at", "note"]
-CHECKER = "オーナー"
+STATS_FILE_COLUMNS = [*STATS_COLUMNS, "where", "note"]
+CHECKER = HUMAN_CHECKER
 TOKYO = ZoneInfo("Asia/Tokyo")
 STAT_FIX = ("label", "value", "unit", "year", "survey")
 FINDING_FIX = ("claim_ja", "limits_ja", "population_ja")
@@ -241,6 +249,9 @@ class MergeResult:
     # 下書きに無いキー（下書きを直す前の押した跡）
     unknown: list[str] = field(default_factory=list)
     unchecked: int = 0  # まだ押していない行
+    # 押していないので、AI が確かめた行として入れた（accept_rest のとき）
+    stats_ai: list[str] = field(default_factory=list)
+    findings_ai: list[str] = field(default_factory=list)
 
 
 def _day(at: Any) -> str:
@@ -278,31 +289,82 @@ def _csv_text(columns: list[str], rows: list[dict[str, str]]) -> str:
     return buf.getvalue()
 
 
-def _stat_row(d: dict[str, Any], c: dict[str, Any], *, from_lead: bool) -> dict[str, str]:
+def _stat_row(
+    d: dict[str, Any], c: dict[str, Any], *, from_lead: bool, by: str, day: str
+) -> dict[str, str]:
     fix = c.get("entry" if from_lead else "fix") or {}
     row = {col: _text(d.get(col, "")) for col in STATS_COLUMNS}
     for col in LEAD_STAT if from_lead else STAT_FIX:
         if _text(fix.get(col)):
             row[col] = _text(fix[col])
     row["status"] = ""
-    if from_lead or not (c.get("trend") and d.get("trend") in TRENDS and d.get("trend_note")):
+    # 増え方は、人が「増え方も確かめた」に印を付けたときだけ（AI だけの行には書かない）
+    if (
+        from_lead
+        or by != CHECKER
+        or not (c.get("trend") and d.get("trend") in TRENDS and d.get("trend_note"))
+    ):
         row["trend"] = row["trend_note"] = ""
     row["where"] = _text(d.get("where", "")) if not from_lead else "人が元のページで確かめた"
-    row["checked_by"] = CHECKER
-    row["checked_at"] = _day(c.get("at"))
+    row["checked_by"] = by
+    row["checked_at"] = day
     row["note"] = _text(c.get("note", ""))[:200]
     return row
 
 
-def merge_checks(drafts: dict[str, Any], checks: dict[str, Any], config_dir: Path) -> MergeResult:
-    """人が「合っている」を押した行だけを、stats.csv と findings.csv に書く。
+def _finding_row(
+    d: dict[str, Any], c: dict[str, Any], *, kind: str, by: str, day: str, ai_day: str
+) -> dict[str, str]:
+    row = {col: _text(d.get(col, "")) for col in FINDING_COLUMNS}
+    if kind == "paid_paper":
+        row["finding_id"] = str(d.get("finding_id") or f"FN-{d['lead_id']}")
+        row["themes"] = _text(d.get("themes") or d.get("theme"))
+        row["license"] = "COPYRIGHTED"
+        row["year"] = _text(d.get("year"))
+        for col in LEAD_FINDING:
+            if _text((c.get("entry") or {}).get(col)):
+                row[col] = _text(c["entry"][col])
+        if not row["replication"]:
+            row["replication"] = "not_tested"
+    else:
+        for col in FINDING_FIX:
+            if _text((c.get("fix") or {}).get(col)):
+                row[col] = _text(c["fix"][col])
+    human = by == CHECKER
+    row.update(
+        status="verified" if human else "ai_checked",
+        verified_from="full_text",
+        checked_by=by,
+        checked_at=day,
+        # 人が押したときは押した日。AI の行は、調べ役が Crossref と論文のページで見た日
+        retraction_checked_at=day if human else ai_day,
+        note=_text(c.get("note", ""))[:200] or row.get("note", ""),
+    )
+    return row
 
-    どちらかの台帳が決まりに合わなくなるなら、どちらも書かずに止める（SourcesError）。
-    同じ stat_id・finding_id の行があれば置き換える。統計の下書きの replaces に書いた古い行
-    （転載サイトを出典にした行など）は、置き換える行を人が確かめたときだけ外す。
+
+def merge_checks(
+    drafts: dict[str, Any],
+    checks: dict[str, Any],
+    config_dir: Path,
+    *,
+    accept_rest: bool = False,
+) -> MergeResult:
+    """押した結果を、stats.csv と findings.csv に書く。
+
+    - 人が「合っている」「入れる」を押した行：人が確かめた行（checked_by オーナー・verified）
+    - accept_rest のとき、統計と CC BY の研究で押していない行：AI が確かめた行（checked_by AI・
+      ai_checked）。台本で使えるが、回で使ったら承認の前に人が確かめる。民間の調査と有料の論文は
+      人が数字や一文を書くまで入れない
+    - 「違う」「使わない」を押した行は入れない
+    - 人が確かめた行を、AI が確かめた行で上書きしない
+    - どちらかの台帳が決まりに合わなくなるなら、どちらも書かずに止める（SourcesError）
+    - 統計の下書きの replaces に書いた古い行（転載サイトを出典にした行など）は、置き換える行を
+      入れたときに外す
     """
     res = MergeResult()
     themes = _themes(config_dir)
+    ai_day = str(drafts.get("made") or date.today().isoformat())
     by_key: dict[str, tuple[str, dict[str, Any]]] = {}
     for d in drafts["stats"]:
         by_key[stat_key(d)] = ("stat", d)
@@ -313,22 +375,47 @@ def merge_checks(drafts: dict[str, Any], checks: dict[str, Any], config_dir: Pat
     res.unknown = [k for k in checks if k not in by_key]
     res.unchecked = sum(1 for k in by_key if k not in checks)
 
+    stats_path = config_dir / "stats.csv"
+    cols, old = _read_csv(stats_path)
+    find_path = config_dir / "findings.csv"
+    fcols, fold = _read_csv(find_path)
+    if fcols and fcols != FINDING_COLUMNS:
+        raise SourcesError(f"{find_path.name} の列が決まりと違うので書きません")
+    human_stats = {r["stat_id"] for r in old if (r.get("checked_by") or "").strip() == CHECKER}
+    human_findings = {r["finding_id"] for r in fold if (r.get("status") or "") == "verified"}
+
     new_stats: list[dict[str, str]] = []
     new_findings: list[dict[str, str]] = []
     removes: set[str] = set()
     for key, (kind, d) in by_key.items():
         c = checks.get(key)
-        if not isinstance(c, dict):
-            continue
         name = d.get("stat_id") or d.get("finding_id") or d.get("lead_id") or key
+        if not isinstance(c, dict) or c.get("v") not in ("ok", "ng"):
+            if not accept_rest or kind not in ("stat", "finding"):
+                continue
+            if kind == "stat" and d["stat_id"] in human_stats:
+                continue
+            if kind == "finding" and d["finding_id"] in human_findings:
+                continue
+            if kind == "finding" and d.get("license") not in ("CC_BY", "CC0"):
+                continue
+            if kind == "stat":
+                new_stats.append(_stat_row(d, {}, from_lead=False, by=AI_CHECKER, day=ai_day))
+                res.stats_ai.append(d["stat_id"])
+                if d.get("replaces"):
+                    removes.add(str(d["replaces"]))
+            else:
+                new_findings.append(
+                    _finding_row(d, {}, kind=kind, by=AI_CHECKER, day=ai_day, ai_day=ai_day)
+                )
+                res.findings_ai.append(d["finding_id"])
+            continue
         if c.get("v") == "ng":
             res.rejected.append(name)
             continue
-        if c.get("v") != "ok":
-            continue
         day = _day(c.get("at"))
         if kind == "stat":
-            new_stats.append(_stat_row(d, c, from_lead=False))
+            new_stats.append(_stat_row(d, c, from_lead=False, by=CHECKER, day=day))
             if d.get("replaces"):
                 removes.add(str(d["replaces"]))
         elif kind == "private_survey":
@@ -347,36 +434,15 @@ def merge_checks(drafts: dict[str, Any], checks: dict[str, Any], config_dir: Pat
                     {**d, "stat_id": sid, "theme": d.get("theme", ""), "url": d.get("url", "")},
                     c,
                     from_lead=True,
+                    by=CHECKER,
+                    day=day,
                 )
             )
         elif kind in ("finding", "paid_paper"):
             if not (c.get("read") and c.get("retr")):
                 res.skipped.append(f"{name}：本文の結果の節と、取り下げ・訂正を確かめた印が要る")
                 continue
-            row = {col: _text(d.get(col, "")) for col in FINDING_COLUMNS}
-            if kind == "paid_paper":
-                row["finding_id"] = str(d.get("finding_id") or f"FN-{d['lead_id']}")
-                row["themes"] = _text(d.get("themes") or d.get("theme"))
-                row["license"] = "COPYRIGHTED"
-                row["year"] = _text(d.get("year"))
-                for col in LEAD_FINDING:
-                    if _text((c.get("entry") or {}).get(col)):
-                        row[col] = _text(c["entry"][col])
-                if not row["replication"]:
-                    row["replication"] = "not_tested"
-            else:
-                for col in FINDING_FIX:
-                    if _text((c.get("fix") or {}).get(col)):
-                        row[col] = _text(c["fix"][col])
-            row.update(
-                status="verified",
-                verified_from="full_text",
-                checked_by=CHECKER,
-                checked_at=day,
-                retraction_checked_at=day,
-                note=_text(c.get("note", ""))[:200] or row.get("note", ""),
-            )
-            new_findings.append(row)
+            new_findings.append(_finding_row(d, c, kind=kind, by=CHECKER, day=day, ai_day=ai_day))
     for r in new_stats:
         if themes and r["theme"] not in themes:
             raise SourcesError(f"{r['stat_id']}：themes.yaml に無いテーマ（{r['theme']}）")
@@ -386,8 +452,6 @@ def merge_checks(drafts: dict[str, Any], checks: dict[str, Any], config_dir: Pat
         if r["replication"] not in REPLICATION:
             raise SourcesError(f"{r['finding_id']}：replication が決まりの言葉でない")
 
-    stats_path = config_dir / "stats.csv"
-    cols, old = _read_csv(stats_path)
     columns = [*cols, *(c for c in STATS_FILE_COLUMNS if c not in cols)]
     added = {r["stat_id"] for r in new_stats}
     kept = []
@@ -402,10 +466,6 @@ def merge_checks(drafts: dict[str, Any], checks: dict[str, Any], config_dir: Pat
     if problems := stats_problems(stats_rows):
         raise SourcesError("stats.csv に問題が出るので書きません：" + "、".join(problems))
 
-    find_path = config_dir / "findings.csv"
-    fcols, fold = _read_csv(find_path)
-    if fcols and fcols != FINDING_COLUMNS:
-        raise SourcesError(f"{find_path.name} の列が決まりと違うので書きません")
     fadded = {r["finding_id"] for r in new_findings}
     find_rows = [r for r in fold if r.get("finding_id") not in fadded] + new_findings
     find_text = _csv_text(FINDING_COLUMNS, find_rows)
@@ -426,6 +486,64 @@ def merge_checks(drafts: dict[str, Any], checks: dict[str, Any], config_dir: Pat
         stats_path.write_text(_csv_text(columns, stats_rows), "utf-8")
     if new_findings:
         find_path.write_text(find_text, "utf-8")
-    res.stats_added = [r["stat_id"] for r in new_stats]
-    res.findings_added = [r["finding_id"] for r in new_findings]
+    ai_stats, ai_findings = set(res.stats_ai), set(res.findings_ai)
+    res.stats_added = [r["stat_id"] for r in new_stats if r["stat_id"] not in ai_stats]
+    res.findings_added = [
+        r["finding_id"] for r in new_findings if r["finding_id"] not in ai_findings
+    ]
     return res
+
+
+# --- 回で使った行だけを確かめる -----------------------------------------------------
+
+DRAFTS_GLOB = "docs/research/*-source-drafts.json"
+
+
+def collect_drafts(paths: list[Path]) -> dict[str, Any]:
+    """下書きのファイルをまとめる。同じ ID は後のファイルを使う（ファイル名の日付の順に渡す）。"""
+    out: dict[str, Any] = {"made": "", "stats": {}, "findings": {}, "leads": {}}
+    for path in paths:
+        d = read_drafts(path)
+        out["made"] = str(d.get("made") or out["made"])
+        for part, idk in (("stats", "stat_id"), ("findings", "finding_id"), ("leads", "lead_id")):
+            for x in d[part]:
+                out[part][x[idk]] = x
+    return {**out, **{part: list(out[part].values()) for part in ("stats", "findings", "leads")}}
+
+
+def todo_drafts(drafts: dict[str, Any], todo: dict[str, Any], config_dir: Path) -> dict[str, Any]:
+    """回で使った、人がまだ確かめていない行だけのページの材料。
+
+    文と数字は今の台帳（動画で言っている形）、元の資料の場所・該当箇所は下書きから取る。
+    下書きに無い行（人が台帳に直に書いた行）も、台帳の文と URL で出す。
+    """
+    _, stat_rows = _read_csv(config_dir / "stats.csv")
+    _, find_rows = _read_csv(config_dir / FINDINGS_FILE)
+    ledger_s = {r["stat_id"]: r for r in stat_rows}
+    ledger_f = {r["finding_id"]: r for r in find_rows}
+    draft_s = {d["stat_id"]: d for d in drafts["stats"]}
+    draft_f = {d["finding_id"]: d for d in drafts["findings"]}
+    stats, findings, missing = [], [], []
+    for sid in todo.get("stats") or []:
+        if sid not in ledger_s:
+            missing.append(sid)
+            continue
+        row = {k: v for k, v in ledger_s[sid].items() if k in STATS_COLUMNS or k == "where"}
+        stats.append(
+            {**draft_s.get(sid, {}), **{k: v for k, v in row.items() if v}, "replaces": ""}
+        )
+    for fid in todo.get("findings") or []:
+        if fid not in ledger_f:
+            missing.append(fid)
+            continue
+        findings.append({**draft_f.get(fid, {}), **ledger_f[fid]})
+    if missing:
+        raise SourcesError(
+            f"台帳に無い行があります（{'・'.join(missing)}）：git pull してから作り直す"
+        )
+    return {
+        "made": f"回 {todo.get('episode_id', '')}",
+        "stats": stats,
+        "findings": findings,
+        "leads": [],
+    }

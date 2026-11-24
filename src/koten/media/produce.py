@@ -549,6 +549,22 @@ def blockers_for(
             blockers.append(
                 f"台本のあとで使えなくなった：{x}（差し戻して koten script で作り直す）"
             )
+    # 回で使った統計・研究のうち、人が元の資料で確かめていない行（AI が確かめた行）は承認しない。
+    # 台帳には AI が確かめた行も入れて企画・台本で使い、公開する前に使った分だけ人が確かめる
+    unchecked = unchecked_sources(ep)
+    if unchecked:
+        blockers.append(
+            f"人が元の資料で確かめていない統計・研究：{'・'.join(unchecked)}"
+            f"（koten sources todo --episode {eid} で GitHub に入れ、"
+            "Claude に確かめのページを頼む）"
+        )
+    stale = stale_segments(s, ep, media)
+    if stale:
+        blockers.append(
+            f"音声のあとで、台本に入る文が変わった（{'・'.join(stale[:5])}"
+            f"{' ほか' if len(stale) > 5 else ''}。統計や研究の文を直したときなど）："
+            f"koten produce --episode {eid} --from voice"
+        )
     if holds:
         blockers.append(f"今の本との照合で保留が {len(holds)} 件（koten check status）")
     credit = (s.section("voicevox").get("credit") or "").strip()
@@ -567,6 +583,53 @@ def blockers_for(
             "人の一言が決まっていません（koten episode take で文字か声を入れるか、--skip で省く）"
         )
     return blockers, warnings
+
+
+def unchecked_sources(ep: Episode) -> list[str]:
+    """台本で使った統計・研究のうち、人が元の資料で確かめていないもの（出てきた順）。"""
+    from koten.db import human_checked
+
+    used = used_ids(ep.script)
+    out = [
+        sid
+        for sid in used["stats"]
+        if sid in ep.data.stats and not human_checked(ep.data.stats[sid])
+    ]
+    out += [
+        fid
+        for fid in used["findings"]
+        if fid in ep.data.findings and ep.data.findings[fid].get("status") != "verified"
+    ]
+    return out
+
+
+def stale_segments(s: Settings, ep: Episode, media: Path) -> list[str]:
+    """音声に入っている文と、今の台帳で差し込み直した文が違う段落（人の一言は除く）。
+
+    統計の数字や研究の一文を、音声を作ったあとで直したときに、古い音声のまま承認しないため。
+    差し込めない記号があるとき（統計が消えたなど）は、ほかの理由で止まるのでここでは数えない。
+    """
+    from koten.script.placeholders import UnresolvedPlaceholder
+    from koten.voice.reading import load_overrides
+
+    if not (media / MANIFEST).exists():
+        return []
+    manifest = VoiceManifest.load(media / MANIFEST)
+    try:
+        now = {
+            x.seg_id: x.display
+            for x in prepare_lines(
+                ep.script, ep.resolver, load_overrides(s.config_dir / "readings.csv")
+            )
+        }
+    except (UnresolvedPlaceholder, ValueError):
+        return []
+    return [
+        seg.seg_id
+        for ch in manifest.chapters
+        for seg in ch.segments
+        if seg.kind != "human_take" and seg.seg_id in now and now[seg.seg_id] != seg.display
+    ]
 
 
 def step_review(
