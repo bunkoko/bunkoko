@@ -212,7 +212,7 @@ def _text_history(args, C, df, ir_root) -> None:
     jobs = len(C.history_jobs(df, ir_root, HISTORY_FROM, C.history_until(datetime.now()))) if place["ready"] else 0
     todo = min(jobs, args.history_max) if args.history_max else jobs
     print(f"過去の本文: {HISTORY_FROM[:7]} からの開示のうち、まだ本文の無い {jobs:,} 件" + (f"のうち {todo:,} 件" if todo < jobs else "")
-          + f"を、新しい順に {C.INTERVAL:g} 秒に 1 件ずつ取る（東証 上場会社情報サービス。同時に 1 本。見込み {todo * max(C.INTERVAL, 0.0) / 3600:.1f} 時間。"
+          + f"を、新しい順に {C.INTERVAL:g} 秒に 1 件ずつ取る（東証 上場会社情報サービス。同時に 1 本。いちばん速くて {todo * max(C.INTERVAL, 0.0) / 3600:.1f} 時間。受け取りと読み取りにかかる分、実際はその数倍。今の速さと残りの時間は ./cfd agents status。"
           "毎朝 7:50〜8:45 は休む）", flush=True)
     print("過去の本文: " + C.text_place_line(place) + ("。原本の PDF も、となりの ir_pdf に残す" if keep_pdf else "。原本の PDF は残さない"), flush=True)
     keep_awake()
@@ -1828,6 +1828,49 @@ def cmd_series(args) -> Path:
     return out
 
 
+def size_text(b: float) -> str:
+    """大きさを、人が言う形で（5KB・6.1MB・48MB・10.0GB）。"""
+    if b >= 2 ** 30:
+        return f"{b / 2 ** 30:,.1f}GB"
+    if b >= 2 ** 20:
+        return f"{b / 2 ** 20:.1f}MB" if b < 10 * 2 ** 20 else f"{b / 2 ** 20:,.0f}MB"
+    return f"{b / 2 ** 10:,.0f}KB"
+
+
+def history_outlook(C, ir_root: Path, place: dict, left: int, running: bool) -> list[str]:
+    """過去の本文の取得について、決めるための数字: 今の速さと残りの時間・実際に使っている場所・この先に使う見当。
+
+    見込み（1 件 1 秒・原本 1 件 0.6MB）は測っていない数字だった。2026-11-24 に実物で、1 件 4 秒・1,000 件で 19GB と分かった。
+    場所は、中身の大きさと、ディスクの上で使っている場所の両方を出す（形式によっては、小さなファイルも 1 つで何 MB も使う）。
+    """
+    import shutil
+
+    pdf, txt = C.disk_use(C.pdf_root(ir_root), ".pdf"), C.disk_use(Path(place["path"]), ".txt")
+    if not pdf["n"] and not txt["n"]:
+        return []
+    out = []
+    pace = C.pace_seconds(pdf["times"] if pdf["n"] else (txt["times"] if running else []))
+    if pace:
+        out.append(f"  速さ: 1 件 {pace:.1f} 秒（1 時間に {3600 / pace:,.0f} 件。直近の書類の間隔から）。この速さで、あと {C.span_text(pace * left)}（毎朝 55 分の休みは別）")
+    each = 0.0
+    for label, use in (("原本の PDF", pdf), ("本文", txt)):
+        if not use["n"]:
+            continue
+        each += use["used"] / use["n"]
+        big = f"・いちばん大きいもの {size_text(use['biggest'])}" if label == "原本の PDF" else ""
+        out.append(f"  {label}: {use['n']:,} 件・中身 {size_text(use['size'])}（1 件 {size_text(use['size'] / use['n'])}）・"
+                   f"HDD の上で使っている場所 {size_text(use['used'])}（1 件 {size_text(use['used'] / use['n'])}）{big}")
+        if label == "原本の PDF" and use["size"]:
+            out.append(f"    {size_text(C.BIG_FILE)} を超えるものは {use['big_n']:,} 件（{use['big_n'] / use['n']:.0%}）で、中身の {use['big_size'] / use['size']:.0%} を占める")
+    try:
+        room = f"。HDD の空き {size_text(shutil.disk_usage(place['path']).free)}"
+    except OSError:
+        room = ""
+    only = "" if pdf["n"] else "本文だけなら、"
+    out.append(f"  残り {left:,} 件で、{only}あと {size_text(left * each)} ほど使う見当（今ある分の 1 件あたりから。時期で大きさが違うので目安）{room}")
+    return out
+
+
 def cmd_status(args) -> None:
     p = paths(args.root)
     for label, key, col in (("情報収集（開示）", "disclosures", "time"), ("IR 評価（点数）", "ir_scores", "date"),
@@ -1848,8 +1891,12 @@ def cmd_status(args) -> None:
         past = df[df["time"] >= HISTORY_FROM]
         past = past[past["time"] < C.history_until(datetime.now())]          # 直近 7 日は毎日の収集の持ち分
         left, miss = len(C.history_jobs(past, ir_root, HISTORY_FROM)), len(set(past["id"]) & C.load_missing(ir_root))
-        now = "動いている" if C.history_running(ir_root) is not None else "止まっている"
+        running = C.history_running(ir_root) is not None
+        now = "動いている" if running else "止まっている"
         print(f"過去の本文（{HISTORY_FROM[:7]}〜）: 取ってある {len(past) - left - miss:,} 件・サイトに無い {miss:,} 件・残り {left:,} 件。取得は今: {now}")
+        if place["link"]:
+            for line in history_outlook(C, ir_root, place, left, running):
+                print(line)
     if p["selector"].exists():
         d = pd.read_csv(p["selector"], usecols=[0]).iloc[:, 0]
         print(f"銘柄選定（点数）: {len(d):,} 日、{d.min()[:10]}〜{d.max()[:10]}")

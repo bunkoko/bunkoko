@@ -669,3 +669,83 @@ def test_status_tells_whether_the_history_fetch_is_running(tmp_path, capsys, mon
         assert "取得は今: 動いている" in capsys.readouterr().out
     finally:
         C.history_release(hold)
+
+
+# --------------------------------------------------------------------------- 速さと、使う場所を測る（2026-11-24: 見込みより 4 倍遅く、30 倍大きかった）
+def test_disk_use_counts_both_the_content_and_the_room_on_the_disk(tmp_path):
+    """中身の大きさと、ディスクの上で使っている場所は違う（形式によっては、小さなファイルも 1 つで何 MB も使う）。両方を数える。"""
+    import os
+
+    d = tmp_path / "x"
+    (d / "2026-11").mkdir(parents=True)
+    (d / "2026-10").mkdir()
+    (d / "2026-11" / "a.pdf").write_bytes(b"1" * 3000)
+    (d / "2026-10" / "b.pdf").write_bytes(b"1" * 10)
+    (d / "2026-10" / "c.txt").write_text("x")
+    (d / "2026-10" / "d.part").write_text("x")
+    got = C.disk_use(d, ".pdf", big=1000)
+    assert got["n"] == 2 and got["size"] == 3010 and got["biggest"] == 3000
+    assert got["big_n"] == 1 and got["big_size"] == 3000                       # 大きいもの（ここでは 1000 バイトより上）が、いくつで、どれだけを占めるか
+    assert got["used"] == sum(os.stat(f).st_blocks * 512 for f in d.rglob("*.pdf"))
+    assert len(got["times"]) == 2 and got["times"] == sorted(got["times"])
+    assert C.disk_use(d, ".txt")["n"] == 1
+    assert C.disk_use(tmp_path / "none", ".pdf") == {"n": 0, "size": 0, "used": 0, "biggest": 0, "big_n": 0, "big_size": 0, "times": []}
+
+
+def test_pace_is_the_usual_gap_between_files():
+    times = [1000.0 + 4 * k for k in range(100)]                 # 4 秒に 1 件
+    assert C.pace_seconds(times) == 4
+    paused = times[:50] + [x + 3600 for x in times[50:]]         # 途中で 1 時間休んでも（毎朝の休み・止めていた間）、ふだんの間隔は変わらない
+    assert C.pace_seconds(paused) == 4
+    assert C.pace_seconds(times[:5]) is None                     # 少なすぎて分からない
+
+
+def test_span_reads_like_a_person_would_say_it():
+    assert C.span_text(50 * 60) == "50 分" and C.span_text(26.5 * 3600) == "26.5 時間" and C.span_text(4.3 * 86400) == "4.3 日"
+
+
+def test_status_tells_the_speed_and_the_room_the_past_texts_take(tmp_path, capsys, monkeypatch, fast):
+    """進み具合を聞かれたら、今の速さ・残りの時間・実際に使っている場所・この先の見当も答える（決めるための数字）。"""
+    root, _, disk = world(tmp_path)
+    (disk / "ir_pdf").mkdir()
+    gb, mb = 2 ** 30, 2 ** 20
+    use = {".pdf": {"n": 1000, "size": 6 * gb, "used": 10 * gb, "biggest": 48 * mb, "big_n": 150, "big_size": 4 * gb,
+                    "times": [1000.0 + 4 * k for k in range(500)]},
+           ".txt": {"n": 2821, "size": 15 * mb, "used": 11 * gb, "biggest": 24000, "big_n": 0, "big_size": 0, "times": []}}
+    monkeypatch.setattr(C, "disk_use", lambda folder, suffix: use[suffix])
+    load_script().cmd_status(ns(root, out=str(tmp_path / "out")))
+    out = capsys.readouterr().out
+    assert "残り 3 件" in out
+    assert "速さ: 1 件 4.0 秒" in out and "1 時間に 900 件" in out and "この速さで、あと" in out
+    assert "原本の PDF: 1,000 件・中身 6.0GB（1 件 6.1MB）・HDD の上で使っている場所 10.0GB（1 件 10MB）・いちばん大きいもの 48MB" in out
+    assert "10MB を超えるものは 150 件（15%）で、中身の 67% を占める" in out          # 大きい書類を飛ばすかどうかを決めるための数字
+    assert "本文: 2,821 件・中身 15MB（1 件 5KB）・HDD の上で使っている場所 11.0GB（1 件 4.0MB）" in out
+    assert "残り 3 件で、あと 43MB ほど使う見当" in out                    # 3 × (10.2MB + 4.0MB)
+    assert "HDD の空き" in out
+
+
+def test_status_stays_short_when_nothing_was_taken_yet(tmp_path, capsys, fast):
+    root, _, _ = world(tmp_path)
+    load_script().cmd_status(ns(root, out=str(tmp_path / "out")))
+    out = capsys.readouterr().out
+    assert "過去の本文（2016-10〜）: 取ってある 0 件" in out and "原本の PDF" not in out and "速さ" not in out
+
+
+def test_history_log_tells_the_real_pace(tmp_path, monkeypatch):
+    """始めに出す時間は「いちばん速くて」の数字。区切りごとに、実際の速さと残りの時間を出す。"""
+    root, _ = hdd(tmp_path)
+    monkeypatch.setattr(C, "HISTORY_CHUNK", 2)
+    logs = []
+    run(root, lambda url: _pdf("a"), log=logs.append)
+    line = next(s for s in logs if "過去の本文 2/3" in s)
+    assert "1 件" in line and "秒（受け取り" in line and "この速さで、あと" in line
+
+
+def test_pdf_reader_does_not_fill_the_log_with_notes_about_odd_files(caplog):
+    """PDF の作りについての注意書き（Multiple definitions in dictionary…）が記録を埋めると、最後の行で様子が分からなくなる。"""
+    import logging
+
+    assert C.pdf_text(_pdf("hello")) == "hello"
+    with caplog.at_level(logging.DEBUG):
+        logging.getLogger("pypdf._reader").warning("Multiple definitions in dictionary at byte 0x1 for key /Info")
+    assert "Multiple definitions" not in caplog.text

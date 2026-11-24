@@ -112,8 +112,11 @@ def doc_url(ticker: str, filename: str) -> str:
 def pdf_text(blob: bytes, pages: int = TEXT_PAGES, max_chars: int = TEXT_MAX) -> str:
     """PDF の最初の数ページを文字にする。読めなければ空。"""
     try:
+        import logging
+
         from pypdf import PdfReader
 
+        logging.getLogger("pypdf").setLevel(logging.ERROR)      # 作りの変わった PDF への注意書き（Multiple definitions…）で記録を埋めない
         reader = PdfReader(io.BytesIO(blob))
         text = "\n".join((pg.extract_text() or "") for pg in reader.pages[:pages])
     except Exception:  # noqa: BLE001
@@ -488,6 +491,64 @@ def pdf_need(n_docs: int) -> int:
     return int(n_docs * PDF_EACH_MB * 2 ** 20) + PDF_KEEP_FREE_GB * 2 ** 30
 
 
+BIG_FILE = 10 * 2 ** 20                    # 「大きい書類」の目安（10MB）。いくつあって、中身のどれだけを占めるかを数える
+
+
+def disk_use(folder: Path, suffix: str, keep: int = 500, big: int = BIG_FILE) -> dict:
+    """folder/<年-月>/ の下の suffix のファイル: 件数 n・中身の合計 size・ディスクの上で使っている場所 used・いちばん大きいもの biggest（バイト）、
+    big より大きいものの件数 big_n と中身の合計 big_size、書いた時刻（新しい keep 件。古い順）。
+
+    中身の大きさと、使っている場所は違う: ディスクの形式によっては、小さなファイルも 1 つで何 MB もの場所を使う。
+    """
+    import os
+
+    n = size = used = biggest = big_n = big_size = 0
+    times: list[float] = []
+    try:
+        months = [m for m in os.scandir(folder) if m.is_dir()]
+    except OSError:
+        months = []
+    for month in months:
+        try:
+            entries = list(os.scandir(month.path))
+        except OSError:
+            continue
+        for e in entries:
+            if not e.name.endswith(suffix) or e.name.startswith("._"):
+                continue
+            try:
+                st = e.stat()
+            except OSError:
+                continue
+            n, size, used, biggest = n + 1, size + st.st_size, used + st.st_blocks * 512, max(biggest, st.st_size)
+            if st.st_size > big:
+                big_n, big_size = big_n + 1, big_size + st.st_size
+            times.append(st.st_mtime)
+    return {"n": n, "size": size, "used": used, "biggest": biggest, "big_n": big_n, "big_size": big_size, "times": sorted(times)[-keep:]}
+
+
+def pace_seconds(times: list[float]) -> float | None:
+    """続けて書いたファイルの間隔の、まん中の値（秒）。休んでいた間（毎朝の休み・止めていた間）は、まん中の値なら数に入らない。
+
+    20 件に満たなければ None（少なすぎて分からない）。
+    """
+    if len(times) < 20:
+        return None
+    from itertools import pairwise
+
+    gaps = sorted(b - a for a, b in pairwise(times))
+    return float(gaps[len(gaps) // 2])
+
+
+def span_text(seconds: float) -> str:
+    """時間の長さを、人が言う形で（50 分・26.5 時間・4.3 日）。"""
+    if seconds < 90 * 60:
+        return f"{seconds / 60:.0f} 分"
+    if seconds < 48 * 3600:
+        return f"{seconds / 3600:.1f} 時間"
+    return f"{seconds / 86400:.1f} 日"
+
+
 def load_missing(root: Path) -> set[str]:
     """サイトに無かった書類の id。"""
     path = root / MISS_FILE
@@ -572,6 +633,7 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
             return dict(done, stopped="no_space", need_gb=pdf_need(todo) / 2 ** 30, free_gb=have / 2 ** 30)
     i = fails = 0
     told = False
+    spent = {"n": 0, "all": 0.0, "get": 0.0, "save": 0.0}     # この回に、1 件ずつにかかった時間（秒。待ちも入れる）
     while i < todo and not done["stopped"]:
         t = now()
         if in_quiet(t):
@@ -602,11 +664,13 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
                     done.update(stopped="no_space", need_gb=pdf_need(todo - i) / 2 ** 30, free_gb=have / 2 ** 30)
                     break
                 started = time.monotonic()
+                blob = None
                 try:
                     blob = get(doc_url(r.ticker, f"{r.id}.pdf"))
                     if not blob.startswith(b"%PDF"):
                         raise ValueError("PDF ではないものが返ってきた")
                 except urllib.error.HTTPError as e:
+                    blob = None
                     if e.code in REFUSED:
                         done["stopped"] = "refused"
                         break
@@ -619,9 +683,11 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
                         done["failed"] += 1
                         fails += 1
                 except Exception:  # noqa: BLE001  回線が切れた・途中で切れた・PDF でない。次の機会にもう一度試す
+                    blob = None
                     done["failed"] += 1
                     fails += 1
-                else:
+                fetched = time.monotonic()
+                if blob is not None:
                     fails = 0
                     try:
                         _save_history(root, r, blob, keep_pdf)
@@ -629,15 +695,23 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
                         done["stopped"] = "disk"
                         break
                     done["text"] += 1
+                saved = time.monotonic()
                 i += 1
                 if fails >= MAX_FAILS:
                     done["stopped"] = "network"
                     break
+                _wait(started, interval)
+                spent["n"] += 1
+                spent["all"] += time.monotonic() - started
+                spent["get"] += fetched - started
+                spent["save"] += saved - fetched
                 if i % HISTORY_CHUNK == 0:
                     left = room() if keep_pdf else None
                     space = f"・HDD の空き {left / 2 ** 30:,.0f}GB" if left is not None else ""
-                    log(f"  過去の本文 {i:,}/{todo:,}（取れた {done['text']:,}・サイトに無い {done['missing']:,}・取れなかった {done['failed']:,}{space}）")
-                _wait(started, interval)
+                    per = spent["all"] / spent["n"]
+                    log(f"  過去の本文 {i:,}/{todo:,}（取れた {done['text']:,}・サイトに無い {done['missing']:,}・取れなかった {done['failed']:,}{space}）。"
+                        f"1 件 {per:.1f} 秒（受け取り {spent['get'] / spent['n']:.1f}・読み取りと書き込み {spent['save'] / spent['n']:.1f}）。"
+                        f"この速さで、あと {span_text(per * (todo - i))}")
         finally:
             docs_unlock(root)
     done["left"] = len(jobs) - done["text"] - done["missing"]
