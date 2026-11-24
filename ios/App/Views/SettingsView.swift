@@ -16,6 +16,7 @@ struct SettingsView: View {
     @State private var tokenText = ""
     @AppStorage("health.authorizationRequested") private var healthRequested = false
     @AppStorage(Reminders.enabledKey) private var remindersEnabled = true
+    @State private var confirmResend = false
 
     var body: some View {
         NavigationStack {
@@ -76,10 +77,18 @@ struct SettingsView: View {
                         }
                     }
                     Button("過去1年分を送り直す", role: .destructive) {
-                        Task {
-                            await HealthSync.shared.resetAndResendEverything()
-                            await syncNow()
+                        confirmResend = true
+                    }
+                    .confirmationDialog("過去1年分を送り直しますか？", isPresented: $confirmResend, titleVisibility: .visible) {
+                        Button("送り直す", role: .destructive) {
+                            Task {
+                                await HealthSync.shared.resetAndResendEverything()
+                                await syncNow()
+                            }
                         }
+                        Button("やめる", role: .cancel) {}
+                    } message: {
+                        Text("サーバーの無料プランでは、1日に書き込める量（10万行）のほとんどを使います。その日は、ほかの記録の保存が止まることがあります。ふだんは押す必要はありません。")
                     }
                 }
 
