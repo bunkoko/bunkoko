@@ -112,6 +112,27 @@ describe("buildHome / buildTimeline（1晩のデータで）", () => {
     expect(view?.events[0]).toEqual({ t: at(PREV, "20:30"), kind: "meal", label: "豚骨ラーメン、餃子" });
   });
 
+  it("夜の詳細: シーリングライトがなければ、人感センサーの照度から「部屋が暗くなった」を出す", async () => {
+    db.sqlite.prepare(`DELETE FROM devices WHERE device_id = 'L1'`).run();
+    db.sqlite.prepare(`DELETE FROM readings WHERE device_id = 'L1'`).run();
+    db.sqlite.prepare(`UPDATE readings SET value_num = 1 WHERE device_id = 'P1' AND metric = 'lightLevel' AND measured_at >= ?`).run(at(PREV, "23:00"));
+    db.sqlite.prepare(`INSERT INTO day_queue (user_id, date, queued_at) VALUES ('me', ?, 1)`).run(D);
+    await processDayQueue(db.d1, "me", settings, at(D, "09:00"));
+
+    const view = await buildTimeline(db.d1, "me", D, settings);
+    expect(view?.events.map((event) => event.kind)).toEqual([
+      "meal",
+      "alcohol",
+      "bath",
+      "windowOpen",
+      "windowClose",
+      "roomDark",
+      "charger",
+      "phoneLastUse",
+    ]);
+    expect(view?.events.find((event) => event.kind === "roomDark")?.t).toBe(at(PREV, "23:00"));
+  });
+
   it("計算していない日は null", async () => {
     expect(await buildTimeline(db.d1, "me", "2026-11-01", settings)).toBeNull();
   });

@@ -182,6 +182,10 @@ struct PreBedMetrics: Decodable {
     let lightBrightnessAvg: Double?
     let lightColorTemperatureAvg: Double?
     let lightsOffAt: Double?
+    /// 人感センサー Pro の照度（1〜20）から見た部屋の明るさ。シーリングライトがなくても取れる
+    let roomLightLevelAvg: Double?
+    let roomBrightMin: Double?
+    let roomDarkAt: Double?
     let tvOnMin: Double?
     let windowOpenMin: Double?
     let windowOpenings: Double?

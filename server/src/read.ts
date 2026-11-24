@@ -245,6 +245,8 @@ export async function buildTimeline(
   }
   if (metrics.behavior.lastPhoneUseAt !== null) events.push({ t: metrics.behavior.lastPhoneUseAt, kind: "phoneLastUse" });
   if (metrics.preBed.lightsOffAt !== null) events.push({ t: metrics.preBed.lightsOffAt, kind: "lightsOff" });
+  // シーリングライトがない部屋では、照度から見た「部屋が暗くなった」時刻を代わりに出す
+  else if (metrics.preBed.roomDarkAt) events.push({ t: metrics.preBed.roomDarkAt, kind: "roomDark" });
   // 窓・ドアの開け閉め（状態が変わった時刻だけ）
   for (const role of ["window", "door"] as const) {
     let previous: string | null = null;

@@ -155,6 +155,7 @@ enum EventText {
         case "charger": return event.label == "connected" ? "スマホを充電器につないだ" : "スマホを充電器から外した"
         case "phoneLastUse": return "スマホを最後に使った（目安）"
         case "lightsOff": return "照明を消した"
+        case "roomDark": return "部屋が暗くなった"
         case "windowOpen": return "窓を開けた"
         case "windowClose": return "窓を閉めた"
         case "doorOpen": return "ドアを開けた"
@@ -252,9 +253,15 @@ struct DaySummarySections: View {
             }
         }
         Section("寝る前（2時間）") {
-            MetricRow(label: "照明がついていた", value: Fmt.duration(m.preBed?.lightOnMin))
-            MetricRow(label: "照明の明るさ / 色温度", value: "\(Fmt.number(m.preBed?.lightBrightnessAvg, unit: "%")) / \(Fmt.number(m.preBed?.lightColorTemperatureAvg, unit: "K"))")
-            MetricRow(label: "消灯", value: Fmt.time(m.preBed?.lightsOffAt))
+            // シーリングライトがある部屋だけ（ない部屋では、人感センサーの照度で見る）
+            if m.preBed?.lightOnMin != nil {
+                MetricRow(label: "照明がついていた", value: Fmt.duration(m.preBed?.lightOnMin))
+                MetricRow(label: "照明の明るさ / 色温度", value: "\(Fmt.number(m.preBed?.lightBrightnessAvg, unit: "%")) / \(Fmt.number(m.preBed?.lightColorTemperatureAvg, unit: "K"))")
+                MetricRow(label: "消灯", value: Fmt.time(m.preBed?.lightsOffAt))
+            }
+            MetricRow(label: "部屋が明るかった", value: Fmt.duration(m.preBed?.roomBrightMin))
+            MetricRow(label: "部屋の明るさ（1〜20）", value: Fmt.number(m.preBed?.roomLightLevelAvg, digits: 1))
+            MetricRow(label: "部屋が暗くなった", value: Fmt.time(m.preBed?.roomDarkAt))
             MetricRow(label: "テレビ", value: Fmt.duration(m.preBed?.tvOnMin))
             MetricRow(label: "布団に入ったときの CO2", value: Fmt.number(m.room?.co2AtBed, unit: "ppm"))
         }

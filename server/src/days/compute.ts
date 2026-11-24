@@ -17,7 +17,7 @@ import {
   type SleepSegment,
 } from "./sleep";
 
-export const ALGO_VERSION = 3;
+export const ALGO_VERSION = 4;
 /** センサーの値を取る間隔（分）。「目安を超えた回数 × 5分」で時間にする */
 export const POLL_INTERVAL_MIN = 5;
 /** 人感センサー Pro の明るさ（1〜20）がこれ以上なら「明るい」 [TBD: 実データで調整] */
@@ -111,6 +111,12 @@ export interface DayMetrics {
     lightBrightnessAvg: number | null;
     lightColorTemperatureAvg: number | null;
     lightsOffAt: number | null;
+    /** 部屋の明るさ（人感センサー Pro の照度 1〜20）の平均。シーリングライトがなくても取れる */
+    roomLightLevelAvg: number | null;
+    /** 照度が BRIGHT_LIGHT_LEVEL 以上だった時間 */
+    roomBrightMin: number | null;
+    /** 部屋が暗くなった時刻: 寝る前〜寝ついて1時間後で、最後に明るかったあと、初めて暗かった時刻。暗くならなかった夜は null */
+    roomDarkAt: number | null;
     tvOnMin: number | null;
     windowOpenMin: number | null;
     windowOpenings: number | null;
@@ -309,7 +315,7 @@ export async function computeDay(
   const sleepEnd = night?.wake ?? bedRef;
   const ceiling = JSON.stringify(roles.ceilingLight);
 
-  const [aggregateResult, lightResult, lightsOffResult, openingsResult, bucketResult, workoutResult, logResult, checkinResult] = await db.batch([
+  const [aggregateResult, lightResult, lightsOffResult, roomDarkResult, openingsResult, bucketResult, workoutResult, logResult, checkinResult] = await db.batch([
     db
       .prepare(
         `SELECT device_id, metric,
@@ -356,6 +362,18 @@ export async function computeDay(
            AND metric = 'power' AND lower(value_text) = 'on' AND measured_at >= ?3 AND measured_at < ?4`,
       )
       .bind(userId, ceiling, preStart, sleepStart + HOUR_MS),
+    // 部屋が暗くなった時刻（人感センサーの照度）。同じ範囲で、最後に明るかった時刻より後の、最初の暗い値
+    db
+      .prepare(
+        `SELECT MIN(d.measured_at) AS dark_at FROM readings AS d
+         WHERE d.user_id = ?1 AND d.source = 'poll' AND d.device_id IN (SELECT value FROM json_each(?2))
+           AND d.metric = 'lightLevel' AND d.value_num < ?3 AND d.measured_at < ?5
+           AND d.measured_at > (
+             SELECT MAX(b.measured_at) FROM readings AS b
+             WHERE b.user_id = ?1 AND b.source = 'poll' AND b.device_id IN (SELECT value FROM json_each(?2))
+               AND b.metric = 'lightLevel' AND b.value_num >= ?3 AND b.measured_at >= ?4 AND b.measured_at < ?5)`,
+      )
+      .bind(userId, JSON.stringify(roles.bedPresence), BRIGHT_LIGHT_LEVEL, preStart, sleepStart + HOUR_MS),
     // 寝る前に窓を開けた回数（Webhook の「開いた」の数）
     db
       .prepare(
@@ -523,6 +541,7 @@ export async function computeDay(
 
   const lightRow = (lightResult.results[0] ?? {}) as { brightness: number | null; color_temperature: number | null };
   const lastOn = ((lightsOffResult.results[0] ?? {}) as { last_on: number | null }).last_on;
+  const darkAt = ((roomDarkResult.results[0] ?? {}) as { dark_at: number | null }).dark_at ?? null;
   const openings = Number(((openingsResult.results[0] ?? {}) as { n: number }).n ?? 0);
   const hasRole = (role: keyof RoleMap) => roles[role].length > 0;
 
@@ -588,6 +607,9 @@ export async function computeDay(
       lightBrightnessAvg: round(lightRow.brightness, 0),
       lightColorTemperatureAvg: round(lightRow.color_temperature, 0),
       lightsOffAt: lastOn !== null && lastOn !== undefined ? lastOn + POLL_INTERVAL_MIN * MINUTE_MS : null,
+      roomLightLevelAvg: round(light?.pAvg),
+      roomBrightMin: light && light.pN > 0 ? hitMinutes(light, "pHit") : null,
+      roomDarkAt: darkAt,
       tvOnMin: hasRole("tv") ? (hitMinutes(tv, "pHit") ?? 0) : null,
       windowOpenMin: hasRole("window") ? (hitMinutes(windowOpen, "pHit") ?? 0) : null,
       windowOpenings: hasRole("window") ? openings : null,

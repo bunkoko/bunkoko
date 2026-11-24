@@ -80,6 +80,9 @@ describe("computeDay", () => {
       lightBrightnessAvg: 60,
       lightColorTemperatureAvg: 3000,
       lightsOffAt: at(PREV, "23:20"),
+      roomLightLevelAvg: 12,
+      roomBrightMin: 120,
+      roomDarkAt: at(PREV, "23:40"), // 人感センサーの照度は、寝つくまで明るいまま
       tvOnMin: 60,
       windowOpenMin: 20,
       windowOpenings: 1,
@@ -170,6 +173,37 @@ describe("computeDay", () => {
     expect(metrics.sleep?.inBedSource).toBe("healthkit");
     expect(metrics.sleep?.latencyMin).toBe(20);
     expect(metrics.quality.presenceAvailable).toBe(false);
+    // 部屋の明るさも出さない（0分などとしない）
+    expect(metrics.preBed.roomLightLevelAvg).toBeNull();
+    expect(metrics.preBed.roomBrightMin).toBeNull();
+    expect(metrics.preBed.roomDarkAt).toBeNull();
+  });
+
+  it("シーリングライトがなくても、寝る前の部屋の明るさと、部屋が暗くなった時刻を人感センサーの照度から出す", async () => {
+    seedNight();
+    db.sqlite.prepare(`DELETE FROM devices WHERE device_id = 'L1'`).run();
+    db.sqlite.prepare(`DELETE FROM readings WHERE device_id = 'L1'`).run();
+    // 22:55 までは明るさ 12、23:00 から 1（今の照明を消した）
+    db.sqlite.prepare(`UPDATE readings SET value_num = 1 WHERE device_id = 'P1' AND metric = 'lightLevel' AND measured_at >= ?`).run(at(PREV, "23:00"));
+    const metrics = await computeDay(db.d1, "me", D, settings, await loadRoles(db.d1, "me", {}));
+    expect(metrics.preBed).toMatchObject({
+      lightOnMin: null,
+      lightBrightnessAvg: null,
+      lightColorTemperatureAvg: null,
+      lightsOffAt: null,
+      // 寝る前の2時間（21:10〜23:10）の24回のうち、明るいのは 22:55 までの22回
+      roomLightLevelAvg: 11.1, // (12 × 22 + 1 × 2) ÷ 24 = 11.08
+      roomBrightMin: 110,
+      roomDarkAt: at(PREV, "23:00"),
+    });
+  });
+
+  it("照明をつけたまま寝た夜は、部屋が暗くなった時刻を出さない", async () => {
+    seedNight();
+    db.sqlite.prepare(`UPDATE readings SET value_num = 12 WHERE device_id = 'P1' AND metric = 'lightLevel'`).run();
+    const metrics = await computeDay(db.d1, "me", D, settings, await loadRoles(db.d1, "me", {}));
+    expect(metrics.preBed.roomDarkAt).toBeNull();
+    expect(metrics.room.brightMin).toBe(430); // 寝ついてから起きるまで明るいまま
   });
 
   it("睡眠のデータがない日は、睡眠を null にし、目標の就寝時刻を区切りに使う", async () => {
