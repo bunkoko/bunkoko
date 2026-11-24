@@ -145,6 +145,7 @@ npm run admin -- process 10
 | `HTTP 401` | トークン・シークレットの誤り、または1日の上限超え。`npm run switchbot -- devices` で確かめる |
 | `statusCode 161` / `171` | 機器 / ハブがオフライン。モバイル Wi-Fi の電源・スリープ設定を確認する |
 | `Exceeded CPU` | 無料プランの処理時間の上限を超えた。続くようなら Workers の有料プラン（月 5ドル）にする |
+| `HTTP 500`・`Worker threw exception`（1101）がすべての API で出る | データベース（D1）の無料プランの1日の上限（読み取り 500万行・書き込み 10万行）を超えた可能性が高い。日本時間の朝9時（UTC の0時）に戻る。`npx wrangler d1 info bunkoko` で直近24時間の利用量を見られる。2026-11-24 に、1日 = 1行の計算が毎回すべての心拍を読んでいた不具合を直した（`test/query-plans.test.ts` で、全件を読む SQL がないかを確かめている） |
 
 ## 5. データを取り出す
 

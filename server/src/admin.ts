@@ -19,9 +19,6 @@ interface RunRow {
 
 interface LatestRow {
   device_id: string;
-  device_name: string | null;
-  device_type: string | null;
-  active: number;
   metric: string | null;
   value_num: number | null;
   value_text: string | null;
@@ -30,8 +27,11 @@ interface LatestRow {
 
 const iso = (ms: number | null | undefined) => (typeof ms === "number" ? new Date(ms).toISOString() : null);
 
+/** 機器の最新の値として見る範囲。これより古い値は出さない（全期間を読むと、読み取り行数が増え続けるため） */
+const SUMMARY_WINDOW_MS = 60 * 60 * 1000;
+
 export async function buildSummary(db: D1Database, userId: string, now: number) {
-  const [runs, latest, webhook, calls] = await db.batch([
+  const [runs, deviceRows, latest, webhook, calls] = await db.batch([
     db
       .prepare(
         `SELECT started_at, finished_at, device_list_refreshed, devices_total, devices_ok,
@@ -39,23 +39,27 @@ export async function buildSummary(db: D1Database, userId: string, now: number) 
          FROM collector_runs WHERE user_id = ?1 ORDER BY started_at DESC LIMIT 5`,
       )
       .bind(userId),
+    // 機器と、最後に値を取った時刻（主キーの索引で、機器ごとに1回だけ探す）
     db
       .prepare(
         `SELECT d.device_id, d.device_name, d.device_type, d.active,
-                r.metric, r.value_num, r.value_text, r.measured_at
-         FROM devices d
-         LEFT JOIN readings r
-           ON r.user_id = d.user_id AND r.device_id = d.device_id AND r.source = 'poll'
-          AND r.measured_at = (SELECT MAX(r2.measured_at) FROM readings r2
-                               WHERE r2.user_id = d.user_id AND r2.device_id = d.device_id
-                                 AND r2.source = 'poll')
+                (SELECT MAX(r.measured_at) FROM readings AS r WHERE r.user_id = d.user_id AND r.device_id = d.device_id) AS last_at
+         FROM devices AS d
          WHERE d.user_id = ?1
-         ORDER BY d.device_name, d.device_id, r.metric`,
+         ORDER BY d.device_name, d.device_id`,
       )
       .bind(userId),
+    // 直近1時間の値（新しい順）
     db
-      .prepare(`SELECT COUNT(*) AS count, MAX(received_at) AS last FROM webhook_events WHERE user_id = ?1`)
-      .bind(userId),
+      .prepare(
+        `SELECT device_id, metric, value_num, value_text, measured_at FROM readings
+         WHERE user_id = ?1 AND measured_at >= ?2 AND source = 'poll'
+         ORDER BY measured_at DESC`,
+      )
+      .bind(userId, now - SUMMARY_WINDOW_MS),
+    db
+      .prepare(`SELECT COUNT(*) AS count, MAX(received_at) AS last FROM webhook_events WHERE user_id = ?1 AND received_at >= ?2`)
+      .bind(userId, now - DAY_MS),
     db
       .prepare(
         `SELECT COALESCE(SUM(devices_total + device_list_refreshed), 0) AS calls, COUNT(*) AS runs
@@ -68,20 +72,20 @@ export async function buildSummary(db: D1Database, userId: string, now: number) 
     string,
     { deviceId: string; name: string | null; type: string | null; active: boolean; lastPolledAt: string | null; values: Record<string, number | string | null> }
   >();
+  for (const row of deviceRows.results as { device_id: string; device_name: string | null; device_type: string | null; active: number; last_at: number | null }[]) {
+    devices.set(row.device_id, {
+      deviceId: row.device_id,
+      name: row.device_name,
+      type: row.device_type,
+      active: row.active === 1,
+      lastPolledAt: iso(row.last_at),
+      values: {},
+    });
+  }
   for (const row of latest.results as unknown as LatestRow[]) {
-    let device = devices.get(row.device_id);
-    if (!device) {
-      device = {
-        deviceId: row.device_id,
-        name: row.device_name,
-        type: row.device_type,
-        active: row.active === 1,
-        lastPolledAt: iso(row.measured_at),
-        values: {},
-      };
-      devices.set(row.device_id, device);
-    }
-    if (row.metric) device.values[row.metric] = row.value_num ?? row.value_text;
+    const device = devices.get(row.device_id);
+    // 新しい順に並んでいるので、項目ごとに最初の値だけを使う
+    if (device && row.metric && !(row.metric in device.values)) device.values[row.metric] = row.value_num ?? row.value_text;
   }
 
   const webhookRow = (webhook.results[0] ?? {}) as { count?: number; last?: number | null };
@@ -99,6 +103,7 @@ export async function buildSummary(db: D1Database, userId: string, now: number) 
       readingsWritten: run.readings_written,
       errors: JSON.parse(run.errors_json),
     })),
+    // 直近24時間に届いた Webhook
     webhook: { eventsReceived: webhookRow.count ?? 0, lastReceivedAt: iso(webhookRow.last) },
     // 1日の上限は 10,000 回
     switchBotApiCallsLast24h: callsRow.calls ?? 0,

@@ -31,6 +31,10 @@ export const MIN_COVERAGE = 0.7;
  * 5分ごとの区切りで見ると、着けていても「データが少ない」になってしまう。15分の区切りに1つでも心拍があれば「着けていた」とみなす
  */
 export const COVERAGE_WINDOW_MIN = 15;
+/** HealthKit の記録1つの長さの上限の目安（手首皮膚温など、ひと晩にまたがる記録があるため）。問い合わせの範囲を絞るのに使う */
+const SAMPLE_MAX_SPAN_MS = 24 * HOUR_MS;
+/** 1日の計算で使う記録の種類（ふり返りは別に問い合わせる） */
+const LOG_KINDS_FOR_DAY = ["meal", "bath", "caffeine", "alcohol", "screenUsage", "charger", "morningFeeling"];
 
 const SAMPLE_TYPES = [
   "sleepAnalysis",
@@ -236,14 +240,15 @@ export async function computeDay(
   const feelingTo = localTimeOn(date, "18:00", tz);
 
   // --- 1. HealthKit の測った値（睡眠・体・心の状態・飲み物）
+  // 無料プランの読み取り行数の上限に収めるため、種類と開始時刻の索引で範囲を絞る（INDEXED BY で必ず使わせる）
   const { results: sampleRows } = await db
     .prepare(
       `SELECT type, start_at, end_at, value_num, value_text, source_name, source_product
-       FROM health_samples
-       WHERE user_id = ?1 AND deleted = 0 AND start_at < ?3 AND end_at >= ?2
-         AND type IN (SELECT value FROM json_each(?4))`,
+       FROM health_samples INDEXED BY idx_health_samples_type_time
+       WHERE user_id = ?1 AND type IN (SELECT value FROM json_each(?4))
+         AND start_at >= ?5 AND start_at < ?3 AND end_at >= ?2 AND deleted = 0`,
     )
-    .bind(userId, fetchFrom, fetchTo, JSON.stringify(SAMPLE_TYPES))
+    .bind(userId, fetchFrom, fetchTo, JSON.stringify(SAMPLE_TYPES), fetchFrom - SAMPLE_MAX_SPAN_MS)
     .all<{ type: string; start_at: number; end_at: number; value_num: number | null; value_text: string | null; source_name: string | null; source_product: string | null }>();
 
   const sleepSamples: SleepSample[] = pickWatchSamples(
@@ -359,30 +364,33 @@ export async function computeDay(
            AND metric = 'openState' AND value_text = 'open' AND measured_at >= ?3 AND measured_at < ?4`,
       )
       .bind(userId, JSON.stringify(roles.window), preStart, bedRef),
-    // HealthKit の集計（心拍数は5分ごと、歩数などは1時間ごと）
+    // HealthKit の集計（心拍数は5分ごと、歩数などは1時間ごと）。種類ごとに主キーの範囲で読む（OR でまとめると全件を読んでしまう）
     db
       .prepare(
         `SELECT type, bucket_minutes, bucket_start, sum, avg, min FROM health_buckets
-         WHERE user_id = ?1 AND bucket_start >= ?2 AND bucket_start < ?3
-           AND ((bucket_minutes = 60 AND type IN (SELECT value FROM json_each(?4))) OR (bucket_minutes = 5 AND type = 'heartRate'))`,
+         WHERE user_id = ?1 AND type = 'heartRate' AND bucket_minutes = 5 AND bucket_start >= ?2 AND bucket_start < ?3
+         UNION ALL
+         SELECT type, bucket_minutes, bucket_start, sum, avg, min FROM health_buckets
+         WHERE user_id = ?1 AND type IN (SELECT value FROM json_each(?4)) AND bucket_minutes = 60 AND bucket_start >= ?2 AND bucket_start < ?3`,
       )
       .bind(userId, Math.min(dayStart, preStart) - HOUR_MS, Math.max(sleepEnd, bedRef) + MINUTE_MS, JSON.stringify(HOURLY_TYPES)),
     db
       .prepare(
         `SELECT start_at, end_at, effort FROM workouts
-         WHERE user_id = ?1 AND deleted = 0 AND end_at > ?2 AND start_at < ?3`,
+         WHERE user_id = ?1 AND start_at >= ?4 AND start_at < ?3 AND end_at > ?2 AND deleted = 0`,
       )
-      .bind(userId, dayStart, bedRef),
+      .bind(userId, dayStart, bedRef, dayStart - SAMPLE_MAX_SPAN_MS),
     // 記録（食事は目安も一緒に。利用者が直した目安を優先する）
     db
       .prepare(
         `SELECT l.id, l.kind, l.occurred_at, l.data_json, u.estimate_json AS user_est, a.estimate_json AS ai_est
-         FROM user_logs AS l
+         FROM user_logs AS l INDEXED BY idx_user_logs_kind_time
          LEFT JOIN meal_estimates AS u ON u.user_id = l.user_id AND u.log_id = l.id AND u.source = 'user'
          LEFT JOIN meal_estimates AS a ON a.user_id = l.user_id AND a.log_id = l.id AND a.source = 'ai'
-         WHERE l.user_id = ?1 AND l.deleted = 0 AND l.occurred_at >= ?2 AND l.occurred_at < ?3`,
+         WHERE l.user_id = ?1 AND l.kind IN (SELECT value FROM json_each(?4))
+           AND l.occurred_at >= ?2 AND l.occurred_at < ?3 AND l.deleted = 0`,
       )
-      .bind(userId, Math.min(dayStart, bedRef - 12 * HOUR_MS), feelingTo),
+      .bind(userId, Math.min(dayStart, bedRef - 12 * HOUR_MS), feelingTo, JSON.stringify(LOG_KINDS_FOR_DAY)),
     // 1日のふり返り: 前の日（この夜の前の日中）と、その日（この夜のあとの日中）。忘れて翌日に入れた分も拾う
     db
       .prepare(

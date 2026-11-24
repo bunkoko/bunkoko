@@ -470,8 +470,9 @@ export async function ingestLogsBatch(
       db
         .prepare(
           `DELETE FROM meal_estimates WHERE user_id = ?1 AND log_id IN (
-             SELECT l.id FROM user_logs AS l JOIN json_each(?2) AS j ON l.id = j.value ->> 'id'
-             WHERE l.user_id = ?1 AND l.data_json <> j.value ->> 'data')`,
+             SELECT j.value ->> 'id' FROM json_each(?2) AS j
+             WHERE EXISTS (SELECT 1 FROM user_logs AS l
+                           WHERE l.user_id = ?1 AND l.id = j.value ->> 'id' AND l.data_json <> j.value ->> 'data'))`,
         )
         .bind(userId, logsJson),
       db

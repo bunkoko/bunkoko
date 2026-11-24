@@ -18,15 +18,14 @@ const ROOM_STALE_MS = 30 * MINUTE_MS;
 
 export async function latestRoom(db: D1Database, userId: string, roles: RoleMap, now: number): Promise<RoomNow> {
   const devices = [...new Set([...roles.co2, ...roles.hub, ...roles.bedPresence, ...roles.ceilingLight])];
+  // 直近30分の値だけを読み、機器・項目ごとに一番新しいものを使う（古い値まで読まないように時刻の索引で絞る）
   const { results } = await db
     .prepare(
-      `SELECT r.device_id, r.metric, r.value_num, r.value_text, r.measured_at
-       FROM readings AS r
-       WHERE r.user_id = ?1 AND r.source = 'poll' AND r.device_id IN (SELECT value FROM json_each(?2))
-         AND r.metric IN ('CO2', 'temperature', 'humidity', 'lightLevel', 'Detected', 'power', 'brightness', 'colorTemperature')
-         AND r.measured_at = (SELECT MAX(r2.measured_at) FROM readings AS r2
-                              WHERE r2.user_id = r.user_id AND r2.device_id = r.device_id AND r2.source = 'poll')
-         AND r.measured_at >= ?3`,
+      `SELECT device_id, metric, value_num, value_text, measured_at
+       FROM readings
+       WHERE user_id = ?1 AND measured_at >= ?3 AND device_id IN (SELECT value FROM json_each(?2)) AND source = 'poll'
+         AND metric IN ('CO2', 'temperature', 'humidity', 'lightLevel', 'Detected', 'power', 'brightness', 'colorTemperature')
+       ORDER BY measured_at DESC`,
     )
     .bind(userId, JSON.stringify(devices), now - ROOM_STALE_MS)
     .all<{ device_id: string; metric: string; value_num: number | null; value_text: string | null; measured_at: number }>();
@@ -213,9 +212,9 @@ export async function buildTimeline(
       .bind(userId, start, end),
     db
       .prepare(
-        `SELECT kind, occurred_at, data_json FROM user_logs
-         WHERE user_id = ?1 AND deleted = 0 AND occurred_at >= ?2 AND occurred_at < ?3
-           AND kind IN ('meal', 'bath', 'caffeine', 'alcohol', 'charger')
+        `SELECT kind, occurred_at, data_json FROM user_logs INDEXED BY idx_user_logs_kind_time
+         WHERE user_id = ?1 AND kind IN ('meal', 'bath', 'caffeine', 'alcohol', 'charger')
+           AND occurred_at >= ?2 AND occurred_at < ?3 AND deleted = 0
          ORDER BY occurred_at`,
       )
       .bind(userId, start - 6 * HOUR_MS, end),

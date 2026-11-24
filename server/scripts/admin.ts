@@ -143,7 +143,7 @@ async function main(): Promise<void> {
         const errors = run.errors.length > 0 ? `  エラー: ${maskSecrets(JSON.stringify(run.errors), secrets)}` : "";
         console.log(`  ${clock(Date.parse(run.startedAt))}  ${run.devicesOk}/${run.devicesTotal}台${errors}`);
       }
-      console.log(`Webhook: ${summary.webhook.eventsReceived}件（最後 ${summary.webhook.lastReceivedAt ? clock(Date.parse(summary.webhook.lastReceivedAt)) : "-"}）`);
+      console.log(`Webhook（24時間）: ${summary.webhook.eventsReceived}件（最後 ${summary.webhook.lastReceivedAt ? clock(Date.parse(summary.webhook.lastReceivedAt)) : "-"}）`);
       console.log(`SwitchBot API の利用（24時間）: ${summary.switchBotApiCallsLast24h}回 / 上限 10,000回`);
       return;
     }

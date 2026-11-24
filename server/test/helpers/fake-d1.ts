@@ -25,22 +25,31 @@ function toSqliteValue(value: unknown): SQLInputValue {
 
 const isQuery = (sql: string) => /^\s*(SELECT|WITH)\b/i.test(sql);
 
+/** 実行した SQL と、bind した値（問い合わせの計画を確かめるテストで使う） */
+export interface ExecutedStatement {
+  sql: string;
+  params: SQLInputValue[];
+}
+
 class FakeStatement {
   private readonly db: DatabaseSync;
   readonly sql: string;
   private readonly params: SQLInputValue[];
+  private readonly log: ExecutedStatement[];
 
-  constructor(db: DatabaseSync, sql: string, params: SQLInputValue[] = []) {
+  constructor(db: DatabaseSync, sql: string, log: ExecutedStatement[], params: SQLInputValue[] = []) {
     this.db = db;
     this.sql = sql;
+    this.log = log;
     this.params = params;
   }
 
   bind(...values: unknown[]): FakeStatement {
-    return new FakeStatement(this.db, this.sql, values.map(toSqliteValue));
+    return new FakeStatement(this.db, this.sql, this.log, values.map(toSqliteValue));
   }
 
   runSync() {
+    this.log.push({ sql: this.sql, params: this.params });
     const info = this.db.prepare(this.sql).run(...this.params);
     return {
       success: true,
@@ -50,6 +59,7 @@ class FakeStatement {
   }
 
   allSync() {
+    this.log.push({ sql: this.sql, params: this.params });
     const rows = this.db.prepare(this.sql).all(...this.params).map((row) => ({ ...row }));
     return { success: true, results: rows, meta: { changes: 0 } };
   }
@@ -63,6 +73,7 @@ class FakeStatement {
   }
 
   async first(column?: string) {
+    this.log.push({ sql: this.sql, params: this.params });
     const row = this.db.prepare(this.sql).get(...this.params) as Record<string, unknown> | undefined;
     if (!row) return null;
     return column ? (row[column] ?? null) : { ...row };
@@ -72,6 +83,8 @@ class FakeStatement {
 export interface FakeD1 {
   d1: D1Database;
   sqlite: DatabaseSync;
+  /** これまでに実行した SQL */
+  executed: ExecutedStatement[];
 }
 
 export function createFakeD1(): FakeD1 {
@@ -80,8 +93,9 @@ export function createFakeD1(): FakeD1 {
     sqlite.exec(readFileSync(join(MIGRATIONS_DIR, file), "utf8"));
   }
 
+  const executed: ExecutedStatement[] = [];
   const d1 = {
-    prepare: (sql: string) => new FakeStatement(sqlite, sql),
+    prepare: (sql: string) => new FakeStatement(sqlite, sql, executed),
     async batch(statements: FakeStatement[]) {
       // D1 の batch は1つのトランザクションとして実行される
       sqlite.exec("BEGIN");
@@ -102,5 +116,5 @@ export function createFakeD1(): FakeD1 {
     },
   };
 
-  return { d1: d1 as unknown as D1Database, sqlite };
+  return { d1: d1 as unknown as D1Database, sqlite, executed };
 }
