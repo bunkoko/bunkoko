@@ -133,7 +133,7 @@ def fred_csv(data, end="2026-11-13"):
 
 def test_the_registered_shares_and_years():
     """決め方（docs/risk_plan.md 8 章）。変えるときは、文書を先に直す。"""
-    assert R.SHARES == (0.3, 0.5, 0.7, 0.8, 0.9, 1.0) and R.YEARS == (1, 3, 5, 10, 15, 20)
+    assert R.SHARES == (0.3, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0) and R.YEARS == (1, 3, 5, 10, 15, 20)
     assert (R.WINDOW_YEARS, R.BAND) == (20, 0.10) and list(R.WAYS) == ["drift", "yearly", "band"]
 
 
@@ -227,3 +227,53 @@ def test_a_share_that_rounds_to_zero_is_not_shown_as_zero():
     assert none["below"] == 0 and R._share(none) == "0%"
     some = R.shortfall(pd.Series([0.9] * 3 + [1.2] * 7, index=months(10)))
     assert R._share(some) == "30%"
+
+
+# --------------------------------------------------------------------------- 柱と株の指数の相関（8.4）
+def pillar_files(data, index_returns, seed=0):
+    """束ねる検証が書き出した形（data/bundle/series/<名前>.csv: month・d）。EA は指数と同じ向き、C2 は逆向き、C3 は無関係。"""
+    rng = np.random.default_rng(seed)
+    folder = data / "bundle" / "series"
+    folder.mkdir(parents=True)
+    r = index_returns
+    made = {"EA": 0.5 * r + 0.002 * rng.standard_normal(len(r)), "C2": -1.0 * r, "C3": pd.Series(0.01 * rng.standard_normal(len(r)), index=r.index)}
+    for k, s in made.items():
+        pd.DataFrame({"month": [f"{x:%Y-%m-%d}" for x in s.index], "d": s.to_numpy()}).to_csv(folder / f"{k}.csv", index=False)
+    return folder
+
+
+def test_pillar_links_give_the_correlation_with_the_index_and_nothing_else():
+    import tempfile
+    from pathlib import Path
+
+    rng = np.random.default_rng(5)
+    r = pd.Series(0.04 * rng.standard_normal(120), index=months(120, "2010-01-31"))
+    folder = pillar_files(Path(tempfile.mkdtemp()), r)
+    links = R.pillar_links(folder, {"指数": r, "短い": r.iloc[:30]})
+    assert set(links) == {"A", "B", "G"}                           # 系列のある家族だけ
+    corr, n = links["A"]["指数"]
+    assert corr > 0.95 and n == 108                               # 家族の系列は、値動きの大きさが測れる 13 か月目から
+    assert links["B"]["指数"][0] == pytest.approx(-1.0) and abs(links["G"]["指数"][0]) < 0.3
+    assert np.isnan(links["A"]["短い"][0]) and links["A"]["短い"][1] == 18         # 重なる月が 24 に届かなければ、相関は出さない
+    assert all(set(v) == {"指数", "短い"} for v in links.values())
+
+
+def test_pillar_links_are_none_without_the_bundle_series(tmp_path):
+    assert R.pillar_links(tmp_path / "nothing", {"指数": pd.Series(dtype=float)}) is None
+
+
+def test_run_and_report_show_the_links_without_any_performance(tmp_path):
+    data = fred_csv(misc_csv(tmp_path))
+    first = R.run(data)
+    assert first["links"] is None and "束ねる検証の系列が無い" in "\n".join(R.report_lines(first, "2026-11-25 09:00"))
+    yen = R.in_yen(R.month_ends(R.read_index(data, "^GSPC")["1971-01-01":]), R.read_usdjpy(data)["1971-01-01":])
+    pillar_files(data, yen.pct_change().dropna().iloc[-150:])
+    res = R.run(data)
+    assert set(res["links"]) == {"A", "B", "G"} and set(res["links"]["A"]) == {"S&P500（円で見て）", "日経平均"}
+    assert res["links"]["B"]["S&P500（円で見て）"][0] == pytest.approx(-1.0)
+    lines = R.report_lines(res, "2026-11-25 09:00")
+    part = lines[next(i for i, x in enumerate(lines) if x.startswith("## 3.")):]
+    text = "\n".join(part)
+    assert "| A 商品のトレンド（今の EA） |" in text and "−1.00（138 か月）" in text and "柱の成績は出していない" in text
+    assert "%" not in text and "t 値" not in text                 # 相関と月の数だけ
+    assert sum(x.startswith("| 60% |") for x in lines) == 6       # 株 60% の行（戻し方 3 通り × 円・ドル）

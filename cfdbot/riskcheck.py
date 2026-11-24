@@ -3,6 +3,7 @@
 8.1 持つ年数ごとの元本割れ: 指数を N 年持った（まとめて買う・毎月積み立てる）とき、元本を割って終わった割合。
 8.2 戻し方 3 通りの比べ: 株と「元本が動かない置き場所」を決めた割合で 20 年持つとき、放置・年 1 回戻す・幅を超えたら戻す、の下げと割合のぶれ。
 8.3 足した分: 株の割合 80・90・100% と、円で見た版（S&P500 × ドル円）。
+8.4 足した分: 柱（束ねる検証で書き出した家族ごとの月の系列）と株の指数の相関、株 60% の行。柱の成績は出さない。
 """
 
 from __future__ import annotations
@@ -16,7 +17,9 @@ from .wide import base, w7
 
 YEARS = (1, 3, 5, 10, 15, 20)                  # 持つ年数（8.1）
 INDEXES = {"^GSPC": ("S&P500（米国。ドル建て・配当なし）", "1950-01-01"), "^N225": ("日経平均（日本。円建て・配当なし）", "1965-01-01")}
-SHARES = (0.3, 0.5, 0.7, 0.8, 0.9, 1.0)        # 株の割合（8.2。80% から上は 8.3 で足した）
+SHARES = (0.3, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)   # 株の割合（8.2。80% から上は 8.3、60% は 8.4 で足した）
+LINK_MIN = 24                                  # 柱と指数の相関は、重なる月がこれ以上あるときだけ出す（8.4）
+YEN_SHORT = "S&P500（円で見て）"               # 8.4 の表の列の名前
 YEN, YEN_SINCE, USDJPY = "S&P500 を円で見たもの（S&P500 × ドル円。配当なし）", "1971-01-01", "DEXJPUS"     # 8.3
 VIEWS = {"yen": "円で見た場合（S&P500 × ドル円。円の預金と組む）", "usd": "ドルで見た場合（S&P500 そのまま）"}
 WAYS = {"drift": "放置（1 度も戻さない）", "yearly": "年 1 回、12 月末に必ず戻す", "band": "年 1 回見て、10 ポイントより外れていたら戻す"}
@@ -55,6 +58,29 @@ def in_yen(m_usd: pd.Series, usdjpy_daily: pd.Series) -> pd.Series:
     rate = month_ends(usdjpy_daily)
     both = m_usd.index.intersection(rate.index)
     return (m_usd[both] * rate[both]).sort_index()
+
+
+def pillar_links(series_dir, indexes: dict[str, pd.Series]) -> dict | None:
+    """8.4: 束ねる検証で書き出した家族ごとの月の系列と、株の指数の月の変化率の相関。
+
+    返すのは、家族 → {指数の名前: (相関, 重なる月の数)}。相関と月の数だけで、柱の成績は出さない。系列が無ければ None。
+    """
+    from . import bundle as B
+
+    try:
+        series, _ = B.load_series(series_dir)
+    except base.NotReady:
+        return None
+    if not series:
+        return None
+    out = {}
+    for f, s in B.family_series(series, B.FAMILIES).items():
+        row = {}
+        for name, r in indexes.items():
+            both = pd.concat([s, r], axis=1, join="inner").dropna()
+            row[name] = (float(both.iloc[:, 0].corr(both.iloc[:, 1])) if len(both) >= LINK_MIN else float("nan"), len(both))
+        out[f] = row
+    return out
 
 
 def month_ends(daily: pd.Series) -> pd.Series:
@@ -145,7 +171,7 @@ def _mix_block(m: pd.Series) -> dict:
 
 def run(data) -> dict:
     """2 つの点検を計算する。データの無い指数・ドル円は、理由だけ返して先へ進む。"""
-    out: dict = {"hold": {}, "skipped": {}, "mix": {}}
+    out: dict = {"hold": {}, "skipped": {}, "mix": {}, "links": None}
     monthly = {}
     for ticker, (label, since) in INDEXES.items():
         try:
@@ -160,15 +186,21 @@ def run(data) -> dict:
         out["hold"][label] = _hold_block(m)
     if STOCK not in monthly:
         return out
+    yen = None
     try:                                                          # 8.3: 円で見た S&P500
         yen = in_yen(monthly[STOCK], read_usdjpy(data)[YEN_SINCE:])
         if len(yen) < 12 * min(YEARS) + 2:
+            yen = None
             raise base.NotReady("ドル円と重なる月が 1 年ぶんに届かない")
         out["hold"][YEN] = _hold_block(yen)
         out["mix"][VIEWS["yen"]] = _mix_block(yen)                # 円で見た版を先に（円で暮らす人には、こちらが実感に近い）
     except base.NotReady as e:
         out["skipped"][YEN] = str(e)
     out["mix"][VIEWS["usd"]] = _mix_block(monthly[STOCK])
+    indexes = {YEN_SHORT: yen.pct_change().dropna()} if yen is not None else {"S&P500（ドルで見て）": monthly[STOCK].pct_change().dropna()}
+    if "^N225" in monthly:
+        indexes["日経平均"] = monthly["^N225"].pct_change().dropna()
+    out["links"] = pillar_links(Path(data) / "bundle" / "series", indexes)       # 8.4
     return out
 
 
@@ -235,4 +267,24 @@ def report_lines(res: dict, made: str) -> list[str]:
     L += ["- 最大の下げは月末の値で測った（月の途中の下げは入っていない）",
           "- 放置では、株が上がるほど株の割合が増え、下げも大きくなる。戻す決まりは、その割合を決めた所に引き戻すためのもの",
           "- 円で見た版は、株が下げる時に円高が重なると、ドルで見た下げより大きくなる（逆に円安なら小さくなる）", ""]
+    return L + _link_lines(res.get("links"))
+
+
+def _link_lines(links: dict | None) -> list[str]:
+    """8.4: 柱と株の指数の相関（相関と月の数だけ）。"""
+    from . import bundle as B
+
+    L = ["## 3. 柱と株の指数の相関", ""]
+    if not links:
+        return [*L, "- 束ねる検証の系列が無い（`data/bundle/series/`）ので、数えられなかった", ""]
+    names = list(next(iter(links.values())))
+    L += ["束ねる検証で書き出した家族ごとの月の系列と、株の指数の月の変化率の相関（どちらにも値のある月）。**柱の成績は出していない。**",
+          "プラスが大きい柱は、株が下げる月に一緒に負けやすい。マイナスなら逆に動きやすい。0 に近ければ、関わりが薄い。", "",
+          "| 柱 | " + " | ".join(names) + " |", "|---|" + "---|" * len(names)]
+    for f in B.FAMILIES:
+        if f not in links:
+            continue
+        cells = [("–" if not np.isfinite(c) else f"{c:.2f}".replace("-", "−")) + f"（{n} か月）" for c, n in (links[f][k] for k in names)]
+        L.append(f"| {f} {B.FAMILY_NAMES[f]} | " + " | ".join(cells) + " |")
+    L += ["", f"- 重なる月が {LINK_MIN} に届かないものは「–」", "- ふだんの月の相関なので、大きく荒れた時にも同じとは限らない", ""]
     return L
