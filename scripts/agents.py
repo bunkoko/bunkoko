@@ -121,7 +121,7 @@ def f2(x: float) -> str:
 # --------------------------------------------------------------------------- 情報収集
 TEXT_HISTORY_WHY = {   # 過去の本文の取得が止まった理由（利用者に伝える文）
     "not_external": "本文の置き場所が、外付けの HDD へのリンクになっていない。先に「IR の文章を HDD に移して」（2026-11-20 利用者の決め: 本文は HDD に置く）。何も取っていない",
-    "no_text_place": "外付けの HDD がつながっていない。つないでから、同じコマンドで。何も取っていない",
+    "no_text_place": "外付けの HDD がつながっていないか、つながっているのに書けない（上の「本文の置き場所」の行を見る）。直してから、同じコマンドで。何も取っていない",
     "no_space": "HDD の空きが足りない（原本の PDF も残すには {need}GB ほど要る）。原本を残さないなら --no-pdf（利用者に確かめてから）。何も取っていない",
     "refused": "サイトに断られた（403・429・503）。すぐ止めた。今日はもう取りに行かない。明日以降に同じコマンドで続きから（続くようなら指令役に知らせる）",
     "network": "続けて取れなかった（回線かサイトの不調）。時間をおいて、同じコマンドで続きから",
@@ -226,13 +226,16 @@ def cmd_collect(args) -> None:
             since = (pd.Timestamp.now(tz=JST).tz_localize(None) - pd.Timedelta(days=args.docs_days)).strftime("%Y-%m-%d")
             want = df[df["time"] >= since]
             print(f"情報収集: 直近 {args.docs_days} 日の開示 {len(want):,} 件の本文と数字を、{C.INTERVAL:g} 秒に 1 件ずつ取る（東証 上場会社情報サービス）", flush=True)
+            place = C.text_place(ir_root)
+            if place["link"]:                                   # 外付けのディスクに置いているときは、書けるかを毎回 1 行残す（新しい本文が 0 件の日も）
+                print("情報収集: " + C.text_place_line(place), flush=True)
             got = C.collect_docs(want, ir_root, max_docs=args.max_docs, log=lambda s: print(s, flush=True),
                                  wait=600)                      # 過去の本文の取得が動いていたら、頼んで先に通してもらう（10 分まで待つ）
+            if got.get("no_text_place") and place["ready"]:     # 取っている間に書けなくなった。今の様子を残す
+                print("情報収集: " + C.text_place_line(C.text_place(ir_root)), flush=True)
         if got.get("busy"):
             print("情報収集: ほかの書類の取得が動いているので、今回は取らない（次の回に取る）", flush=True)
         else:
-            if got.get("no_text_place"):
-                print("情報収集: " + C.text_place_line(C.text_place(ir_root)), flush=True)
             print(f"情報収集: 本文 +{got['text']}、数字 +{got['xbrl']}、まだ載っていない {got['missing']}、残り {got['left']}", flush=True)
 
 

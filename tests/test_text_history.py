@@ -346,6 +346,56 @@ def test_status_tells_how_far_the_past_texts_are(tmp_path, capsys, monkeypatch, 
     assert "過去の本文（2016-10〜）: 取ってある 1 件・サイトに無い 1 件・残り 1 件" in out
 
 
+def test_daily_collection_tells_each_morning_whether_the_disk_can_be_written(tmp_path, capsys, monkeypatch, fast):
+    """毎朝の収集は、新しく取る本文が 0 件の日も、外付けのディスクに書けるかを実際に確かめて、記録に 1 行残す。
+
+    2026-11-24: 置き場所を HDD に移した日の試しは「新しく取る本文が 0 件」で、自動実行から書けるかが分からなかった。
+    """
+    from pathlib import Path
+
+    root, _, disk = world(tmp_path)
+    stocks = tmp_path / "stocks"
+    stocks.mkdir()
+    pd.DataFrame({"ticker": ["7203.T"], "name": ["トヨタ"]}).to_csv(stocks / "universe_jp.csv", index=False)
+    m = load_script()
+    args = ns(root, text_history=False, backfill=False, force=False, days=0, no_embed=True, docs=True, xbrl_history=False, docs_days=7, max_docs=300)
+    m.cmd_collect(args)
+    out = capsys.readouterr().out
+    assert "本文 +0" in out and "情報収集: 本文の置き場所" in out and "外付けのディスクへのリンク。つながっている。書ける" in out and "⚠" not in out
+    assert list((disk / "ir_text").iterdir()) == []                                  # 確かめに書いたファイルは残さない
+    real = Path.write_bytes
+
+    def blocked(self, data):                                                         # macOS が、自動実行から外付けへの書き込みを止めている
+        if disk in self.resolve().parents:
+            raise PermissionError(1, "Operation not permitted")
+        return real(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", blocked)
+    m.cmd_collect(args)
+    out = capsys.readouterr().out
+    assert "情報収集: ⚠ 本文の置き場所" in out and "つながっているが、書けない" in out and "本文 +0" in out
+    assert out.count("つながっているが、書けない") == 1                                # 同じ知らせを 2 度出さない
+
+
+def test_history_tool_says_when_the_disk_is_there_but_cannot_be_written(tmp_path, capsys, monkeypatch, fast):
+    from pathlib import Path
+
+    root, _, disk = world(tmp_path)
+    called = []
+    monkeypatch.setattr(C, "http_get", lambda url, tries=1: called.append(url) or _pdf("a"))
+    real = Path.write_bytes
+
+    def blocked(self, data):
+        if disk in self.resolve().parents:
+            raise PermissionError(1, "Operation not permitted")
+        return real(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", blocked)
+    with pytest.raises(SystemExit, match="書けない"):
+        load_script().cmd_collect(ns(root))
+    assert called == [] and "つながっているが、書けない" in capsys.readouterr().out
+
+
 # --------------------------------------------------------------------------- 毎日の収集を先に通す（時間に関係なく）
 def test_history_leaves_the_last_week_to_the_daily_collection(tmp_path):
     """直近の開示は、まだサイトに載っていないことがある（翌日から載る）。「無かった」と覚えてしまわないよう、過去分では触らない。"""

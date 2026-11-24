@@ -194,10 +194,41 @@ def text_root(root: Path) -> Path:
     return root / "text"
 
 
-def text_place(root: Path) -> dict:
-    """本文の置き場所の様子: path（リンクなら行き先）・link（リンクか）・ready（今、書けるか）。
+PROBE_SECONDS = 60.0                      # 「書けるか」の確かめを待つ長さ（眠っていた外付けのディスクが回り出すのに十分な長さ）
 
-    リンクの行き先が無い（外付けのディスクがつながっていない）と ready は False。その日は本文を取りに行かない。
+
+def _can_write(p: Path) -> bool:
+    """フォルダ p に、小さなファイルを実際に書いて消せるか。PROBE_SECONDS 待っても返事が無ければ、書けないとする。
+
+    権限の印（os.access）だけでは分からないことがある: macOS は、自動実行（launchd）から外付けのディスクへの書き込みを
+    止めることがあり、そのときも印は「書ける」のまま。「許可しますか」の窓を出して待たせている間は、書き込みが返ってこない
+    （誰も Mac の前にいない朝に、収集ごと止まらないよう、別の糸で試して時間で切る）。
+    """
+    import os
+    import threading
+
+    ok: list[bool] = []
+
+    def probe() -> None:
+        f = p / f".write_test_{os.getpid()}"
+        try:
+            f.write_bytes(b"")
+            f.unlink()
+        except OSError:
+            return
+        ok.append(True)
+
+    th = threading.Thread(target=probe, daemon=True)
+    th.start()
+    th.join(PROBE_SECONDS)
+    return bool(ok)
+
+
+def text_place(root: Path) -> dict:
+    """本文の置き場所の様子: path（リンクなら行き先）・link（リンクか）・seen（フォルダが見えるか）・ready（今、書けるか）。
+
+    リンクの行き先が無い（外付けのディスクがつながっていない）と seen も ready も False。見えていても書けなければ ready は False
+    （実際に書いて確かめる）。ready でない日は本文を取りに行かない。
     """
     import os
 
@@ -205,10 +236,10 @@ def text_place(root: Path) -> dict:
     link = p.is_symlink()
     try:
         p.mkdir(parents=True, exist_ok=True)                    # 行き先の無いリンクは、ここで失敗する
-        ready = p.is_dir() and os.access(p, os.W_OK)
+        seen = p.is_dir()
     except OSError:
-        ready = False
-    return {"path": os.path.realpath(p) if link else str(p), "link": link, "ready": bool(ready)}
+        seen = False
+    return {"path": os.path.realpath(p) if link else str(p), "link": link, "seen": bool(seen), "ready": bool(seen and _can_write(p))}
 
 
 def text_place_line(place: dict) -> str:
@@ -216,8 +247,20 @@ def text_place_line(place: dict) -> str:
     if not place["link"]:
         return f"本文の置き場所: {place['path']}"
     if place["ready"]:
-        return f"本文の置き場所: {place['path']}（外付けのディスクへのリンク。つながっている）"
-    return f"⚠ 本文の置き場所: {place['path']}（外付けのディスクへのリンク。つながっていない。つながるまで本文は取らない）"
+        return f"本文の置き場所: {place['path']}（外付けのディスクへのリンク。つながっている。書ける）"
+    if place.get("seen"):
+        return (f"⚠ 本文の置き場所: {place['path']}（外付けのディスクへのリンク。つながっているが、書けない。Mac の画面に許可を求める窓が出ていないか、"
+                "「システム設定 → プライバシーとセキュリティ」で外付けのディスクへの書き込みが止められていないかを見る。書けるまで本文は取らない）")
+    return (f"⚠ 本文の置き場所: {place['path']}（外付けのディスクへのリンク。つながっていない。つながるまで本文は取らない。"
+            "つないであるのにこの行が出るときは、Mac の「システム設定 → プライバシーとセキュリティ」を見る）")
+
+
+def _write_text(path: Path, text: str) -> None:
+    """本文を書く。書き終えてから名前を付ける（その名前のファイルがあることが「取った」印なので、書きかけを残さない）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".part")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
 
 
 def text_path(root: Path, row) -> Path:
@@ -318,7 +361,8 @@ def _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done) -> 
     if pdf:
         place = text_place(root)
         if not place["ready"]:                                  # 書けない所へは取りに行かない（取っても残せない）。数字は取る
-            log(f"  ⚠ 本文の置き場所（{place['path']}）に書けない（外付けのディスクがつながっていない？）。今回は本文を取らず、数字だけ取る")
+            why = "見えているのに書けない" if place["seen"] else "外付けのディスクがつながっていない？"
+            log(f"  ⚠ 本文の置き場所（{place['path']}）に書けない（{why}）。今回は本文を取らず、数字だけ取る")
             pdf = False
             done["no_text_place"] = 1
     jobs = []
@@ -328,6 +372,8 @@ def _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done) -> 
         if xbrl and r.xbrl and not facts_path(root, r).exists():
             jobs.append(("xbrl", r, doc_url(r.ticker, r.xbrl), facts_path(root, r)))
     for k, (kind, r, url, path) in enumerate(jobs[:max_docs]):
+        if kind == "text" and not pdf:                          # 途中で本文を書けなくなった。その後の本文は取りに行かない
+            continue
         started = time.monotonic()
         try:
             blob = get(url)
@@ -335,10 +381,17 @@ def _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done) -> 
             done["missing"] += 1
             _wait(started, interval)
             continue
-        path.parent.mkdir(parents=True, exist_ok=True)
         if kind == "text":
-            path.write_text(pdf_text(blob), encoding="utf-8")
+            try:
+                _write_text(path, pdf_text(blob))
+            except OSError as e:                                # 外付けのディスクが外れた・書き込みを止められた。数字の収集は続ける
+                log(f"  ⚠ 本文を書けなかった（{str(e)[:60]}）。今回は、この後の本文を取りに行かず、数字だけ取る")
+                pdf = False
+                done["no_text_place"] = 1
+                _wait(started, interval)
+                continue
         else:
+            path.parent.mkdir(parents=True, exist_ok=True)
             summary = xbrl_summary(blob)
             if summary:
                 path.with_suffix(".zip").write_bytes(summary)                        # サマリーの原本（読み直し用）
@@ -405,11 +458,7 @@ def _save_history(root: Path, r, blob: bytes, keep_pdf: bool) -> None:
         raw = pdf_root(root) / str(r.time)[:7] / f"{r.id}.pdf"
         raw.parent.mkdir(parents=True, exist_ok=True)
         raw.write_bytes(blob)
-    path = text_path(root, r)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".part")
-    tmp.write_text(pdf_text(blob), encoding="utf-8")
-    tmp.replace(path)                                           # 本文のファイルがあることが「取った」印。書き終えてから名前を付ける（原本より後）
+    _write_text(text_path(root, r), pdf_text(blob))             # 原本より後に書く（本文のファイルがあることが「取った」印）
 
 
 def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: int | None = None, keep_pdf: bool = True,

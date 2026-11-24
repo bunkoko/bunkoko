@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -749,18 +751,117 @@ def test_collector_skips_body_text_when_its_folder_is_not_reachable(tmp_path):
 
 def test_text_place_tells_where_the_body_text_goes(tmp_path):
     plain = C.text_place(tmp_path / "a")
-    assert plain == {"path": str(tmp_path / "a" / "text"), "link": False, "ready": True}
+    assert plain == {"path": str(tmp_path / "a" / "text"), "link": False, "seen": True, "ready": True}
+    assert list((tmp_path / "a" / "text").iterdir()) == []                             # 確かめに書いたファイルは残さない
     (tmp_path / "b").mkdir()
     (tmp_path / "b" / "text").symlink_to(tmp_path / "gone" / "ir_text")
     away = C.text_place(tmp_path / "b")
-    assert away["link"] and not away["ready"] and away["path"].endswith("gone/ir_text")
+    assert away["link"] and not away["seen"] and not away["ready"] and away["path"].endswith("gone/ir_text")
+
+
+def test_text_place_is_ready_only_when_a_file_can_really_be_written(tmp_path, monkeypatch):
+    """権限の印（os.access）は「書ける」でも、macOS が外付けへの書き込みを止めていると書けない。実際に書いて確かめる。"""
+    disk = tmp_path / "disk" / "ir_text"
+    disk.mkdir(parents=True)
+    (tmp_path / "ir").mkdir()
+    (tmp_path / "ir" / "text").symlink_to(disk)
+    assert C.text_place(tmp_path / "ir")["ready"]
+    real = Path.write_bytes
+
+    def blocked(self, data):
+        if disk in self.resolve().parents:
+            raise PermissionError(1, "Operation not permitted")
+        return real(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", blocked)
+    place = C.text_place(tmp_path / "ir")
+    assert place["link"] and place["seen"] and not place["ready"]
+    line = C.text_place_line(place)
+    assert line.startswith("⚠") and "つながっているが、書けない" in line and "プライバシーとセキュリティ" in line
+
+
+def test_text_place_does_not_wait_forever_for_a_disk_that_does_not_answer(tmp_path, monkeypatch):
+    """macOS が「許可しますか」の窓を出して待たせている間、書き込みは返ってこない（誰も Mac の前にいない朝は、そのまま止まる）。
+
+    待ち続けずに「書けない」として先へ進む（毎朝の収集が止まると、決算の数字が取れず、その日の E1 の一覧が欠ける）。
+    """
+    import threading
+    import time
+
+    disk = tmp_path / "disk" / "ir_text"
+    disk.mkdir(parents=True)
+    (tmp_path / "ir").mkdir()
+    (tmp_path / "ir" / "text").symlink_to(disk)
+    release = threading.Event()
+    real = Path.write_bytes
+
+    def stuck(self, data):
+        if disk in self.resolve().parents:
+            release.wait(5)                                                            # 返事が来るまで返ってこない
+            raise PermissionError(1, "Operation not permitted")
+        return real(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", stuck)
+    monkeypatch.setattr(C, "PROBE_SECONDS", 0.2, raising=False)
+    started = time.monotonic()
+    place = C.text_place(tmp_path / "ir")
+    took = time.monotonic() - started
+    release.set()
+    assert place["seen"] and not place["ready"] and took < 2
+    assert "許可" in C.text_place_line(place)
+
+
+def test_collector_keeps_fetching_numbers_when_the_text_disk_goes_away_midway(tmp_path):
+    """取っている間に外付けのディスクが外れても、収集は止まらない: その後の本文は取りに行かず、数字は最後まで取る。
+
+    数字が抜けると、その日の 13:05 の E1 の記録が傷む。
+    """
+    import shutil
+
+    disc = pd.DataFrame([("p1", "2026-10-08 15:30:00", "7203.T", "トヨタ", "決算短信", "", "x1.zip"),
+                         ("p2", "2026-10-09 15:30:00", "1332.T", "ニッスイ", "お知らせ", "", ""),
+                         ("p3", "2026-10-09 16:00:00", "6758.T", "ソニー", "決算短信", "", "x3.zip")], columns=C.COLUMNS)
+    root, disk = tmp_path / "ir", tmp_path / "disk" / "ir_text"
+    root.mkdir()
+    disk.mkdir(parents=True)
+    (root / "text").symlink_to(disk)
+    calls, logs = [], []
+
+    def get(url):
+        calls.append(url.rsplit("/", 1)[-1])
+        if url.endswith("p2.pdf"):
+            shutil.rmtree(disk.parent)                                                 # 2 つ目の本文を取っている間に、ディスクが外れた
+        return _xbrl_zip() if url.endswith(".zip") else _pdf("hello")
+
+    got = C.collect_docs(disc, root, interval=0, get=get, log=logs.append)
+    assert calls == ["p1.pdf", "x1.zip", "p2.pdf", "x3.zip"]                           # 外れた後は、本文（p3.pdf）を取りに行かない
+    assert got["text"] == 1 and got["xbrl"] == 2 and got["no_text_place"] == 1
+    assert sum("⚠" in s and "本文を書けなかった" in s for s in logs) == 1
+    assert (root / "xbrl" / "2026-10" / "x3.csv").exists()
+
+
+def test_collector_does_not_leave_a_half_written_body_text(tmp_path, monkeypatch):
+    """本文のファイルがあることが「取った」印。書きかけで止まっても、その名前のファイルは残さない（次の回に取り直す）。"""
+    disc = pd.DataFrame([("p1", "2026-10-08 15:30:00", "7203.T", "トヨタ", "お知らせ", "", "")], columns=C.COLUMNS)
+    root = tmp_path / "ir"
+    real = Path.replace
+
+    def cut(self, target):
+        raise OSError("ディスクが外れた")
+
+    monkeypatch.setattr(Path, "replace", cut)
+    got = C.collect_docs(disc, root, interval=0, get=lambda url: _pdf("hello"), log=lambda s: None)
+    assert got["text"] == 0 and not (root / "text" / "2026-10" / "p1.txt").exists()
+    monkeypatch.setattr(Path, "replace", real)
+    again = C.collect_docs(disc, root, interval=0, get=lambda url: _pdf("hello"), log=lambda s: None)
+    assert again["text"] == 1 and (root / "text" / "2026-10" / "p1.txt").read_text(encoding="utf-8") == "hello"
 
 
 def test_text_place_line_warns_when_the_disk_is_away(tmp_path):
     assert C.text_place_line({"path": "data/agents/ir/text", "link": False, "ready": True}) == "本文の置き場所: data/agents/ir/text"
-    on = C.text_place_line({"path": "/Volumes/HDD/bunkoko/ir_text", "link": True, "ready": True})
-    off = C.text_place_line({"path": "/Volumes/HDD/bunkoko/ir_text", "link": True, "ready": False})
-    assert "/Volumes/HDD/bunkoko/ir_text" in on and "つながっている" in on and "⚠" not in on
+    on = C.text_place_line({"path": "/Volumes/HDD/bunkoko/ir_text", "link": True, "seen": True, "ready": True})
+    off = C.text_place_line({"path": "/Volumes/HDD/bunkoko/ir_text", "link": True, "seen": False, "ready": False})
+    assert "/Volumes/HDD/bunkoko/ir_text" in on and "外付けのディスクへのリンク。つながっている" in on and "書ける" in on and "⚠" not in on
     assert off.startswith("⚠") and "つながっていない" in off
 
 
