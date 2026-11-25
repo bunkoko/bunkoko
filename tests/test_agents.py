@@ -130,7 +130,7 @@ def test_collector_collects_docs_slowly_and_resumes(tmp_path):
 
     got = C.collect_docs(disc, tmp_path, interval=0, get=get, log=lambda s: None)
     assert got == {"text": 2, "xbrl": 1, "missing": 1, "left": 0}
-    assert calls[0] == "https://www2.jpx.co.jp/disc/72030/p1.pdf" and calls[1].endswith("/72030/x1.zip")
+    assert calls[0].endswith("/72030/x1.zip") and calls[1] == "https://www2.jpx.co.jp/disc/72030/p1.pdf"      # 決算の数字が先
     assert (tmp_path / "text" / "2026-10" / "p1.txt").read_text(encoding="utf-8") == "hello"
     assert pd.read_csv(tmp_path / "xbrl" / "2026-10" / "x1.csv")["name"].tolist()[:2] == ["NetSales", "ChangeInOperatingIncome"]
     assert (tmp_path / "xbrl" / "2026-10" / "x1.zip").exists()                        # サマリーの原本も残す
@@ -741,14 +741,119 @@ def test_daily_collection_tells_failures_apart_from_not_yet_posted(tmp_path):
         if url.endswith("p1.pdf"):
             raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)             # まだ載っていない
         if url.endswith("x1.zip"):
-            raise urllib.error.HTTPError(url, 403, "Forbidden", {}, None)             # 断られた
+            raise urllib.error.HTTPError(url, 500, "Server Error", {}, None)          # サイトの不調
         if url.endswith("p2.pdf"):
             raise TimeoutError("timed out")
         return _xbrl_zip() if url.endswith(".zip") else _pdf("hello")
 
     got = C.collect_docs(disc, tmp_path, interval=0, get=get, log=logs.append)
-    assert got["missing"] == 1 and got["failed"] == 2 and got["why"] == "HTTP 403 ×1、時間切れ ×1" and got["text"] == 1 and got["xbrl"] == 1
-    assert sum(s.strip().startswith("⚠") and "取れなかった 2 件" in s and "HTTP 403" in s for s in logs) == 1
+    assert got["missing"] == 1 and got["failed"] == 2 and got["why"] == "HTTP 500 ×1、時間切れ ×1" and got["text"] == 1 and got["xbrl"] == 1
+    assert sum(s.strip().startswith("⚠") and "取れなかった 2 件" in s and "HTTP 500" in s for s in logs) == 1
+
+
+# --------------------------------------------------------------------------- サイトに断られたとき（2026-11-25: 過去分を 18 時間続けて取った後、HTTP 503 で断られた）
+DISC3 = [("p1", "2026-10-08 15:30:00", "7203.T", "トヨタ", "決算短信", "", "x1.zip"),
+         ("p2", "2026-10-09 15:30:00", "1332.T", "ニッスイ", "お知らせ", "", ""),
+         ("p3", "2026-10-09 16:00:00", "6758.T", "ソニー", "決算短信", "", "x3.zip")]
+
+
+def _refuse(url, code=503, headers=None):
+    return urllib.error.HTTPError(url, code, "Service Unavailable", headers or {}, None)
+
+
+def test_daily_collection_takes_the_numbers_first(tmp_path):
+    """決算の数字は、その日の 13:05 の E1 の一覧に要る。サイトが少ししか通してくれない朝でも、数字が先に取れるようにする。"""
+    calls = []
+    C.collect_docs(pd.DataFrame(DISC3, columns=C.COLUMNS), tmp_path, interval=0, log=lambda s: None,
+                   get=lambda url: calls.append(url.rsplit("/", 1)[1]) or (_xbrl_zip() if url.endswith(".zip") else _pdf("a")))
+    assert calls == ["x1.zip", "x3.zip", "p1.pdf", "p2.pdf", "p3.pdf"]
+
+
+def test_daily_collection_waits_and_slows_down_when_the_site_refuses(tmp_path):
+    """断られたら、たたみかけない: 待ってから同じ書類をもう一度取り、その回の残りはゆっくり取る。断られたことは覚えておく。"""
+    import json
+    from datetime import datetime
+
+    calls, slept, logs = [], [], []
+
+    def get(url):
+        calls.append(url.rsplit("/", 1)[1])
+        if calls.count("x3.zip") == 1 and calls[-1] == "x3.zip":
+            raise _refuse(url)                                                          # 2 件目で 1 度だけ断られた
+        return _xbrl_zip() if url.endswith(".zip") else _pdf("a")
+
+    got = C.collect_docs(pd.DataFrame(DISC3, columns=C.COLUMNS), tmp_path, interval=0, get=get, log=logs.append, sleep=slept.append,
+                         now=lambda: datetime(2026, 11, 26, 8, 0))
+    assert calls == ["x1.zip", "x3.zip", "x3.zip", "p1.pdf", "p2.pdf", "p3.pdf"] and slept == [60.0]
+    assert got["xbrl"] == 2 and got["text"] == 3 and "refused" not in got
+    assert any("サイトに断られた（HTTP 503）" in s and "60 秒待って" in s for s in logs)
+    rec = json.loads((tmp_path / C.REFUSED_FILE).read_text(encoding="utf-8"))
+    assert rec["at"] == "2026-11-26 08:00:00" and rec["code"] == 503
+
+
+def test_daily_collection_gives_up_politely_when_the_site_keeps_refusing(tmp_path):
+    calls, slept, logs = [], [], []
+
+    def get(url):
+        calls.append(url.rsplit("/", 1)[1])
+        raise _refuse(url)
+
+    got = C.collect_docs(pd.DataFrame(DISC3, columns=C.COLUMNS), tmp_path, interval=0, get=get, log=logs.append, sleep=slept.append)
+    assert calls == ["x1.zip"] * 3 and slept == [60.0, 120.0]                           # 3 回断られたら、その回はやめる（残りは次の回）
+    assert got["refused"] == 3 and got["left"] == 5 and got["xbrl"] == 0 and got["text"] == 0
+    assert sum(s.strip().startswith("⚠") and "今回はここでやめる" in s for s in logs) == 1
+
+
+def test_daily_collection_follows_the_wait_the_site_asks_for(tmp_path):
+    calls, slept = [], []
+
+    def get(url):
+        calls.append(url.rsplit("/", 1)[1])
+        if len(calls) == 1:
+            raise _refuse(url, headers={"Retry-After": "30"})
+        return _xbrl_zip() if url.endswith(".zip") else _pdf("a")
+
+    C.collect_docs(pd.DataFrame(DISC3, columns=C.COLUMNS), tmp_path, interval=0, get=get, log=lambda s: None, sleep=slept.append)
+    assert slept == [30.0] and len(calls) == 6
+    calls.clear()
+    slept.clear()
+
+    def long_wait(url):
+        calls.append(url)
+        raise _refuse(url, headers={"Retry-After": "7200"})                             # 「2 時間後に」と言われたら、待たずにその回はやめる
+
+    got = C.collect_docs(pd.DataFrame(DISC3, columns=C.COLUMNS), tmp_path / "b", interval=0, get=long_wait, log=lambda s: None, sleep=slept.append)
+    assert len(calls) == 1 and slept == [] and got["refused"] == 1
+
+
+def test_daily_collection_goes_slowly_for_a_while_after_a_refusal(tmp_path):
+    """断られてからしばらく（GENTLE_DAYS 日）は、毎日の収集も間隔を 10 倍にあけて取る。"""
+    import time
+    from datetime import datetime, timedelta
+
+    now = datetime(2026, 11, 26, 8, 0)
+    disc = pd.DataFrame(DISC3, columns=C.COLUMNS)
+    logs = []
+    C.note_refused(tmp_path, 503, now - timedelta(days=2))
+    started = time.monotonic()
+    C.collect_docs(disc, tmp_path, interval=0.02, xbrl=False, get=lambda url: _pdf("a"), log=logs.append, now=lambda: now)
+    assert time.monotonic() - started >= 0.4 and any("ゆっくり取る" in s and "0.2 秒に 1 件" in s for s in logs)      # 3 件・間は 0.2 秒
+    logs.clear()
+    C.note_refused(tmp_path / "b", 503, now - timedelta(days=C.GENTLE_DAYS + 1))        # 日数が過ぎたら、ふつうの速さに戻る
+    started = time.monotonic()
+    C.collect_docs(disc, tmp_path / "b", interval=0.02, xbrl=False, get=lambda url: _pdf("a"), log=logs.append, now=lambda: now)
+    assert time.monotonic() - started < 0.3 and not any("ゆっくり" in s for s in logs)
+
+
+def test_the_last_refusal_seen_on_the_real_site_counts_too(tmp_path, monkeypatch):
+    """Mac の側に覚え（ファイル）が無くても、実物で最後に断られた時刻（道具に書いてある）から数える。先の時刻は数えない。"""
+    from datetime import datetime
+
+    monkeypatch.setattr(C, "REFUSED_SEEN", "2026-11-25 20:15")
+    assert C.last_refused(tmp_path, datetime(2026, 11, 26, 8, 0)) == datetime(2026, 11, 25, 20, 15)
+    assert C.last_refused(tmp_path, datetime(2026, 11, 25, 12, 0)) is None
+    C.note_refused(tmp_path, 503, datetime(2026, 11, 27, 9, 0))
+    assert C.last_refused(tmp_path, datetime(2026, 11, 28, 8, 0)) == datetime(2026, 11, 27, 9, 0)
 
 
 def test_collector_skips_body_text_when_its_folder_is_not_reachable(tmp_path):
@@ -859,7 +964,7 @@ def test_collector_keeps_fetching_numbers_when_the_text_disk_goes_away_midway(tm
         return _xbrl_zip() if url.endswith(".zip") else _pdf("hello")
 
     got = C.collect_docs(disc, root, interval=0, get=get, log=logs.append)
-    assert calls == ["p1.pdf", "x1.zip", "p2.pdf", "x3.zip"]                           # 外れた後は、本文（p3.pdf）を取りに行かない
+    assert calls == ["x1.zip", "x3.zip", "p1.pdf", "p2.pdf"]                           # 数字が先。外れた後は、本文（p3.pdf）を取りに行かない
     assert got["text"] == 1 and got["xbrl"] == 2 and got["no_text_place"] == 1
     assert sum("⚠" in s and "本文を書けなかった" in s for s in logs) == 1
     assert (root / "xbrl" / "2026-10" / "x3.csv").exists()

@@ -68,6 +68,51 @@ def reason_summary(reasons: list[str]) -> str:
     return "、".join(f"{r} ×{n}" for r, n in count.items())
 
 
+# 東証のサイトに断られたとき（2026-11-25: 過去分を 18 時間続けて取った後、HTTP 503 で断られ、7 時間後も 3 件目で断られた）。
+# サイトは「高頻度・高負荷に繋がる可能性のある自動取得等はご遠慮いただいております」としている（docs/agents.md 3 章）。
+REFUSED = (403, 429, 503)                 # サイトに断られた印
+REFUSED_FILE = ".site_refused.json"       # 最後に断られた時刻の覚え（data/agents/ir の下。その機械の時計）
+REFUSED_SEEN: str | None = "2026-11-25 20:15"   # 実物で最後に断られた時刻（Mac の側に覚えが無いときのために、ここにも書く）
+REFUSE_TRIES, REFUSE_TOTAL = 3, 6         # 毎日の収集: 続けて 3 回・合わせて 6 回断られたら、その回はやめる（たたみかけない）
+REFUSE_WAIT, REFUSE_WAIT_MAX = 60.0, 600.0      # 断られたら待つ秒数（60・120…。サイトが待つ長さを言ってきたら、それに従う。10 分より長ければやめる）
+GENTLE_FACTOR, GENTLE_DAYS = 10, 14       # 断られてから 14 日は、毎日の収集も間隔を 10 倍にあけて取る（1 秒 → 10 秒に 1 件）
+COOL_OFF_DAYS = 7                         # 断られてから 7 日は、過去分をまとめて取らない
+
+
+def note_refused(root: Path, code: int, when) -> None:
+    """サイトに断られた時刻を覚える（毎日の収集はしばらくゆっくり取り、過去分の取得は休む）。"""
+    root.mkdir(parents=True, exist_ok=True)
+    tmp = root / (REFUSED_FILE + ".tmp")
+    tmp.write_text(json.dumps({"at": f"{when:%Y-%m-%d %H:%M:%S}", "code": int(code)}), encoding="utf-8")
+    tmp.replace(root / REFUSED_FILE)
+
+
+def last_refused(root: Path, when):
+    """最後にサイトに断られた時刻（when より後の時刻は数えない）。断られたことが無ければ None。"""
+    from datetime import datetime
+
+    times = []
+    if REFUSED_SEEN:
+        times.append(datetime.fromisoformat(REFUSED_SEEN))
+    try:
+        times.append(datetime.fromisoformat(json.loads((root / REFUSED_FILE).read_text(encoding="utf-8"))["at"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    times = [x for x in times if x <= when]
+    return max(times) if times else None
+
+
+def refuse_wait(e, n: int) -> float | None:
+    """n 回続けて断られたときに待つ秒数。サイトが待つ長さ（Retry-After）を言ってきたら、それに従う。長すぎるときは None（その回はやめる）。"""
+    try:
+        asked = float((e.headers or {}).get("Retry-After") or 0)
+    except (AttributeError, TypeError, ValueError):
+        asked = 0.0
+    if asked > REFUSE_WAIT_MAX:
+        return None
+    return asked if asked > 0 else min(REFUSE_WAIT * 2 ** (n - 1), REFUSE_WAIT_MAX)
+
+
 def ticker_of(code: str) -> str:
     """TDnet の会社コード（5 桁。例 72030、417A0）を Yahoo の形（7203.T）に。"""
     return str(code).strip()[:4] + ".T"
@@ -347,7 +392,7 @@ def wanted(root: Path) -> bool:
 
 def collect_docs(disc: pd.DataFrame, root: Path, pdf: bool = True, xbrl: bool = True, max_docs: int = 300, interval: float = INTERVAL,
                  get: Callable[[str], bytes] | None = None, log: Callable[[str], None] = print, wait: float = 0.0,
-                 sleep: Callable[[float], None] = time.sleep) -> dict[str, int]:
+                 sleep: Callable[[float], None] = time.sleep, now=None) -> dict[str, int]:
     """disc の開示について、まだ無い本文（文字にしたもの）と数字を取って root（data/agents/ir）の下に保存する。
 
     PDF そのものは残さない。interval 秒に 1 件の速さで取る。取れなかったもの（まだ載っていない・消えた）は次の機会にまた試す。
@@ -372,7 +417,9 @@ def collect_docs(disc: pd.DataFrame, root: Path, pdf: bool = True, xbrl: bool = 
         finally:
             want.unlink(missing_ok=True)
     try:
-        return _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done)
+        from datetime import datetime
+
+        return _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done, sleep, now or datetime.now)
     finally:
         docs_unlock(root)
 
@@ -384,7 +431,9 @@ def _wait(started: float, interval: float) -> None:
         time.sleep(rest)
 
 
-def _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done) -> dict[str, int]:
+def _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done, sleep, now) -> dict[str, int]:
+    from datetime import timedelta
+
     if pdf:
         place = text_place(root)
         if not place["ready"]:                                  # 書けない所へは取りに行かない（取っても残せない）。数字は取る
@@ -392,27 +441,52 @@ def _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done) -> 
             log(f"  ⚠ 本文の置き場所（{place['path']}）に書けない（{why}）。今回は本文を取らず、数字だけ取る")
             pdf = False
             done["no_text_place"] = 1
-    jobs = []
+    numbers, texts = [], []
     for r in disc.itertuples(index=False):
-        if pdf and not text_path(root, r).exists():
-            jobs.append(("text", r, doc_url(r.ticker, f"{r.id}.pdf"), text_path(root, r)))
         if xbrl and r.xbrl and not facts_path(root, r).exists():
-            jobs.append(("xbrl", r, doc_url(r.ticker, r.xbrl), facts_path(root, r)))
+            numbers.append(("xbrl", r, doc_url(r.ticker, r.xbrl), facts_path(root, r)))
+        if pdf and not text_path(root, r).exists():
+            texts.append(("text", r, doc_url(r.ticker, f"{r.id}.pdf"), text_path(root, r)))
+    jobs = (numbers + texts)[:max_docs]                         # 決算の数字が先（その日の 13:05 の E1 の一覧に要る。サイトが少ししか通さない朝でも、数字を先に取る）
+    left = max(len(numbers) + len(texts) - max_docs, 0)
+    pace = interval
+    seen = last_refused(root, now())
+    if seen is not None and now() - seen < timedelta(days=GENTLE_DAYS):
+        pace = interval * GENTLE_FACTOR
+        log(f"  サイトに断られた後（{seen:%m-%d %H:%M}）なので、しばらくはゆっくり取る（{pace:g} 秒に 1 件。断られてから {GENTLE_DAYS} 日間）")
     odd: list[str] = []                                         # 「まだ載っていない」（404）とは別の、取れなかった理由
-    for k, (kind, r, url, path) in enumerate(jobs[:max_docs]):
+    k = row = total = 0                                         # row・total: 続けて・合わせて、断られた数
+    while k < len(jobs):
+        kind, r, url, path = jobs[k]
         if kind == "text" and not pdf:                          # 途中で本文を書けなくなった。その後の本文は取りに行かない
+            k += 1
             continue
         started = time.monotonic()
         try:
             blob = get(url)
         except Exception as e:  # noqa: BLE001
+            if isinstance(e, urllib.error.HTTPError) and e.code in REFUSED:           # 断られた: たたみかけない
+                row, total = row + 1, total + 1
+                note_refused(root, e.code, now())
+                pause = refuse_wait(e, row)
+                if pause is None or row >= REFUSE_TRIES or total >= REFUSE_TOTAL:
+                    done["refused"], done["why_refused"] = total, f"HTTP {e.code}"
+                    left += len(jobs) - k
+                    log(f"  ⚠ サイトに断られた（HTTP {e.code}。この回で {total} 回）。今回はここでやめる（残りは次の回に取る。たたみかけない）")
+                    break
+                pace = min(max(pace * 2, interval * GENTLE_FACTOR), interval * 60)
+                log(f"  サイトに断られた（HTTP {e.code}）。{pause:.0f} 秒待って、同じ書類からゆっくり続ける（{pace:g} 秒に 1 件）")
+                sleep(pause)
+                continue                                        # 同じ書類をもう一度
             why = fail_reason(e)
             if why is None:
                 done["missing"] += 1
             else:
                 odd.append(why)
-            _wait(started, interval)
+            _wait(started, pace)
+            k += 1
             continue
+        row = 0
         if kind == "text":
             try:
                 _write_text(path, pdf_text(blob))
@@ -420,7 +494,8 @@ def _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done) -> 
                 log(f"  ⚠ 本文を書けなかった（{str(e)[:60]}）。今回は、この後の本文を取りに行かず、数字だけ取る")
                 pdf = False
                 done["no_text_place"] = 1
-                _wait(started, interval)
+                _wait(started, pace)
+                k += 1
                 continue
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -430,9 +505,10 @@ def _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done) -> 
             xbrl_facts(blob).to_csv(path, index=False)
         done[kind] += 1
         if (k + 1) % 50 == 0:
-            log(f"  書類 {k + 1}/{min(len(jobs), max_docs)}（本文 {done['text']}・数字 {done['xbrl']}・まだ無い {done['missing']}）")
-        _wait(started, interval)
-    done["left"] = max(len(jobs) - max_docs, 0)
+            log(f"  書類 {k + 1}/{len(jobs)}（本文 {done['text']}・数字 {done['xbrl']}・まだ無い {done['missing']}）")
+        _wait(started, pace)
+        k += 1
+    done["left"] = left
     if odd:                                                     # 決算の数字が抜けているおそれがあるので、数と理由を出す
         done["failed"], done["why"] = len(odd), reason_summary(odd)
         log(f"  ⚠ 取れなかった {len(odd)} 件（{done['why']}）。「まだ載っていない」とは別（サイトに断られた・回線やサイトの不調）。次の回にもう一度試す")
@@ -443,7 +519,9 @@ def _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done) -> 
 MISS_FILE = "text_missing.csv"            # サイトに無かった書類（404）の控え。過去分では、もう取りに行かない
 QUIET_FROM, QUIET_TO = (7, 50), (8, 45)   # 毎朝 8:00 の収集に場所をゆずる時間（その機械の時計）。この間は取らない・錠も持たない
 HISTORY_CHUNK = 200                       # 1 度の錠で取る数（3 分ちょっと。終わるたびに錠を放す）
-REFUSED = (403, 429, 503)                 # サイトに断られた印。すぐ止める（続けて取りに行かない）
+HISTORY_INTERVAL = 10.0                   # 過去分をまとめて取るときの間隔（秒）。毎日の収集（1 秒）より長くあける（2026-11-25 に断られた後の決まり）
+HISTORY_DAY_MAX = 2000                    # 過去分を 1 日に取りに行く数（断られたのは、1 日に 6 万件ほど続けて取った後だった。その 30 分の 1）
+DAY_FILE = ".text_history.day.json"       # その日に取りに行った数の覚え
 MAX_FAILS = 10                            # 続けてこれだけ取れなければ止める（回線・サイトの不調）
 FAIL_WAIT, FAIL_WAIT_MAX = 15.0, 300.0    # 取れなかったら、次を試す前にあける間（秒）。続けて取れないたびに倍にする（15・30・60…5 分まで）
 PDF_EACH_MB = 0.6                         # 原本 1 件に見ておく大きさ（測っていない見当。0.3〜1MB の幅の中ほど。9 万件で 55GB ほど）
@@ -507,6 +585,21 @@ def history_running(root: Path) -> int | None:
                 return 0
         fcntl.flock(f, fcntl.LOCK_UN)
     return None
+
+
+def day_count(root: Path, day: str) -> int:
+    """その日（YYYY-MM-DD）に、過去分の取得がサイトへ取りに行った数。"""
+    try:
+        rec = json.loads((root / DAY_FILE).read_text(encoding="utf-8"))
+        return int(rec["n"]) if rec.get("day") == day else 0
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return 0
+
+
+def day_note(root: Path, day: str, n: int) -> None:
+    tmp = root / (DAY_FILE + ".tmp")
+    tmp.write_text(json.dumps({"day": day, "n": int(n)}), encoding="utf-8")
+    tmp.replace(root / DAY_FILE)
 
 
 def pdf_root(root: Path) -> Path:
@@ -625,7 +718,8 @@ def _save_history(root: Path, r, blob: bytes, keep_pdf: bool) -> None:
 
 def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: int | None = None, keep_pdf: bool = True,
                          interval: float = INTERVAL, get: Callable[[str], bytes] | None = None, log: Callable[[str], None] = print,
-                         now=None, sleep: Callable[[float], None] = time.sleep, free: Callable[[str], int] | None = None) -> dict:
+                         now=None, sleep: Callable[[float], None] = time.sleep, free: Callable[[str], int] | None = None,
+                         day_max: int | None = None) -> dict:
     """過去の開示の本文（PDF の最初の数ページを文字にしたもの。毎日の収集と同じ形）を、新しい順にまとめて取る。
 
     決まり: interval 秒に 1 件・同時に 1 本だけ（錠）。毎朝 8:00 の収集の時間（QUIET）は取らず、錠も持たない
@@ -635,8 +729,7 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
     返すのは、取れた数（text）・サイトに無かった数（missing）・取れなかった数（failed）・残り（left）・止まった理由（stopped）。
     """
     import shutil
-    import urllib.error
-    from datetime import datetime
+    from datetime import datetime, timedelta
 
     now = now or datetime.now
     get = get or (lambda url: http_get(url, tries=1))
@@ -647,9 +740,22 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
         return dict(done, stopped="not_external")
     if not place["ready"]:
         return dict(done, stopped="no_text_place")
+    seen = last_refused(root, now())
+    if seen is not None and now() - seen < timedelta(days=COOL_OFF_DAYS):          # 断られた後は、しばらく休む（毎日の収集を守る）
+        return dict(done, stopped="cooling", until=f"{seen + timedelta(days=COOL_OFF_DAYS):%Y-%m-%d %H:%M}")
     jobs = history_jobs(disc, root, since, history_until(now()))
     done["left"] = len(jobs)
     todo = len(jobs) if max_docs is None else min(len(jobs), max_docs)
+    cap = HISTORY_DAY_MAX if day_max is None else day_max
+    asked: dict[str, int] = {}                                  # 日ごとに、サイトへ取りに行った数（覚えてある分に足していく）
+
+    def used(day: str) -> int:
+        if day not in asked:
+            asked[day] = day_count(root, day)
+        return asked[day]
+
+    if todo and used(f"{now():%Y-%m-%d}") >= cap:
+        return dict(done, stopped="day_done")
 
     def room() -> int | None:
         """置き場所の空き（バイト）。ディスクが外れていて測れなければ None。"""
@@ -697,6 +803,11 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
                 if keep_pdf and have < PDF_KEEP_FREE_GB * 2 ** 30:                     # 原本が見当より大きかった・ほかのものが増えた。いっぱいにしない
                     done.update(stopped="no_space", need_gb=pdf_need(todo - i) / 2 ** 30, free_gb=have / 2 ** 30)
                     break
+                day = f"{now():%Y-%m-%d}"
+                if used(day) >= cap:                            # 今日の分は取り終えた（1 日に取りに行く数を決めてある）
+                    done["stopped"] = "day_done"
+                    break
+                asked[day] += 1
                 started = time.monotonic()
                 blob = None
                 try:
@@ -708,6 +819,7 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
                     blob = None
                     if e.code in REFUSED:
                         done["stopped"], done["why"] = "refused", f"HTTP {e.code}"
+                        note_refused(root, e.code, now())       # 覚えておく: 過去分は COOL_OFF_DAYS 日休み、毎日の収集はしばらくゆっくり取る
                         break
                     if e.code in (404, 410):
                         with open(root / MISS_FILE, "a", encoding="utf-8") as f:
@@ -761,6 +873,9 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
                         f"この速さで、あと {span_text(per * (todo - i))}")
         finally:
             docs_unlock(root)
+            for day, n in asked.items():
+                if n > day_count(root, day):
+                    day_note(root, day, n)                      # いちばん新しい日の分が残る（日をまたいだら、新しい日の数）
     done["left"] = len(jobs) - done["text"] - done["missing"]
     return done
 

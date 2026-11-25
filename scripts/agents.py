@@ -34,7 +34,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -129,6 +129,7 @@ TEXT_HISTORY_WHY = {   # 過去の本文の取得が止まった理由（利用�
     "refused": "サイトに断られた（{why}）。すぐ止めた。今日はもう取りに行かない。明日以降に同じコマンドで続きから（続くようなら指令役に知らせる）",
     "network": "続けて取れなかった（{why}）。回線かサイトの不調。間をあけながら試したが、だめだった。時間をおいて、まず 1 件だけ試す（--history-max 1）。取れたら同じコマンドで続きから",
     "disk": "取っている間に HDD に書けなくなった（外れた・いっぱいになった）。直して、同じコマンドで続きから",
+    "cooling": "サイトに断られたので、{until} までは過去分をまとめて取らない（断られてから {cool} 日は休む決まり。毎日の収集を守るため。確かめの 1 件も取らない）。何も取っていない",
 }
 
 
@@ -212,16 +213,20 @@ def _text_history(args, C, df, ir_root) -> None:
     jobs = len(C.history_jobs(df, ir_root, HISTORY_FROM, C.history_until(datetime.now()))) if place["ready"] else 0
     todo = min(jobs, args.history_max) if args.history_max else jobs
     print(f"過去の本文: {HISTORY_FROM[:7]} からの開示のうち、まだ本文の無い {jobs:,} 件" + (f"のうち {todo:,} 件" if todo < jobs else "")
-          + f"を、新しい順に {C.INTERVAL:g} 秒に 1 件ずつ取る（東証 上場会社情報サービス。同時に 1 本。いちばん速くて {todo * max(C.INTERVAL, 0.0) / 3600:.1f} 時間。受け取りと読み取りにかかる分、実際はその数倍。今の速さと残りの時間は ./cfd agents status。"
-          "毎朝 7:50〜8:45 は休む）", flush=True)
+          + f"を、新しい順に {C.HISTORY_INTERVAL:g} 秒に 1 件ずつ取る（東証 上場会社情報サービス。同時に 1 本。"
+          f"1 日に {C.HISTORY_DAY_MAX:,} 件まで ＝ 全部で {-(-todo // max(C.HISTORY_DAY_MAX, 1)):,} 日ほど。今の速さは ./cfd agents status。毎朝 7:50〜8:45 は休む）", flush=True)
     print("過去の本文: " + C.text_place_line(place) + ("。原本の PDF も、となりの ir_pdf に残す" if keep_pdf else "。原本の PDF は残さない"), flush=True)
     keep_awake()
     got = C.collect_text_history(df, ir_root, HISTORY_FROM, max_docs=args.history_max or None, keep_pdf=keep_pdf,
-                                 interval=C.INTERVAL, log=lambda s: print(s, flush=True))
+                                 interval=C.HISTORY_INTERVAL, log=lambda s: print(s, flush=True))
     print(f"過去の本文: 取れた +{got['text']:,}、サイトに無い {got['missing']:,}、取れなかった {got['failed']:,}、残り {got['left']:,}", flush=True)
+    if got["stopped"] == "day_done":                            # ふつうの止まり方（1 日に取りに行く数を決めてある）
+        print(f"過去の本文: 今日の分（1 日に {C.HISTORY_DAY_MAX:,} 件まで）は取り終えた。続きは明日以降に、同じコマンドで", flush=True)
+        return
     if got["stopped"]:
         sys.exit("過去の本文: ⚠ " + TEXT_HISTORY_WHY[got["stopped"]].format(need=got.get("need_gb", 0.0), free=got.get("free_gb", 0.0), keep=C.PDF_KEEP_FREE_GB,
-                                                                             why=got.get("why") or "理由は分からない"))
+                                                                             why=got.get("why") or "理由は分からない",
+                                                                             until=got.get("until", ""), cool=C.COOL_OFF_DAYS))
     print("過去の本文: " + ("終わった" if not got["left"] else "ここまで。続きは同じコマンドで（取れなかったものは、もう一度試す）"), flush=True)
 
 
@@ -296,6 +301,9 @@ def cmd_collect(args) -> None:
         else:
             bad = f"、取れなかった {got['failed']}（{got['why']}）" if got.get("failed") else ""
             print(f"情報収集: 本文 +{got['text']}、数字 +{got['xbrl']}、まだ載っていない {got['missing']}{bad}、残り {got['left']}", flush=True)
+            if got.get("refused"):
+                print(f"情報収集: ⚠ サイトに断られた（{got['why_refused']}。この回で {got['refused']} 回）。待ちながら試したが、今回は途中でやめた（残りは次の回に取る）。"
+                      "決算の数字が抜けているおそれがある → 指令役に知らせる", flush=True)
             if got.get("failed"):
                 print("情報収集: ⚠ 取れなかった書類がある（「まだ載っていない」とは別。決算の数字が抜けているおそれ。続くようなら指令役に知らせる）", flush=True)
 
@@ -1898,6 +1906,10 @@ def cmd_status(args) -> None:
         running = C.history_running(ir_root) is not None
         now = "動いている" if running else "止まっている"
         print(f"過去の本文（{HISTORY_FROM[:7]}〜）: 取ってある {len(past) - left - miss:,} 件・サイトに無い {miss:,} 件・残り {left:,} 件。取得は今: {now}")
+        seen = C.last_refused(ir_root, datetime.now())
+        if seen is not None and datetime.now() - seen < timedelta(days=C.COOL_OFF_DAYS):
+            print(f"  サイトに断られたので（{seen:%m-%d %H:%M}）、{seen + timedelta(days=C.COOL_OFF_DAYS):%m-%d %H:%M} までは過去分をまとめて取らない"
+                  f"（毎日の収集は、ゆっくり続ける）")
         if place["link"]:
             for line in history_outlook(C, ir_root, place, left, running):
                 print(line)

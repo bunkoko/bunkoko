@@ -13,6 +13,14 @@ from cfdbot.data import synthetic_ohlc  # noqa: E402
 from cfdbot.strategies.base import Strategy  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _no_real_refusal_on_record(monkeypatch):
+    """東証のサイトに実物で断られた時刻（collector.REFUSED_SEEN）は、試験では無いものとする。確かめる試験だけが、自分で入れる。"""
+    from cfdbot.agents import collector
+
+    monkeypatch.setattr(collector, "REFUSED_SEEN", None, raising=False)
+
+
 class FixedSignals(Strategy):
     """テスト用: 指定した足で指定の方向にシグナルを出す。"""
 

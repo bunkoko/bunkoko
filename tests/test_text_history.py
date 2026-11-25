@@ -355,6 +355,7 @@ def fast(monkeypatch):
     monkeypatch.setattr(C, "PDF_KEEP_FREE_GB", 0, raising=False)
     monkeypatch.setattr(C, "in_quiet", lambda t: False)           # 試験を朝に流しても休まない
     monkeypatch.setattr(C, "FAIL_WAIT", 0.0, raising=False)       # 取れなかったときの間（本物は 15 秒から）を、試験では待たない
+    monkeypatch.setattr(C, "HISTORY_INTERVAL", 0.0, raising=False)   # まとめて取るときの間隔（本物は 10 秒）
 
 
 def test_tool_takes_the_past_texts_and_tells_what_it_did(tmp_path, capsys, monkeypatch, fast):
@@ -841,3 +842,75 @@ def test_tool_tells_why_the_fetch_could_not_go_on(tmp_path, capsys, monkeypatch,
     with pytest.raises(SystemExit) as stop:
         load_script().cmd_collect(ns(root))
     assert "続けて取れなかった" in str(stop.value) and "HTTP 500 ×2" in str(stop.value)
+
+
+# --------------------------------------------------------------------------- サイトに断られた後の取り方（2026-11-25）
+def test_history_notes_the_refusal_and_rests_for_days(tmp_path):
+    """断られたら、その時刻を覚えて、COOL_OFF_DAYS 日は過去分をまとめて取らない（毎日の収集を守る。確かめの 1 件も取らない）。"""
+    root, _ = hdd(tmp_path)
+    clock = noon()
+    calls = []
+
+    def get(url):
+        calls.append(url)
+        if len(calls) == 2:
+            raise http_error(url, 503)
+        return _pdf("a")
+
+    first = run(root, get, clock=clock)
+    assert first["stopped"] == "refused" and first["why"] == "HTTP 503" and first["text"] == 1
+    assert C.last_refused(root, clock.t) == clock.t
+    calls.clear()
+    clock.t += timedelta(days=2)
+    again = run(root, get, clock=clock)
+    assert again["stopped"] == "cooling" and calls == [] and again["until"] == f"{clock.t + timedelta(days=C.COOL_OFF_DAYS - 2):%Y-%m-%d %H:%M}"
+    clock.t += timedelta(days=C.COOL_OFF_DAYS)                    # 日数が過ぎたら、続きを取れる
+    assert run(root, lambda url: _pdf("a"), clock=clock)["text"] == 2
+
+
+def test_history_takes_only_so_many_a_day(tmp_path):
+    """1 日に取る数を決めておく（サイトに断られたのは、1 日に 6 万件ほど続けて取った後だった）。次の日になれば、続きを取れる。"""
+    root, _ = hdd(tmp_path)
+    clock = noon()
+    calls = []
+
+    def get(url):
+        calls.append(url)
+        return _pdf("a")
+
+    first = run(root, get, rows=MANY[:8], clock=clock, day_max=5)
+    assert first["text"] == 5 and first["stopped"] == "day_done" and first["left"] == 3 and len(calls) == 5
+    assert run(root, get, rows=MANY[:8], clock=clock, day_max=5)["stopped"] == "day_done" and len(calls) == 5     # 同じ日には、もう取らない
+    clock.t += timedelta(days=1)
+    nxt = run(root, get, rows=MANY[:8], clock=clock, day_max=5)
+    assert nxt["text"] == 3 and nxt["stopped"] is None and nxt["left"] == 0
+
+
+def test_tool_tells_when_the_fetch_may_start_again(tmp_path, capsys, monkeypatch, fast):
+    root, ir, _ = world(tmp_path)
+    called = []
+    monkeypatch.setattr(C, "http_get", lambda url, tries=1: called.append(url) or _pdf("a"))
+    C.note_refused(ir, 503, datetime.now() - timedelta(days=1))
+    with pytest.raises(SystemExit) as stop:
+        load_script().cmd_collect(ns(root))
+    assert "サイトに断られた" in str(stop.value) and "までは" in str(stop.value) and called == []
+    load_script().cmd_status(ns(root, out=str(tmp_path / "out")))
+    assert "サイトに断られたので" in capsys.readouterr().out
+
+
+def test_tool_uses_the_slow_pace_for_the_bulk_fetch(tmp_path, capsys, monkeypatch, fast):
+    """まとめて取るときの間隔は、毎日の収集（1 秒）より長い（HISTORY_INTERVAL）。"""
+    root, _, _ = world(tmp_path)
+    monkeypatch.setattr(C, "http_get", lambda url, tries=1: _pdf("a"))
+    seen = {}
+    real = C.collect_text_history
+
+    def spy(*a, **kw):
+        seen.update(kw)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(C, "collect_text_history", spy)
+    monkeypatch.setattr(C, "HISTORY_INTERVAL", 0.01)
+    load_script().cmd_collect(ns(root))
+    out = capsys.readouterr().out
+    assert seen["interval"] == 0.01 and "0.01 秒に 1 件" in out and "1 日に" in out
