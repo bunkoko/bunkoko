@@ -7,8 +7,10 @@ struct HomeView: View {
     @State private var feeling: Int?
     /// 体感を入れる前に、昨夜の数字を見ることにした
     @State private var revealNight = false
-    /// 昨日のふり返りを入れ忘れている
-    @State private var missingYesterday = false
+    /// 入れ忘れていた昨日のふり返りの日（入れ忘れがなければ nil）
+    @State private var missingCheckinDay: String?
+    /// その日のふり返りを、この画面で入れた
+    @State private var savedMissingCheckin = false
     @State private var now = Date()
     @AppStorage("health.authorizationRequested") private var healthRequested = false
 
@@ -66,11 +68,12 @@ struct HomeView: View {
                     }
                 }
 
-                // 朝: 昨日のふり返りを入れ忘れていたら、ここで入れられる
-                if isMorning && missingYesterday {
-                    Section("昨日のふり返り（まだ入っていません）") {
-                        DayCheckinForm(day: DayKey.adding(-1, to: DayKey.activeDay(now))) {
-                            missingYesterday = false
+                // 朝: 昨日のふり返りを入れ忘れていたら、ここで入れられる。
+                // 調子とストレスは1つずつ保存される。1つ入れても欄を消さずに、続けてもう1つも入れられるようにする
+                if isMorning, let day = missingCheckinDay {
+                    Section("\(DayKey.label(day))のふり返り（\(savedMissingCheckin ? "保存しました" : "まだ入っていません")）") {
+                        DayCheckinForm(day: day) {
+                            savedMissingCheckin = true
                         }
                     }
                 }
@@ -102,8 +105,7 @@ struct HomeView: View {
         now = Date()
         let today = Fmt.dateString(now)
         feeling = await LogStore.shared.log(id: Recorder.feelingID(day: today))?.data.score
-        let yesterday = DayKey.adding(-1, to: DayKey.activeDay(now))
-        missingYesterday = await LogStore.shared.log(id: Recorder.checkinID(day: yesterday)) == nil
+        await findMissingCheckin()
         do {
             home = try await APIClient.shared.home()
             errorMessage = nil
@@ -114,6 +116,15 @@ struct HomeView: View {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// 昨日のふり返りを入れ忘れていないか確かめる。
+    /// この画面で入れ始めた欄は、そのまま出しておく（調子だけ入れて、ストレスを入れる前に消えないように）
+    private func findMissingCheckin() async {
+        let yesterday = DayKey.adding(-1, to: DayKey.activeDay(now))
+        if savedMissingCheckin, missingCheckinDay == yesterday { return }
+        missingCheckinDay = await LogStore.shared.log(id: Recorder.checkinID(day: yesterday)) == nil ? yesterday : nil
+        savedMissingCheckin = false
     }
 }
 
