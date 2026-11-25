@@ -769,6 +769,34 @@ def test_daily_collection_takes_the_numbers_first(tmp_path):
     assert calls == ["x1.zip", "x3.zip", "p1.pdf", "p2.pdf", "p3.pdf"]
 
 
+def test_daily_collection_does_not_keep_what_is_not_a_document(tmp_path):
+    """サイトが、書類の代わりにお断りや不調のページ（HTML）を「成功」として返すことがある。
+
+    空の本文・空の数字として残すと「取った」ことになり、取り直せなくなる（決算の数字が抜ける）。残さずに「取れなかった」と数える。
+    """
+    disc = pd.DataFrame(DISC3, columns=C.COLUMNS)
+    logs = []
+
+    def get(url):
+        if url.endswith(("x1.zip", "p2.pdf")):
+            return b"<html><title>Access Denied</title></html>"
+        return _xbrl_zip() if url.endswith(".zip") else _pdf("a")
+
+    got = C.collect_docs(disc, tmp_path, interval=0, get=get, log=logs.append)
+    assert got["xbrl"] == 1 and got["text"] == 2 and got["failed"] == 2
+    assert "zip ではないものが返ってきた" in got["why"] and "PDF ではないものが返ってきた" in got["why"] and "Access Denied" in got["why"]
+    assert not (tmp_path / "text" / "2026-10" / "p2.txt").exists() and not list((tmp_path / "xbrl").rglob("x1.*"))      # 残さない
+    again = C.collect_docs(disc, tmp_path, interval=0, get=lambda url: _xbrl_zip() if url.endswith(".zip") else _pdf("a"), log=logs.append)
+    assert again["xbrl"] == 1 and again["text"] == 1 and "failed" not in again                                           # 次の回に取り直せる
+
+
+def test_a_pdf_may_have_a_few_bytes_before_its_header():
+    """PDF の印（%PDF）は、先頭から少し後ろにあってもよい（決まりの上では 1,024 バイトまで）。それは書類として受け取る。"""
+    assert C.not_a_document("text", b"\xef\xbb\xbf\n" + _pdf("a")) is None and C.not_a_document("xbrl", _xbrl_zip()) is None
+    assert "PDF ではない" in C.not_a_document("text", _xbrl_zip()) and "zip ではない" in C.not_a_document("xbrl", _pdf("a"))
+    assert "zip ではない" in C.not_a_document("xbrl", b"")
+
+
 def test_daily_collection_waits_and_slows_down_when_the_site_refuses(tmp_path):
     """断られたら、たたみかけない: 待ってから同じ書類をもう一度取り、その回の残りはゆっくり取る。断られたことは覚えておく。"""
     import json

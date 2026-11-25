@@ -55,9 +55,22 @@ def fail_reason(e: BaseException) -> str | None:
         return "時間切れ"
     if isinstance(e, urllib.error.URLError):
         return f"つながらない（{str(e.reason)[:40]}）"
-    if isinstance(e, ValueError) and str(e).startswith("PDF ではない"):
+    if isinstance(e, ValueError) and "ではないものが返ってきた" in str(e):
         return str(e)[:90]
     return f"{type(e).__name__}（{str(e)[:40]}）"
+
+
+def not_a_document(kind: str, blob: bytes) -> str | None:
+    """返ってきたものが書類でなければ、その理由（先頭の文字つき）。書類なら None。kind は "text"（PDF）か "xbrl"（zip）。
+
+    サイトが、書類の代わりにお断りや不調のページ（HTML）を「成功」として返すことがある。空の本文・空の数字として残すと
+    「取った」ことになり、取り直せなくなる。PDF の印（%PDF）は、先頭から 1,024 バイトまでにあればよい。
+    """
+    want, ok = ("PDF", b"%PDF" in blob[:1024]) if kind == "text" else ("zip", blob[:2] == b"PK")
+    if ok:
+        return None
+    head = "".join(c if c.isprintable() else " " for c in blob[:50].decode("ascii", "replace"))
+    return f"{want} ではないものが返ってきた（{head.strip()}）"
 
 
 def reason_summary(reasons: list[str]) -> str:
@@ -531,6 +544,9 @@ def _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done, sle
         started = time.monotonic()
         try:
             blob = get(url)
+            bad = not_a_document(kind, blob)
+            if bad:                                             # お断りや不調のページが「成功」として返ってきた。残さない（次の回にもう一度取る）
+                raise ValueError(bad)
         except Exception as e:  # noqa: BLE001
             if isinstance(e, urllib.error.HTTPError) and e.code in REFUSED:           # 断られた: たたみかけない
                 row, total = row + 1, total + 1
@@ -893,9 +909,9 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
                 blob = None
                 try:
                     blob = get(doc_url(r.ticker, f"{r.id}.pdf"))
-                    if not blob.startswith(b"%PDF"):
-                        head = "".join(c if c.isprintable() else " " for c in blob[:50].decode("ascii", "replace"))
-                        raise ValueError(f"PDF ではないものが返ってきた（{head.strip()}）")
+                    bad = not_a_document("text", blob)
+                    if bad:
+                        raise ValueError(bad)
                 except urllib.error.HTTPError as e:
                     blob = None
                     if e.code in REFUSED:
