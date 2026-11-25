@@ -8,7 +8,7 @@ const TZ = "Asia/Tokyo";
 const at = (date: string, hhmm: string) => localTimeOn(date, hhmm, TZ);
 
 /** 1日 = 1行の表の1行（ここで使う項目だけ）。onset は起きた日の時刻（"01:00"）か、前の日の時刻（"-23:30"） */
-function day(date: string, values: { onset?: string; asleepMin?: number; steps?: number | null; usable?: boolean; unusual?: boolean } = {}): AnalysisDay {
+function day(date: string, values: { onset?: string; asleepMin?: number; steps?: number | null; usable?: boolean; unusual?: boolean; noSleep?: boolean } = {}): AnalysisDay {
   const onsetText = values.onset ?? "01:00";
   const onset = onsetText.startsWith("-") ? at(addDays(date, -1), onsetText.slice(1)) : at(date, onsetText);
   const asleepMin = values.asleepMin ?? 420;
@@ -16,12 +16,12 @@ function day(date: string, values: { onset?: string; asleepMin?: number; steps?:
     date,
     unusual: values.unusual ?? false,
     metrics: {
-      sleep: { onset, wake: onset + (asleepMin + 20) * 60_000, asleepMin, efficiency: 0.95, awakenings: 1 },
+      sleep: values.noSleep ? null : { onset, wake: onset + (asleepMin + 20) * 60_000, asleepMin, efficiency: 0.95, awakenings: 1 },
       body: { hrvAvg: 50, restingHeartRate: 55 },
       day: { steps: values.steps ?? 8000, daylightMin: 20, morningDaylightMin: 10, workoutMin: 0 },
       morning: { feeling: null },
       nextDay: { condition: null },
-      quality: { usable: values.usable ?? true },
+      quality: { usable: values.noSleep ? false : (values.usable ?? true) },
     },
   };
 }
@@ -80,11 +80,21 @@ describe("2つのグループの比べ方（分析の設計 7章の決まり）"
 });
 
 describe("夜の表", () => {
-  it("使えない夜と、体調がいつもと違う日を外して数える", () => {
-    const rows = [day("2026-02-01"), day("2026-02-02", { usable: false }), day("2026-02-03", { unusual: true }), day("2026-02-04")];
+  it("使えない夜（睡眠の記録がない・データが少ない）と、体調がいつもと違う日を、わけを分けて数える", () => {
+    const rows = [
+      day("2026-02-01"),
+      day("2026-02-02", { usable: false }),
+      day("2026-02-03", { unusual: true }),
+      day("2026-02-04"),
+      day("2026-02-05", { noSleep: true }),
+      day("2026-02-06", { noSleep: true }),
+    ];
     const { nights, excluded } = toNights(rows, TZ);
     expect(nights.map((night) => night.date)).toEqual(["2026-02-01", "2026-02-04"]);
-    expect(excluded).toEqual({ unusable: 1, unusual: 1 });
+    expect(excluded).toEqual({ noSleep: 2, lowData: 1, unusual: 1 });
+    expect(formatReport(analyze(rows, TZ))[0]).toBe(
+      "対象: 2026-02-01〜2026-02-06 の 2夜（外した夜: Watch の睡眠の記録がない 2、Watch のデータが少ない 1、体調がいつもと違う 1）",
+    );
   });
 
   it("いつもの寝つく時刻は、それまでの28日の夜（14夜以上）の中央値。日付をまたいでも続けて数える", () => {

@@ -55,8 +55,15 @@ export interface Night {
 
 const minutesFrom18 = (epochMs: number, timeZone: string) => (localMinuteOfDay(epochMs, timeZone) - 18 * 60 + 24 * 60) % (24 * 60);
 
+/** 外した夜の数。noSleep: Watch の睡眠の記録がない、lowData: 記録はあるが Watch のデータが少ない、unusual: 体調がいつもと違う */
+export interface Excluded {
+  noSleep: number;
+  lowData: number;
+  unusual: number;
+}
+
 /** 1日 = 1行の表から、比べる夜を作る。使えない夜と、体調がいつもと違う日は外す */
-export function toNights(rows: AnalysisDay[], timeZone: string): { nights: Night[]; excluded: { unusable: number; unusual: number } } {
+export function toNights(rows: AnalysisDay[], timeZone: string): { nights: Night[]; excluded: Excluded } {
   const sorted = [...rows].sort((a, b) => a.date.localeCompare(b.date));
   const byDate = new Map(sorted.map((row) => [row.date, row]));
   const usable = sorted.filter((row) => row.metrics.sleep && row.metrics.quality?.usable);
@@ -91,7 +98,8 @@ export function toNights(rows: AnalysisDay[], timeZone: string): { nights: Night
       usualOnsetMin: history.length >= USUAL_MIN_NIGHTS ? median(history.map((past) => past.onsetMin)) : null,
     });
   });
-  return { nights, excluded: { unusable: sorted.length - usable.length, unusual } };
+  const noSleep = sorted.filter((row) => !row.metrics.sleep).length;
+  return { nights, excluded: { noSleep, lowData: sorted.length - usable.length - noSleep, unusual } };
 }
 
 /** 再現できる乱数（同じデータなら、毎回同じ結果になるように） */
@@ -272,7 +280,7 @@ export interface Report {
   from: string | null;
   to: string | null;
   nights: number;
-  excluded: { unusable: number; unusual: number };
+  excluded: Excluded;
   comparisons: ComparisonResult[];
 }
 
@@ -315,7 +323,7 @@ function signed(value: number, unit: Unit): string {
 /** 結果を、ここに貼れる長さの文字にする */
 export function formatReport(report: Report): string[] {
   const lines = [
-    `対象: ${report.from ?? "-"}〜${report.to ?? "-"} の ${report.nights}夜（使えない夜 ${report.excluded.unusable}、体調がいつもと違う日 ${report.excluded.unusual} を除く）`,
+    `対象: ${report.from ?? "-"}〜${report.to ?? "-"} の ${report.nights}夜（外した夜: Watch の睡眠の記録がない ${report.excluded.noSleep}、Watch のデータが少ない ${report.excluded.lowData}、体調がいつもと違う ${report.excluded.unusual}）`,
     "見方: 差 = 1つ目の夜の平均 − 2つ目の夜の平均。差の範囲が0をまたぐときは「差ははっきりしない」。前半と後半の両方で同じ向きなら「気づきの候補」",
   ];
   let subjectiveMissing = false;
