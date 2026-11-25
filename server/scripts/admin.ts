@@ -5,11 +5,14 @@
 //   npm run admin -- days [from] [to]      1日 = 1行の表の要点（省略すると直近7日）
 //   npm run admin -- requeue <from> <to>   期間の日を計算し直す（計算のしかたを変えたとき）
 //   npm run admin -- process [max]         計算待ちの日を今すぐ計算する
+//   npm run admin -- analyze [from] [to]   夜を条件で2つに分けて比べる（省略すると直近1年。docs/analysis.md の 5章②）
 //
 // .dev.vars の SERVER_URL（npm run secrets -- --set SERVER_URL https://…）と ADMIN_TOKEN を使う。
+// analyze は、アプリと同じ表（いつもと違う日の印つき）を読むので APP_TOKEN も使う。
 
 import { pathToFileURL } from "node:url";
 import { inferRole } from "../src/roles";
+import { analyze, formatReport, type AnalysisDay } from "./analyze";
 import { addDays, isValidDate } from "../src/time";
 import { loadDevVars } from "./dev-vars";
 
@@ -179,13 +182,32 @@ async function main(): Promise<void> {
     case "process":
       print(await call("POST", `/admin/days/process?max=${Number(arg1 ?? 10) || 10}`));
       return;
+    case "analyze": {
+      const to = arg2 ?? arg1 ?? today();
+      const from = arg2 ? arg1 : addDays(to, -364);
+      if (!isValidDate(from) || !isValidDate(to) || from > to) throw new Error("日付は YYYY-MM-DD で書いてください");
+      const appToken = process.env.APP_TOKEN ?? vars.APP_TOKEN ?? "";
+      if (!appToken) throw new Error("APP_TOKEN が .dev.vars にありません");
+      // アプリの API は一度に92日分までなので、区切って読む
+      const rows: AnalysisDay[] = [];
+      for (let start = from; start <= to; start = addDays(start, 92)) {
+        const end = addDays(start, 91) < to ? addDays(start, 91) : to;
+        const response = await fetch(`${base}/api/days?from=${start}&to=${end}`, { headers: { Authorization: `Bearer ${appToken}` } });
+        const text = await response.text();
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${maskSecrets(text, secrets)}`);
+        rows.push(...(JSON.parse(text) as { days: AnalysisDay[] }).days);
+      }
+      for (const line of formatReport(analyze(rows, TIME_ZONE))) console.log(line);
+      return;
+    }
     default:
       console.log(`使い方:
   npm run admin -- summary
   npm run admin -- collect
   npm run admin -- days [from] [to]
   npm run admin -- requeue <from> <to>
-  npm run admin -- process [max]`);
+  npm run admin -- process [max]
+  npm run admin -- analyze [from] [to]`);
   }
 }
 
