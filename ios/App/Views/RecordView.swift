@@ -36,6 +36,7 @@ struct RecordView: View {
     @State private var editing: Meal?
     /// 1日のふり返りで、どの日の分を入れるか（0 = 今日、-1 = 昨日）
     @State private var checkinOffset = 0
+    @FocusState private var mealFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -55,6 +56,15 @@ struct RecordView: View {
 
                 Section("食事") {
                     TextField("料理名（例: 豚骨ラーメン、餃子6個）", text: $mealText, axis: .vertical)
+                        .focused($mealFocused)
+                        .submitLabel(.done)
+                        // 複数行の入力欄では、改行キーを押すと改行が入るだけでキーボードが閉じない。
+                        // 改行キーで入力を終えるようにする（貼り付けた改行は空白にする）
+                        .onChange(of: mealText) { _, text in
+                            guard text.contains("\n") else { return }
+                            mealText = text.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+                            mealFocused = false
+                        }
                     Picker("量", selection: $amount) {
                         Text("少なめ").tag("small")
                         Text("ふつう").tag("normal")
@@ -112,6 +122,8 @@ struct RecordView: View {
                 }
             }
             .navigationTitle("記録")
+            // 下に引っぱると、キーボードを閉じられる
+            .scrollDismissesKeyboard(.interactively)
             .task { await loadMeals() }
             .refreshable { await loadMeals() }
             .sheet(item: $editing) { meal in
@@ -123,6 +135,7 @@ struct RecordView: View {
     }
 
     private func recordMeal() async {
+        mealFocused = false
         let text = mealText.trimmingCharacters(in: .whitespacesAndNewlines)
         await Recorder.meal(text: text, amount: amount, meal: mealType, at: mealDate)
         message = "「\(text)」を記録しました。目安は毎朝まとめて出します"
@@ -181,6 +194,8 @@ struct EstimateEditor: View {
     @State private var estimate: MealEstimate
     @State private var saving = false
     @State private var errorMessage: String?
+    private enum Field { case kcal, caffeine }
+    @FocusState private var focusedField: Field?
 
     init(meal: Meal, onSaved: @escaping () async -> Void) {
         self.meal = meal
@@ -207,6 +222,7 @@ struct EstimateEditor: View {
                         Text("カロリー")
                         TextField("kcal", value: $estimate.kcal, format: .number)
                             .keyboardType(.numberPad)
+                            .focused($focusedField, equals: .kcal)
                             .multilineTextAlignment(.trailing)
                         Text("kcal")
                     }
@@ -223,6 +239,7 @@ struct EstimateEditor: View {
                         Text("カフェイン")
                         TextField("mg", value: $estimate.caffeineMg, format: .number)
                             .keyboardType(.numberPad)
+                            .focused($focusedField, equals: .caffeine)
                             .multilineTextAlignment(.trailing)
                         Text("mg")
                     }
@@ -234,7 +251,13 @@ struct EstimateEditor: View {
             }
             .navigationTitle("目安を直す")
             .navigationBarTitleDisplayMode(.inline)
+            .scrollDismissesKeyboard(.interactively)
             .toolbar {
+                // 数字のキーボードには改行キーがないので、キーボードの上に「完了」を出す
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("完了") { focusedField = nil }
+                }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("やめる") { dismiss() }
                 }
