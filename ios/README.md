@@ -74,6 +74,7 @@
 | `App/ScreenTime/` | スクリーンタイムの節目の登録 |
 | `App/Intents/` | ショートカットから呼ぶ「充電を記録」 |
 | `App/Views/` | 画面 |
+| `App/Assets.xcassets/` | アイコン（ふつう・ダーク・色付きの3枚）。元の絵と作り直し方は `Design/README.md` |
 | `ActivityMonitor/` | スクリーンタイムの節目を受け取る拡張機能 |
 | `Shared/` | アプリと拡張機能の両方で使う（App Group でのデータの受け渡し） |
 

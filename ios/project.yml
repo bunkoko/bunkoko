@@ -48,6 +48,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID)
         # 権限のファイルは、Paid と Free で分けて置いてある（Free は通知・スクリーンタイム・App Group なし）
         CODE_SIGN_ENTITLEMENTS: App/KenkoKanri-$(KENKO_EDITION).entitlements
+        # アイコン（App/Assets.xcassets/AppIcon。元の絵は Design/）
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     dependencies:
       - target: KenkoKanriActivityMonitor
 

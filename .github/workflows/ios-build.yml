@@ -52,6 +52,14 @@ jobs:
             2>&1 | tee build.log | grep -E "error:|warning:|BUILD (SUCCEEDED|FAILED)" || true
           grep -q "BUILD SUCCEEDED" build.log
 
+      - name: Check the app icon is in the app
+        run: |
+          app=$(find build/Build/Products -maxdepth 2 -name "KenkoKanri.app" | head -1)
+          test -f "$app/Assets.car"
+          name=$(plutil -extract CFBundleIcons.CFBundlePrimaryIcon.CFBundleIconName raw "$app/Info.plist")
+          echo "icon: $name"
+          test "$name" = "AppIcon"
+
       - name: Check the shortcut action (App Intents) is in the app
         run: |
           grep -n -B2 -A3 "ExtractAppIntentsMetadata" build.log | grep -E "ExtractAppIntentsMetadata|warning|error" || true
