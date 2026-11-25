@@ -35,14 +35,21 @@ describe("手元のコマンド", () => {
     const line = formatDay({
       date: "2026-11-24",
       metrics: {
-        sleep: { asleepMin: 477, onset, wake, efficiency: 0.919, deepMin: 41, remMin: 140, awakenings: 2, latencyMin: null },
+        sleep: { asleepMin: 477, onset, wake, efficiency: 0.919, deepMin: 41, remMin: 140, awakenings: 2, latencyMin: 17, inBedStart: Date.parse("2026-11-23T16:50:00Z") },
         quality: { heartRateCoverage: 0.96, usable: true },
         morning: { feeling: 4 },
         nextDay: { condition: null, stress: null },
-        room: { co2Max: null, temperatureAvg: null },
+        room: { co2Max: 1450, temperatureAvg: 21.5 },
+        preBed: { roomDarkAt: Date.parse("2026-11-23T16:55:00Z") },
       },
     });
     expect(line).toContain("睡眠 7:57（2:07〜10:46）");
+    expect(line).toContain("布団に入った 1:50");
+    expect(line).toContain("寝つき 17分");
+    expect(line).toContain("CO2最高 1450ppm 室温 21.5℃");
+    expect(line).toContain("部屋が暗くなった 1:55");
+    // まだない値は「-」
+    expect(formatDay({ date: "2026-11-01", metrics: { sleep: null, quality: {}, morning: {}, nextDay: {}, room: {}, preBed: {} } })).toContain("布団に入った -");
     expect(line).toContain("効率 92%");
     expect(line).toContain("心拍の記録 96%");
     expect(line).toContain("体感 4 調子 - ストレス -");

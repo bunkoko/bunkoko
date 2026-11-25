@@ -47,14 +47,26 @@ interface DayRow {
 /** 1日 = 1行の表の1行を、1行の文字にする */
 export function formatDay(row: DayRow): string {
   const m = row.metrics;
-  const sleep = m.sleep as { asleepMin?: number; onset?: number; wake?: number; efficiency?: number; deepMin?: number; remMin?: number; awakenings?: number; latencyMin?: number | null } | null;
+  const sleep = m.sleep as {
+    asleepMin?: number;
+    onset?: number;
+    wake?: number;
+    efficiency?: number;
+    deepMin?: number;
+    remMin?: number;
+    awakenings?: number;
+    latencyMin?: number | null;
+    inBedStart?: number | null;
+  } | null;
   const quality = (m.quality ?? {}) as { heartRateCoverage?: number | null; usable?: boolean };
   const morning = (m.morning ?? {}) as { feeling?: number | null };
   const nextDay = (m.nextDay ?? {}) as { condition?: number | null; stress?: number | null };
   const room = (m.room ?? {}) as { co2Max?: number | null; temperatureAvg?: number | null };
+  const preBed = (m.preBed ?? {}) as { roomDarkAt?: number | null };
   const parts = [
     row.date,
     sleep ? `睡眠 ${hm(sleep.asleepMin)}（${clock(sleep.onset)}〜${clock(sleep.wake)}）` : "睡眠 -",
+    `布団に入った ${clock(sleep?.inBedStart)}`,
     sleep ? `効率 ${Math.round((sleep.efficiency ?? 0) * 100)}%` : "",
     sleep ? `深い ${value(sleep.deepMin, "分")} レム ${value(sleep.remMin, "分")}` : "",
     sleep ? `中途覚醒 ${value(sleep.awakenings, "回")} 寝つき ${value(sleep.latencyMin, "分")}` : "",
@@ -62,6 +74,7 @@ export function formatDay(row: DayRow): string {
     quality.usable ? "使える夜" : "使えない夜",
     `体感 ${value(morning.feeling)} 調子 ${value(nextDay.condition)} ストレス ${value(nextDay.stress)}`,
     `CO2最高 ${value(room.co2Max, "ppm")} 室温 ${value(room.temperatureAvg, "℃")}`,
+    `部屋が暗くなった ${clock(preBed.roomDarkAt)}`,
   ];
   return parts.filter(Boolean).join("  ");
 }
