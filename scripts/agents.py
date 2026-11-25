@@ -4,7 +4,7 @@
     python scripts/agents.py collect              # 情報収集（毎日。直近 5 日分の一覧）
     python scripts/agents.py collect --docs       # ＋本文（PDF を文字にしたもの）と決算の数字（XBRL）。直近 7 日分を 1 秒に 1 件で取る
     python scripts/agents.py collect --xbrl-history --max-docs 40000   # 過去の決算の数字（2016-10〜。1 秒に 1 件なので 6〜7 時間）
-    python scripts/agents.py collect --text-history       # 過去の開示の本文（2016-10〜。1 秒に 1 件。1〜2 晩。外付けの HDD へ。動かせるのは 1 本だけ）
+    python scripts/agents.py collect --text-history       # 過去の開示の本文（2016-10〜。10 秒に 1 件・1 日に 2,000 件まで。外付けの HDD へ。動かせるのは 1 本だけ）
     python scripts/agents.py collect --text-history-stop  # それを止める（取った分は残る。続きは --text-history で）
     python scripts/agents.py ir                   # IR 評価
     python scripts/agents.py select               # 銘柄選定
@@ -14,6 +14,7 @@
     python scripts/agents.py earnings             # 決算の数字で評価する（10 章の E1〜E3。collect --xbrl-history の後）
     python scripts/agents.py extra [--fetch]      # まだ入れていなかった項目（出来高・割安さ・業種・進捗率）を足して確かめる（11 章の F1〜F4）
     python scripts/agents.py status
+    python scripts/agents.py inventory            # 取ってある開示の本文の棚卸し（何が・いつから・どれだけ読めているか。見るだけ。10.6）
     python scripts/agents.py check                # 台帳の点検（自動実行が動いたか・抜けた日）と、先のデータの途中経過・止める決まり（12 章）
     python scripts/agents.py orders               # 日本株の予行演習: 今日の注文の一覧を作る（注文は出さない。docs/stocks_live.md）
     python scripts/agents.py orders --setup --equity 300000 [--deadline 13:30] [--real]   # 予行演習の設定（--real は空運転の条件を満たした後だけ）
@@ -34,7 +35,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -124,12 +125,13 @@ def f2(x: float) -> str:
 TEXT_HISTORY_WHY = {   # 過去の本文の取得が止まった理由（利用者に伝える文）
     "not_external": "本文の置き場所が、外付けの HDD へのリンクになっていない。先に「IR の文章を HDD に移して」（2026-11-20 利用者の決め: 本文は HDD に置く）。何も取っていない",
     "no_text_place": "外付けの HDD がつながっていないか、つながっているのに書けない（上の「本文の置き場所」の行を見る）。直してから、同じコマンドで。何も取っていない",
-    "no_space": "HDD の空きが足りない（原本の PDF も残すには、これから取る分で {need:,.0f}GB ほど要る。今の空きは {free:,.0f}GB。{keep}GB は空けておく決まり）。"
+    "no_space": "HDD の空きが足りない（原本の PDF も残すには、これから取る分で {need_gb:,.0f}GB ほど要る。今の空きは {free:,.0f}GB。{keep}GB は空けておく決まり）。"
                 "HDD の空きを作るか、原本を残さないなら --no-pdf（利用者に確かめてから）。取ってある分はそのまま残っている",
-    "refused": "サイトに断られた（{why}）。すぐ止めた。今日はもう取りに行かない。明日以降に同じコマンドで続きから（続くようなら指令役に知らせる）",
+    "refused": "サイトに断られた（{why}）。すぐ止めた。取った分はそのまま残っている。この後は、毎日の収集が、断られずに書類を受け取れた日が {need} 日そろうまで、"
+               "道具は過去分を取らない（動かしても何も取らない。確かめの 1 件も）。試し直さずに、利用者に伝えて、指令役へ",
     "network": "続けて取れなかった（{why}）。回線かサイトの不調。間をあけながら試したが、だめだった。時間をおいて、まず 1 件だけ試す（--history-max 1）。取れたら同じコマンドで続きから",
     "disk": "取っている間に HDD に書けなくなった（外れた・いっぱいになった）。直して、同じコマンドで続きから",
-    "cooling": "サイトに断られたので、{until} までは過去分をまとめて取らない（断られてから {cool} 日は休む決まり。毎日の収集を守るため。確かめの 1 件も取らない）。何も取っていない",
+    "cooling": "{gate}。確かめの 1 件も取らない（毎日の収集を守るため）",
 }
 
 
@@ -147,7 +149,9 @@ def keep_awake() -> None:
 def cmd_text_history(args) -> None:
     """過去の開示の本文（2016-10〜）を、新しい順にまとめて取る（docs/agents.md 10.1）。取るだけで、判定はしない。
 
-    東証の上場会社情報サービスから、1 秒に 1 件・同時に 1 本。毎朝 8:00 の収集の時間（7:50〜8:45）は休む。止めても、同じコマンドで続きから。
+    東証の上場会社情報サービスから、10 秒に 1 件・同時に 1 本・1 日に 2,000 件まで（2026-11-25 にサイトに断られた後の決まり）。
+    断られた後は、毎日の収集が 3 日、断られずに書類を受け取れるまで取らない（利用者の決め 2026-11-25）。
+    毎朝 8:00 の収集の時間（7:50〜8:45）は休む。止めても、同じコマンドで続きから。
     """
     import signal
 
@@ -224,9 +228,10 @@ def _text_history(args, C, df, ir_root) -> None:
         print(f"過去の本文: 今日の分（1 日に {C.HISTORY_DAY_MAX:,} 件まで）は取り終えた。続きは明日以降に、同じコマンドで", flush=True)
         return
     if got["stopped"]:
-        sys.exit("過去の本文: ⚠ " + TEXT_HISTORY_WHY[got["stopped"]].format(need=got.get("need_gb", 0.0), free=got.get("free_gb", 0.0), keep=C.PDF_KEEP_FREE_GB,
-                                                                             why=got.get("why") or "理由は分からない",
-                                                                             until=got.get("until", ""), cool=C.COOL_OFF_DAYS))
+        sys.exit("過去の本文: ⚠ " + TEXT_HISTORY_WHY[got["stopped"]].format(need_gb=got.get("need_gb", 0.0), free=got.get("free_gb", 0.0), keep=C.PDF_KEEP_FREE_GB,
+                                                                             why=got.get("why") or "理由は分からない", need=C.CLEAN_NEED,
+                                                                             gate=C.gate_line(ir_root, datetime.now())
+                                                                             or "サイトに断られた後なので、過去分はまだまとめて取らない"))
     print("過去の本文: " + ("終わった" if not got["left"] else "ここまで。続きは同じコマンドで（取れなかったものは、もう一度試す）"), flush=True)
 
 
@@ -292,7 +297,7 @@ def cmd_collect(args) -> None:
             place = C.text_place(ir_root)
             if place["link"]:                                   # 外付けのディスクに置いているときは、書けるかを毎回 1 行残す（新しい本文が 0 件の日も）
                 print("情報収集: " + C.text_place_line(place), flush=True)
-            got = C.collect_docs(want, ir_root, max_docs=args.max_docs, log=lambda s: print(s, flush=True),
+            got = C.collect_docs(want, ir_root, max_docs=args.max_docs, interval=C.INTERVAL, log=lambda s: print(s, flush=True),
                                  wait=600)                      # 過去の本文の取得が動いていたら、頼んで先に通してもらう（10 分まで待つ）
             if got.get("no_text_place") and place["ready"]:     # 取っている間に書けなくなった。今の様子を残す
                 print("情報収集: " + C.text_place_line(C.text_place(ir_root)), flush=True)
@@ -306,6 +311,9 @@ def cmd_collect(args) -> None:
                       "決算の数字が抜けているおそれがある → 指令役に知らせる", flush=True)
             if got.get("failed"):
                 print("情報収集: ⚠ 取れなかった書類がある（「まだ載っていない」とは別。決算の数字が抜けているおそれ。続くようなら指令役に知らせる）", flush=True)
+            gate = C.gate_line(ir_root, datetime.now()) if not args.xbrl_history else None
+            if gate:                                            # 断られた後: 過去分の取得を始められるまでの数え（毎朝 1 行）
+                print("情報収集: " + gate, flush=True)
 
 
 # --------------------------------------------------------------------------- IR 評価
@@ -1883,6 +1891,41 @@ def history_outlook(C, ir_root: Path, place: dict, left: int, running: bool) -> 
     return out
 
 
+def cmd_inventory(args) -> Path:
+    """取ってある開示の本文の棚卸し（docs/agents.md 10.6）: 何が・いつから・どれだけ読めているかを数える。
+
+    見るだけ: 値段は使わない・判定しない・サイトに取りに行かない・本文の置き場所には何も書かない。
+    """
+    import os
+
+    from cfdbot.agents import collector as C
+    from cfdbot.agents import inventory as V
+
+    p = paths(args.root)
+    df = C.load_disclosures(p["disclosures"])
+    if df.empty:
+        sys.exit("開示の一覧が無い（先に ./cfd agents collect）")
+    ir_root = p["disclosures"].parent
+    folder = C.text_root(ir_root)
+    if not folder.is_dir():                                     # 行き先の無いリンク ＝ 外付けの HDD がつながっていない
+        sys.exit(f"棚卸し: ⚠ 本文の置き場所（{os.path.realpath(folder)}）が見えない。外付けの HDD をつないでから、同じコマンドで。何も数えていない")
+    place = os.path.realpath(folder)
+    print("棚卸し: 取ってある本文を読んで数える（見るだけ。値段は使わない・判定しない・サイトに取りに行かない。数分かかることがある）", flush=True)
+    texts = V.scan_texts(Path(place), log=lambda s: print(s, flush=True))
+    now = datetime.now()
+    docs = V.build(df, texts, V.pdf_ids(C.pdf_root(ir_root)), C.load_missing(ir_root), HISTORY_FROM, C.history_until(now))
+    orphans = len(set(texts["id"]) - set(df["id"]))
+    out = Path(args.out) / now.strftime("%Y%m%d-%H%M")
+    out.mkdir(parents=True, exist_ok=True)
+    docs.drop(columns=["company", "title"]).to_csv(out / "inventory_docs.csv", index=False)
+    (out / "inventory.md").write_text(V.report(docs, f"{now:%Y-%m-%d %H:%M}", place, orphans), encoding="utf-8")
+    print("棚卸し: 全体（年ごと・種類ごと・会社ごとの表は、報告の 2〜4 章）", flush=True)
+    for line in V.summary_lines(docs, orphans):
+        print("  " + line, flush=True)
+    print(f"保存先: {out / 'inventory.md'}（数と割合だけ。本文の中身・値段・成績は入っていない）", flush=True)
+    return out
+
+
 def cmd_status(args) -> None:
     p = paths(args.root)
     for label, key, col in (("情報収集（開示）", "disclosures", "time"), ("IR 評価（点数）", "ir_scores", "date"),
@@ -1898,6 +1941,9 @@ def cmd_status(args) -> None:
     print(f"情報収集（本文）: {sum(1 for _ in ir_root.glob('text/*/*.txt')):,} 件、（決算の数字）: {sum(1 for _ in ir_root.glob('xbrl/*/*.csv')):,} 件")
     place = C.text_place(ir_root)
     print(C.text_place_line(place))
+    gate = C.gate_line(ir_root, datetime.now())                 # サイトに断られた後の様子（HDD を外している日も出す）
+    if gate:
+        print(gate)
     if p["disclosures"].exists() and place["ready"]:            # 過去の本文（./cfd agents collect --text-history）の進み具合
         df = C.load_disclosures(p["disclosures"])
         past = df[df["time"] >= HISTORY_FROM]
@@ -1906,10 +1952,6 @@ def cmd_status(args) -> None:
         running = C.history_running(ir_root) is not None
         now = "動いている" if running else "止まっている"
         print(f"過去の本文（{HISTORY_FROM[:7]}〜）: 取ってある {len(past) - left - miss:,} 件・サイトに無い {miss:,} 件・残り {left:,} 件。取得は今: {now}")
-        seen = C.last_refused(ir_root, datetime.now())
-        if seen is not None and datetime.now() - seen < timedelta(days=C.COOL_OFF_DAYS):
-            print(f"  サイトに断られたので（{seen:%m-%d %H:%M}）、{seen + timedelta(days=C.COOL_OFF_DAYS):%m-%d %H:%M} までは過去分をまとめて取らない"
-                  f"（毎日の収集は、ゆっくり続ける）")
         if place["link"]:
             for line in history_outlook(C, ir_root, place, left, running):
                 print(line)
@@ -2482,7 +2524,7 @@ def cmd_schedule(args) -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("command", choices=["collect", "ir", "select", "decide", "evaluate", "run", "status", "schedule", "earnings", "extra",
-                                        "check", "orders", "manual", "premium", "shap", "rank", "residual", "series"])
+                                        "check", "orders", "manual", "premium", "shap", "rank", "residual", "series", "inventory"])
     p.add_argument("--fetch", action="store_true", help="extra: 先に出来高・終値・株式分割を Yahoo から取る（1 秒に 1 社。取得済みは飛ばす）")
     p.add_argument("--reuse", action="store_true", help="extra: 入力を足した銘柄選定の点数が書いてあれば、学び直さずに使う")
     p.add_argument("--off", action="store_true", help="schedule: 自動実行を外す")
@@ -2491,7 +2533,7 @@ def main() -> None:
     p.add_argument("--docs-days", type=int, default=7, help="collect --docs: さかのぼる日数")
     p.add_argument("--xbrl-history", action="store_true", help="collect: 過去の決算の数字（2016〜）を取る（時間がかかる）")
     p.add_argument("--text-history", action="store_true",
-                   help="collect: 過去の開示の本文（2016-10〜）を、新しい順にまとめて取る（1 秒に 1 件。1〜2 晩。置き場所は外付けの HDD。止めても続きから）")
+                   help="collect: 過去の開示の本文（2016-10〜）を、新しい順にまとめて取る（10 秒に 1 件・1 日に 2,000 件まで。置き場所は外付けの HDD。止めても続きから）")
     p.add_argument("--text-history-stop", action="store_true",
                    help="collect: 動いている過去の本文の取得（--text-history）を止める（取った分は残る。続きは --text-history で）")
     p.add_argument("--no-pdf", action="store_true", help="collect --text-history: 原本の PDF を残さない（既定は、本文のとなりの ir_pdf に残す）")
@@ -2534,7 +2576,7 @@ def main() -> None:
     {"collect": cmd_collect, "ir": cmd_ir, "select": cmd_select, "decide": cmd_decide, "evaluate": cmd_evaluate,
      "run": cmd_run, "status": cmd_status, "schedule": cmd_schedule, "earnings": cmd_earnings, "extra": cmd_extra,
      "check": cmd_check, "orders": cmd_orders, "manual": cmd_manual, "premium": cmd_premium, "shap": cmd_shap, "rank": cmd_rank, "residual": cmd_residual,
-     "series": cmd_series}[args.command](args)
+     "series": cmd_series, "inventory": cmd_inventory}[args.command](args)
 
 
 if __name__ == "__main__":

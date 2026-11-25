@@ -76,7 +76,9 @@ REFUSED_SEEN: str | None = "2026-11-25 20:15"   # 実物で最後に断られた
 REFUSE_TRIES, REFUSE_TOTAL = 3, 6         # 毎日の収集: 続けて 3 回・合わせて 6 回断られたら、その回はやめる（たたみかけない）
 REFUSE_WAIT, REFUSE_WAIT_MAX = 60.0, 600.0      # 断られたら待つ秒数（60・120…。サイトが待つ長さを言ってきたら、それに従う。10 分より長ければやめる）
 GENTLE_FACTOR, GENTLE_DAYS = 10, 14       # 断られてから 14 日は、毎日の収集も間隔を 10 倍にあけて取る（1 秒 → 10 秒に 1 件）
-COOL_OFF_DAYS = 7                         # 断られてから 7 日は、過去分をまとめて取らない
+CLEAN_NEED = 3                            # 断られた後、毎日の収集が断られずに書類を受け取れた日が、これだけそろったら、過去分をまとめて取ってよい
+#                                           （利用者の決め 2026-11-25: 「朝の収集が 3 回続けて無事なら始める」。その前の決まりは「7 日休む」で、根拠の無い見当だった）
+CLEAN_LOOK_BACK = 62                      # 無事だった日を数えるときに見る置き場所: 断られた日の 62 日前の月から後（毎日の収集が書く所。古い月は過去分の取得が書く所なので見ない）
 
 
 def note_refused(root: Path, code: int, when) -> None:
@@ -111,6 +113,71 @@ def refuse_wait(e, n: int) -> float | None:
     if asked > REFUSE_WAIT_MAX:
         return None
     return asked if asked > 0 else min(REFUSE_WAIT * 2 ** (n - 1), REFUSE_WAIT_MAX)
+
+
+def clean_days(root: Path, when) -> list[str]:
+    """最後に断られた日より後で、毎日の収集がサイトから書類を受け取れた日（YYYY-MM-DD。古い順。when より先は数えない）。
+
+    証拠は、決算の数字（xbrl）と本文のファイルが書かれた日。道具が別に覚えを書くのではなく、ファイルの書かれた時刻を見るので、
+    道具を新しくする前の朝の分も数えられる。断られた日そのものは数えない（その日に、待って取り直せた分があっても）。
+    書類が 1 件も無かった朝は、証拠が無いので数えない（数え直しにもならない）。断られたことが無ければ、空。
+    過去分の取得は、この日数がそろうまで動かないので、この間に書かれるのは毎日の収集の分だけ。
+    """
+    import os
+    from datetime import datetime, timedelta
+
+    seen = last_refused(root, when)
+    if seen is None:
+        return []
+    first = f"{seen - timedelta(days=CLEAN_LOOK_BACK):%Y-%m}"
+    days: set[str] = set()
+    for folder, suffix in ((root / "xbrl", ".csv"), (text_root(root), ".txt")):
+        try:
+            months = [m for m in os.scandir(folder) if re.fullmatch(r"\d{4}-\d{2}", m.name) and m.name >= first and m.is_dir()]
+        except OSError:                                         # まだ無い・外付けのディスクがつながっていない
+            continue
+        for month in months:
+            try:
+                entries = list(os.scandir(month.path))
+            except OSError:
+                continue
+            for e in entries:
+                if not e.name.endswith(suffix) or e.name.startswith("._"):
+                    continue
+                try:
+                    t = datetime.fromtimestamp(e.stat().st_mtime)
+                except OSError:
+                    continue
+                if t.date() > seen.date() and t <= when:
+                    days.add(f"{t:%Y-%m-%d}")
+    return sorted(days)
+
+
+def history_gate(root: Path, when) -> dict | None:
+    """過去分をまとめて取ってよいか。よければ None。まだなら、断られた時刻 since・無事だった日 days・要る日数 need。"""
+    seen = last_refused(root, when)
+    if seen is None:
+        return None
+    days = clean_days(root, when)
+    return None if len(days) >= CLEAN_NEED else {"since": seen, "days": days, "need": CLEAN_NEED}
+
+
+def gate_line(root: Path, when) -> str | None:
+    """断られた後の様子を 1 行で（./cfd agents status と、毎朝の収集の記録に出す）。断られたことが無い・済んで日がたった、なら None。"""
+    from datetime import timedelta
+
+    seen = last_refused(root, when)
+    if seen is None:
+        return None
+    days = clean_days(root, when)
+    short = "・".join(d[5:] for d in days[:CLEAN_NEED])
+    if len(days) < CLEAN_NEED:
+        return (f"サイトに断られたので（{seen:%m-%d %H:%M}）、過去分はまだまとめて取らない。毎日の収集が、断られずに書類を受け取れた日が "
+                f"{CLEAN_NEED} 日そろったら始められる（今 {len(days)} 日{': ' + short if days else ''}。間に断られたら 0 から数え直す。利用者の決め 2026-11-25）")
+    if when - seen < timedelta(days=GENTLE_DAYS):
+        return (f"サイトに断られた後（{seen:%m-%d %H:%M}）、毎日の収集が、断られずに書類を受け取れた日が {CLEAN_NEED} 日そろった（{short}）。"
+                f"過去分の取得を始められる（1 日に {HISTORY_DAY_MAX:,} 件まで。始めるのは、利用者が頼んだとき）")
+    return None
 
 
 def ticker_of(code: str) -> str:
@@ -725,11 +792,12 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
     決まり: interval 秒に 1 件・同時に 1 本だけ（錠）。毎朝 8:00 の収集の時間（QUIET）は取らず、錠も持たない
     （毎朝の収集は、ほかの取得が動いていると書類を取らずに終わる。決算の数字が抜けると、その日の E1 の記録が傷む）。
     サイトに無かった書類（404）は控えて、次からは取りに行かない。断られたら（REFUSED）すぐ止める。
+    断られた後は、毎日の収集が CLEAN_NEED 日、断られずに書類を受け取れるまで取らない（history_gate。取っている間も、区切りごとに確かめる）。
     置き場所は外付けのディスクへのリンクであること（2026-11-20 利用者の決め）。keep_pdf なら原本もそのとなりに残す。
     返すのは、取れた数（text）・サイトに無かった数（missing）・取れなかった数（failed）・残り（left）・止まった理由（stopped）。
     """
     import shutil
-    from datetime import datetime, timedelta
+    from datetime import datetime
 
     now = now or datetime.now
     get = get or (lambda url: http_get(url, tries=1))
@@ -740,11 +808,19 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
         return dict(done, stopped="not_external")
     if not place["ready"]:
         return dict(done, stopped="no_text_place")
-    seen = last_refused(root, now())
-    if seen is not None and now() - seen < timedelta(days=COOL_OFF_DAYS):          # 断られた後は、しばらく休む（毎日の収集を守る）
-        return dict(done, stopped="cooling", until=f"{seen + timedelta(days=COOL_OFF_DAYS):%Y-%m-%d %H:%M}")
+
+    def shut() -> dict | None:
+        """断られた後で、まだ取ってはいけない間なら、止まる理由（毎日の収集を守る。確かめの 1 件も取らない）。"""
+        gate = history_gate(root, now())
+        if gate is None:
+            return None
+        return {"stopped": "cooling", "since": f"{gate['since']:%Y-%m-%d %H:%M}", "clean": len(gate["days"]), "need": gate["need"]}
+
     jobs = history_jobs(disc, root, since, history_until(now()))
     done["left"] = len(jobs)
+    closed = shut()
+    if closed:
+        return dict(done, **closed)
     todo = len(jobs) if max_docs is None else min(len(jobs), max_docs)
     cap = HISTORY_DAY_MAX if day_max is None else day_max
     asked: dict[str, int] = {}                                  # 日ごとに、サイトへ取りに行った数（覚えてある分に足していく）
@@ -788,6 +864,11 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
             log("  毎日の収集が待っているので、先に通す（30 秒待つ）")
             sleep(30.0)
             continue
+        closed = shut()
+        if closed:                                              # 取っている間に、毎日の収集が断られた。過去分も止める
+            log("  毎日の収集がサイトに断られたので、過去分の取得も止める")
+            done.update(closed)
+            break
         if not docs_lock(root):
             log("  ほかの書類の取得が動いている。1 分待つ")
             sleep(60.0)
@@ -819,7 +900,7 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
                     blob = None
                     if e.code in REFUSED:
                         done["stopped"], done["why"] = "refused", f"HTTP {e.code}"
-                        note_refused(root, e.code, now())       # 覚えておく: 過去分は COOL_OFF_DAYS 日休み、毎日の収集はしばらくゆっくり取る
+                        note_refused(root, e.code, now())       # 覚えておく: 過去分は毎日の収集が CLEAN_NEED 日無事になるまで休み、毎日の収集はしばらくゆっくり取る
                         break
                     if e.code in (404, 410):
                         with open(root / MISS_FILE, "a", encoding="utf-8") as f:

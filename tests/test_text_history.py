@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 from cfdbot.agents import collector as C
-from tests.test_agents import _pdf
+from tests.test_agents import _pdf, _xbrl_zip
 
 ROWS = [("p1", "2019-05-10 15:00:00", "7203.T", "トヨタ", "決算短信", "", "x1.zip"),
         ("p2", "2021-08-06 15:00:00", "1332.T", "ニッスイ", "業績予想の修正", "", ""),
@@ -845,8 +845,75 @@ def test_tool_tells_why_the_fetch_could_not_go_on(tmp_path, capsys, monkeypatch,
 
 
 # --------------------------------------------------------------------------- サイトに断られた後の取り方（2026-11-25）
-def test_history_notes_the_refusal_and_rests_for_days(tmp_path):
-    """断られたら、その時刻を覚えて、COOL_OFF_DAYS 日は過去分をまとめて取らない（毎日の収集を守る。確かめの 1 件も取らない）。"""
+def written(path, when, text="x"):
+    """when に書かれたファイル（毎日の収集が、その日にサイトから書類を受け取った印）。"""
+    import os
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    os.utime(path, (when.timestamp(), when.timestamp()))
+    return path
+
+
+def test_clean_days_are_the_days_after_the_refusal_on_which_documents_came_in(tmp_path):
+    """断られた後で、毎日の収集がサイトから書類を受け取れた日を数える（証拠は、数字と本文のファイルが書かれた日）。"""
+    root, disk = hdd(tmp_path)
+    now = datetime(2026, 11, 29, 9, 0)
+    written(root / "xbrl" / "2026-11" / "z.csv", datetime(2026, 11, 20, 8, 3))
+    assert C.clean_days(root, now) == [] and C.history_gate(root, now) is None            # 断られたことが無ければ、数えるものが無い（いつでも取れる）
+    C.note_refused(root, 503, datetime(2026, 11, 25, 20, 15))
+    assert C.clean_days(root, now) == []
+    written(root / "xbrl" / "2026-11" / "a.csv", datetime(2026, 11, 25, 8, 3))            # 断られる前
+    written(root / "xbrl" / "2026-11" / "b.csv", datetime(2026, 11, 25, 21, 0))           # 断られた日そのものは数えない（待って取り直せた分があっても）
+    written(root / "xbrl" / "2026-11" / "c.csv", datetime(2026, 11, 26, 8, 3))            # 決算の数字
+    written(disk / "ir_text" / "2026-11" / "d.txt", datetime(2026, 11, 26, 8, 9))         # 同じ日の本文（1 日は 1 回と数える）
+    written(disk / "ir_text" / "2026-10" / "e.txt", datetime(2026, 11, 28, 8, 4))         # 前の月の開示を、後から受け取った分も数える
+    written(disk / "ir_text" / "2019-05" / "f.txt", datetime(2026, 11, 27, 8, 4))         # 古い月の置き場所（過去分の取得が書く所）は見ない
+    written(root / "xbrl" / "2026-11" / "._g.csv", datetime(2026, 11, 27, 8, 4))          # Mac が作る影のファイルは数えない
+    assert C.clean_days(root, now) == ["2026-11-26", "2026-11-28"]                        # 27 日は何も無かった（数えない。数え直しにもならない）
+    assert C.clean_days(root, datetime(2026, 11, 27, 9, 0)) == ["2026-11-26"]             # 先の時刻のファイルは数えない
+
+
+def test_clean_days_can_be_counted_without_the_external_disk(tmp_path):
+    """HDD を外している日も、決算の数字（内蔵に置く）は取る。その日も数える。"""
+    root, disk = hdd(tmp_path)
+    C.note_refused(root, 503, datetime(2026, 11, 25, 20, 15))
+    written(root / "xbrl" / "2026-11" / "c.csv", datetime(2026, 11, 26, 8, 3))
+    (disk / "ir_text").rmdir()                                                            # 行き先の無いリンク
+    assert C.clean_days(root, datetime(2026, 11, 26, 9, 0)) == ["2026-11-26"]
+
+
+def test_gate_opens_after_three_clean_days_and_closes_on_a_new_refusal(tmp_path):
+    """利用者の決め（2026-11-25）: 毎朝の収集が 3 回続けて無事なら、過去分の取得を始められる。間に断られたら、0 から数え直す。"""
+    root, _ = hdd(tmp_path)
+    C.note_refused(root, 503, datetime(2026, 11, 25, 20, 15))
+    for d in (26, 27):
+        written(root / "xbrl" / "2026-11" / f"n{d}.csv", datetime(2026, 11, d, 8, 3))
+    assert C.history_gate(root, datetime(2026, 11, 27, 9, 0)) == {"since": datetime(2026, 11, 25, 20, 15), "days": ["2026-11-26", "2026-11-27"], "need": 3}
+    written(root / "xbrl" / "2026-11" / "n28.csv", datetime(2026, 11, 28, 8, 3))
+    assert C.CLEAN_NEED == 3 and C.history_gate(root, datetime(2026, 11, 28, 9, 0)) is None
+    C.note_refused(root, 503, datetime(2026, 11, 28, 8, 30))                              # 3 日目の朝に断られた
+    assert C.history_gate(root, datetime(2026, 11, 28, 9, 0))["days"] == []
+    written(root / "xbrl" / "2026-11" / "n29.csv", datetime(2026, 11, 29, 8, 3))
+    assert C.history_gate(root, datetime(2026, 11, 29, 9, 0))["days"] == ["2026-11-29"]
+
+
+def test_gate_line_says_where_the_count_stands(tmp_path):
+    root, _ = hdd(tmp_path)
+    assert C.gate_line(root, datetime(2026, 11, 26, 9, 0)) is None                        # 断られたことが無ければ、何も言わない
+    C.note_refused(root, 503, datetime(2026, 11, 25, 20, 15))
+    line = C.gate_line(root, datetime(2026, 11, 26, 7, 0))
+    assert "サイトに断られたので（11-25 20:15）" in line and "3 日そろったら始められる（今 0 日" in line
+    for d in (26, 27, 28):
+        written(root / "xbrl" / "2026-11" / f"n{d}.csv", datetime(2026, 11, d, 8, 3))
+    assert "今 2 日: 11-26・11-27" in C.gate_line(root, datetime(2026, 11, 27, 9, 0))
+    line = C.gate_line(root, datetime(2026, 11, 28, 9, 0))
+    assert "3 日そろった（11-26・11-27・11-28）" in line and "過去分の取得を始められる" in line
+    assert C.gate_line(root, datetime(2026, 12, 20, 9, 0)) is None                        # 済んだ話は、いつまでも出さない
+
+
+def test_history_notes_the_refusal_and_waits_for_three_clean_mornings(tmp_path):
+    """断られたら、その時刻を覚えて、毎日の収集が 3 日、断られずに書類を受け取れるまで過去分を取らない（確かめの 1 件も取らない）。"""
     root, _ = hdd(tmp_path)
     clock = noon()
     calls = []
@@ -861,11 +928,33 @@ def test_history_notes_the_refusal_and_rests_for_days(tmp_path):
     assert first["stopped"] == "refused" and first["why"] == "HTTP 503" and first["text"] == 1
     assert C.last_refused(root, clock.t) == clock.t
     calls.clear()
-    clock.t += timedelta(days=2)
+    clock.t += timedelta(days=7)                                                          # 日数だけでは始めない（毎日の収集が無事かを見る）
+    written(root / "xbrl" / "2026-11" / "m26.csv", datetime(2026, 11, 26, 8, 3))
+    written(root / "xbrl" / "2026-11" / "m27.csv", datetime(2026, 11, 27, 8, 3))
     again = run(root, get, clock=clock)
-    assert again["stopped"] == "cooling" and calls == [] and again["until"] == f"{clock.t + timedelta(days=C.COOL_OFF_DAYS - 2):%Y-%m-%d %H:%M}"
-    clock.t += timedelta(days=C.COOL_OFF_DAYS)                    # 日数が過ぎたら、続きを取れる
+    assert again["stopped"] == "cooling" and calls == []
+    assert (again["since"], again["clean"], again["need"]) == ("2026-11-25 12:00", 2, 3)
+    assert again["left"] == 2                                                             # 残りの数は、取らない間も正しく伝える（0 と言わない）
+    written(root / "xbrl" / "2026-11" / "m28.csv", datetime(2026, 11, 28, 8, 3))          # 3 日そろった
     assert run(root, lambda url: _pdf("a"), clock=clock)["text"] == 2
+
+
+def test_history_stops_when_the_daily_collection_is_refused_meanwhile(tmp_path, monkeypatch):
+    """取っている間に毎日の収集が断られたら、過去分も止める（区切りごとに確かめる。毎日の収集を守る）。"""
+    root, _ = hdd(tmp_path)
+    monkeypatch.setattr(C, "HISTORY_CHUNK", 2)
+    clock = noon()
+    calls = []
+
+    def get(url):
+        calls.append(url)
+        if len(calls) == 3:
+            C.note_refused(root, 503, clock.t)                                            # このとき、毎日の収集が断られた
+        return _pdf("a")
+
+    got = run(root, get, rows=MANY[:8], clock=clock)
+    assert got["stopped"] == "cooling" and len(calls) == 4 and got["text"] == 4 and got["left"] == 4
+    assert not (root / ".docs.lock").exists()
 
 
 def test_history_takes_only_so_many_a_day(tmp_path):
@@ -890,12 +979,83 @@ def test_tool_tells_when_the_fetch_may_start_again(tmp_path, capsys, monkeypatch
     root, ir, _ = world(tmp_path)
     called = []
     monkeypatch.setattr(C, "http_get", lambda url, tries=1: called.append(url) or _pdf("a"))
-    C.note_refused(ir, 503, datetime.now() - timedelta(days=1))
+    now = datetime.now()
+    C.note_refused(ir, 503, now - timedelta(days=2))
+    written(ir / "xbrl" / f"{now:%Y-%m}" / "n1.csv", now - timedelta(days=1))             # 昨日の朝は、断られずに受け取れた
     with pytest.raises(SystemExit) as stop:
         load_script().cmd_collect(ns(root))
-    assert "サイトに断られた" in str(stop.value) and "までは" in str(stop.value) and called == []
+    said = str(stop.value)
+    assert "サイトに断られたので" in said and "3 日そろったら始められる（今 1 日" in said and "確かめの 1 件も取らない" in said and called == []
     load_script().cmd_status(ns(root, out=str(tmp_path / "out")))
-    assert "サイトに断られたので" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "サイトに断られたので" in out and "今 1 日" in out
+
+
+def test_tool_says_when_the_wait_is_over_and_fetches_again(tmp_path, capsys, monkeypatch, fast):
+    root, ir, _ = world(tmp_path)
+    monkeypatch.setattr(C, "http_get", lambda url, tries=1: _pdf("a"))
+    now = datetime.now()
+    C.note_refused(ir, 503, now - timedelta(days=4))
+    for k in (3, 2, 1):
+        written(ir / "xbrl" / f"{now:%Y-%m}" / f"n{k}.csv", now - timedelta(days=k))
+    load_script().cmd_status(ns(root, out=str(tmp_path / "out")))
+    assert "過去分の取得を始められる" in capsys.readouterr().out
+    load_script().cmd_collect(ns(root))
+    assert "取れた +3" in capsys.readouterr().out
+
+
+def test_tool_tells_what_comes_next_when_the_bulk_fetch_is_refused(tmp_path, capsys, monkeypatch, fast):
+    """断られて止まったときの文は、次にどうなるかを言う（その日のうちに試し直さない。道具は、朝の収集が 3 日無事になるまで取らない）。"""
+    root, _, _ = world(tmp_path)
+
+    def get(url, tries=1):
+        raise http_error(url, 503)
+
+    monkeypatch.setattr(C, "http_get", get)
+    with pytest.raises(SystemExit) as stop:
+        load_script().cmd_collect(ns(root))
+    said = str(stop.value)
+    assert "サイトに断られた（HTTP 503）" in said and "3 日そろうまで" in said and "指令役" in said and "明日以降" not in said
+
+
+def daily_ns(root, **kw):
+    from argparse import Namespace
+
+    base = {"root": str(root), "data": str(root.parent / "stocks"), "text_history": False, "text_history_stop": False, "backfill": False,
+            "force": False, "days": 0, "no_embed": True, "docs": True, "xbrl_history": False, "docs_days": 7, "max_docs": 300}
+    return Namespace(**{**base, **kw})
+
+
+def daily_world(tmp_path):
+    """毎朝の収集が見る形: 昨日の開示が 2 つ（1 つは決算短信で、数字つき）。"""
+    root, ir, disk = world(tmp_path)
+    (root.parent / "stocks").mkdir()
+    pd.DataFrame({"ticker": ["7203.T", "1332.T"], "name": ["トヨタ", "ニッスイ"]}).to_csv(root.parent / "stocks" / "universe_jp.csv", index=False)
+    day = datetime.now() - timedelta(days=1)
+    disc([("d1", f"{day:%Y-%m-%d} 15:00:00", "7203.T", "トヨタ", "決算短信", "", "y1.zip"),
+          ("d2", f"{day:%Y-%m-%d} 15:30:00", "1332.T", "ニッスイ", "お知らせ", "", "")]).to_csv(ir / "disclosures.csv", index=False)
+    return root, ir, disk
+
+
+def test_morning_record_tells_how_many_clean_days_there_are(tmp_path, capsys, monkeypatch, fast):
+    """断られた後は、毎朝の記録に「断られずに書類を受け取れた日が何日か」を残す（3 日そろえば、過去分を始められる）。"""
+    root, ir, _ = daily_world(tmp_path)
+    monkeypatch.setattr(C, "http_get", lambda url, tries=1: _xbrl_zip() if url.endswith(".zip") else _pdf("a"))
+    now = datetime.now()
+    C.note_refused(ir, 503, now - timedelta(days=2))
+    written(ir / "xbrl" / f"{now:%Y-%m}" / "n1.csv", now - timedelta(days=1))
+    load_script().cmd_collect(daily_ns(root))
+    out = capsys.readouterr().out
+    assert "本文 +2、数字 +1" in out
+    assert "情報収集: サイトに断られたので" in out and "3 日そろったら始められる（今 2 日" in out      # 昨日と、今日の分
+
+
+def test_morning_record_says_nothing_about_the_wait_when_never_refused(tmp_path, capsys, monkeypatch, fast):
+    root, _, _ = daily_world(tmp_path)
+    monkeypatch.setattr(C, "http_get", lambda url, tries=1: _xbrl_zip() if url.endswith(".zip") else _pdf("a"))
+    load_script().cmd_collect(daily_ns(root))
+    out = capsys.readouterr().out
+    assert "本文 +2、数字 +1" in out and "断られ" not in out
 
 
 def test_tool_uses_the_slow_pace_for_the_bulk_fetch(tmp_path, capsys, monkeypatch, fast):
