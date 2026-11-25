@@ -24,7 +24,7 @@ export async function latestRoom(db: D1Database, userId: string, roles: RoleMap,
       `SELECT device_id, metric, value_num, value_text, measured_at
        FROM readings
        WHERE user_id = ?1 AND measured_at >= ?3 AND device_id IN (SELECT value FROM json_each(?2)) AND source = 'poll'
-         AND metric IN ('CO2', 'temperature', 'humidity', 'lightLevel', 'Detected', 'power', 'brightness', 'colorTemperature')
+         AND metric IN ('CO2', 'temperature', 'humidity', 'lightLevel', 'detected', 'power', 'brightness', 'colorTemperature')
        ORDER BY measured_at DESC`,
     )
     .bind(userId, JSON.stringify(devices), now - ROOM_STALE_MS)
@@ -42,7 +42,7 @@ export async function latestRoom(db: D1Database, userId: string, roles: RoleMap,
     temperature: num("co2", "temperature") ?? num("hub", "temperature"),
     humidity: num("co2", "humidity") ?? num("hub", "humidity"),
     lightLevel: num("bedPresence", "lightLevel"),
-    inBed: pick("bedPresence", "Detected") ? num("bedPresence", "Detected") === 1 : null,
+    inBed: pick("bedPresence", "detected") ? num("bedPresence", "detected") === 1 : null,
     ceilingLight: power
       ? { on: power.toLowerCase() === "on", brightness: num("ceilingLight", "brightness"), colorTemperature: num("ceilingLight", "colorTemperature") }
       : null,
@@ -199,7 +199,7 @@ export async function buildTimeline(
       .prepare(
         `SELECT device_id, metric, measured_at, value_num, value_text, source FROM readings
          WHERE user_id = ?1 AND device_id IN (SELECT value FROM json_each(?2)) AND measured_at >= ?3 AND measured_at < ?4
-           AND metric IN ('CO2', 'temperature', 'humidity', 'lightLevel', 'Detected', 'detectionState', 'power', 'brightness', 'colorTemperature', 'openState')
+           AND metric IN ('CO2', 'temperature', 'humidity', 'lightLevel', 'detected', 'detectionState', 'power', 'brightness', 'colorTemperature', 'openState')
          ORDER BY measured_at`,
       )
       .bind(userId, JSON.stringify(devices), start, end),
@@ -271,7 +271,7 @@ export async function buildTimeline(
       temperature: series("co2", "temperature").length > 0 ? series("co2", "temperature") : series("hub", "temperature"),
       humidity: series("co2", "humidity").length > 0 ? series("co2", "humidity") : series("hub", "humidity"),
       lightLevel: series("bedPresence", "lightLevel"),
-      inBed: series("bedPresence", "Detected"),
+      inBed: series("bedPresence", "detected"),
       ceilingLight: [...lightAt.entries()]
         .filter(([, entry]) => entry.on !== undefined)
         .sort((a, b) => a[0] - b[0])

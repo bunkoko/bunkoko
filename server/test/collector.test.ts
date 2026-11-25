@@ -57,7 +57,7 @@ describe("collect", () => {
     expect(co2).toEqual({ value_num: 1203 });
 
     const presence = db.sqlite
-      .prepare(`SELECT value_num, value_text, measured_at, source FROM readings WHERE device_id = 'P1P1P1P1P1P1' AND metric = 'Detected'`)
+      .prepare(`SELECT value_num, value_text, measured_at, source FROM readings WHERE device_id = 'P1P1P1P1P1P1' AND metric = 'detected'`)
       .get();
     expect(presence).toEqual({ value_num: 1, value_text: "true", measured_at: T0, source: "poll" });
 

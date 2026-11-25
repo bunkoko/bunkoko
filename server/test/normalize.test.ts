@@ -22,8 +22,8 @@ describe("toReadings", () => {
   });
 
   it("真偽値は 1/0、数字の文字列は数値としても保存する", () => {
-    expect(toReadings({ Detected: true, moving: false, slidePosition: "75" })).toEqual([
-      { metric: "Detected", valueNum: 1, valueText: "true" },
+    expect(toReadings({ detected: true, moving: false, slidePosition: "75" })).toEqual([
+      { metric: "detected", valueNum: 1, valueText: "true" },
       { metric: "moving", valueNum: 0, valueText: "false" },
       { metric: "slidePosition", valueNum: 75, valueText: "75" },
     ]);

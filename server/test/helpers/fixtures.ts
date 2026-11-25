@@ -19,7 +19,7 @@ export const DEVICES: SwitchBotDevice[] = [
 export const STATUSES: Record<string, DeviceStatus> = {
   [HUB_ID]: { deviceId: HUB_ID, deviceType: "Hub 3", hubDeviceId: HUB_ID, version: "V1.0", temperature: 22.4, humidity: 48, lightLevel: 3, moveDetected: false, onlineStatus: "online" },
   C1C1C1C1C1C1: { deviceId: "C1C1C1C1C1C1", deviceType: "MeterPro(CO2)", hubDeviceId: HUB_ID, battery: 90, version: "V1.2", temperature: 22.1, humidity: 50, CO2: 1203 },
-  P1P1P1P1P1P1: { deviceId: "P1P1P1P1P1P1", deviceType: "Presence Sensor", hubDeviceId: HUB_ID, battery: 100, lightLevel: 2, Detected: true },
+  P1P1P1P1P1P1: { deviceId: "P1P1P1P1P1P1", deviceType: "Presence Sensor", hubDeviceId: HUB_ID, battery: 100, lightLevel: 2, detected: true },
   W1W1W1W1W1W1: { deviceId: "W1W1W1W1W1W1", deviceType: "Contact Sensor", hubDeviceId: HUB_ID, battery: 100, moveDetected: false, openState: "close", brightness: "dim" },
   D1D1D1D1D1D1: { deviceId: "D1D1D1D1D1D1", deviceType: "Contact Sensor", hubDeviceId: HUB_ID, battery: 60, moveDetected: false, openState: "close", brightness: "dim" },
   L1L1L1L1L1L1: { deviceId: "L1L1L1L1L1L1", deviceType: "Ceiling Light", hubDeviceId: "000000000000", power: "on", brightness: 40, colorTemperature: 3000, onlineStatus: "online" },

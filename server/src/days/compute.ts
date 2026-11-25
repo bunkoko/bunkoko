@@ -282,15 +282,16 @@ export async function computeDay(
           .prepare(
             `SELECT measured_at, metric, value_num, value_text FROM readings
              WHERE user_id = ?1 AND device_id IN (SELECT value FROM json_each(?2))
-               AND metric IN ('Detected', 'detectionState') AND measured_at >= ?3 AND measured_at <= ?4`,
+               AND metric IN ('detected', 'detectionState') AND measured_at >= ?3 AND measured_at <= ?4`,
           )
           .bind(userId, bedPresence, presenceFrom, presenceTo)
           .all<{ measured_at: number; metric: string; value_num: number | null; value_text: string | null }>()
       ).results
     : [];
+  // 5分ごとの値は detected（真偽値）、Webhook は detectionState（"DETECTED" / "NOT_DETECTED"）
   const observations: PresenceObservation[] = presenceRows.map((row) => ({
     t: row.measured_at,
-    present: row.metric === "Detected" ? row.value_num === 1 : row.value_text === "DETECTED",
+    present: row.metric === "detected" ? row.value_num === 1 : row.value_text === "DETECTED",
   }));
 
   let inBedStart: number | null = null;

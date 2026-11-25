@@ -1,4 +1,4 @@
-// テスト用: 1晩を丸ごとまねたデータ（days.test.ts・read.test.ts で使う）
+// テスト用: 1晩を丸ごとまねたデータ（days.test.ts・read.test.ts で使う）。項目名は実機の値に合わせる（人感センサーの在床は detected）
 //
 // 2026-11-21（起きた日）の行。日本時間で:
 //   前の夜: 11/19 23:30 〜 11/20 07:00（日中は 11/20 07:00 から）
@@ -76,7 +76,7 @@ export function seedNight() {
     insertReading("C1", t, "temperature", 21);
     insertReading("C1", t, "humidity", 45);
     insertReading("B1", t, "temperature", 25); // ハブ3 の温度は、CO2センサーがあるので使われない
-    insertReading("P1", t, "Detected", t >= at(PREV, "23:10") ? 1 : 0);
+    insertReading("P1", t, "detected", t >= at(PREV, "23:10") ? 1 : 0);
     insertReading("P1", t, "lightLevel", t >= onset ? 2 : 12);
     insertReading("W1", t, "openState", t >= at(PREV, "22:00") && t < at(PREV, "22:20") ? "open" : "close");
     insertReading("D1", t, "openState", "close");
