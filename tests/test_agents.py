@@ -121,6 +121,10 @@ def test_collector_collects_docs_slowly_and_resumes(tmp_path):
                          ("p2", "2026-10-09 15:30:00", "1332.T", "ニッスイ", "お知らせ", "", ""),
                          ("p3", "2026-10-13 10:00:00", "1332.T", "ニッスイ", "今日の開示", "", "")], columns=C.COLUMNS)
     calls = []
+    from datetime import datetime
+
+    def today():                                                                        # この場面の「今日」（p3 が出た日）
+        return datetime(2026, 10, 13, 12, 0)                                            # 7 日より前の開示の 404 は「サイトに無い」と覚えるので、時計を合わせる
 
     def get(url):
         calls.append(url)
@@ -128,7 +132,7 @@ def test_collector_collects_docs_slowly_and_resumes(tmp_path):
             raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)             # 当日の分はまだ載っていない
         return _xbrl_zip() if url.endswith(".zip") else _pdf("hello")
 
-    got = C.collect_docs(disc, tmp_path, interval=0, get=get, log=lambda s: None)
+    got = C.collect_docs(disc, tmp_path, interval=0, get=get, log=lambda s: None, now=today)
     assert got == {"text": 2, "xbrl": 1, "missing": 1, "left": 0}
     assert calls[0].endswith("/72030/x1.zip") and calls[1] == "https://www2.jpx.co.jp/disc/72030/p1.pdf"      # 決算の数字が先
     assert (tmp_path / "text" / "2026-10" / "p1.txt").read_text(encoding="utf-8") == "hello"
@@ -137,24 +141,24 @@ def test_collector_collects_docs_slowly_and_resumes(tmp_path):
     (tmp_path / "xbrl" / "2026-10" / "x1.csv").write_text("kind,name,context,value,text\n")     # 表だけ壊れても、原本から作り直せる
     assert C.reparse_facts(tmp_path) == 1 and len(pd.read_csv(tmp_path / "xbrl" / "2026-10" / "x1.csv")) == 4
     calls.clear()
-    again = C.collect_docs(disc, tmp_path, interval=0, get=get, log=lambda s: None)
+    again = C.collect_docs(disc, tmp_path, interval=0, get=get, log=lambda s: None, now=today)
     assert again["text"] == 0 and again["missing"] == 1 and calls == ["https://www2.jpx.co.jp/disc/13320/p3.pdf"]   # 取れた分は取り直さない
     import os
 
     (tmp_path / ".docs.lock").write_text(str(os.getpid()))                           # ほかの取得が動いている間は取りに行かない
     calls.clear()
-    assert C.collect_docs(disc, tmp_path, interval=0, get=get, log=lambda s: None).get("busy") == 1 and calls == []
+    assert C.collect_docs(disc, tmp_path, interval=0, get=get, log=lambda s: None, now=today).get("busy") == 1 and calls == []
     (tmp_path / ".docs.lock").write_text("999999999")                                 # 止まった取得の印は無視して進む
-    assert "busy" not in C.collect_docs(disc, tmp_path, interval=0, get=get, log=lambda s: None) and not (tmp_path / ".docs.lock").exists()
-    only = C.collect_docs(disc, tmp_path / "b", pdf=False, max_docs=5, interval=0, get=get, log=lambda s: None)
+    assert "busy" not in C.collect_docs(disc, tmp_path, interval=0, get=get, log=lambda s: None, now=today) and not (tmp_path / ".docs.lock").exists()
+    only = C.collect_docs(disc, tmp_path / "b", pdf=False, max_docs=5, interval=0, get=get, log=lambda s: None, now=today)
     assert only == {"text": 0, "xbrl": 1, "missing": 0, "left": 0}
-    assert C.collect_docs(disc, tmp_path / "c", max_docs=1, interval=0, get=get, log=lambda s: None)["left"] == 3
+    assert C.collect_docs(disc, tmp_path / "c", max_docs=1, interval=0, get=get, log=lambda s: None, now=today)["left"] == 3
     import time
 
     assert C.INTERVAL == 1.0                                                          # 1 秒に 1 件（利用者が決めた速さ）
     t0 = time.monotonic()
-    C.collect_docs(disc.iloc[:1], tmp_path / "d", xbrl=False, interval=0.2, get=get, log=lambda s: None)
-    C.collect_docs(disc.iloc[2:], tmp_path / "d", xbrl=False, interval=0.2, get=get, log=lambda s: None)   # 取れなくても同じだけ待つ
+    C.collect_docs(disc.iloc[:1], tmp_path / "d", xbrl=False, interval=0.2, get=get, log=lambda s: None, now=today)
+    C.collect_docs(disc.iloc[2:], tmp_path / "d", xbrl=False, interval=0.2, get=get, log=lambda s: None, now=today)   # 取れなくても同じだけ待つ
     assert 0.35 < time.monotonic() - t0 < 1.0
 
 
