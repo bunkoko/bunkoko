@@ -844,3 +844,4 @@ Mac で `koten eval grade --redo --model …`（grader_v4）→ `eval agreement`
 - 利用者：「論文など統計を大量に入手できるところはない？圧倒的に不足している」。今の統計の台帳は 53 行で、テーマごとに 2〜4 行しかない。
 - 公式のページで調べ、別の見直し役が確かめ直した結果は docs/research/2026-11-26-bulk-sources.md。どれを取り込むかは利用者が決める（台本の作りの見直しと一緒に）。
 
+- 2026-11-26 利用者が e-Stat に登録し、アプリケーション ID を Mac の .env の KOTEN_ESTAT_APPID に書いた（Git とクラウドには入れない。URL の欄は公式の案内どおり http://test.localhost/）。getStatsList を1回呼んで「0 正常に終了しました。」を確かめた。
