@@ -11,10 +11,11 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, quote_plus, urlparse
 
 import httpx
 
@@ -113,27 +114,44 @@ class Fetcher:
         )
 
     def fetch(
-        self, url: str, rel_path: str, *, license: str | None = None, refresh: bool = False
+        self,
+        url: str,
+        rel_path: str,
+        *,
+        license: str | None = None,
+        refresh: bool = False,
+        secret_params: dict[str, str] | None = None,
     ) -> tuple[Path, bool]:
-        """URLを raw_dir/rel_path に保存する。戻り値は（保存先, 今回取得したか）。"""
+        """URLを raw_dir/rel_path に保存する。戻り値は（保存先, 今回取得したか）。
+
+        secret_params（例：e-Stat の appId）は送る URL にだけ足す。マニフェスト・保存先・
+        保存する本文・例外の文には残さない（本文の中の同じ値は *** に置き換える）。
+        """
         dest = self.raw_dir / rel_path
         known = self.manifest.get(url)
         if known and dest.exists() and not refresh:
             return dest, False
+        secrets = {k: v for k, v in (secret_params or {}).items() if v}
+        send_url = str(httpx.URL(url).copy_merge_params(secrets)) if secrets else url
         headers = {}
         if refresh and known and known.etag and dest.exists():
             headers["If-None-Match"] = known.etag
-        for attempt in range(self.max_retries + 1):
-            self.limiter.wait(url)
-            resp = self.client.get(url, headers=headers)
-            if resp.status_code in (429, 503) and attempt < self.max_retries:
-                self._sleep(retry_after(resp))
-                continue
-            break
-        if resp.status_code == 304:
-            return dest, False
-        resp.raise_for_status()
-        body = resp.content
+        try:
+            for attempt in range(self.max_retries + 1):
+                self.limiter.wait(url)
+                resp = self.client.get(send_url, headers=headers)
+                if resp.status_code in (429, 503) and attempt < self.max_retries:
+                    self._sleep(retry_after(resp))
+                    continue
+                break
+            if resp.status_code == 304:
+                return dest, False
+            resp.raise_for_status()
+        except httpx.HTTPError as e:
+            if not secrets:
+                raise
+            raise FetchError(_scrub_text(f"{type(e).__name__}：{e}", secrets, send_url)) from None
+        body = _scrub_bytes(resp.content, secrets)
         sha = hashlib.sha256(body).hexdigest()
         if known and dest.exists() and known.sha256 == sha:
             return dest, False
@@ -153,16 +171,62 @@ class Fetcher:
         )
         return dest, True
 
-    def fetch_json(self, url: str, subdir: str) -> object:
-        """API の応答（JSON）を取り、raw_dir/subdir/ に URL のハッシュの名前で控える。"""
+    def fetch_json(
+        self,
+        url: str,
+        subdir: str,
+        *,
+        secret_params: dict[str, str] | None = None,
+        error_of: Callable[[object], str | None] | None = None,
+        refresh: bool = False,
+    ) -> object:
+        """API の応答（JSON）を取り、raw_dir/subdir/ に URL のハッシュの名前で控える。
+
+        url は秘密を含まない公開の URL（控えの名前・マニフェストはこれ）。
+        error_of が文を返したら、控えを消して ApiError にする。省くと MediaWiki の "error" を見る。
+        """
         name = hashlib.sha256(url.encode("utf-8")).hexdigest()[:24]
-        path, _ = self.fetch(url, f"{subdir}/{name}.json")
+        path, _ = self.fetch(
+            url, f"{subdir}/{name}.json", refresh=refresh, secret_params=secret_params
+        )
         data = json.loads(path.read_text("utf-8"))
-        if isinstance(data, dict) and "error" in data:
-            # MediaWiki は 200 でエラーを返すことがある。控えを消し、次の実行で取り直す
+        if error_of is not None:
+            msg = error_of(data)
+        elif isinstance(data, dict) and "error" in data:
+            # MediaWiki は 200 でエラーを返すことがある
+            msg = str(data["error"])
+        else:
+            msg = None
+        if msg is not None:
+            # 控えを消し、次の実行で取り直す
             path.unlink(missing_ok=True)
-            raise ApiError(f"{url}：{data['error']}")
+            raise ApiError(f"{url}：{msg}")
         return data
+
+
+def _secret_forms(secrets: dict[str, str]) -> list[str]:
+    forms: set[str] = set()
+    for v in secrets.values():
+        forms.update({v, quote(v, safe=""), quote_plus(v)})
+    return sorted(forms, key=len, reverse=True)
+
+
+def _scrub_text(text: str, secrets: dict[str, str], send_url: str | None = None) -> str:
+    if send_url:
+        text = text.replace(send_url, "***")
+    for form in _secret_forms(secrets):
+        text = text.replace(form, "***")
+    return text
+
+
+def _scrub_bytes(body: bytes, secrets: dict[str, str]) -> bytes:
+    for form in _secret_forms(secrets):
+        body = body.replace(form.encode("utf-8"), b"***")
+    return body
+
+
+class FetchError(httpx.HTTPError):
+    """秘密の引数つきの取得が失敗した。文から秘密の値は取り除いてある。"""
 
 
 class ApiError(RuntimeError):
