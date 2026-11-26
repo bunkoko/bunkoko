@@ -15,6 +15,7 @@
     python scripts/agents.py extra [--fetch]      # まだ入れていなかった項目（出来高・割安さ・業種・進捗率）を足して確かめる（11 章の F1〜F4）
     python scripts/agents.py status
     python scripts/agents.py inventory            # 取ってある開示の本文の棚卸し（何が・いつから・どれだけ読めているか。見るだけ。10.6）
+    python scripts/agents.py digest [--date 日付] [--each 5]   # 読む一覧: その会社の「ふだん」と違う開示を短い一覧に（値段は使わない。docs/ir_text.md）
     python scripts/agents.py reread [--check]     # 空の本文を、残してある原本の PDF から読み直す（--check は見るだけ。サイトには取りに行かない。10.7）
     python scripts/agents.py reread --all [--check]       # 原本のある本文を全部読み直す（読み方を直した後に。変わったものだけ書き直す）
     python scripts/agents.py reread --refetch [--check]   # 空で、原本も無い本文を消して、次の収集に取り直させる（利用者の決め 2026-11-26）
@@ -1934,6 +1935,43 @@ def cmd_inventory(args) -> Path:
     return out
 
 
+def cmd_digest(args) -> Path:
+    """読む一覧（docs/ir_text.md 2 章）: その日の開示のうち、その会社の「ふだん」と違うものを短い一覧にする。
+
+    珍しさの順に並べるだけ。値段は使わない・判定しない・サイトに取りに行かない。一覧に出た開示の本文も、ファイルに付ける（生成 AI に渡すとき用）。
+    """
+    from cfdbot.agents import collector as C
+    from cfdbot.agents import digest as D
+
+    p = paths(args.root)
+    df = C.load_disclosures(p["disclosures"])
+    if df.empty:
+        sys.exit("開示の一覧が無い（先に ./cfd agents collect）")
+    ir_root = p["disclosures"].parent
+    if not C.text_root(ir_root).is_dir():                       # 行き先の無いリンク ＝ 外付けの HDD がつながっていない
+        sys.exit("読む一覧: ⚠ 本文の置き場所が見えない（外付けの HDD がつながっていない？）。つないでから、同じコマンドで")
+    latest = df["time"].max()[:10]
+    day = getattr(args, "date", None) or latest
+    if not (df["time"].str[:10] == day).any():
+        sys.exit(f"読む一覧: {day} の開示が無い（--date で日付を言う。いちばん新しい開示は {latest}）")
+    month = dict(zip(df["id"], df["time"].str[:7]))
+
+    def read(doc: str) -> str | None:
+        try:
+            return (C.text_root(ir_root) / month[doc] / f"{doc}.txt").read_text(encoding="utf-8", errors="replace")
+        except (OSError, KeyError):
+            return None
+
+    table = D.describe(df, read, day)
+    text = D.render(table, day, read, top=getattr(args, "each", None) or D.TOP)
+    out = p["root"] / "digest" / f"{day}.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text, encoding="utf-8")
+    print(text.split("## 3. ")[0].rstrip(), flush=True)         # 画面には一覧だけ（本文はファイルに）
+    print(f"\n保存先: {out}（一覧に出た開示の本文つき。値段は使っていない。コミットしない）", flush=True)
+    return out
+
+
 REREAD_SAMPLE = 300                       # reread --check で読んでみる数（全体に散らばるように選ぶ）
 
 
@@ -2607,11 +2645,13 @@ def cmd_schedule(args) -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("command", choices=["collect", "ir", "select", "decide", "evaluate", "run", "status", "schedule", "earnings", "extra",
-                                        "check", "orders", "manual", "premium", "shap", "rank", "residual", "series", "inventory", "reread"])
+                                        "check", "orders", "manual", "premium", "shap", "rank", "residual", "series", "inventory", "reread", "digest"])
     p.add_argument("--fetch", action="store_true", help="extra: 先に出来高・終値・株式分割を Yahoo から取る（1 秒に 1 社。取得済みは飛ばす）")
     p.add_argument("--reuse", action="store_true", help="extra: 入力を足した銘柄選定の点数が書いてあれば、学び直さずに使う")
     p.add_argument("--off", action="store_true", help="schedule: 自動実行を外す")
     p.add_argument("--check", action="store_true", help="reread: 見るだけ（一部を原本から読んでみて数える。何も書かない・消さない）")
+    p.add_argument("--date", help="digest: どの日の開示の一覧か（YYYY-MM-DD。言わなければ、開示のあるいちばん新しい日）")
+    p.add_argument("--each", type=int, help="digest: 一覧 1 つに出す数（既定 5）")
     p.add_argument("--all", action="store_true", help="reread: 空の本文だけでなく、原本のある本文を全部読み直す（変わったものだけ書き直す）")
     p.add_argument("--refetch", action="store_true", help="reread: 空で、原本も無い本文を消して、次の収集に取り直させる（ここではサイトに取りに行かない）")
     p.add_argument("--job", choices=list(JOBS), default="run", help="schedule: どの自動実行か（run = 平日 13:05 の判断、collect = 毎日 8:00 の収集）")
@@ -2662,7 +2702,7 @@ def main() -> None:
     {"collect": cmd_collect, "ir": cmd_ir, "select": cmd_select, "decide": cmd_decide, "evaluate": cmd_evaluate,
      "run": cmd_run, "status": cmd_status, "schedule": cmd_schedule, "earnings": cmd_earnings, "extra": cmd_extra,
      "check": cmd_check, "orders": cmd_orders, "manual": cmd_manual, "premium": cmd_premium, "shap": cmd_shap, "rank": cmd_rank, "residual": cmd_residual,
-     "series": cmd_series, "inventory": cmd_inventory, "reread": cmd_reread}[args.command](args)
+     "series": cmd_series, "inventory": cmd_inventory, "reread": cmd_reread, "digest": cmd_digest}[args.command](args)
 
 
 if __name__ == "__main__":
