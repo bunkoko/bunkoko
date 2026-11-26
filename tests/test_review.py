@@ -88,17 +88,38 @@ def test_page_escapes_every_text(tmp_path):
         warnings=[evil],
         blockers=[evil],
         human_take={"chapter_id": evil, "text": evil, "audio_path": None},
+        audio=[
+            {
+                "title": evil,
+                "path": str(tmp_path / "all.wav"),
+                "sec": 1.0,
+                "lines": [
+                    {"chapter": evil, "t0": 0.0},
+                    {"t0": 0.0, "t1": 1.0, "text": evil, "reading": evil, "kind": "quote"},
+                ],
+            }
+        ],
     )
     html = build_review_html(b, out_path(tmp_path)).read_text("utf-8")
-    assert "<script" not in html
+    # 文はどれも escape する（動くスクリプトは、このページの1つだけ）
+    assert "<script>alert" not in html and html.count("<script") == 1
     assert "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;&amp;" in html
 
 
 def test_page_reads_nothing_outside(tmp_path):
     html = build_review_html(bundle(tmp_path), out_path(tmp_path)).read_text("utf-8")
     assert "http://" not in html and "https://" not in html
-    assert "<script" not in html and "<link" not in html and "@import" not in html
+    assert "<link" not in html and "@import" not in html and "<script src" not in html
     assert "Content-Security-Policy" in html and "default-src &#x27;none&#x27;" in html
+    # 動くのは、音声と台本を合わせて見せる自分の1つのスクリプトだけ（ハッシュで許す）
+    import base64
+    import hashlib
+
+    from koten.review.page import SYNC_JS
+
+    assert html.count("<script") == 1 and f"<script>{SYNC_JS}</script>" in html
+    digest = base64.b64encode(hashlib.sha256(SYNC_JS.encode()).digest()).decode()
+    assert f"script-src &#x27;sha256-{digest}&#x27;" in html
 
 
 def test_video_and_thumbnails_use_relative_paths(tmp_path):

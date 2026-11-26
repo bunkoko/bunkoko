@@ -252,7 +252,9 @@ def test_voice_only_check_page_has_audio(env, tmp_path):
     html = page.read_text("utf-8")
     media = media_dir(s.require_hdd(), eid)
     whole = media / "voice" / "all.wav"
-    assert whole.exists() and html.count("<audio") == len(m.chapters) + 1
+    # 音声と台本を並べた通しの音声（1つ）と、章ごと・通しの表（章の数 + 1）
+    assert whole.exists() and html.count("<audio") == len(m.chapters) + 2
+    assert 'id="sync-lines"' in html and html.count("data-t0=") > len(m.chapters)
     import wave
 
     with wave.open(str(whole), "rb") as w:

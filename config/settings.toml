@@ -168,7 +168,7 @@ device = "auto"
 [episode]
 min_sec = 600
 max_sec = 900
-chars_per_min = 300
+chars_per_min = 300           # 話す速さ 1.0 のときの1分あたりの字数。台本の目安は、これに voicevox.speed_scale を掛けた数
 same_format_in_row_max = 2
 
 [recency]
@@ -183,7 +183,7 @@ speaker_id = 3                # 語りの声。利用者が試聴して選ぶ（
 # クレジット（説明欄）。キャラクターごとの規約を確かめてから人が書く（例："VOICEVOX:ずんだもん"）。
 # 空のあいだは確認画面で「承認できない」と出す
 credit = ""
-speed_scale = 1.0             # 話す速さ（G7 の尺に合わないときに少しだけ変える。0.9〜1.15 くらい）
+speed_scale = 1.4             # 話す速さ（2026-11-26 利用者：1.4）。台本の字数の目安も、この倍率で増える（episode.chars_per_min）
 pause_sentence = 0.25         # 文と文のあいだ（秒）
 pause_segment = 0.6           # 段落と段落のあいだ（秒）
 pause_chapter = 1.2           # 章の終わり（秒）

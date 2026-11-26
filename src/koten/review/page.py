@@ -1,6 +1,7 @@
 """確認画面（exports/<回>/review.html）を作る（SPEC §8.12）。
 
-- 1枚の HTML で、外のフォント・画像・スクリプトを読まない（Content-Security-Policy でも止める）
+- 1枚の HTML で、外のフォント・画像・スクリプトを読まない（Content-Security-Policy でも止める）。
+  動くのは、音声と台本を合わせて見せる、このページに書いた1つのスクリプトだけ（ハッシュで許す）
 - 動画とサムネイルは、review.html の置き場所からの相対パスで指す（HDD の場所が変わっても開ける）
 - 台本・一節・出典などの文は、どれも html.escape してから入れる
 - このページからは DB を変えない。承認・差し戻しは、ページに出したコマンドをコピーして端末で打つ
@@ -43,11 +44,60 @@ DESCRIPTION_LIMIT = DESCRIPTION_MAX  # YouTube の説明欄の上限（D-036。�
 # 承認できる状態（koten.review.actions.approve と同じ）
 APPROVABLE = "rendered"
 
-# 外を読まない：画像・動画は同じ場所（file: の相対パス）と data: だけ。スクリプトは動かさない
-CSP = (
+# 外を読まない：画像・動画は同じ場所（file: の相対パス）と data: だけ。
+# スクリプトは、このページに書いた1つ（音声と台本を合わせて見せる SYNC_JS）だけを、ハッシュで許す
+CSP_BASE = (
     "default-src 'none'; img-src 'self' file: data:; media-src 'self' file:; "
     "style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
 )
+
+# 音声と台本：聞いている文に印を付け、文を押すとそこから聞く。外のものは読まない
+SYNC_JS = """
+(function () {
+  var audio = document.getElementById("sync-audio");
+  if (!audio) return;
+  var lines = Array.prototype.slice.call(document.querySelectorAll("#sync-lines [data-t0]"));
+  var times = lines.map(function (el) { return parseFloat(el.getAttribute("data-t0")); });
+  var follow = document.getElementById("sync-follow");
+  var current = null;
+  function find(t) {
+    var lo = 0, hi = times.length - 1, ans = -1;
+    while (lo <= hi) {
+      var mid = (lo + hi) >> 1;
+      if (times[mid] <= t + 0.05) { ans = mid; lo = mid + 1; } else { hi = mid - 1; }
+    }
+    return ans;
+  }
+  audio.addEventListener("timeupdate", function () {
+    var i = find(audio.currentTime);
+    var el = i >= 0 ? lines[i] : null;
+    if (el === current) return;
+    if (current) current.classList.remove("now");
+    current = el;
+    if (el) {
+      el.classList.add("now");
+      if (follow && follow.checked) el.scrollIntoView({block: "center", behavior: "smooth"});
+    }
+  });
+  lines.forEach(function (el) {
+    el.addEventListener("click", function () {
+      audio.currentTime = parseFloat(el.getAttribute("data-t0"));
+      audio.play();
+    });
+  });
+})();
+"""
+
+
+def _csp() -> str:
+    import base64
+    import hashlib
+
+    digest = base64.b64encode(hashlib.sha256(SYNC_JS.encode("utf-8")).digest()).decode()
+    return f"{CSP_BASE}; script-src 'sha256-{digest}'"
+
+
+CSP = _csp()
 
 STYLE = """
 body { font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP",
@@ -83,6 +133,20 @@ th { background: #eee; white-space: nowrap; }
   margin: 4px 0 12px; white-space: pre-wrap; word-break: break-all; }
 .stop { color: #b71c1c; font-weight: bold; }
 .small { font-size: 0.9em; color: #555; }
+.sync-bar { position: sticky; top: 0; z-index: 2; background: #fafafa; padding: 8px 0;
+  border-bottom: 1px solid #ccc; }
+.sync-bar audio { width: 100%; }
+#sync-lines { max-height: 70vh; overflow-y: auto; background: #fff; border: 1px solid #ddd;
+  border-radius: 6px; padding: 6px 12px; }
+#sync-lines h3 { font-size: 1em; margin: 14px 0 4px; color: #37474f; cursor: pointer; }
+#sync-lines p { margin: 2px 0; padding: 4px 6px; border-radius: 4px; cursor: pointer; }
+#sync-lines p:hover { background: #eef3f7; }
+#sync-lines p.now { background: #fff59d; }
+#sync-lines p.quote { font-family: "Hiragino Mincho ProN", "Yu Mincho", "Noto Serif JP", serif;
+  border-left: 3px solid #5d4037; }
+#sync-lines .reading { display: block; font-size: 0.85em; color: #6d4c41; }
+#sync-lines .t { color: #999; font-size: 0.8em; margin-right: 6px;
+  font-variant-numeric: tabular-nums; }
 """
 
 
@@ -106,7 +170,8 @@ def build_review_html(bundle: ReviewBundle, out_path: Path) -> Path:
     parts = [
         _header(bundle),
         _status(bundle),
-        _section("音声（台本と音声だけで確かめる）", _audio(bundle.audio, base)),
+        _section("音声と台本（聞きながら読む）", _sync(bundle.audio, base)),
+        _section("章ごとの音声", _audio(bundle.audio, base)),
         _section("動画", _video(bundle.video, base)),
         _section("サムネイル", _thumbs(bundle.thumbnails, base)),
         _section("台本の全文", _script(bundle.script_lines)),
@@ -125,7 +190,9 @@ def build_review_html(bundle: ReviewBundle, out_path: Path) -> Path:
         f'<meta http-equiv="Content-Security-Policy" content="{_e(CSP)}">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         f"<title>{_e(bundle.episode_id)} の確認</title>\n"
-        f"<style>{STYLE}</style>\n</head>\n<body>\n" + "\n".join(parts) + "\n</body>\n</html>\n"
+        f"<style>{STYLE}</style>\n</head>\n<body>\n"
+        + "\n".join(parts)
+        + f"\n<script>{SYNC_JS}</script>\n</body>\n</html>\n"
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = out_path.with_suffix(out_path.suffix + ".part")
@@ -213,6 +280,37 @@ def _video(video: str | None, base: Path) -> str:
         f'{missing}<video controls preload="metadata" src="{url}"></video>\n'
         f'<p class="small">ファイル：<a href="{url}">{_e(Path(video).name)}</a>'
         "（読み違い・間・画面の切り替えを、音を出して確かめる）</p>"
+    )
+
+
+def _sync(items: list[dict[str, Any]], base: Path) -> str:
+    """通しの音声と台本を並べる：聞いている文に印が付き、文を押すとそこから聞ける。"""
+    whole = next((a for a in items if a.get("lines")), None)
+    if whole is None:
+        return '<p class="none">音声がありません（koten voice）。</p>'
+    url = _e(_rel_url(str(whole.get("path") or ""), base))
+    rows = []
+    for x in whole["lines"]:
+        if "chapter" in x:
+            rows.append(f'<h3 data-t0="{float(x["t0"]):.3f}">{_e(x["chapter"])}</h3>')
+            continue
+        cls = ' class="quote"' if x.get("kind") == "quote" else ""
+        reading = (
+            f'<span class="reading">読み：{_e(x["reading"])}</span>' if x.get("reading") else ""
+        )
+        rows.append(
+            f'<p data-t0="{float(x["t0"]):.3f}"{cls}>'
+            f'<span class="t">{_e(_clock(float(x["t0"])))}</span>{_e(x["text"])}{reading}</p>'
+        )
+    return (
+        '<div class="sync-bar">'
+        f'<audio id="sync-audio" controls preload="metadata" src="{url}"></audio>'
+        '<label class="small"><input type="checkbox" id="sync-follow" checked> '
+        "読んでいる文に合わせて動かす</label></div>\n"
+        '<p class="small">聞いている文に黄色の印が付きます。'
+        "文や章の見出しを押すと、そこから聞けます。"
+        "一節は原文で、読み上げを直した文には「読み：」を出しています。</p>\n"
+        f'<div id="sync-lines">\n' + "\n".join(rows) + "\n</div>"
     )
 
 

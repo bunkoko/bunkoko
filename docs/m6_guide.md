@@ -41,7 +41,7 @@ cd /Users/bunkoko/koten
 uv run koten produce --episode E20261107-01 --to voice
 ```
 
-- 最後に出る確認画面に、章ごとの音声と「通しで聞く」が並びます。台本の全文と、一節の原文と読み上げの表を見ながら聞きます。
+- 最後に出る確認画面のいちばん上の「音声と台本」で、通しの音声を聞きながら台本を読めます。聞いている文に黄色の印が付き、文や章の見出しを押すとそこから聞けます。一節は原文で、読み上げを直した文には「読み：」が出ます。
 - 読み違いは config/readings.csv で直し、同じコマンドでやり直します。
 - 音声で良ければ、画面から先を作ります：`uv run koten produce --episode E20261107-01 --from visuals`
 
@@ -94,5 +94,5 @@ uv run koten episode reject --episode E20261107-01 --to script_done --note "直�
 
 - 合計が10〜15分に入らない、または章が formats.yaml の範囲の外だと、G7 が不合格になります。
 - 背景の事実・昔の辞書・研究を使った章は、その分だけ長くてよい（研究は1件ごとに60秒まで足す）。
-- 少しだけなら、config/settings.toml の `[voicevox]` の `speed_scale`（話す速さ。0.9〜1.15 くらい）を変えて、`--from voice` からやり直します。
+- 話す速さは config/settings.toml の `[voicevox]` の `speed_scale`（2026-11-26 から 1.4）。台本の字数の目安も同じ倍率で増えます（`[episode]` の `chars_per_min` は速さ 1.0 のときの字数）。速さを変えたら `--from voice` からやり直し、台本が短くて10分に届かなければ `uv run koten script --episode latest --force` で書き直します。
 - 大きくずれるときは、差し戻して台本を書き直します。

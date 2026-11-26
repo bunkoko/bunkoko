@@ -24,6 +24,7 @@ from koten.media.model import (
     SHOTS,
     CardSpec,
     ReviewBundle,
+    Sentence,
     ShotList,
     ThumbSpec,
     VoiceManifest,
@@ -695,7 +696,14 @@ def step_review(
     audio: list[dict[str, Any]] = []
     if manifest is not None:
         whole = join_voice(media, manifest)
-        audio.append({"title": "通しで聞く", "path": str(whole), "sec": manifest.total_sec})
+        audio.append(
+            {
+                "title": "通しで聞く",
+                "path": str(whole),
+                "sec": manifest.total_sec,
+                "lines": transcript(manifest),
+            }
+        )
         audio += [
             {
                 "title": f"{ch.chapter_id} {ch.title}",
@@ -726,6 +734,32 @@ def step_review(
     build_review_html(bundle, out)
     log(f"確認画面：{out}")
     return out, blockers
+
+
+def transcript(manifest: VoiceManifest) -> list[dict[str, Any]]:
+    """通しの音声に合わせた台本：章の頭と、文ごとの時刻（通しの音声の頭から）・画面の文・読み。
+
+    確認画面で、音声を聞きながら今読んでいる文に印を付け、文を押すとそこから聞けるようにする。
+    """
+    out: list[dict[str, Any]] = []
+    for ch in manifest.chapters:
+        out.append({"chapter": f"{ch.chapter_id} {ch.title}".strip(), "t0": ch.offset})
+        for seg in ch.segments:
+            parts = seg.sentences or [
+                Sentence(display=seg.display, reading=seg.reading, start=seg.start, end=seg.end)
+            ]
+            for x in parts:
+                out.append(
+                    {
+                        "t0": round(ch.offset + x.start, 3),
+                        "t1": round(ch.offset + x.end, 3),
+                        "text": x.display,
+                        "reading": x.reading if x.reading != x.display else "",
+                        "kind": seg.kind,
+                        "seg_id": seg.seg_id,
+                    }
+                )
+    return out
 
 
 def join_voice(media: Path, manifest: VoiceManifest) -> Path:

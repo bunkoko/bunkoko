@@ -36,6 +36,13 @@ class Settings:
             node = node.get(key, {})
         return node
 
+    def chars_per_min(self) -> int:
+        """台本の1分あたりの字数の目安。episode.chars_per_min（話す速さ 1.0 のとき）に
+        voicevox.speed_scale を掛ける（速く読むほど、同じ長さに多くの字が入る）。"""
+        base = float(self.section("episode").get("chars_per_min", 300))
+        speed = float(self.section("voicevox").get("speed_scale", 1.0) or 1.0)
+        return int(round(base * speed))
+
     def _path(self, key: str) -> Path:
         value = self.raw["paths"][key]
         return Path(os.path.expanduser(value)).resolve()

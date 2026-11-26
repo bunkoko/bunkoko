@@ -1749,7 +1749,9 @@ def script(
         for line in render(script, gates.resolver_for(data, script)):
             typer.echo(line)
         return
-    cfg = ScriptConfig.from_settings(s.section("script"), s.section("episode"))
+    cfg = ScriptConfig.from_settings(
+        s.section("script"), {**s.section("episode"), "chars_per_min": s.chars_per_min()}
+    )
     prompts = s.config_dir.parent / "prompts"
     writer = ScriptWriter(make_llm(s.section("llm.script")), prompts, cfg)
     judge = gates.FaithfulnessJudge(
@@ -3867,7 +3869,7 @@ def episode_visuals_cmd(
     if not rows:
         typer.echo("台本ができた回がありません")
         return
-    cpm = int(s.section("episode").get("chars_per_min", 300))
+    cpm = s.chars_per_min()
     names = {
         "photo": "写真",
         "quote_card": "引用カード",
