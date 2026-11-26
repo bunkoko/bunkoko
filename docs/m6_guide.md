@@ -28,7 +28,7 @@
 3. 選んだキャラクターの利用規約を確かめて、クレジットを書きます。
 
    - キャラクターごとに、使ってよい場面とクレジットの書き方が決まっています（VOICEVOX のサイトの、そのキャラクターのページ）。
-   - config/settings.toml の `[voicevox]` の `credit` に、決まった書き方で書きます（例：`credit = "VOICEVOX:ずんだもん"`）。
+   - config/settings.toml の `[voicevox]` の `credit` に、決まった書き方で書きます（例：`credit = "VOICEVOX:青山龍星"`）。
    - 空のあいだは、確認画面に「承認できない理由」として出ます。
    - 確かめたことは、Claude に伝えて docs/decisions.md に書いてもらいます。
 

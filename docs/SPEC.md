@@ -570,7 +570,7 @@ worry_cluster_days = 30
 
 [voicevox]
 endpoint = "http://127.0.0.1:50021"
-speaker_id = 3
+speaker_id = 13   # 青山龍星のノーマル（D-038）
 
 [video]
 width = 1920

@@ -179,10 +179,10 @@ worry_cluster_days = 30
 
 [voicevox]
 endpoint = "http://127.0.0.1:50021"
-speaker_id = 3                # 語りの声。利用者が試聴して選ぶ（2026-11-20）。audio_query と synthesis に同じ ID を渡す
-# クレジット（説明欄）。キャラクターごとの規約を確かめてから人が書く（例："VOICEVOX:ずんだもん"）。
+speaker_id = 13               # 語りの声：青山龍星のノーマル（2026-11-26 利用者。D-038）。audio_query と synthesis に同じ ID を渡す
+# クレジット（説明欄）。キャラクターの規約の書き方そのまま（「:」は半角、前後に空白なし。D-038）。
 # 空のあいだは確認画面で「承認できない」と出す
-credit = ""
+credit = "VOICEVOX:青山龍星"
 speed_scale = 1.4             # 話す速さ（2026-11-26 利用者：1.4）。台本の字数の目安も、この倍率で増える（episode.chars_per_min）
 pause_sentence = 0.25         # 文と文のあいだ（秒）
 pause_segment = 0.6           # 段落と段落のあいだ（秒）
