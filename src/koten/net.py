@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -18,6 +19,31 @@ from pathlib import Path
 from urllib.parse import quote, quote_plus, urlparse
 
 import httpx
+
+# httpx は INFO で送った URL（秘密の引数を含む）を記録する。ログに秘密を出さない保証はここで持つ：
+# 水準を上げて INFO/DEBUG を出さず、さらに秘密の値を伏せる Filter を httpx に付ける。
+for _name in ("httpx", "httpcore"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
+
+
+class _RedactFilter(logging.Filter):
+    """記録の文と引数から、登録した秘密の値（と URL エンコード形）を *** に置き換える。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.forms: set[str] = set()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if self.forms:
+            msg = record.getMessage()
+            for form in sorted(self.forms, key=len, reverse=True):
+                msg = msg.replace(form, "***")
+            record.msg, record.args = msg, None
+        return True
+
+
+_redact = _RedactFilter()
+logging.getLogger("httpx").addFilter(_redact)
 
 
 class RateLimiter:
@@ -132,6 +158,7 @@ class Fetcher:
         if known and dest.exists() and not refresh:
             return dest, False
         secrets = {k: v for k, v in (secret_params or {}).items() if v}
+        _redact.forms.update(_secret_forms(secrets))
         send_url = str(httpx.URL(url).copy_merge_params(secrets)) if secrets else url
         headers = {}
         if refresh and known and known.etag and dest.exists():
@@ -150,7 +177,9 @@ class Fetcher:
         except httpx.HTTPError as e:
             if not secrets:
                 raise
-            raise FetchError(_scrub_text(f"{type(e).__name__}：{e}", secrets, send_url)) from None
+            status = e.response.status_code if isinstance(e, httpx.HTTPStatusError) else None
+            text = _scrub_text(f"{type(e).__name__}：{e}", secrets, send_url, url)
+            raise FetchError(text, status_code=status) from None
         body = _scrub_bytes(resp.content, secrets)
         sha = hashlib.sha256(body).hexdigest()
         if known and dest.exists() and known.sha256 == sha:
@@ -189,14 +218,19 @@ class Fetcher:
         path, _ = self.fetch(
             url, f"{subdir}/{name}.json", refresh=refresh, secret_params=secret_params
         )
-        data = json.loads(path.read_text("utf-8"))
-        if error_of is not None:
-            msg = error_of(data)
-        elif isinstance(data, dict) and "error" in data:
-            # MediaWiki は 200 でエラーを返すことがある
-            msg = str(data["error"])
-        else:
-            msg = None
+        try:
+            data = json.loads(path.read_text("utf-8"))
+            if error_of is not None:
+                msg = error_of(data)
+            elif isinstance(data, dict) and "error" in data:
+                # MediaWiki は 200 でエラーを返すことがある
+                msg = str(data["error"])
+            else:
+                msg = None
+        except Exception:
+            # JSON でない応答や想定外の形の控えを残さない（次の実行で取り直す）
+            path.unlink(missing_ok=True)
+            raise
         if msg is not None:
             # 控えを消し、次の実行で取り直す
             path.unlink(missing_ok=True)
@@ -211,9 +245,11 @@ def _secret_forms(secrets: dict[str, str]) -> list[str]:
     return sorted(forms, key=len, reverse=True)
 
 
-def _scrub_text(text: str, secrets: dict[str, str], send_url: str | None = None) -> str:
+def _scrub_text(
+    text: str, secrets: dict[str, str], send_url: str | None = None, public_url: str = "***"
+) -> str:
     if send_url:
-        text = text.replace(send_url, "***")
+        text = text.replace(send_url, public_url)
     for form in _secret_forms(secrets):
         text = text.replace(form, "***")
     return text
@@ -226,7 +262,15 @@ def _scrub_bytes(body: bytes, secrets: dict[str, str]) -> bytes:
 
 
 class FetchError(httpx.HTTPError):
-    """秘密の引数つきの取得が失敗した。文から秘密の値は取り除いてある。"""
+    """秘密の引数つきの取得が失敗した。文から秘密の値は取り除いてある。
+
+    status_code は HTTP の状態（接続の失敗などは None）。
+    request・response は持たない（URL が入るため）。
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class ApiError(RuntimeError):

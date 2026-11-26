@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 import httpx
 import pytest
@@ -45,6 +46,8 @@ def test_http_error_text_has_no_secret(tmp_path):
         f.fetch("https://api.e-stat.go.jp/x?y=1", "x.json", secret_params={"appId": SECRET})
     assert SECRET not in str(e.value)
     assert SECRET not in repr(e.value)
+    assert "403" in str(e.value) and "y=1" in str(e.value)
+    assert e.value.status_code == 403
     assert e.value.__cause__ is None
     assert e.value.__suppress_context__
 
@@ -57,7 +60,7 @@ def test_connection_error_text_has_no_secret(tmp_path):
     with pytest.raises(FetchError) as e:
         f.fetch("https://api.e-stat.go.jp/x", "x.json", secret_params={"appId": SECRET})
     assert SECRET not in str(e.value)
-    assert "***" in str(e.value)
+    assert e.value.status_code is None
 
 
 def test_without_secret_errors_are_unchanged(tmp_path):
@@ -107,3 +110,45 @@ def test_refresh_is_passed_through(tmp_path):
     assert len(calls) == 1
     f.fetch_json(url, "estat", refresh=True)
     assert len(calls) == 2
+
+
+def test_no_secret_in_logs(tmp_path, caplog):
+    f = make_fetcher(tmp_path, lambda req: httpx.Response(200, json={"ok": 1}))
+    with caplog.at_level(logging.DEBUG):
+        f.fetch_json("https://api.e-stat.go.jp/x?y=1", "estat", secret_params={"appId": SECRET})
+    assert SECRET not in caplog.text
+    # httpx の水準を下げられても、秘密は伏せる
+    with caplog.at_level(logging.DEBUG, logger="httpx"):
+        f.fetch_json("https://api.e-stat.go.jp/x?y=2", "estat", secret_params={"appId": SECRET})
+    assert SECRET not in caplog.text
+    assert all(SECRET not in r.getMessage() for r in caplog.records)
+
+
+def test_non_json_answer_is_not_kept(tmp_path):
+    calls = []
+
+    def server(req):
+        calls.append(1)
+        return httpx.Response(200, text="<html>メンテナンス中</html>")
+
+    f = make_fetcher(tmp_path, server)
+    for n in (1, 2):
+        with pytest.raises(ValueError):
+            f.fetch_json("https://api.e-stat.go.jp/x", "estat")
+        assert not list((tmp_path / "estat").glob("*.json"))
+        assert len(calls) == n
+
+
+def test_error_of_raising_drops_the_cache(tmp_path):
+    calls = []
+
+    def server(req):
+        calls.append(1)
+        return httpx.Response(200, json={"a": 1})
+
+    f = make_fetcher(tmp_path, server)
+    for n in (1, 2):
+        with pytest.raises(KeyError):
+            f.fetch_json("https://api.e-stat.go.jp/x", "estat", error_of=lambda d: d["S"])
+        assert not list((tmp_path / "estat").glob("*.json"))
+        assert len(calls) == n
