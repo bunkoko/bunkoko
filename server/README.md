@@ -277,8 +277,9 @@ Claude のサブスクリプションの使用量の範囲で動き、API の別
 
 同じ環境（ネットワークシークレット）があれば、Claude Code の会話からも、1日 = 1行の表と夜の詳細を読める（`GET /ai/days`・`GET /ai/nights/:date/timeline`。読むだけ）。`npm run admin -- days` などを、あなたが貼らなくても Claude が自分で実行できる:
 ```sh
-# URL は環境変数 BUNKOKO_URL から。合言葉はネットワークシークレットで付くので、AI_TASK_TOKEN はダミーでよい
-AI_TASK_TOKEN=dummy npm run --silent admin -- days
+# URL は環境変数 BUNKOKO_URL から。合言葉はネットワークシークレットで付くので、AI_TASK_TOKEN はダミーでよい。
+# クラウドの通信は中継（プロキシ）を通るので、Node の fetch に使わせる（NODE_USE_ENV_PROXY=1）
+NODE_USE_ENV_PROXY=1 AI_TASK_TOKEN=proxy-injected npm run --silent admin -- days
 ```
 
 ---
