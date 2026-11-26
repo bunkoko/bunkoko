@@ -43,6 +43,7 @@ def prepare_lines(
     script: dict[str, Any],
     resolver: Resolver,
     overrides: dict[str, str] | None = None,
+    words: list[tuple[str, str]] | None = None,
 ) -> list[Line]:
     """読み上げる段落の並び。
 
@@ -52,9 +53,11 @@ def prepare_lines(
       （Resolver.speak）。くの字点・踊り字は、どの段落でも開いて読む（speech_text）
     - 読みの直し（config/readings.csv）：key は「回の ID:段落の ID」（E20261107-01:ch2-s3。その回
       だけ）か候補の ID（どの回でも）。回の段落が先。sha の列があれば、画面の文がその sha のときだけ
+    - 語ごとの読み（config/reading_words.csv。words）：段落の読みを丸ごと直していない段落で、
+      読み違える語（層む→かさむ）を置き換える
     - 人の一言（human_take）は、その章の最後に足す（文字なら読み上げ、録った声ならその wav）
     """
-    from koten.voice.reading import modernize, override_for, speech_text
+    from koten.voice.reading import apply_word_readings, modernize, override_for, speech_text
 
     overrides = overrides or {}
     lines: list[Line] = []
@@ -74,7 +77,7 @@ def prepare_lines(
                     and seg.get("read_as") == "modern"
                 ):
                     spoken = modernize(spoken)
-                reading = speech_text(spoken)
+                reading = apply_word_readings(speech_text(spoken), words or [])
             lines.append(
                 Line(
                     chapter_id=ch["chapter_id"],
@@ -97,7 +100,7 @@ def prepare_lines(
                     seg_id=f"{ch['chapter_id']}-take",
                     kind="human_take",
                     display=text,
-                    reading=speech_text(text) if text else "",
+                    reading=apply_word_readings(speech_text(text), words or []) if text else "",
                     visual={"type": "photo", "ref": None},
                     chapter_title=resolver.resolve(ch.get("title", "")),
                     role=ch.get("role", ""),

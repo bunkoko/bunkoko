@@ -665,3 +665,53 @@ def override_for(overrides: dict[str, str], key: str, display: str) -> str | Non
     if pinned is not None:
         return pinned
     return overrides.get(key)
+
+
+# --- 語ごとの読み（config/reading_words.csv） ---------------------------------------------
+
+
+def load_word_readings(path: Path) -> list[tuple[str, str]]:
+    """config/reading_words.csv（列：surface・reading・note）を読む。長い表記が先の並び。
+
+    VOICEVOX が読み違える語（当て字の「層む」、読み飛ばす「奔って」、「方（かた）」のように前後で
+    読みが変わる語）を、どの回・どの段落でも同じ読みにする。readings.csv（段落の読みを丸ごと直す）
+    より軽い直し方。前後で読みが変わる語は、前後の字も入れて書く（「感じる方も」→「感じるかたも」）。
+
+    ファイルが無ければ空。surface か reading の片方だけの行、同じ surface が2回ある行、surface と
+    reading が同じ行は、どれを使えばよいか分からないので ValueError で止める（両方空の行は飛ばす）。
+    """
+    if not path.exists():
+        return []
+    out: dict[str, str] = {}
+    with path.open(encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        missing = {"surface", "reading"} - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(
+                f"{path}：列 {'・'.join(sorted(missing))} がありません"
+                "（列は surface・reading・note）"
+            )
+        for n, row in enumerate(reader, start=2):
+            surface = (row.get("surface") or "").strip()
+            reading = (row.get("reading") or "").strip()
+            if not surface and not reading:
+                continue
+            if not surface or not reading:
+                raise ValueError(f"{path} の{n}行目：surface と reading の両方を書いてください")
+            if surface == reading:
+                raise ValueError(f"{path} の{n}行目：「{surface}」の読みが表記と同じです")
+            if surface in out:
+                raise ValueError(
+                    f"{path} の{n}行目：「{surface}」が2回あります（1行にまとめてください）"
+                )
+            out[surface] = reading
+    return sorted(out.items(), key=lambda w: (-len(w[0]), w[0]))
+
+
+def apply_word_readings(text: str, words: list[tuple[str, str]]) -> str:
+    """読みの文の中の語を、表の読みに置き換える（長い表記から。置き換えた読みは置き換え直さない）。"""
+    if not words or not text:
+        return text
+    pattern = re.compile("|".join(re.escape(s) for s, _ in words))
+    table = dict(words)
+    return pattern.sub(lambda m: table[m.group(0)], text)

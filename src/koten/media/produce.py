@@ -171,7 +171,7 @@ def step_voice(
     client: Any = None,
     log: Callable[[str], None] = print,
 ) -> VoiceManifest:
-    from koten.voice.reading import load_overrides
+    from koten.voice.reading import load_overrides, load_word_readings
     from koten.voice.synth import synthesize
     from koten.voice.voicevox import VoicevoxClient
 
@@ -179,7 +179,12 @@ def step_voice(
     if ep.state not in VOICE_STATES:
         raise ProduceError(f"{episode_id} は {ep.state}。台本（script_done）のあとで作ります")
     conf = s.section("voicevox")
-    lines = prepare_lines(ep.script, ep.resolver, load_overrides(s.config_dir / "readings.csv"))
+    lines = prepare_lines(
+        ep.script,
+        ep.resolver,
+        load_overrides(s.config_dir / "readings.csv"),
+        load_word_readings(s.config_dir / "reading_words.csv"),
+    )
     media = media_dir(s.require_hdd(), episode_id)  # HDD を先に確かめる（辞書を変える前に）
     if client is None:
         client = VoicevoxClient(

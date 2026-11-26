@@ -216,3 +216,18 @@ def test_prepare_lines_reading_overrides_are_scoped_and_tied_to_text():
     assert {x.seg_id: x for x in prepare_lines(script, resolver, stale)}["ch2-s1"].reading == (
         "一節の本文。"
     )
+
+
+def test_prepare_lines_word_readings_fix_words_but_not_whole_overrides():
+    from koten.media.prepare import prepare_lines
+
+    script = _script()
+    script["chapters"][0]["segments"][0]["text"] = "高さに層むと、また奔って来て乗る。"
+    words = [("奔って", "はしって"), ("層む", "かさむ")]
+    lines = {x.seg_id: x for x in prepare_lines(script, _resolver(), None, words)}
+    assert lines["ch0-s1"].reading == "高さにかさむと、またはしって来て乗る。"
+    assert lines["ch0-s1"].display == "高さに層むと、また奔って来て乗る。"  # 画面は原文のまま
+    # 人が段落の読みを丸ごと直した段落は、その読みのまま
+    whole = {"E1:ch0-s1": "たかさにそうむと。"}
+    lines = {x.seg_id: x for x in prepare_lines(script, _resolver(), whole, words)}
+    assert lines["ch0-s1"].reading == "たかさにそうむと。"

@@ -591,3 +591,33 @@ def test_load_overrides_rejects_unclear_rows(tmp_path, body, message):
     path.write_text(body, encoding="utf-8")
     with pytest.raises(ValueError, match=message):
         load_overrides(path)
+
+
+def test_word_readings_table(tmp_path):
+    import pytest
+
+    from koten.voice.reading import apply_word_readings, load_word_readings
+
+    p = tmp_path / "reading_words.csv"
+    assert load_word_readings(p) == []
+    p.write_text("surface,reading,note\n方も,ほうも,\n感じる方も,感じるかたも,\n,,\n", "utf-8")
+    words = load_word_readings(p)
+    assert words[0][0] == "感じる方も"  # 長い表記が先
+    assert apply_word_readings("そう感じる方もいる。こちらの方もよい。", words) == (
+        "そう感じるかたもいる。こちらのほうもよい。"
+    )
+    p.write_text("surface,reading\n層む,\n", "utf-8")
+    with pytest.raises(ValueError, match="両方"):
+        load_word_readings(p)
+    p.write_text("surface,reading\n層む,かさむ\n層む,そうむ\n", "utf-8")
+    with pytest.raises(ValueError, match="2回"):
+        load_word_readings(p)
+
+
+def test_config_reading_words_loads():
+    from pathlib import Path
+
+    from koten.voice.reading import load_word_readings
+
+    words = dict(load_word_readings(Path(__file__).parents[1] / "config" / "reading_words.csv"))
+    assert words["層む"] == "かさむ" and words["奔って"] == "はしって"
