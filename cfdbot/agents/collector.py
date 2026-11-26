@@ -612,11 +612,13 @@ def _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done, sle
             done["no_text_place"] = 1
         else:
             keep_raw = place["link"]                            # 読み方を直したとき、取り直さずに読み直せるように（内蔵に置いている間は残さない）
+    miss = load_missing(root) if pdf else set()                 # サイトに無かった本文。もう取りに行かない（過去分の取得と同じ控え）
+    settled = history_until(now())                              # これより前の開示は、「まだ載っていない」ではなく「サイトに無い」
     numbers, texts = [], []
     for r in disc.itertuples(index=False):
         if xbrl and r.xbrl and not facts_path(root, r).exists():
             numbers.append(("xbrl", r, doc_url(r.ticker, r.xbrl), facts_path(root, r)))
-        if pdf and not text_path(root, r).exists():
+        if pdf and r.id not in miss and not text_path(root, r).exists():
             texts.append(("text", r, doc_url(r.ticker, f"{r.id}.pdf"), text_path(root, r)))
     jobs = (numbers + texts)[:max_docs]                         # 決算の数字が先（その日の 13:05 の E1 の一覧に要る。サイトが少ししか通さない朝でも、数字を先に取る）
     left = max(len(numbers) + len(texts) - max_docs, 0)
@@ -655,6 +657,9 @@ def _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done, sle
             why = fail_reason(e)
             if why is None:
                 done["missing"] += 1
+                if kind == "text" and str(r.time) < settled:    # 7 日たっても無い本文は、控えて、次の朝からは取りに行かない
+                    with open(root / MISS_FILE, "a", encoding="utf-8") as f:      # （毎朝見る日数を 30 日に延ばしたので、ずっと無い書類を取りに行き続けない）
+                        f.write(f"{r.id}\n")
             else:
                 odd.append(why)
             _wait(started, pace)

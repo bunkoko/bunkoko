@@ -1074,3 +1074,51 @@ def test_tool_uses_the_slow_pace_for_the_bulk_fetch(tmp_path, capsys, monkeypatc
     load_script().cmd_collect(ns(root))
     out = capsys.readouterr().out
     assert seen["interval"] == 0.01 and "0.01 秒に 1 件" in out and "1 日に" in out
+
+
+# --------------------------------------------------------------------------- 毎朝の収集が見る日数を延ばす（2026-11-27。docs/todo.md の 40）
+def test_daily_collection_gives_up_on_an_old_text_the_site_does_not_have(tmp_path):
+    """毎朝の収集が見る日数を 30 日に延ばした。7 日より前の開示で、サイトに無かった本文は「サイトに無い」と覚えて、
+    次の朝からは取りに行かない（ずっと無い書類を、毎朝取りに行き続けない）。直近の開示は、まだ載っていないだけかもしれないので、覚えない。
+    """
+    now = datetime(2026, 11, 27, 8, 0)
+    rows = [("o1", "2026-11-10 15:00:00", "7203.T", "トヨタ", "お知らせ", "", ""),          # 17 日前
+            ("n1", "2026-11-26 15:00:00", "1332.T", "ニッスイ", "お知らせ", "", "")]        # 昨日
+    calls = []
+
+    def get(url):
+        calls.append(url.rsplit("/", 1)[1])
+        raise http_error(url, 404)
+
+    got = C.collect_docs(disc(rows), tmp_path, interval=0, get=get, log=lambda s: None, now=lambda: now)
+    assert got["missing"] == 2 and calls == ["o1.pdf", "n1.pdf"] and C.load_missing(tmp_path) == {"o1"}
+    calls.clear()
+    C.collect_docs(disc(rows), tmp_path, interval=0, get=get, log=lambda s: None, now=lambda: now)
+    assert calls == ["n1.pdf"]                                                              # 覚えた o1 には、もう取りに行かない
+
+
+def test_daily_collection_does_not_note_other_failures_as_missing(tmp_path):
+    """「サイトに無い」と覚えるのは、サイトが「無い」（404）と言ったときだけ。断られた・回線の不調は、次の朝にもう一度試す。"""
+    now = datetime(2026, 11, 27, 8, 0)
+    rows = [("o1", "2026-11-10 15:00:00", "7203.T", "トヨタ", "お知らせ", "", "")]
+
+    def get(url):
+        raise TimeoutError("timed out")
+
+    got = C.collect_docs(disc(rows), tmp_path, interval=0, get=get, log=lambda s: None, now=lambda: now)
+    assert got["failed"] == 1 and C.load_missing(tmp_path) == set()
+
+
+def test_morning_collection_looks_back_thirty_days(tmp_path, capsys, monkeypatch, fast):
+    """毎朝の収集が 7 日より長く取れなかったとき（断られる朝が続く・HDD を長く外す）も、30 日までは自分で取り戻す。"""
+    root, ir, _ = daily_world(tmp_path)
+    old = datetime.now() - timedelta(days=20)
+    df = pd.read_csv(ir / "disclosures.csv", dtype=str, keep_default_na=False)
+    df.loc[len(df)] = ["d0", f"{old:%Y-%m-%d} 15:00:00", "7203.T", "トヨタ", "お知らせ", "", ""]
+    df.to_csv(ir / "disclosures.csv", index=False)
+    monkeypatch.setattr(C, "http_get", lambda url, tries=1: _xbrl_zip() if url.endswith(".zip") else _pdf("a"))
+    m = load_script()
+    assert m.DOCS_DAYS == 30
+    m.cmd_collect(daily_ns(root, docs_days=m.DOCS_DAYS))
+    out = capsys.readouterr().out
+    assert "直近 30 日" in out and "本文 +3" in out and (ir / "text" / f"{old:%Y-%m}" / "d0.txt").exists()

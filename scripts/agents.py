@@ -2,7 +2,7 @@
 
     python scripts/agents.py collect --backfill   # 情報収集（初回。490 社の過去の適時開示と題名の埋め込み。20〜40 分）
     python scripts/agents.py collect              # 情報収集（毎日。直近 5 日分の一覧）
-    python scripts/agents.py collect --docs       # ＋本文（PDF を文字にしたもの）と決算の数字（XBRL）。直近 7 日分を 1 秒に 1 件で取る
+    python scripts/agents.py collect --docs       # ＋本文（PDF を文字にしたもの）と決算の数字（XBRL）。直近 30 日分を 1 秒に 1 件で取る
     python scripts/agents.py collect --xbrl-history --max-docs 40000   # 過去の決算の数字（2016-10〜。1 秒に 1 件なので 6〜7 時間）
     python scripts/agents.py collect --text-history       # 過去の開示の本文（2016-10〜。10 秒に 1 件・1 日に 2,000 件まで。外付けの HDD へ。動かせるのは 1 本だけ）
     python scripts/agents.py collect --text-history-stop  # それを止める（取った分は残る。続きは --text-history で）
@@ -54,6 +54,7 @@ MODEL = "qwen3-0.6b"
 JST = "Asia/Tokyo"
 LABEL = "com.bunkoko.agents"
 HISTORY_FROM = "2016-10-01"   # 上場会社情報サービスに残っているのは約 10 年分（2026-10-13 に確かめた: 2016-09 までは無く、2016-10-11 の分はある）
+DOCS_DAYS = 30                # 毎朝の収集（collect --docs）がさかのぼる日数。2026-11-27 に 7 → 30（7 日より長く取れなかったときも、自分で取り戻す）
 JOBS = {   # 自動実行: 名前 → （launchd の名前、動かすコマンド、時刻、説明）
     "run": (LABEL, ["agents", "run", "--prices"], [{"Weekday": d, "Hour": 13, "Minute": 5} for d in range(1, 6)], "平日 13:05 に ./cfd agents run --prices"),
     "collect": (LABEL + ".collect", ["agents", "collect", "--docs"], {"Hour": 8, "Minute": 0}, "毎日 8:00 に ./cfd agents collect --docs"),
@@ -2003,7 +2004,7 @@ def _reread_refetch(C, ir_root: Path, check: bool) -> None:
     if check:
         print(f"読み直し: 見るだけ。空で、原本も無い本文は {got['lost']:,} 件（消していない）。消すなら、--check を付けずに同じコマンドで", flush=True)
         return
-    print(f"読み直し: 空で、原本も無い本文 {got['dropped']:,} 件を消した。取り直しは、毎朝の収集（直近 7 日の分）と、過去分の取得（それより前の分。"
+    print(f"読み直し: 空で、原本も無い本文 {got['dropped']:,} 件を消した。取り直しは、毎朝の収集（直近 {DOCS_DAYS} 日の分）と、過去分の取得（それより前の分。"
           f"毎朝の収集が {C.CLEAN_NEED} 日無事になってから・1 日に {C.HISTORY_DAY_MAX:,} 件まで）が、いつもの決まりの速さでする。"
           "今、サイトには取りに行っていない", flush=True)
 
@@ -2615,7 +2616,7 @@ def main() -> None:
     p.add_argument("--refetch", action="store_true", help="reread: 空で、原本も無い本文を消して、次の収集に取り直させる（ここではサイトに取りに行かない）")
     p.add_argument("--job", choices=list(JOBS), default="run", help="schedule: どの自動実行か（run = 平日 13:05 の判断、collect = 毎日 8:00 の収集）")
     p.add_argument("--docs", action="store_true", help="collect: 本文（PDF）と決算の数字（XBRL）も取る")
-    p.add_argument("--docs-days", type=int, default=7, help="collect --docs: さかのぼる日数")
+    p.add_argument("--docs-days", type=int, default=DOCS_DAYS, help="collect --docs: さかのぼる日数")
     p.add_argument("--xbrl-history", action="store_true", help="collect: 過去の決算の数字（2016〜）を取る（時間がかかる）")
     p.add_argument("--text-history", action="store_true",
                    help="collect: 過去の開示の本文（2016-10〜）を、新しい順にまとめて取る（10 秒に 1 件・1 日に 2,000 件まで。置き場所は外付けの HDD。止めても続きから）")
