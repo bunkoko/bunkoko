@@ -84,6 +84,9 @@ OPEN_LICENSES = ("CC_BY", "CC0")
 LICENSES = ("CC0", "CC_BY", "COPYRIGHTED")
 # 研究の一文を渡す章（古典の章には渡さない。企画と G1 の両方で使う）
 FINDING_ROLES = {"context", "research", "summary", "worry_block", "compare"}
+# 研究の一文と限界（台帳の決まった文。書き手が短くできない）を読む秒の目安（1件あたり）。
+# G7 で、研究を使った章の長さの上の端に足す（formats.yaml の章に finding_sec があればそれ）
+FINDING_SEC = (30, 60)
 CLAIM_MAX = 150
 LIMITS_MAX = 150
 POPULATION_MAX = 60

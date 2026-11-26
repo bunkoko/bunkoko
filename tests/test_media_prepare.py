@@ -179,8 +179,13 @@ def test_chapter_ranges_add_ref_seconds_like_the_planner():
         }
     }
     r = chapter_ranges(script, formats)
-    # 事実（fact_sec）と語釈（def_sec が無ければ 20〜30 秒）の分だけ上の端を広げる。下の端はそのまま
-    assert r == {"ch0": (30.0, 60.0), "ch2": (90.0, 220.0)}
+    # 事実（fact_sec）と語釈（def_sec が無ければ 20〜30 秒）と研究（1件 60 秒）の分だけ上の端を
+    # 広げる。下の端はそのまま
+    assert r == {"ch0": (30.0, 60.0), "ch2": (90.0, 280.0)}
+    # 研究の章（形式A）は、もともと研究を読む章なので足さない
+    script["chapters"][1]["role"] = "research"
+    formats["A"]["chapters"].append({"role": "research", "target_sec": [45, 90]})
+    assert chapter_ranges(script, formats)["ch2"] == (45.0, 120.0)  # 語釈の 30 秒だけ
 
 
 def test_prepare_lines_reading_overrides_are_scoped_and_tied_to_text():

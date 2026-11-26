@@ -93,5 +93,6 @@ uv run koten episode reject --episode E20261107-01 --to script_done --note "直�
 ## 尺（G7）が合わないとき
 
 - 合計が10〜15分に入らない、または章が formats.yaml の範囲の外だと、G7 が不合格になります。
+- 背景の事実・昔の辞書・研究を使った章は、その分だけ長くてよい（研究は1件ごとに60秒まで足す）。
 - 少しだけなら、config/settings.toml の `[voicevox]` の `speed_scale`（話す速さ。0.9〜1.15 くらい）を変えて、`--from voice` からやり直します。
 - 大きくずれるときは、差し戻して台本を書き直します。

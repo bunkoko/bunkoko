@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from koten.authors import author_label, translator_label
+from koten.findings import FINDING_SEC
 from koten.media.model import CardSpec, ClassicSource, KitInput, Line, split_sentences
 from koten.script.placeholders import Resolver, format_source, short_section
 
@@ -326,8 +327,9 @@ def kit_input(
 def chapter_ranges(
     script: dict[str, Any], formats: dict[str, Any]
 ) -> dict[str, tuple[float, float]]:
-    """G7 の章の長さの範囲。formats.yaml の役ごとの target_sec。背景の事実・語釈が付いた章は、
-    上の端に fact_sec・def_sec の上の端を足す（長くなってよい。短くなるのは止めない）。
+    """G7 の章の長さの範囲。formats.yaml の役ごとの target_sec。背景の事実・語釈・研究が付いた章は、
+    上の端に fact_sec・def_sec・finding_sec（研究1件ごと）の上の端を足す（長くなってよい。
+    短くなるのは止めない）。
     役が formats.yaml に無い章は入れない。"""
     fmt = formats.get(script.get("format") or "", {})
     by_role = {c["role"]: c for c in fmt.get("chapters", [])}
@@ -343,5 +345,10 @@ def chapter_ranges(
             hi += float(conf["fact_sec"][1])
         if has_refs:
             hi += float((conf.get("def_sec") or [20, 30])[1])  # 企画（planner.ref_sec）と同じ既定
+        # 研究の一文と限界は台帳の決まった文で、書き手が短くできないので、使った研究の数だけ足す。
+        # 研究の章（形式A）は、もともと研究を読む章の長さなので足さない
+        findings = {f for seg in ch["segments"] for f in seg.get("findings") or []}
+        if findings and ch.get("role") != "research":
+            hi += len(findings) * float((conf.get("finding_sec") or FINDING_SEC)[1])
         out[ch["chapter_id"]] = (lo, hi)
     return out
