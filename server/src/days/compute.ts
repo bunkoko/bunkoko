@@ -20,7 +20,7 @@ import {
 export const ALGO_VERSION = 4;
 /** センサーの値を取る間隔（分）。「目安を超えた回数 × 5分」で時間にする */
 export const POLL_INTERVAL_MIN = 5;
-/** 人感センサー Pro の明るさ（1〜20）がこれ以上なら「明るい」 [TBD: 実データで調整] */
+/** 人感センサー Pro の明るさ（1〜20）がこれ以上なら「明るい」。実測（2026-11-25〜26）: 天井の照明 11、間接照明 2〜4、消灯 1（docs/phase1-design.md の 4.3） */
 export const BRIGHT_LIGHT_LEVEL = 5;
 /** プラグミニの消費電力（W）がこれを超えたら「動いている」 [TBD: 実データで調整] */
 export const PLUG_ON_WATTS = 2;

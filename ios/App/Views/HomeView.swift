@@ -13,6 +13,7 @@ struct HomeView: View {
     @State private var savedMissingCheckin = false
     @State private var now = Date()
     @AppStorage("health.authorizationRequested") private var healthRequested = false
+    @Environment(\.scenePhase) private var scenePhase
 
     private var hour: Int { Calendar.current.component(.hour, from: now) }
     /// 朝の体感を聞く時間帯（4時〜18時）
@@ -94,6 +95,10 @@ struct HomeView: View {
                 NightDetailView(date: date, day: home?.lastNight?.date == date ? home?.lastNight : nil)
             }
             .task { await load() }
+            // アプリに戻ってきたときにも読み直す（夜に開いたまま朝に戻ったとき、夜の表示のまま残らないように）
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { Task { await load() } }
+            }
             .refreshable {
                 await HealthSync.shared.sync()
                 await load()

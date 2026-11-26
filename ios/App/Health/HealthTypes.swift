@@ -62,6 +62,9 @@ enum HealthTypes {
         BucketSpec(identifier: .headphoneAudioExposure, name: "headphoneAudioExposure", minutes: 60, options: .discreteAverage, unit: .decibelAWeightedSoundPressureLevel()),
     ]
 
+    /// 集計して送るデータのすべて
+    static var bucketed: [BucketSpec] { [heartRate] + hourly }
+
     static var readTypes: Set<HKObjectType> {
         var types = Set<HKObjectType>(anchored.map { $0.type as HKObjectType })
         types.insert(HKQuantityType(heartRate.identifier))

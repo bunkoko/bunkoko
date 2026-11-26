@@ -3,7 +3,9 @@ import HealthKit
 
 /// HealthKit のデータをサーバーに送る（docs/phase1-design.md の 6.3）。
 /// - 測った値: 型ごとに「前回どこまで送ったか」（アンカー）を覚えておき、増えた分と削除された分だけを送る
-/// - 集計: 心拍数は5分ごと、歩数などは1時間ごとに集計して送る（最後の3時間は毎回送り直す。あとから届くデータがあるため）
+/// - 集計: 心拍数は5分ごと、歩数などは1時間ごとに集計して送る（最後の3時間は毎回送り直す。あとから届くデータがあるため）。
+///   それより前の時間帯にあとから届いた記録（Watch から朝まとめて届いた夜の心拍など）は、型ごとのアンカーで見つけて、
+///   その時間帯だけ集計し直して送る（直近7日まで）
 /// - 初回は過去1年分を、少しずつ送る（途中で止まっても、次に起きたときに続きから送る）
 actor HealthSync {
     static let shared = HealthSync()
@@ -20,6 +22,8 @@ actor HealthSync {
     private let uploadChunk = 900
     /// 集計を1回に計算する日数
     private let bucketChunkDays = 3.0
+    /// あとから届いた記録を探す日数
+    private let lateWindowDays = 7.0
 
     static var isAvailable: Bool { HKHealthStore.isHealthDataAvailable() }
 
@@ -112,6 +116,7 @@ actor HealthSync {
     /// 送った位置を忘れて、過去1年分を送り直す
     func resetAndResendEverything() {
         for spec in HealthTypes.anchored { defaults.removeObject(forKey: Keys.anchor(spec.name)) }
+        for spec in HealthTypes.bucketed { defaults.removeObject(forKey: Keys.anchor(Self.lateAnchorName(spec))) }
         defaults.removeObject(forKey: Keys.bucketCursor)
         defaults.removeObject(forKey: Keys.backfillStart)
     }
@@ -200,6 +205,8 @@ actor HealthSync {
         let cursor = (defaults.object(forKey: Keys.bucketCursor) as? Date)?.addingTimeInterval(-3 * 3600) ?? backfillStart
         // 集計の区切りに合わせて、1時間の始まりから計算する（途中から計算すると、その時間の値が少なくなるため）
         var from = calendar.dateInterval(of: .hour, for: max(cursor, backfillStart))?.start ?? backfillStart
+        // ここより前の時間帯に、あとから届いた記録があれば、その時間帯を先に送り直す
+        try await syncLateBuckets(before: from)
 
         while from < end {
             let chunkEnd = min(from.addingTimeInterval(bucketChunkDays * 86_400), end)
@@ -211,6 +218,75 @@ actor HealthSync {
             defaults.set(chunkEnd, forKey: Keys.bucketCursor)
             from = chunkEnd
         }
+    }
+
+    /// あとから届いた記録の時間帯を、集計し直して送る。
+    /// Watch の記録は、iPhone に遅れて届くことがある（夜の心拍が、朝にまとめて届くなど）。
+    /// いつもの集計は「前に送ったところの3時間前から」なので、それより前の時間帯に届いた分は、ここで拾う。
+    /// 型ごとにアンカーを覚えておき、増えた記録が入る時間帯（1時間ごと）だけを計算し直す
+    private func syncLateBuckets(before regularFrom: Date) async throws {
+        let calendar = Calendar.current
+        let windowStart = max(backfillStart, Date().addingTimeInterval(-lateWindowDays * 86_400))
+        let since = calendar.dateInterval(of: .hour, for: windowStart)?.start ?? windowStart
+        let predicate = HKQuery.predicateForSamples(withStart: since, end: nil)
+        var buckets: [BucketDTO] = []
+        var anchors: [(name: String, anchor: HKQueryAnchor)] = []
+
+        for spec in HealthTypes.bucketed {
+            let name = Self.lateAnchorName(spec)
+            var anchor = loadAnchor(name)
+            var hours = Set<Date>()
+            while true {
+                let descriptor = HKAnchoredObjectQueryDescriptor(
+                    predicates: [.quantitySample(type: HKQuantityType(spec.identifier), predicate: predicate)],
+                    anchor: anchor,
+                    limit: pageSize
+                )
+                let result = try await descriptor.result(for: store)
+                for sample in result.addedSamples {
+                    for hour in Self.hours(from: sample.startDate, to: sample.endDate) where hour >= since && hour < regularFrom {
+                        hours.insert(hour)
+                    }
+                }
+                anchor = result.newAnchor
+                if result.addedSamples.count + result.deletedObjects.count < pageSize { break }
+            }
+            for range in Self.ranges(of: hours) {
+                buckets += try await statistics(spec, from: range.start, to: range.end)
+            }
+            if let anchor { anchors.append((name: name, anchor: anchor)) }
+        }
+
+        try await upload(HealthBatch(buckets: buckets))
+        // 送り終えてから、どこまで見たかを覚える（途中で失敗したら、次にもう一度探す）
+        for entry in anchors { saveAnchor(entry.anchor, name: entry.name) }
+    }
+
+    private static func lateAnchorName(_ spec: HealthTypes.BucketSpec) -> String { "late.\(spec.name)" }
+
+    /// 記録が入る時間帯（1時間ごとの始まり）。終わりの時刻ちょうどは含めない
+    static func hours(from start: Date, to end: Date) -> [Date] {
+        guard var hour = Calendar.current.dateInterval(of: .hour, for: start)?.start else { return [] }
+        let last = max(start, end.addingTimeInterval(-1))
+        var hours: [Date] = []
+        while hour <= last {
+            hours.append(hour)
+            hour = hour.addingTimeInterval(3600)
+        }
+        return hours
+    }
+
+    /// 時間帯（1時間ごとの始まり）を、続いているところでまとめる
+    static func ranges(of hours: Set<Date>) -> [DateInterval] {
+        var ranges: [DateInterval] = []
+        for hour in hours.sorted() {
+            if let last = ranges.last, last.end == hour {
+                ranges[ranges.count - 1] = DateInterval(start: last.start, end: hour.addingTimeInterval(3600))
+            } else {
+                ranges.append(DateInterval(start: hour, end: hour.addingTimeInterval(3600)))
+            }
+        }
+        return ranges
     }
 
     private func statistics(_ spec: HealthTypes.BucketSpec, from: Date, to: Date) async throws -> [BucketDTO] {
