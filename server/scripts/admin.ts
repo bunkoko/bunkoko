@@ -6,11 +6,14 @@
 //   npm run admin -- requeue <from> <to>   期間の日を計算し直す（計算のしかたを変えたとき）
 //   npm run admin -- process [max]         計算待ちの日を今すぐ計算する
 //   npm run admin -- analyze [from] [to]   夜を条件で2つに分けて比べる（省略すると直近1年。docs/analysis.md の 5章②）
+//   npm run admin -- night [date]          その夜の様子を15分ごとの表で（明るさ・布団・CO2・室温・心拍の記録。省略すると今朝）
 //
 // .dev.vars の SERVER_URL（npm run secrets -- --set SERVER_URL https://…）と ADMIN_TOKEN を使う。
-// analyze は、アプリと同じ表（いつもと違う日の印つき）を読むので APP_TOKEN も使う。
+// analyze と night は、アプリと同じ API を読むので APP_TOKEN も使う。
 
 import { pathToFileURL } from "node:url";
+import { BRIGHT_LIGHT_LEVEL } from "../src/days/compute";
+import type { TimelineView } from "../src/read";
 import { inferRole } from "../src/roles";
 import { analyze, formatReport, type AnalysisDay } from "./analyze";
 import { addDays, isValidDate } from "../src/time";
@@ -82,6 +85,84 @@ export function formatDay(row: DayRow): string {
   return parts.filter(Boolean).join("  ");
 }
 
+type Point = [number, number];
+
+/** 夜の詳細（アプリと同じ GET /api/nights/:date/timeline）のうち、表に使うところ */
+export type NightView = Pick<TimelineView, "date" | "window" | "heartRate" | "events"> & {
+  sleep: Pick<NonNullable<TimelineView["sleep"]>, "inBedStart" | "onset" | "wake"> | null;
+  series: Pick<TimelineView["series"], "lightLevel" | "inBed" | "co2" | "temperature">;
+};
+
+const SLOT_MS = 15 * 60_000;
+
+const EVENT_TEXT: Record<string, string> = {
+  meal: "食事",
+  bath: "入浴",
+  caffeine: "カフェイン",
+  alcohol: "お酒",
+  phoneLastUse: "スマホを最後に使った",
+  lightsOff: "照明を消した",
+  roomDark: "部屋が暗くなった",
+  windowOpen: "窓を開けた",
+  windowClose: "窓を閉めた",
+  doorOpen: "ドアを開けた",
+  doorClose: "ドアを閉めた",
+};
+
+function eventText(event: NightView["events"][number]): string {
+  if (event.kind === "charger") return event.label === "connected" ? "iPhone を充電につないだ" : "iPhone を充電から外した";
+  const text = EVENT_TEXT[event.kind] ?? event.kind;
+  return event.label ? `${text}（${event.label}）` : text;
+}
+
+/** 画面での幅（全角は2）に合わせて、右を空白で埋める */
+function pad(text: string, width: number): string {
+  const used = [...text].reduce((sum, ch) => sum + ((ch.codePointAt(0) ?? 0) > 0xff ? 2 : 1), 0);
+  return text + " ".repeat(Math.max(1, width - used));
+}
+
+/**
+ * 夜の様子を15分ごとの表にする。部屋の明るさ（人感センサーの 1〜20）の幅、布団にいた回数、
+ * CO2・室温の平均、心拍の記録があった5分の数。出来事と、布団に入った・寝ついた・起きた時刻をはさむ
+ */
+export function formatNight(view: NightView): string[] {
+  const first = Math.ceil(view.window.start / SLOT_MS) * SLOT_MS;
+  const last = Math.floor(view.window.end / SLOT_MS) * SLOT_MS;
+  const marks = [
+    ...view.events.map((event) => ({ t: event.t, text: eventText(event) })),
+    { t: view.sleep?.inBedStart, text: "布団に入った" },
+    { t: view.sleep?.onset, text: "寝ついた" },
+    { t: view.sleep?.wake, text: "起きた" },
+  ]
+    .filter((mark): mark is { t: number; text: string } => typeof mark.t === "number")
+    .sort((a, b) => a.t - b.t);
+  const markLines = (from: number, to: number) => marks.filter((mark) => mark.t >= from && mark.t < to).map((mark) => `        ${clock(mark.t)} ${mark.text}`);
+  const inSlot = (points: Point[], slot: number) => points.filter(([t]) => t >= slot && t < slot + SLOT_MS).map(([, v]) => v);
+  const mean = (values: number[]) => values.reduce((sum, v) => sum + v, 0) / values.length;
+
+  const lines = [`${view.date} の夜（15分ごと）`, ...markLines(-Infinity, first)];
+  lines.push(pad("時刻", 6) + pad("明るさ", 8) + pad("布団", 6) + pad("CO2", 6) + pad("室温", 6) + "心拍");
+  for (let slot = first; slot < last; slot += SLOT_MS) {
+    const light = inSlot(view.series.lightLevel, slot);
+    const inBed = inSlot(view.series.inBed, slot);
+    const co2 = inSlot(view.series.co2, slot);
+    const temperature = inSlot(view.series.temperature, slot);
+    const lightText = light.length === 0 ? "-" : Math.min(...light) === Math.max(...light) ? `${light[0]}` : `${Math.min(...light)}〜${Math.max(...light)}`;
+    lines.push(
+      pad(clock(slot), 6) +
+        pad(lightText, 8) +
+        pad(inBed.length === 0 ? "-" : `${inBed.filter((v) => v === 1).length}/${inBed.length}`, 6) +
+        pad(co2.length === 0 ? "-" : `${Math.round(mean(co2))}`, 6) +
+        pad(temperature.length === 0 ? "-" : mean(temperature).toFixed(1), 6) +
+        `${inSlot(view.heartRate, slot).length}/3`,
+    );
+    lines.push(...markLines(slot, slot + SLOT_MS));
+  }
+  lines.push(...markLines(last, Infinity));
+  lines.push(`明るさ: 人感センサーの値（1〜20。${BRIGHT_LIGHT_LEVEL} より下を「暗い」とみなしている）。布団・心拍: 15分のうち記録があった数（5分ごと）`);
+  return lines;
+}
+
 interface SummaryDevice {
   deviceId: string;
   name: string | null;
@@ -134,7 +215,8 @@ async function main(): Promise<void> {
     console.error("SERVER_URL と ADMIN_TOKEN を .dev.vars に入れてください（npm run secrets -- --set SERVER_URL https://…）");
     process.exit(1);
   }
-  const secrets = { ADMIN_TOKEN: token, WEBHOOK_SECRET: vars.WEBHOOK_SECRET, APP_TOKEN: vars.APP_TOKEN, AI_TASK_TOKEN: vars.AI_TASK_TOKEN };
+  const appToken = process.env.APP_TOKEN ?? vars.APP_TOKEN ?? "";
+  const secrets = { ADMIN_TOKEN: token, WEBHOOK_SECRET: vars.WEBHOOK_SECRET, APP_TOKEN: appToken, AI_TASK_TOKEN: vars.AI_TASK_TOKEN };
 
   const call = async (method: string, path: string): Promise<unknown> => {
     const response = await fetch(`${base}${path}`, { method, headers: { Authorization: `Bearer ${token}` } });
@@ -143,6 +225,14 @@ async function main(): Promise<void> {
     return JSON.parse(text);
   };
   const print = (data: unknown) => console.log(maskSecrets(JSON.stringify(data, null, 2), secrets));
+  // アプリと同じ API（/api/*）を読む
+  const callApp = async (path: string): Promise<unknown> => {
+    if (!appToken) throw new Error("APP_TOKEN が .dev.vars にありません");
+    const response = await fetch(`${base}${path}`, { headers: { Authorization: `Bearer ${appToken}` } });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`HTTP ${response.status}: ${maskSecrets(text, secrets)}`);
+    return JSON.parse(text);
+  };
 
   switch (command) {
     case "summary": {
@@ -186,18 +276,20 @@ async function main(): Promise<void> {
       const to = arg2 ?? arg1 ?? today();
       const from = arg2 ? arg1 : addDays(to, -364);
       if (!isValidDate(from) || !isValidDate(to) || from > to) throw new Error("日付は YYYY-MM-DD で書いてください");
-      const appToken = process.env.APP_TOKEN ?? vars.APP_TOKEN ?? "";
-      if (!appToken) throw new Error("APP_TOKEN が .dev.vars にありません");
       // アプリの API は一度に92日分までなので、区切って読む
       const rows: AnalysisDay[] = [];
       for (let start = from; start <= to; start = addDays(start, 92)) {
         const end = addDays(start, 91) < to ? addDays(start, 91) : to;
-        const response = await fetch(`${base}/api/days?from=${start}&to=${end}`, { headers: { Authorization: `Bearer ${appToken}` } });
-        const text = await response.text();
-        if (!response.ok) throw new Error(`HTTP ${response.status}: ${maskSecrets(text, secrets)}`);
-        rows.push(...(JSON.parse(text) as { days: AnalysisDay[] }).days);
+        rows.push(...((await callApp(`/api/days?from=${start}&to=${end}`)) as { days: AnalysisDay[] }).days);
       }
       for (const line of formatReport(analyze(rows, TIME_ZONE))) console.log(line);
+      return;
+    }
+    case "night": {
+      // 日付は起きた日（今朝なら今日）
+      const date = arg1 ?? today();
+      if (!isValidDate(date)) throw new Error("日付は YYYY-MM-DD で書いてください");
+      for (const line of formatNight((await callApp(`/api/nights/${date}/timeline`)) as NightView)) console.log(line);
       return;
     }
     default:
@@ -207,7 +299,8 @@ async function main(): Promise<void> {
   npm run admin -- days [from] [to]
   npm run admin -- requeue <from> <to>
   npm run admin -- process [max]
-  npm run admin -- analyze [from] [to]`);
+  npm run admin -- analyze [from] [to]
+  npm run admin -- night [date]`);
   }
 }
 

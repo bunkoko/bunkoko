@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clock, formatDay, formatDevice, hm, maskSecrets } from "../scripts/admin";
+import { clock, formatDay, formatDevice, formatNight, hm, maskSecrets } from "../scripts/admin";
 import { cleanPastedValue, secretsToUpload } from "../scripts/setup-secrets";
 import { webhookUrl } from "../scripts/switchbot-cli";
 
@@ -56,5 +56,50 @@ describe("手元のコマンド", () => {
     expect(formatDevice({ deviceId: "A", name: "窓", type: "Contact Sensor", lastPolledAt: null, values: { openState: "close" } })).toContain("→ 窓");
     expect(formatDevice({ deviceId: "B", name: "開閉センサー 1F", type: "Contact Sensor", lastPolledAt: null, values: {} })).toContain("名前に「窓」か「ドア」を入れる");
     expect(formatDevice({ deviceId: "C", name: "プラグミニ 3A", type: "Plug Mini (JP)", lastPolledAt: null, values: {} })).toContain("名前に「加湿」か「テレビ」を入れる");
+  });
+
+  it("夜の様子を15分ごとの表にする（明るさ・布団・CO2・室温・心拍の記録があった5分の数）", () => {
+    // 正午より前は 11/26、あとは 11/25（日本時間）
+    const t = (hhmm: string) => Date.parse(`2026-11-${hhmm < "12:00" ? "26" : "25"}T${hhmm}:00+09:00`);
+    const points = (values: [string, number][]): [number, number][] => values.map(([hhmm, v]) => [t(hhmm), v]);
+    const lines = formatNight({
+      date: "2026-11-26",
+      window: { start: t("22:24"), end: t("01:21") },
+      sleep: { inBedStart: t("00:24"), onset: t("00:49"), wake: t("08:21") },
+      heartRate: points([["00:45", 60], ["00:50", 58], ["01:00", 56], ["01:05", 55], ["01:10", 55]]),
+      series: {
+        lightLevel: points([["22:30", 12], ["22:35", 12], ["22:40", 12], ["23:15", 3], ["23:20", 1], ["23:25", 1]]),
+        inBed: points([["00:15", 0], ["00:20", 0], ["00:25", 1], ["00:30", 1], ["00:35", 1], ["00:40", 1]]),
+        co2: points([["22:30", 1100], ["22:35", 1120], ["22:40", 1140]]),
+        temperature: points([["22:30", 23.04], ["22:35", 23.1], ["22:40", 23.2]]),
+      },
+      events: [
+        { t: t("19:30"), kind: "meal", label: "カレー" },
+        { t: t("23:15"), kind: "roomDark" },
+        { t: t("23:40"), kind: "windowOpen" },
+      ],
+    });
+    expect(lines).toEqual([
+      "2026-11-26 の夜（15分ごと）",
+      "        19:30 食事（カレー）",
+      "時刻  明るさ  布団  CO2   室温  心拍",
+      "22:30 12      -     1120  23.1  0/3",
+      "22:45 -       -     -     -     0/3",
+      "23:00 -       -     -     -     0/3",
+      "23:15 1〜3    -     -     -     0/3",
+      "        23:15 部屋が暗くなった",
+      "23:30 -       -     -     -     0/3",
+      "        23:40 窓を開けた",
+      "23:45 -       -     -     -     0/3",
+      "0:00  -       -     -     -     0/3",
+      "0:15  -       1/3   -     -     0/3",
+      "        0:24 布団に入った",
+      "0:30  -       3/3   -     -     0/3",
+      "0:45  -       -     -     -     2/3",
+      "        0:49 寝ついた",
+      "1:00  -       -     -     -     3/3",
+      "        8:21 起きた",
+      "明るさ: 人感センサーの値（1〜20。5 より下を「暗い」とみなしている）。布団・心拍: 15分のうち記録があった数（5分ごと）",
+    ]);
   });
 });
