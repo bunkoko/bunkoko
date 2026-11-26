@@ -2,13 +2,34 @@
 //   GET /api/home                  … 今の部屋の状態・昨夜の要点・就寝まであと何分か
 //   GET /api/days?from=&to=        … 1日 = 1行の表（いつもとの差つき）
 //   GET /api/nights/:date/timeline … その夜の睡眠・心拍・部屋の値・出来事を時刻つきで
+// 1日 = 1行の表と夜の詳細は、Claude Code のタスクも /ai/* で同じものを読める（読むだけ）
 
 import { BASELINE_DAYS, UNUSUAL_Z, deviation, type Deviation } from "./baseline";
 import type { DayMetrics } from "./days/compute";
+import { jsonError } from "./http";
 import { evaluateRoom, upcomingBedtime, type RoomNow } from "./notify";
 import { loadRoles, type RoleMap } from "./roles";
 import type { UserSettings } from "./settings";
-import { DAY_MS, HOUR_MS, MINUTE_MS, addDays, localDate } from "./time";
+import { DAY_MS, HOUR_MS, MINUTE_MS, addDays, isValidDate, localDate } from "./time";
+
+/** 一度に見られる日数 */
+const MAX_DAYS_PER_REQUEST = 92;
+
+/** 1日 = 1行の表の応答（from / to は日付。省略すると直近14日） */
+export async function daysResponse(db: D1Database, userId: string, url: URL, timeZone: string, now: number): Promise<Response> {
+  const to = url.searchParams.get("to") ?? localDate(now, timeZone);
+  const from = url.searchParams.get("from") ?? addDays(to, -13);
+  if (!isValidDate(from) || !isValidDate(to) || from > to) return jsonError(400, "from と to を YYYY-MM-DD で指定してください");
+  if (addDays(from, MAX_DAYS_PER_REQUEST) < to) return jsonError(400, `一度に見られるのは${MAX_DAYS_PER_REQUEST}日分までです`);
+  return Response.json({ ok: true, days: await loadDays(db, userId, from, to) });
+}
+
+/** 夜の詳細の応答 */
+export async function timelineResponse(db: D1Database, userId: string, date: string, settings: UserSettings): Promise<Response> {
+  const view = await buildTimeline(db, userId, date, settings);
+  if (!view) return jsonError(404, "その日のデータはまだ計算されていません");
+  return Response.json({ ok: true, ...view });
+}
 
 /** これより古い値は「今の部屋の状態」として使わない */
 const ROOM_STALE_MS = 30 * MINUTE_MS;

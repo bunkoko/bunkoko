@@ -1,9 +1,12 @@
 // Claude Code のスケジュールされたタスク向けの API（/ai/*）。AI_TASK_TOKEN が必要。
-// できることは「目安がまだの食事を読む」「目安を書き込む」だけにしている。
+// できることは「目安がまだの食事を読む」「目安を書き込む」と、
+// 「1日 = 1行の表・夜の詳細を読む」（アプリと同じもの。読むだけ）にしている。
 
 import { hasBearer, jsonError, notFound, readJsonBody, unauthorized } from "./http";
 import { MAX_PENDING, listPendingMeals, parseEstimate, parseEstimateBatch, saveEstimates } from "./meals";
+import { daysResponse, timelineResponse } from "./read";
 import { getSettings } from "./settings";
+import { isValidDate } from "./time";
 import { Problems, isRecord, optionalString } from "./validate";
 
 export interface AiEnv {
@@ -29,6 +32,15 @@ export async function handleAi(request: Request, url: URL, env: AiEnv, userId: s
     const inputs = parseEstimateBatch(body.value, problems);
     if (!problems.ok) return jsonError(400, "目安の形に問題があります", problems.list);
     return Response.json({ ok: true, ...(await saveEstimates(env.DB, userId, settings.timeZone, "ai", inputs, now)) });
+  }
+
+  // 1日 = 1行の表と夜の詳細（アプリの GET /api/days・/api/nights/:date/timeline と同じ）
+  if (request.method === "GET" && url.pathname === "/ai/days") {
+    return daysResponse(env.DB, userId, url, settings.timeZone, now);
+  }
+  const timeline = /^\/ai\/nights\/(\d{4}-\d{2}-\d{2})\/timeline$/.exec(url.pathname);
+  if (request.method === "GET" && timeline && isValidDate(timeline[1])) {
+    return timelineResponse(env.DB, userId, timeline[1], settings);
   }
 
   const single = /^\/ai\/meals\/([A-Za-z0-9-]{1,64})\/estimate$/.exec(url.pathname);

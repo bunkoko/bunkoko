@@ -8,8 +8,11 @@
 //   npm run admin -- analyze [from] [to]   夜を条件で2つに分けて比べる（省略すると直近1年。docs/analysis.md の 5章②）
 //   npm run admin -- night [date]          その夜の様子を15分ごとの表で（明るさ・布団・CO2・室温・心拍の記録。省略すると今朝）
 //
-// .dev.vars の SERVER_URL（npm run secrets -- --set SERVER_URL https://…）と ADMIN_TOKEN を使う。
-// analyze と night は、アプリと同じ API を読むので APP_TOKEN も使う。
+// .dev.vars の SERVER_URL（npm run secrets -- --set SERVER_URL https://…）と、合言葉を使う。
+// - summary・collect・requeue・process: 管理用の API（/admin/*）を ADMIN_TOKEN で
+// - days・night・analyze: Claude Code のタスクと同じ、読むだけの API（/ai/*）を AI_TASK_TOKEN で
+// クラウドの Claude Code から読むときは、URL を環境変数 SERVER_URL か BUNKOKO_URL に入れる。合言葉は環境の
+// ネットワークシークレットとして自動で付くので、AI_TASK_TOKEN にはダミーの値を入れる（本物を入れない）。
 
 import { pathToFileURL } from "node:url";
 import { BRIGHT_LIGHT_LEVEL } from "../src/days/compute";
@@ -209,30 +212,36 @@ function today(): string {
 async function main(): Promise<void> {
   const [command, arg1, arg2] = process.argv.slice(2);
   const vars = loadDevVars();
-  const base = (process.env.SERVER_URL ?? vars.SERVER_URL ?? "").replace(/\/+$/, "");
-  const token = process.env.ADMIN_TOKEN ?? vars.ADMIN_TOKEN ?? "";
-  if (!base || !token) {
-    console.error("SERVER_URL と ADMIN_TOKEN を .dev.vars に入れてください（npm run secrets -- --set SERVER_URL https://…）");
+  const base = (process.env.SERVER_URL ?? process.env.BUNKOKO_URL ?? vars.SERVER_URL ?? "").replace(/\/+$/, "");
+  if (!base) {
+    console.error("SERVER_URL を .dev.vars に入れてください（npm run secrets -- --set SERVER_URL https://…）");
     process.exit(1);
   }
-  const appToken = process.env.APP_TOKEN ?? vars.APP_TOKEN ?? "";
-  const secrets = { ADMIN_TOKEN: token, WEBHOOK_SECRET: vars.WEBHOOK_SECRET, APP_TOKEN: appToken, AI_TASK_TOKEN: vars.AI_TASK_TOKEN };
+  const adminToken = process.env.ADMIN_TOKEN ?? vars.ADMIN_TOKEN ?? "";
+  const aiToken = process.env.AI_TASK_TOKEN ?? vars.AI_TASK_TOKEN ?? "";
+  const secrets = { ADMIN_TOKEN: adminToken, WEBHOOK_SECRET: vars.WEBHOOK_SECRET, APP_TOKEN: vars.APP_TOKEN, AI_TASK_TOKEN: aiToken };
 
-  const call = async (method: string, path: string): Promise<unknown> => {
+  const request = async (method: string, path: string, token: string, name: string): Promise<unknown> => {
+    if (!token) throw new Error(`${name} が .dev.vars にありません`);
     const response = await fetch(`${base}${path}`, { method, headers: { Authorization: `Bearer ${token}` } });
     const text = await response.text();
     if (!response.ok) throw new Error(`HTTP ${response.status}: ${maskSecrets(text, secrets)}`);
     return JSON.parse(text);
   };
-  const print = (data: unknown) => console.log(maskSecrets(JSON.stringify(data, null, 2), secrets));
-  // アプリと同じ API（/api/*）を読む
-  const callApp = async (path: string): Promise<unknown> => {
-    if (!appToken) throw new Error("APP_TOKEN が .dev.vars にありません");
-    const response = await fetch(`${base}${path}`, { headers: { Authorization: `Bearer ${appToken}` } });
-    const text = await response.text();
-    if (!response.ok) throw new Error(`HTTP ${response.status}: ${maskSecrets(text, secrets)}`);
-    return JSON.parse(text);
+  // 管理用の API（/admin/*）
+  const call = (method: string, path: string) => request(method, path, adminToken, "ADMIN_TOKEN");
+  // 読むだけの API（/ai/*。Claude Code のタスクと同じもの）
+  const read = (path: string) => request("GET", path, aiToken, "AI_TASK_TOKEN");
+  /** 1日 = 1行の表（一度に92日分までなので、区切って読む。新しい日から順） */
+  const readDays = async (from: string, to: string): Promise<AnalysisDay[]> => {
+    const rows: AnalysisDay[] = [];
+    for (let start = from; start <= to; start = addDays(start, 92)) {
+      const end = addDays(start, 91) < to ? addDays(start, 91) : to;
+      rows.push(...((await read(`/ai/days?from=${start}&to=${end}`)) as { days: AnalysisDay[] }).days);
+    }
+    return rows.sort((a, b) => b.date.localeCompare(a.date));
   };
+  const print = (data: unknown) => console.log(maskSecrets(JSON.stringify(data, null, 2), secrets));
 
   switch (command) {
     case "summary": {
@@ -259,10 +268,10 @@ async function main(): Promise<void> {
     case "days": {
       const to = arg2 ?? arg1 ?? today();
       const from = arg2 ? arg1 : addDays(to, -6);
-      if (!isValidDate(from) || !isValidDate(to)) throw new Error("日付は YYYY-MM-DD で書いてください");
-      const rows = (await call("GET", `/admin/days?from=${from}&to=${to}`)) as DayRow[];
+      if (!isValidDate(from) || !isValidDate(to) || from > to) throw new Error("日付は YYYY-MM-DD で書いてください");
+      const rows = await readDays(from, to);
       if (rows.length === 0) console.log("まだ計算された日がありません");
-      for (const row of rows) console.log(formatDay(row));
+      for (const row of rows) console.log(formatDay(row as DayRow));
       return;
     }
     case "requeue":
@@ -276,20 +285,14 @@ async function main(): Promise<void> {
       const to = arg2 ?? arg1 ?? today();
       const from = arg2 ? arg1 : addDays(to, -364);
       if (!isValidDate(from) || !isValidDate(to) || from > to) throw new Error("日付は YYYY-MM-DD で書いてください");
-      // アプリの API は一度に92日分までなので、区切って読む
-      const rows: AnalysisDay[] = [];
-      for (let start = from; start <= to; start = addDays(start, 92)) {
-        const end = addDays(start, 91) < to ? addDays(start, 91) : to;
-        rows.push(...((await callApp(`/api/days?from=${start}&to=${end}`)) as { days: AnalysisDay[] }).days);
-      }
-      for (const line of formatReport(analyze(rows, TIME_ZONE))) console.log(line);
+      for (const line of formatReport(analyze(await readDays(from, to), TIME_ZONE))) console.log(line);
       return;
     }
     case "night": {
       // 日付は起きた日（今朝なら今日）
       const date = arg1 ?? today();
       if (!isValidDate(date)) throw new Error("日付は YYYY-MM-DD で書いてください");
-      for (const line of formatNight((await callApp(`/api/nights/${date}/timeline`)) as NightView)) console.log(line);
+      for (const line of formatNight((await read(`/ai/nights/${date}/timeline`)) as NightView)) console.log(line);
       return;
     }
     default:

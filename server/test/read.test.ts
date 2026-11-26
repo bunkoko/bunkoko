@@ -169,4 +169,31 @@ describe("HTTP", () => {
     expect((await get("/api/nights/2026-11-01/timeline", at(D, "08:10"))).status).toBe(404);
     expect((await get("/api/days?from=2026-01-01&to=2026-11-21", at(D, "08:10"))).status).toBe(400);
   });
+
+  it("Claude Code のタスクは AI_TASK_TOKEN で、アプリと同じ1日 = 1行の表と夜の詳細を読める（読むだけ）", async () => {
+    seedNight();
+    db.sqlite.prepare(`INSERT INTO day_queue (user_id, date, queued_at) VALUES ('me', ?, 0)`).run(D);
+    await processDayQueue(db.d1, "me", settings, at(D, "09:00"));
+    const request = (path: string, token: string, method = "GET") =>
+      handleRequest(new Request(`https://x.example${path}`, { method, headers: { Authorization: `Bearer ${token}` } }), env(), at(D, "08:10"));
+
+    const daysPath = `/days?from=${PREV}&to=${D}`;
+    const aiDays = await request(`/ai${daysPath}`, "ai");
+    expect(aiDays.status).toBe(200);
+    expect(await aiDays.json()).toEqual(await (await request(`/api${daysPath}`, "app")).json());
+
+    const timelinePath = `/nights/${D}/timeline`;
+    const aiTimeline = await request(`/ai${timelinePath}`, "ai");
+    expect(aiTimeline.status).toBe(200);
+    expect(await aiTimeline.json()).toEqual(await (await request(`/api${timelinePath}`, "app")).json());
+
+    expect((await request("/ai/nights/2026-11-01/timeline", "ai")).status).toBe(404);
+    expect((await request("/ai/days?from=2026-01-01&to=2026-11-21", "ai")).status).toBe(400);
+    // ほかの合言葉では読めない。AI_TASK_TOKEN でアプリの API は使えない
+    expect((await request(`/ai${daysPath}`, "app")).status).toBe(401);
+    expect((await request(`/ai${daysPath}`, "admin")).status).toBe(401);
+    expect((await request(`/api${daysPath}`, "ai")).status).toBe(401);
+    // 書き込みはできない
+    expect((await request(`/ai${daysPath}`, "ai", "POST")).status).toBe(404);
+  });
 });

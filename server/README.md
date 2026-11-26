@@ -117,6 +117,8 @@ npm run admin -- days        # 1日 = 1行の表の要点（直近7日。期間�
 npm run admin -- night       # 昨夜の様子を15分ごとの表で（別の夜は npm run admin -- night 2026-12-01。日付は起きた日）
 ```
 
+`summary`・`collect`・`requeue`・`process` は `ADMIN_TOKEN` で管理用の API を使う。`days`・`night`・`analyze` は、Claude と同じ読むだけの API（`/ai/*`）を `AI_TASK_TOKEN` で読む（どちらも `npm run secrets` で `.dev.vars` に入っている）。
+
 `night` の表は、寝る2時間前から起きた1時間後まで。明るさは人感センサーの値（1〜20）の幅、布団と心拍は15分の中で記録があった数（5分ごとなので最大3）。CO2・室温は平均。布団に入った・寝ついた・起きた時刻と、部屋が暗くなった・窓を開けたなどの出来事を、その15分の下に出す。心拍の記録が少ない夜（使えない夜）に、どこが抜けたかを見るのにも使う。
 
 `curl` で直接見るときは（`<ADMIN_TOKEN>` は `.dev.vars` の値）:
@@ -239,7 +241,7 @@ SwitchBot の機器 ─Bluetooth→ ハブ3 ─Wi-Fi→ SwitchBot のクラウ�
 ### 安全のための決まり
 - トークン・シークレット・合言葉は `wrangler secret` と `.dev.vars` にだけ置き、Git には含めない。
 - SwitchBot の Webhook には署名がないため、URL に長い合言葉を含めて、合言葉が違う送信は「存在しない URL」として扱う。
-- 合言葉は使う相手ごとに分け、使える API を絞っている（管理: `ADMIN_TOKEN` で `/admin/*`、アプリ: `APP_TOKEN` で `/api/*`、Claude Code のタスク: `AI_TASK_TOKEN` で `/ai/*`）。
+- 合言葉は使う相手ごとに分け、使える API を絞っている（管理: `ADMIN_TOKEN` で `/admin/*`、アプリ: `APP_TOKEN` で `/api/*`、Claude Code: `AI_TASK_TOKEN` で `/ai/*`。Claude ができるのは、食事の目安を読み書きすることと、1日 = 1行の表・夜の詳細を読むことだけ）。
 
 ### 費用と上限
 2026年11月時点の Cloudflare の無料枠の目安（変わることがあるので公式で確認: https://developers.cloudflare.com/workers/platform/pricing/ 、 https://developers.cloudflare.com/d1/platform/pricing/ ）。
@@ -272,6 +274,12 @@ Claude のサブスクリプションの使用量の範囲で動き、API の別
 4. タスクを今すぐ1回動かして、報告に件数が出れば完了。アプリの食事の一覧で、目安が付いていることを確かめる。
 
 指示書（`ai/meal-estimation-task.md`）では、Claude ができることを「目安がまだの食事を読む」「目安を書き込む」の2つの API だけに絞っている。料理名の文字に何が書かれていても、指示としては扱わない。
+
+同じ環境（ネットワークシークレット）があれば、Claude Code の会話からも、1日 = 1行の表と夜の詳細を読める（`GET /ai/days`・`GET /ai/nights/:date/timeline`。読むだけ）。`npm run admin -- days` などを、あなたが貼らなくても Claude が自分で実行できる:
+```sh
+# URL は環境変数 BUNKOKO_URL から。合言葉はネットワークシークレットで付くので、AI_TASK_TOKEN はダミーでよい
+AI_TASK_TOKEN=dummy npm run --silent admin -- days
+```
 
 ---
 
