@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import re
 import time
 import zipfile
@@ -277,10 +278,46 @@ def crypto_ready() -> bool:
     return find_spec("pypdf") is not None and (find_spec("cryptography") is not None or find_spec("Crypto") is not None)
 
 
+# 読む部品（pypdf）が知らないことのある、日本語の文字の表 → 読み方（PDF Reference 1.7 の表 5.15。古い作りの書類が使う）。
+# 知らないと、Shift-JIS の番号を別の読み方で読んで、でたらめな漢字に化ける（2026-11-26 の読み直しの記録に 38 行出た）
+JP_CMAPS = {
+    **{f"/{name}-{way}": "cp932" for name in ("90ms-RKSJ", "90msp-RKSJ", "90pv-RKSJ", "83pv-RKSJ", "Add-RKSJ", "Ext-RKSJ") for way in "HV"},
+    **{f"/{name}-{way}": "utf-16-be" for name in ("UniJIS-UTF16", "UniJIS2004-UTF16", "UniJIS-UCS2", "UniJIS-UCS2-HW") for way in "HV"},
+    "/EUC-H": "euc_jp", "/EUC-V": "euc_jp",
+}
+
+
+def _teach_japanese_encodings() -> None:
+    """読む部品の内側の表に、日本語の文字の表を足す。表の形が違う版では何もしない（そのときは pdf_text_why が「知らない文字の作り」と言う）。"""
+    try:
+        from pypdf import _cmap
+
+        table = _cmap._predefined_cmap
+    except (ImportError, AttributeError):
+        return
+    if isinstance(table, dict):
+        for name, codec in JP_CMAPS.items():
+            table.setdefault(name, codec)
+
+
 def _open_pdf(blob: bytes):
     from pypdf import PdfReader
 
+    _teach_japanese_encodings()
     return PdfReader(io.BytesIO(blob))
+
+
+class _Heard(logging.Handler):
+    """読む部品の知らせを聞く: 「知らない文字の作りなので、別の読み方で読んだ」と言われた書類は、文字が化けている。"""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.ERROR)
+        self.unknown: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        said = re.search(r"Advanced encoding (\S+) not implemented", record.getMessage())
+        if said:
+            self.unknown.append(said.group(1))
 
 
 def pdf_text_why(blob: bytes, pages: int = TEXT_PAGES, max_chars: int = TEXT_MAX) -> tuple[str, str]:
@@ -288,22 +325,29 @@ def pdf_text_why(blob: bytes, pages: int = TEXT_PAGES, max_chars: int = TEXT_MAX
 
     読む部品が無いときは PdfPartMissing を上げる（空の本文と取り違えない）。
     """
-    import logging
-
     try:
         from pypdf.errors import DependencyError, FileNotDecryptedError
     except ImportError as e:
         raise PdfPartMissing(PDF_PART_HINT) from e
-    logging.getLogger("pypdf").setLevel(logging.ERROR)          # 作りの変わった PDF への注意書き（Multiple definitions…）で記録を埋めない
+    said, heard = logging.getLogger("pypdf"), _Heard()
+    said.setLevel(logging.ERROR)                                # 作りの変わった PDF への注意書き（Multiple definitions…）で記録を埋めない
+    said.addHandler(heard)
+    text = why = ""
     try:
         reader = _open_pdf(blob)
         text = "\n".join((pg.extract_text() or "") for pg in reader.pages[:pages])
     except (DependencyError, ImportError) as e:                 # 保護を解く部品（cryptography）が無い
         raise PdfPartMissing(PDF_PART_HINT) from e
     except FileNotDecryptedError:
-        return "", "開くのにパスワードが要る"
+        why = "開くのにパスワードが要る"
     except Exception as e:  # noqa: BLE001
-        return "", f"読めない作り（{type(e).__name__}）"
+        why = f"読めない作り（{type(e).__name__}）"
+    finally:
+        said.removeHandler(heard)
+    if heard.unknown:                                           # 化けた文字を本文として残さない（原本から、後で読み直せる）
+        return "", f"知らない文字の作り（{heard.unknown[0]}）"
+    if why:
+        return "", why
     text = re.sub(r"[ \t\u3000]+", " ", re.sub(r"\n\s*\n+", "\n", text)).strip()[:max_chars]
     return text, "" if text else NO_TEXT
 
@@ -558,6 +602,7 @@ def _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done, sle
         log(f"  ⚠ {PDF_PART_HINT}。今回は本文を取らず、数字だけ取る（本文は、部品を入れた後の回に取る）")
         pdf = False
         done["no_pdf_part"] = 1
+    keep_raw = False                                            # 原本の PDF も残すか（本文を外付けのディスクに置いているときだけ。2026-11-26 利用者の決め）
     if pdf:
         place = text_place(root)
         if not place["ready"]:                                  # 書けない所へは取りに行かない（取っても残せない）。数字は取る
@@ -565,6 +610,8 @@ def _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done, sle
             log(f"  ⚠ 本文の置き場所（{place['path']}）に書けない（{why}）。今回は本文を取らず、数字だけ取る")
             pdf = False
             done["no_text_place"] = 1
+        else:
+            keep_raw = place["link"]                            # 読み方を直したとき、取り直さずに読み直せるように（内蔵に置いている間は残さない）
     numbers, texts = [], []
     for r in disc.itertuples(index=False):
         if xbrl and r.xbrl and not facts_path(root, r).exists():
@@ -616,7 +663,10 @@ def _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done, sle
         row = 0
         if kind == "text":
             try:
-                _write_text(path, pdf_text(blob))
+                if keep_raw:
+                    _save_history(root, r, blob, True)          # 原本 → 本文の順に書く（過去分の取得と同じ形・同じ置き場所）
+                else:
+                    _write_text(path, pdf_text(blob))
             except PdfPartMissing as e:                         # 読む部品が無い。空の本文を残さない
                 log(f"  ⚠ {e}。今回は、この後の本文を取りに行かず、数字だけ取る")
                 pdf = False
@@ -1033,6 +1083,102 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
     return done
 
 
+def _text_entries(folder: Path):
+    """本文の置き場所の、すべての本文（月の名前・ファイル）。新しい月から。Mac が作る影のファイルは除く。"""
+    import os
+
+    for month in sorted((m for m in os.scandir(folder) if m.is_dir()), key=lambda m: m.name, reverse=True):
+        for e in sorted(os.scandir(month.path), key=lambda e: e.name):
+            if e.name.endswith(".txt") and not e.name.startswith("._"):
+                yield month.name, e
+
+
+def _rewrite(path: Path, text: str) -> None:
+    """本文を書き直す。書かれた時刻は元のままにする（断られた後の日数の数え clean_days は、本文のファイルが書かれた日を見る）。"""
+    import os
+
+    st = path.stat()
+    _write_text(path, text)
+    os.utime(path, (st.st_atime, st.st_mtime))
+
+
+def _spread(jobs: list, limit: int | None) -> list:
+    """limit を渡されたら、全体に散らばるように、その数だけ選ぶ。"""
+    return jobs if limit is None or len(jobs) <= limit else [jobs[int(k * len(jobs) / limit)] for k in range(limit)]
+
+
+def reread_all(root: Path, write: bool = True, limit: int | None = None, log: Callable[[str], None] | None = print, every: int = 2000) -> dict:
+    """原本のある本文を全部、今の読み方で読み直す（サイトには取りに行かない）。変わったものだけ書き直す。読み方を直した後に使う。
+
+    - 今の読み方で文字が取れて、前と違う → 書き直す（changed。空だったものが読めた分も入る）
+    - 今の読み方では「知らない文字の作り」で、前の本文がある → 前の本文は化けているので、空にする（blanked）
+    - 今は読めないが、前の本文がある → 前の本文を残す（kept）
+    - 前と同じ → 何もしない（same）
+    write=False なら数えるだけ。書き直したファイルの時刻は、元のまま。返すのは、本文の数 texts・原本の無い数 no_pdf・読んでみた数 tried と、上の 4 つ・
+    今の読み方で文字が取れなかった理由ごとの数 why・始められなかった理由 stopped。
+    """
+    done = {"texts": 0, "no_pdf": 0, "tried": 0, "changed": 0, "blanked": 0, "same": 0, "kept": 0, "why": {}, "stopped": None}
+    folder = text_root(root)
+    if not folder.is_dir():
+        return dict(done, stopped="no_text_place")
+    if not crypto_ready():
+        return dict(done, stopped="no_pdf_part")
+    raw, jobs = pdf_root(root), []
+    for month, e in _text_entries(folder):
+        done["texts"] += 1
+        pdf = raw / month / f"{e.name[:-4]}.pdf"
+        if pdf.exists():
+            jobs.append((Path(e.path), pdf))
+        else:
+            done["no_pdf"] += 1
+    jobs = _spread(jobs, limit)
+    for path, pdf in jobs:
+        try:
+            old = path.read_text(encoding="utf-8", errors="replace")
+            new, why = pdf_text_why(pdf.read_bytes())
+        except OSError:
+            old, new, why = "", "", "読めない（ディスク）"
+        done["tried"] += 1
+        if why:
+            done["why"][why] = done["why"].get(why, 0) + 1
+        if new == old:
+            done["same"] += 1
+        elif new or why.startswith("知らない文字の作り"):
+            done["changed" if new else "blanked"] += 1
+            if write:
+                _rewrite(path, new)
+        else:
+            done["kept"] += 1
+        if log and done["tried"] % every == 0:
+            log(f"  読み直し {done['tried']:,}/{len(jobs):,}（変わった {done['changed'] + done['blanked']:,}・変わらない {done['same']:,}）")
+    return done
+
+
+def drop_lost_empties(root: Path, write: bool = True) -> dict:
+    """空で、原本も無い本文を消す（利用者の決め 2026-11-26: 取り直す）。消すと、次の収集が取り直す:
+    直近の分は毎朝の収集、それより前は過去分の取得。どちらも、いつもの決まりの速さで（ここでは、サイトに取りに行かない）。
+
+    消すのは 0 バイトの本文だけ。原本の置き場所が見えないときは、何も消さない（どの空の本文も「原本なし」に見えてしまう）。
+    返すのは、当てはまる数 lost・消した数 dropped・始められなかった理由 stopped。
+    """
+    import os
+
+    done = {"lost": 0, "dropped": 0, "stopped": None}
+    folder, raw = text_root(root), pdf_root(root)
+    if not folder.is_dir():
+        return dict(done, stopped="no_text_place")
+    if not raw.is_dir():
+        return dict(done, stopped="no_pdf_place")
+    for month, e in _text_entries(folder):
+        if e.stat().st_size or (raw / month / f"{e.name[:-4]}.pdf").exists():
+            continue
+        done["lost"] += 1
+        if write:
+            os.unlink(e.path)
+            done["dropped"] += 1
+    return done
+
+
 def reread_empty(root: Path, write: bool = True, limit: int | None = None, log: Callable[[str], None] | None = print, every: int = 500) -> dict:
     """空の本文を、残してある原本の PDF から読み直す（サイトには取りに行かない）。文字のある本文には触らない。
 
@@ -1041,8 +1187,6 @@ def reread_empty(root: Path, write: bool = True, limit: int | None = None, log: 
     返すのは、空の本文の数 empty・原本が無くて読み直せない数 no_pdf・読んでみた数 tried・文字が取れた数 fixed・
     やはり取れない数 still と、その理由ごとの数 why・始められなかった理由 stopped。
     """
-    import os
-
     done = {"empty": 0, "no_pdf": 0, "tried": 0, "fixed": 0, "still": 0, "why": {}, "stopped": None}
     folder = text_root(root)
     if not folder.is_dir():                                     # 行き先の無いリンク ＝ 外付けのディスクがつながっていない
@@ -1050,18 +1194,16 @@ def reread_empty(root: Path, write: bool = True, limit: int | None = None, log: 
     if not crypto_ready():
         return dict(done, stopped="no_pdf_part")
     raw, jobs = pdf_root(root), []
-    for month in sorted((m for m in os.scandir(folder) if m.is_dir()), key=lambda m: m.name, reverse=True):
-        for e in sorted(os.scandir(month.path), key=lambda e: e.name):
-            if not e.name.endswith(".txt") or e.name.startswith("._") or e.stat().st_size:
-                continue
-            done["empty"] += 1
-            pdf = raw / month.name / f"{e.name[:-4]}.pdf"
-            if pdf.exists():
-                jobs.append((Path(e.path), pdf))
-            else:
-                done["no_pdf"] += 1
-    if limit is not None and len(jobs) > limit:
-        jobs = [jobs[int(k * len(jobs) / limit)] for k in range(limit)]
+    for month, e in _text_entries(folder):
+        if e.stat().st_size:
+            continue
+        done["empty"] += 1
+        pdf = raw / month / f"{e.name[:-4]}.pdf"
+        if pdf.exists():
+            jobs.append((Path(e.path), pdf))
+        else:
+            done["no_pdf"] += 1
+    jobs = _spread(jobs, limit)
     for path, pdf in jobs:
         try:
             text, why = pdf_text_why(pdf.read_bytes())
@@ -1071,9 +1213,7 @@ def reread_empty(root: Path, write: bool = True, limit: int | None = None, log: 
         if text:
             done["fixed"] += 1
             if write:
-                st = path.stat()
-                _write_text(path, text)
-                os.utime(path, (st.st_atime, st.st_mtime))
+                _rewrite(path, text)
         else:
             done["still"] += 1
             done["why"][why] = done["why"].get(why, 0) + 1

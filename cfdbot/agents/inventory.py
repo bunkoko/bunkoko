@@ -163,7 +163,7 @@ def summary_lines(docs: pd.DataFrame, orphans: int = 0) -> list[str]:
         lines.append(f"- 続けてそろっているのは {first} から {last} までの {span} か月（その月の {FULL:.0%} 以上に本文がある月が、最後まで続く）。"
                      f"それより前: 一覧 {len(before):,} 件のうち、本文 {int((before['state'] == 'ある').sum()):,} 件")
     lines.append(f"- 原本の PDF がある: {int(have['pdf'].sum()):,} 件（本文のある分の {_pct(have['pdf'].sum(), len(have))}）。"
-                 + "無い分は、毎日の収集で取った本文（原本を残していない）")
+                 + "無い分は、2026-11-26 までの毎日の収集で取った本文（その後は、毎日の収集でも原本を残す）")
     if len(have):
         short = int((have["chars"] < SHORT).sum())
         lines.append(f"- 本文の長さ（残してある文字数。PDF の最初の {TEXT_PAGES} ページ・{TEXT_MAX:,} 字まで）: まん中 {int(have['chars'].median()):,} 字・"

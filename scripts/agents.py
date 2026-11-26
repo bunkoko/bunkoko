@@ -16,6 +16,8 @@
     python scripts/agents.py status
     python scripts/agents.py inventory            # 取ってある開示の本文の棚卸し（何が・いつから・どれだけ読めているか。見るだけ。10.6）
     python scripts/agents.py reread [--check]     # 空の本文を、残してある原本の PDF から読み直す（--check は見るだけ。サイトには取りに行かない。10.7）
+    python scripts/agents.py reread --all [--check]       # 原本のある本文を全部読み直す（読み方を直した後に。変わったものだけ書き直す）
+    python scripts/agents.py reread --refetch [--check]   # 空で、原本も無い本文を消して、次の収集に取り直させる（利用者の決め 2026-11-26）
     python scripts/agents.py check                # 台帳の点検（自動実行が動いたか・抜けた日）と、先のデータの途中経過・止める決まり（12 章）
     python scripts/agents.py orders               # 日本株の予行演習: 今日の注文の一覧を作る（注文は出さない。docs/stocks_live.md）
     python scripts/agents.py orders --setup --equity 300000 [--deadline 13:30] [--real]   # 予行演習の設定（--real は空運転の条件を満たした後だけ）
@@ -299,7 +301,7 @@ def cmd_collect(args) -> None:
             print(f"情報収集: 直近 {args.docs_days} 日の開示 {len(want):,} 件の本文と数字を、{C.INTERVAL:g} 秒に 1 件ずつ取る（東証 上場会社情報サービス）", flush=True)
             place = C.text_place(ir_root)
             if place["link"]:                                   # 外付けのディスクに置いているときは、書けるかを毎回 1 行残す（新しい本文が 0 件の日も）
-                print("情報収集: " + C.text_place_line(place), flush=True)
+                print("情報収集: " + C.text_place_line(place) + ("。原本の PDF も、となりの ir_pdf に残す" if place["ready"] else ""), flush=True)
             got = C.collect_docs(want, ir_root, max_docs=args.max_docs, interval=C.INTERVAL, log=lambda s: print(s, flush=True),
                                  wait=600)                      # 過去の本文の取得が動いていたら、頼んで先に通してもらう（10 分まで待つ）
             if got.get("no_text_place") and place["ready"]:     # 取っている間に書けなくなった。今の様子を残す
@@ -1935,36 +1937,75 @@ REREAD_SAMPLE = 300                       # reread --check で読んでみる数
 
 
 def cmd_reread(args) -> None:
-    """空の本文を、HDD に残してある原本の PDF から読み直す（docs/agents.md 10.7）。サイトには取りに行かない。
+    """取ってある本文を、HDD に残してある原本の PDF から読み直す（docs/agents.md 10.7）。サイトには取りに行かない。
 
-    2026-11-26 の棚卸しで、取ってある本文の 15% が空だった。編集を止める保護つきの PDF を読む部品が無く、空の本文として残っていた。
-    --check は見るだけ: 原本のある空の本文から REREAD_SAMPLE 件までを読んでみて、文字が取れる数と、取れない理由を数える。
+    何も付けない: 空の本文だけを読み直す（2026-11-26: 保護つきの PDF を読む部品が無く、本文の 15% が空だった）。
+    --all: 原本のある本文を全部、今の読み方で読み直して、変わったものだけ書き直す（読み方を直した後に。古い日本語の文字の作りなど）。
+    --refetch: 空で、原本も無い本文を消して、次の収集に取り直させる（利用者の決め 2026-11-26。ここでは、サイトに取りに行かない）。
+    --check を付けると、どれも見るだけ（何も書かない・消さない。読んでみるのは REREAD_SAMPLE 件まで）。
     """
     from cfdbot.agents import collector as C
 
     ir_root = paths(args.root)["disclosures"].parent
-    check = bool(getattr(args, "check", False))
-    how = (f"見るだけ（何も書かない）。空の本文のうち、原本のある分から {REREAD_SAMPLE:,} 件までを読んでみる" if check
-           else "空の本文を、残してある原本の PDF から読み直して書き直す（文字のある本文には触らない）")
+    check, everything = bool(getattr(args, "check", False)), bool(getattr(args, "all", False))
+    if getattr(args, "refetch", False):
+        return _reread_refetch(C, ir_root, check)
+    what = "原本のある本文" if everything else "空の本文"
+    how = (f"見るだけ（何も書かない）。{what}から {REREAD_SAMPLE:,} 件までを、今の読み方で読んでみる" if check
+           else ("原本のある本文を全部、今の読み方で読み直して、変わったものだけ書き直す" if everything
+                 else "空の本文を、残してある原本の PDF から読み直して書き直す（文字のある本文には触らない）"))
     print(f"読み直し: {how}。サイトには取りに行かない", flush=True)
+    try:
+        import pypdf
+
+        print(f"読み直し: 読む部品は pypdf {pypdf.__version__}", flush=True)
+    except ImportError:
+        pass
     keep_awake()
     try:
-        got = C.reread_empty(ir_root, write=not check, limit=REREAD_SAMPLE if check else None, log=lambda s: print(s, flush=True))
+        got = (C.reread_all if everything else C.reread_empty)(ir_root, write=not check, limit=REREAD_SAMPLE if check else None,
+                                                               log=lambda s: print(s, flush=True))
     except C.PdfPartMissing as e:
         sys.exit(f"読み直し: ⚠ {e}")
     if got["stopped"] == "no_text_place":
         sys.exit("読み直し: ⚠ 本文の置き場所が見えない（外付けの HDD がつながっていない？）。つないでから、同じコマンドで。何も読んでいない")
     if got["stopped"] == "no_pdf_part":
         sys.exit(f"読み直し: ⚠ {C.PDF_PART_HINT}。何も読んでいない")
-    print(f"読み直し: 空の本文 {got['empty']:,} 件（原本がある {got['empty'] - got['no_pdf']:,} 件・原本が無い {got['no_pdf']:,} 件）", flush=True)
-    did = "文字が取れた" if check else "書き直した"
-    print(f"読み直し: 読んでみた {got['tried']:,} 件のうち、{did} {got['fixed']:,} 件・やはり取れない {got['still']:,} 件", flush=True)
+    if everything:
+        print(f"読み直し: 本文 {got['texts']:,} 件（原本がある {got['texts'] - got['no_pdf']:,} 件・原本が無い {got['no_pdf']:,} 件）", flush=True)
+        if check:
+            print(f"読み直し: 読んでみた {got['tried']:,} 件のうち、読み直すと変わる {got['changed']:,} 件・文字が化けているので空にする {got['blanked']:,} 件・"
+                  f"変わらない {got['same']:,} 件・今は読めないので前の本文を残す {got['kept']:,} 件", flush=True)
+        else:
+            print(f"読み直し: 読んでみた {got['tried']:,} 件のうち、書き直した {got['changed']:,} 件・文字が化けていたので空にした {got['blanked']:,} 件・"
+                  f"変わらない {got['same']:,} 件・今は読めないので前の本文を残した {got['kept']:,} 件", flush=True)
+        label = "今の読み方で文字が取れない理由"
+    else:
+        print(f"読み直し: 空の本文 {got['empty']:,} 件（原本がある {got['empty'] - got['no_pdf']:,} 件・原本が無い {got['no_pdf']:,} 件）", flush=True)
+        did = "文字が取れた" if check else "書き直した"
+        print(f"読み直し: 読んでみた {got['tried']:,} 件のうち、{did} {got['fixed']:,} 件・やはり取れない {got['still']:,} 件", flush=True)
+        label = "取れない理由"
     for why, n in got["why"].items():
-        print(f"  取れない理由: {why} {n:,} 件", flush=True)
+        print(f"  {label}: {why} {n:,} 件", flush=True)
     if check:
         print("読み直し: 何も書いていない（サイトには取りに行っていない）。書き直すなら、--check を付けずに同じコマンドで", flush=True)
     else:
         print("読み直し: 終わった（サイトには取りに行っていない）。数え直すなら ./cfd agents inventory", flush=True)
+
+
+def _reread_refetch(C, ir_root: Path, check: bool) -> None:
+    """空で、原本も無い本文を消して、次の収集に取り直させる。"""
+    got = C.drop_lost_empties(ir_root, write=not check)
+    if got["stopped"] == "no_text_place":
+        sys.exit("読み直し: ⚠ 本文の置き場所が見えない（外付けの HDD がつながっていない？）。つないでから、同じコマンドで。何も消していない")
+    if got["stopped"] == "no_pdf_place":
+        sys.exit("読み直し: ⚠ 原本の置き場所（本文のとなりの ir_pdf）が見えない。見えないと、どの空の本文も「原本なし」に見えるので、何も消していない")
+    if check:
+        print(f"読み直し: 見るだけ。空で、原本も無い本文は {got['lost']:,} 件（消していない）。消すなら、--check を付けずに同じコマンドで", flush=True)
+        return
+    print(f"読み直し: 空で、原本も無い本文 {got['dropped']:,} 件を消した。取り直しは、毎朝の収集（直近 7 日の分）と、過去分の取得（それより前の分。"
+          f"毎朝の収集が {C.CLEAN_NEED} 日無事になってから・1 日に {C.HISTORY_DAY_MAX:,} 件まで）が、いつもの決まりの速さでする。"
+          "今、サイトには取りに行っていない", flush=True)
 
 
 def cmd_status(args) -> None:
@@ -2569,7 +2610,9 @@ def main() -> None:
     p.add_argument("--fetch", action="store_true", help="extra: 先に出来高・終値・株式分割を Yahoo から取る（1 秒に 1 社。取得済みは飛ばす）")
     p.add_argument("--reuse", action="store_true", help="extra: 入力を足した銘柄選定の点数が書いてあれば、学び直さずに使う")
     p.add_argument("--off", action="store_true", help="schedule: 自動実行を外す")
-    p.add_argument("--check", action="store_true", help="reread: 見るだけ（空の本文の一部を原本から読んでみて数える。何も書かない）")
+    p.add_argument("--check", action="store_true", help="reread: 見るだけ（一部を原本から読んでみて数える。何も書かない・消さない）")
+    p.add_argument("--all", action="store_true", help="reread: 空の本文だけでなく、原本のある本文を全部読み直す（変わったものだけ書き直す）")
+    p.add_argument("--refetch", action="store_true", help="reread: 空で、原本も無い本文を消して、次の収集に取り直させる（ここではサイトに取りに行かない）")
     p.add_argument("--job", choices=list(JOBS), default="run", help="schedule: どの自動実行か（run = 平日 13:05 の判断、collect = 毎日 8:00 の収集）")
     p.add_argument("--docs", action="store_true", help="collect: 本文（PDF）と決算の数字（XBRL）も取る")
     p.add_argument("--docs-days", type=int, default=7, help="collect --docs: さかのぼる日数")
