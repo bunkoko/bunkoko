@@ -25,7 +25,7 @@ case "$cmd" in
           # news（埋め込みの部品 sentence-transformers・PyTorch）も入れる。平日 13:05 の自動実行の「情報収集」が使う
           # （2026-10-21 に別の作業で部品が消え、update では戻らず、10-22〜10-28 の自動実行が止まった）
           UV_PYTHON_INSTALL_DIR="$PWD/.python" uv pip install --python "$PY" -e ".[dev,research,news]" -q
-          "$PY" -c "import sentence_transformers, torch, sklearn, yfinance, shap" 2>/dev/null \
+          "$PY" -c "import sentence_transformers, torch, sklearn, yfinance, shap, cryptography" 2>/dev/null \
             || echo "⚠ 毎日の自動実行に要る部品が入っていない（上のエラーを Claude に貼る）"
           "$PY" scripts/mt5_files.py install
           echo "更新した（MetaEditor でのコンパイルが要るかは、上の「⚠ コンパイルが要る」か「コンパイル済みのまま」の行）" ;;
@@ -150,7 +150,8 @@ case "$cmd" in
            shap = M2 と決算の数字の IR 評価 AI（E2）の SHAP 値・bee swarm の図（見るためだけ。数分。docs/agents.md 14 章）、
            rank = 向こう N 営業日で上がる確率の順位（--days 5 など 1〜60。--top で銘柄の数。判定 RK5・RK20 は 2026-11-08 に済み（使えない）。docs/chance.md）、
            residual = M2 を「その株だけの動き」（ベータと業種の分を引く）で学び直して比べる M2r（1 回だけ。15〜30 分。docs/agents.md 15 章）、
-           inventory = 取ってある IR の本文の棚卸し（何が・いつから・どれだけ読めているか。見るだけで、値段は使わない。数分。docs/agents.md 10.6）
+           inventory = 取ってある IR の本文の棚卸し（何が・いつから・どれだけ読めているか。見るだけで、値段は使わない。数分。docs/agents.md 10.6）、
+           reread = 空の本文を、HDD に残してある原本の PDF から読み直す（--check は見るだけ。サイトには取りに行かない。docs/agents.md 10.7）
   ml       59 市場をまとめて学ぶ機械学習でポジションを決めると良くなるかを検証（universe の後。10〜40 分）
   leadlag  先行指標（原油・為替・金利など）で日米の業種・個別株を予測できるかを検証（初回は --fetch。30〜60 分）
   intraday 5 分足〜1 時間足の短い売買を、小さいコストで候補探し → 実際のコストで確認（--source mt5 で data/ の M5）

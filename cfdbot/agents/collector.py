@@ -258,19 +258,59 @@ def doc_url(ticker: str, filename: str) -> str:
     return f"{JPX_DISC}{ticker.replace('.T', '')}0/{filename}"
 
 
-def pdf_text(blob: bytes, pages: int = TEXT_PAGES, max_chars: int = TEXT_MAX) -> str:
-    """PDF の最初の数ページを文字にする。読めなければ空。"""
+class PdfPartMissing(RuntimeError):
+    """PDF を読む部品が入っていない（空の本文と取り違えないための印）。"""
+
+
+PDF_PART_HINT = "PDF を読む部品が足りない（保護つきの PDF を読むには cryptography が要る）。./cfd update で入れる"
+NO_TEXT = "文字が入っていない（画像だけの PDF など）"
+
+
+def crypto_ready() -> bool:
+    """PDF を読む部品と、保護（AES の暗号）を解く部品が入っているか。
+
+    上場会社の書類には、編集を止める保護つきの PDF が多い（開くのにパスワードは要らない）。解く部品が無いと読めず、
+    2026-11-26 までは、それを黙って空の本文として残していた（取ってある本文の 15%。docs/agents.md 10.7）。
+    """
+    from importlib.util import find_spec
+
+    return find_spec("pypdf") is not None and (find_spec("cryptography") is not None or find_spec("Crypto") is not None)
+
+
+def _open_pdf(blob: bytes):
+    from pypdf import PdfReader
+
+    return PdfReader(io.BytesIO(blob))
+
+
+def pdf_text_why(blob: bytes, pages: int = TEXT_PAGES, max_chars: int = TEXT_MAX) -> tuple[str, str]:
+    """PDF の最初の数ページを文字にする。返すのは（本文, 取れなかった理由）。取れたら、理由は空。
+
+    読む部品が無いときは PdfPartMissing を上げる（空の本文と取り違えない）。
+    """
+    import logging
+
     try:
-        import logging
-
-        from pypdf import PdfReader
-
-        logging.getLogger("pypdf").setLevel(logging.ERROR)      # 作りの変わった PDF への注意書き（Multiple definitions…）で記録を埋めない
-        reader = PdfReader(io.BytesIO(blob))
+        from pypdf.errors import DependencyError, FileNotDecryptedError
+    except ImportError as e:
+        raise PdfPartMissing(PDF_PART_HINT) from e
+    logging.getLogger("pypdf").setLevel(logging.ERROR)          # 作りの変わった PDF への注意書き（Multiple definitions…）で記録を埋めない
+    try:
+        reader = _open_pdf(blob)
         text = "\n".join((pg.extract_text() or "") for pg in reader.pages[:pages])
-    except Exception:  # noqa: BLE001
-        return ""
-    return re.sub(r"[ \t\u3000]+", " ", re.sub(r"\n\s*\n+", "\n", text)).strip()[:max_chars]
+    except (DependencyError, ImportError) as e:                 # 保護を解く部品（cryptography）が無い
+        raise PdfPartMissing(PDF_PART_HINT) from e
+    except FileNotDecryptedError:
+        return "", "開くのにパスワードが要る"
+    except Exception as e:  # noqa: BLE001
+        return "", f"読めない作り（{type(e).__name__}）"
+    text = re.sub(r"[ \t\u3000]+", " ", re.sub(r"\n\s*\n+", "\n", text)).strip()[:max_chars]
+    return text, "" if text else NO_TEXT
+
+
+def pdf_text(blob: bytes, pages: int = TEXT_PAGES, max_chars: int = TEXT_MAX) -> str:
+    """PDF の最初の数ページを文字にする。文字が取れなければ空（理由は pdf_text_why）。読む部品が無いときは PdfPartMissing。"""
+    return pdf_text_why(blob, pages, max_chars)[0]
 
 
 def _is_summary(member: str) -> bool:
@@ -514,6 +554,10 @@ def _wait(started: float, interval: float) -> None:
 def _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done, sleep, now) -> dict[str, int]:
     from datetime import timedelta
 
+    if pdf and not crypto_ready():                              # 部品が無いと、保護つきの書類の本文が空になる。取りに行かない（数字は取る）
+        log(f"  ⚠ {PDF_PART_HINT}。今回は本文を取らず、数字だけ取る（本文は、部品を入れた後の回に取る）")
+        pdf = False
+        done["no_pdf_part"] = 1
     if pdf:
         place = text_place(root)
         if not place["ready"]:                                  # 書けない所へは取りに行かない（取っても残せない）。数字は取る
@@ -573,6 +617,13 @@ def _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done, sle
         if kind == "text":
             try:
                 _write_text(path, pdf_text(blob))
+            except PdfPartMissing as e:                         # 読む部品が無い。空の本文を残さない
+                log(f"  ⚠ {e}。今回は、この後の本文を取りに行かず、数字だけ取る")
+                pdf = False
+                done["no_pdf_part"] = 1
+                _wait(started, pace)
+                k += 1
+                continue
             except OSError as e:                                # 外付けのディスクが外れた・書き込みを止められた。数字の収集は続ける
                 log(f"  ⚠ 本文を書けなかった（{str(e)[:60]}）。今回は、この後の本文を取りに行かず、数字だけ取る")
                 pdf = False
@@ -834,6 +885,8 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
 
     jobs = history_jobs(disc, root, since, history_until(now()))
     done["left"] = len(jobs)
+    if not crypto_ready():                                      # 部品が無いと、保護つきの書類の本文が空になる。取りに行かない
+        return dict(done, stopped="no_pdf_part")
     closed = shut()
     if closed:
         return dict(done, **closed)
@@ -939,6 +992,9 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
                     recent.clear()
                     try:
                         _save_history(root, r, blob, keep_pdf)
+                    except PdfPartMissing:
+                        done["stopped"] = "no_pdf_part"
+                        break
                     except OSError:
                         done["stopped"] = "disk"
                         break
@@ -974,6 +1030,55 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
                 if n > day_count(root, day):
                     day_note(root, day, n)                      # いちばん新しい日の分が残る（日をまたいだら、新しい日の数）
     done["left"] = len(jobs) - done["text"] - done["missing"]
+    return done
+
+
+def reread_empty(root: Path, write: bool = True, limit: int | None = None, log: Callable[[str], None] | None = print, every: int = 500) -> dict:
+    """空の本文を、残してある原本の PDF から読み直す（サイトには取りに行かない）。文字のある本文には触らない。
+
+    write=False なら数えるだけで、何も書かない。limit を渡すと、原本のある分から、全体に散らばるようにその数だけ読んでみる。
+    書き直したファイルの時刻は、元のままにする（断られた後の日数の数え clean_days は、本文のファイルが書かれた日を見る）。
+    返すのは、空の本文の数 empty・原本が無くて読み直せない数 no_pdf・読んでみた数 tried・文字が取れた数 fixed・
+    やはり取れない数 still と、その理由ごとの数 why・始められなかった理由 stopped。
+    """
+    import os
+
+    done = {"empty": 0, "no_pdf": 0, "tried": 0, "fixed": 0, "still": 0, "why": {}, "stopped": None}
+    folder = text_root(root)
+    if not folder.is_dir():                                     # 行き先の無いリンク ＝ 外付けのディスクがつながっていない
+        return dict(done, stopped="no_text_place")
+    if not crypto_ready():
+        return dict(done, stopped="no_pdf_part")
+    raw, jobs = pdf_root(root), []
+    for month in sorted((m for m in os.scandir(folder) if m.is_dir()), key=lambda m: m.name, reverse=True):
+        for e in sorted(os.scandir(month.path), key=lambda e: e.name):
+            if not e.name.endswith(".txt") or e.name.startswith("._") or e.stat().st_size:
+                continue
+            done["empty"] += 1
+            pdf = raw / month.name / f"{e.name[:-4]}.pdf"
+            if pdf.exists():
+                jobs.append((Path(e.path), pdf))
+            else:
+                done["no_pdf"] += 1
+    if limit is not None and len(jobs) > limit:
+        jobs = [jobs[int(k * len(jobs) / limit)] for k in range(limit)]
+    for path, pdf in jobs:
+        try:
+            text, why = pdf_text_why(pdf.read_bytes())
+        except OSError:
+            text, why = "", "原本を読めない"
+        done["tried"] += 1
+        if text:
+            done["fixed"] += 1
+            if write:
+                st = path.stat()
+                _write_text(path, text)
+                os.utime(path, (st.st_atime, st.st_mtime))
+        else:
+            done["still"] += 1
+            done["why"][why] = done["why"].get(why, 0) + 1
+        if log and done["tried"] % every == 0:
+            log(f"  読み直し {done['tried']:,}/{len(jobs):,}（文字が取れた {done['fixed']:,}・やはり取れない {done['still']:,}）")
     return done
 
 
