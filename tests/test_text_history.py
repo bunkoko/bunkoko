@@ -356,7 +356,7 @@ def fast(monkeypatch):
     monkeypatch.setattr(C, "PDF_KEEP_FREE_GB", 0, raising=False)
     monkeypatch.setattr(C, "in_quiet", lambda t: False)           # 試験を朝に流しても休まない
     monkeypatch.setattr(C, "FAIL_WAIT", 0.0, raising=False)       # 取れなかったときの間（本物は 15 秒から）を、試験では待たない
-    monkeypatch.setattr(C, "HISTORY_INTERVAL", 0.0, raising=False)   # まとめて取るときの間隔（本物は 10 秒）
+    monkeypatch.setattr(C, "HISTORY_INTERVAL", 0.0, raising=False)   # まとめて取るときの間隔（本物は 3 秒）
 
 
 def test_tool_takes_the_past_texts_and_tells_what_it_did(tmp_path, capsys, monkeypatch, fast):
@@ -1074,7 +1074,7 @@ def test_tool_uses_the_slow_pace_for_the_bulk_fetch(tmp_path, capsys, monkeypatc
     monkeypatch.setattr(C, "HISTORY_INTERVAL", 0.01)
     load_script().cmd_collect(ns(root))
     out = capsys.readouterr().out
-    assert seen["interval"] == 0.01 and "0.01 秒に 1 件" in out and "1 日に" in out
+    assert seen["interval"] == 0.01 and "0.01 秒に 1 件" in out and "1 日の上限なし" in out
 
 
 # --------------------------------------------------------------------------- 毎朝の収集が見る日数を延ばす（2026-11-27。docs/todo.md の 40）
@@ -1381,3 +1381,49 @@ def test_morning_collection_makes_the_reading_list_afterwards(tmp_path, capsys, 
     assert asked == [str(root)]
     m.cmd_collect(daily_ns(root, no_digest=False, docs=False))                            # 平日 13 時すぎの回（一覧だけ）では、作らない
     assert asked == [str(root)]
+
+
+# --------------------------------------------------------------------------- 速さと 1 日の上限（2026-11-28 利用者の決め: 3 秒に 1 件・1 日の上限なし）
+def test_pace_of_the_bulk_fetch_is_the_one_the_user_chose():
+    """利用者の決め（2026-11-28）: まとめて取るときは 3 秒に 1 件・1 日の上限なし（その前は 10 秒に 1 件・1 日 2,000 件。指令役の勧めは、今のままか 10 秒・上限なしだった）。"""
+    assert C.HISTORY_INTERVAL == 3.0 and C.HISTORY_DAY_MAX == 0                            # 0 ＝ 1 日の上限なし
+    assert C.HISTORY_INTERVAL >= C.INTERVAL                                               # 毎日の収集の決まり（1 秒に 1 件）より速くはしない
+    assert C.day_limit_text() == "1 日の上限なし"
+
+
+def test_day_limit_text_names_the_limit_when_there_is_one(monkeypatch):
+    monkeypatch.setattr(C, "HISTORY_DAY_MAX", 2000)
+    assert C.day_limit_text() == "1 日に 2,000 件まで"
+
+
+def test_history_goes_on_past_any_number_when_there_is_no_daily_limit(tmp_path):
+    root, _ = hdd(tmp_path)
+    clock = noon()
+    C.day_note(root, f"{clock.t:%Y-%m-%d}", 5000)                                        # 今日は、もう 5,000 件取りに行ってある
+    got = run(root, lambda url: _pdf("a"), rows=MANY, clock=clock)                        # day_max を言わない ＝ 道具の決まり（上限なし）
+    assert got["text"] == len(MANY) and got["stopped"] is None and got["left"] == 0
+
+
+def test_tool_tells_the_pace_and_that_there_is_no_daily_limit(tmp_path, capsys, monkeypatch):
+    root, _, _ = world(tmp_path)
+    monkeypatch.setattr(C, "http_get", lambda url, tries=1: _pdf("a"))
+    monkeypatch.setattr(C, "in_quiet", lambda t: False)
+    monkeypatch.setattr(C, "HISTORY_INTERVAL", 0.01)
+    load_script().cmd_collect(ns(root))
+    out = capsys.readouterr().out
+    assert "0.01 秒に 1 件" in out and "1 日の上限なし" in out and "1 日に" not in out and "取れた +3" in out
+
+
+def test_gate_line_and_status_do_not_name_a_daily_limit_that_is_not_there(tmp_path, capsys, monkeypatch):
+    root, ir, _ = world(tmp_path)
+    now = datetime.now()
+    C.note_refused(ir, 503, now - timedelta(days=4))
+    for k in (3, 2, 1):
+        written(ir / "xbrl" / f"{now:%Y-%m}" / f"n{k}.csv", now - timedelta(days=k))
+    line = C.gate_line(ir, now)
+    assert "過去分の取得を始められる（1 日の上限なし" in line and "2,000" not in line
+    m = load_script()
+    monkeypatch.setattr(m, "job_registered", lambda job, **kw: True)
+    m.cmd_status(ns(root, out=str(tmp_path / "out")))
+    out = capsys.readouterr().out
+    assert "自動の取得: 登録してある（毎日 9:00 に、止まっていれば続きを自分で始める" in out and "2,000" not in out

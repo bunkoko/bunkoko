@@ -59,10 +59,10 @@ DOCS_DAYS = 30                # 毎朝の収集（collect --docs）がさかの�
 JOBS = {   # 自動実行: 名前 → （launchd の名前、動かすコマンド、時刻、説明）
     "run": (LABEL, ["agents", "run", "--prices"], [{"Weekday": d, "Hour": 13, "Minute": 5} for d in range(1, 6)], "平日 13:05 に ./cfd agents run --prices"),
     "collect": (LABEL + ".collect", ["agents", "collect", "--docs"], {"Hour": 8, "Minute": 0}, "毎日 8:00 に ./cfd agents collect --docs"),
-    # 過去の本文の続き（利用者の決め 2026-11-28: 自動に）。毎朝の収集にゆずる時間（〜8:45）の後。1 日に 2,000 件までで、道具が自分で止まる。
+    # 過去の本文の続き（利用者の決め 2026-11-28: 自動に）。毎朝の収集にゆずる時間（〜8:45）の後。動いていれば 2 本目は始まらない。
     # 断られた後の数え・HDD・同時に 1 本、の決まりは、手で始めるときと同じに道具が守る（早めの印 --early は使わない）
     "text_history": (LABEL + ".text_history", ["agents", "collect", "--text-history", "--auto"], {"Hour": 9, "Minute": 0},
-                     "毎日 9:00 に ./cfd agents collect --text-history --auto（過去の本文の続き。1 日に 2,000 件まで）"),
+                     "毎日 9:00 に ./cfd agents collect --text-history --auto（過去の本文の続き。止まっていれば、続きから）"),
 }
 
 
@@ -230,7 +230,8 @@ def _text_history(args, C, df, ir_root) -> None:
     todo = min(jobs, args.history_max) if args.history_max else jobs
     print(f"過去の本文: {HISTORY_FROM[:7]} からの開示のうち、まだ本文の無い {jobs:,} 件" + (f"のうち {todo:,} 件" if todo < jobs else "")
           + f"を、新しい順に {C.HISTORY_INTERVAL:g} 秒に 1 件ずつ取る（東証 上場会社情報サービス。同時に 1 本。"
-          f"1 日に {C.HISTORY_DAY_MAX:,} 件まで ＝ 全部で {-(-todo // max(C.HISTORY_DAY_MAX, 1)):,} 日ほど。今の速さは ./cfd agents status。毎朝 7:50〜8:45 は休む）", flush=True)
+          f"{C.day_limit_text()}" + (f" ＝ 全部で {-(-todo // C.HISTORY_DAY_MAX):,} 日ほど" if C.HISTORY_DAY_MAX else "。取り終えるまで続ける")
+          + "。今の速さと残りの時間は ./cfd agents status。毎朝 7:50〜8:45 は休む）", flush=True)
     print("過去の本文: " + C.text_place_line(place) + ("。原本の PDF も、となりの ir_pdf に残す" if keep_pdf else "。原本の PDF は残さない"), flush=True)
     auto = bool(getattr(args, "auto", False))                    # 自動の取得（毎日 9:00）。早めの印は使わない
     early = bool(getattr(args, "early", False)) and not auto
@@ -2175,7 +2176,7 @@ def _reread_refetch(C, ir_root: Path, check: bool) -> None:
         print(f"読み直し: 見るだけ。空で、原本も無い本文は {got['lost']:,} 件（消していない）。消すなら、--check を付けずに同じコマンドで", flush=True)
         return
     print(f"読み直し: 空で、原本も無い本文 {got['dropped']:,} 件を消した。取り直しは、毎朝の収集（直近 {DOCS_DAYS} 日の分）と、過去分の取得（それより前の分。"
-          f"毎朝の収集が {C.CLEAN_NEED} 日無事になってから・1 日に {C.HISTORY_DAY_MAX:,} 件まで）が、いつもの決まりの速さでする。"
+          f"毎朝の収集が {C.CLEAN_NEED} 日無事になってから・{C.day_limit_text()}）が、いつもの決まりの速さでする。"
           "今、サイトには取りに行っていない", flush=True)
 
 
@@ -2199,7 +2200,7 @@ def cmd_status(args) -> None:
         print(gate)
     on = job_registered("text_history")                         # 過去の本文の自動の取得（Mac でだけ分かる）
     if on is not None:
-        print("過去の本文の自動の取得: " + (f"登録してある（毎日 9:00 に、その日の分〈{C.HISTORY_DAY_MAX:,} 件まで〉を自分で始める。Mac のふたを開けて、電源と HDD につないである日だけ進む。"
+        print("過去の本文の自動の取得: " + (f"登録してある（毎日 9:00 に、止まっていれば続きを自分で始める。{C.day_limit_text()}。Mac のふたを開けて、電源と HDD につないである間だけ進む。"
                                              "外すのは ./cfd agents schedule --job text_history --off）" if on
                                             else "登録していない（自動にするなら ./cfd agents schedule --job text_history）"))
     lists = sorted((p["root"] / "digest").glob("2*.md"))
@@ -2758,7 +2759,7 @@ def orders_report(args, p: dict, files, cfg: dict, plan, fills, ev, lots: dict, 
 
 def make_plist(root: Path, log: Path, job: str = "run") -> dict:
     """run: 平日の 13:05 に、その日の寄りまでの値段と 13:00 までの開示で判断し、台帳に書き足す。collect: 毎日 8:00 に開示・本文・数字を集める。
-    text_history: 毎日 9:00 に、過去の本文の続きを取る（1 日に 2,000 件まで。記録は、手で始めるときと同じ data/agents/text_history.log）。"""
+    text_history: 毎日 9:00 に、過去の本文の続きを取る（動いていれば何もしない。記録は、手で始めるときと同じ data/agents/text_history.log）。"""
     label, command, when, _ = JOBS[job]
     return {"Label": label, "ProgramArguments": [str(root / "cfd")] + command, "WorkingDirectory": str(root),
             "StartCalendarInterval": when, "StandardOutPath": str(log), "StandardErrorPath": str(log),
@@ -2811,7 +2812,7 @@ def main() -> None:
     p.add_argument("--docs-days", type=int, default=DOCS_DAYS, help="collect --docs: さかのぼる日数")
     p.add_argument("--xbrl-history", action="store_true", help="collect: 過去の決算の数字（2016〜）を取る（時間がかかる）")
     p.add_argument("--text-history", action="store_true",
-                   help="collect: 過去の開示の本文（2016-10〜）を、新しい順にまとめて取る（10 秒に 1 件・1 日に 2,000 件まで。置き場所は外付けの HDD。止めても続きから）")
+                   help="collect: 過去の開示の本文（2016-10〜）を、新しい順にまとめて取る（3 秒に 1 件・1 日の上限なし〈利用者の決め 2026-11-28〉。置き場所は外付けの HDD。止めても続きから）")
     p.add_argument("--text-history-stop", action="store_true",
                    help="collect: 動いている過去の本文の取得（--text-history）を止める（取った分は残る。続きは --text-history で）")
     p.add_argument("--early", action="store_true",

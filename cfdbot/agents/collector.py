@@ -192,7 +192,7 @@ def gate_line(root: Path, when) -> str | None:
                 f"{CLEAN_NEED} 日そろったら始められる（今 {len(days)} 日{': ' + short if days else ''}。間に断られたら 0 から数え直す。利用者の決め 2026-11-25）")
     if when - seen < timedelta(days=GENTLE_DAYS):
         return (f"サイトに断られた後（{seen:%m-%d %H:%M}）、毎日の収集が、断られずに書類を受け取れた日が {CLEAN_NEED} 日そろった（{short}）。"
-                f"過去分の取得を始められる（1 日に {HISTORY_DAY_MAX:,} 件まで。自動の取得を登録してあれば、毎日 9:00 に自分で始まる。無ければ、利用者が頼んだとき）")
+                f"過去分の取得を始められる（{day_limit_text()}。自動の取得を登録してあれば、毎日 9:00 に自分で始まる。無ければ、利用者が頼んだとき）")
     return None
 
 
@@ -744,9 +744,10 @@ def _collect_docs(disc, root, pdf, xbrl, max_docs, interval, get, log, done, sle
 MISS_FILE = "text_missing.csv"            # サイトに無かった書類（404）の控え。過去分では、もう取りに行かない
 QUIET_FROM, QUIET_TO = (7, 50), (8, 45)   # 毎朝 8:00 の収集に場所をゆずる時間（その機械の時計）。この間は取らない・錠も持たない
 HISTORY_CHUNK = 200                       # 1 度の錠で取る数（3 分ちょっと。終わるたびに錠を放す）
-HISTORY_INTERVAL = 10.0                   # 過去分をまとめて取るときの間隔（秒）。毎日の収集（1 秒）より長くあける（2026-11-25 に断られた後の決まり）
+HISTORY_INTERVAL = 3.0                    # 過去分をまとめて取るときの間隔（秒）。利用者の決め 2026-11-28: 3 秒に 1 件（断られた 11-25 は 1 秒に 1 件で 18 時間。
+#                                           その後の決まりは 10 秒に 1 件で、指令役の勧めは「今のまま」か「10 秒のまま上限だけ外す」だった）。毎日の収集の決まり（1 秒）より速くはしない
 AUTO_WAIT, AUTO_STEP = 2 * 3600.0, 300.0  # 自動の取得（毎日 9:00）: 数えがあと 1 日で今日の分がまだ無いとき、その朝の収集を待つ長さと、確かめる間（秒）
-HISTORY_DAY_MAX = 2000                    # 過去分を 1 日に取りに行く数（断られたのは、1 日に 6 万件ほど続けて取った後だった。その 30 分の 1）
+HISTORY_DAY_MAX = 0                      # 過去分を 1 日に取りに行く数の上限。0 ＝ 上限なし（利用者の決め 2026-11-28。その前は 2,000 件: 断られた日の 30 分の 1）
 DAY_FILE = ".text_history.day.json"       # その日に取りに行った数の覚え
 MAX_FAILS = 10                            # 続けてこれだけ取れなければ止める（回線・サイトの不調）
 FAIL_WAIT, FAIL_WAIT_MAX = 15.0, 300.0    # 取れなかったら、次を試す前にあける間（秒）。続けて取れないたびに倍にする（15・30・60…5 分まで）
@@ -811,6 +812,11 @@ def history_running(root: Path) -> int | None:
                 return 0
         fcntl.flock(f, fcntl.LOCK_UN)
     return None
+
+
+def day_limit_text() -> str:
+    """1 日の上限を、利用者に伝える言葉で。"""
+    return f"1 日に {HISTORY_DAY_MAX:,} 件まで" if HISTORY_DAY_MAX else "1 日の上限なし"
 
 
 def day_count(root: Path, day: str) -> int:
@@ -1010,7 +1016,7 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
             asked[day] = day_count(root, day)
         return asked[day]
 
-    if todo and used(f"{now():%Y-%m-%d}") >= cap:
+    if todo and used(f"{now():%Y-%m-%d}") >= cap > 0:              # cap が 0 なら、1 日の上限なし
         return dict(done, stopped="day_done")
 
     def room() -> int | None:
@@ -1065,7 +1071,7 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
                     done.update(stopped="no_space", need_gb=pdf_need(todo - i) / 2 ** 30, free_gb=have / 2 ** 30)
                     break
                 day = f"{now():%Y-%m-%d}"
-                if used(day) >= cap:                            # 今日の分は取り終えた（1 日に取りに行く数を決めてある）
+                if used(day) >= cap > 0:                        # 今日の分は取り終えた（1 日に取りに行く数を決めてあるとき。cap が 0 なら上限なし）
                     done["stopped"] = "day_done"
                     break
                 asked[day] += 1
