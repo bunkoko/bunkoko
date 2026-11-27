@@ -38,6 +38,7 @@ from koten.stats.series import (
     write_points,
 )
 
+META = {"stat_name": "労働力調査", "gov_org": "総務省統計局", "title": "就業状態別人口"}
 API_SELECTOR = {"statsDataId": "0003000001", "cdCat01": "001"}
 
 
@@ -50,6 +51,7 @@ def row(**kw):
         unit="％",
         survey="労働力調査",
         publisher="総務省統計局",
+        table_title="就業状態別人口",
         source_kind="estat_api",
         period_kind="年",
         selector=json.dumps(API_SELECTOR, ensure_ascii=False),
@@ -88,7 +90,7 @@ def env():
         themes={"仕事", "孤独"},
         legacy_ids=set(),
         blocked={"医療": ["うつ病"]},
-        metas={},
+        metas={"0003000001": META},
     )
 
 
@@ -369,3 +371,21 @@ def test_write_points_replaces_only_the_fetched_series(tmp_path):
     assert "\r" not in (config / POINTS_FILE).read_text(encoding="utf-8")
     assert [p.value for p in parse_points(rows)] == ["8", "9", "2"]
     assert isinstance(parse_series([row()])[0], Series)
+
+
+def test_meta_is_required_and_must_match_for_api_series(env):
+    assert series_problems([row()], [], **env) == []
+    probs = series_problems([row()], [], **{**env, "metas": {}})
+    assert any("0003000001.json" in x and "stats meta" in x for x in probs)
+    for col, key in (("survey", "stat_name"), ("publisher", "gov_org"), ("table_title", "title")):
+        bad = {**META, key: "別の名前"}
+        probs = series_problems([row()], [], **{**env, "metas": {"0003000001": bad}})
+        assert any(col in x and "別の名前" in x for x in probs), col
+    padded = {k: f" {v} " for k, v in META.items()}
+    assert series_problems([row()], [], **{**env, "metas": {"0003000001": padded}}) == []
+
+
+def test_file_series_is_not_checked_against_metas(env):
+    part = {"statInfId": "x", "fileKind": "1", "sheet": "", "values": "B2:B9", "periods": ["2020"]}
+    r = row(source_kind="estat_file", selector=json.dumps({"parts": [part]}), table_title="")
+    assert series_problems([r], [], **{**env, "metas": {}}) == []

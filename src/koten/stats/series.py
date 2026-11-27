@@ -203,7 +203,9 @@ def series_problems(
 ) -> list[str]:
     """「何行目：何が」の文の一覧。空なら全部読める（読み込みは全部か無しか）。
 
-    metas は statsDataId → 表の情報。段1では形の確かめには使わない（取得側が使う）。
+    metas は statsDataId → 表の情報（load_meta が1表ごとに返すもの）。estat_api の系列は
+    表の情報が無ければ問題、あれば survey=stat_name・publisher=gov_org・
+    table_title=title が（前後の空白を除いて）一致すること。estat_file の系列は照らさない。
     """
     out: list[str] = []
     seen: dict[str, int] = {}
@@ -246,6 +248,24 @@ def series_problems(
             sel = _json_or_none(r["selector"])
             for m in _selector_problems(kind, sel):
                 out.append(f"{p}{m}")
+            sdid = str(sel.get("statsDataId", "")).strip() if isinstance(sel, dict) else ""
+            if kind == "estat_api" and sdid:
+                meta = metas.get(sdid)
+                if meta is None:
+                    out.append(
+                        f"{p}{sid} の表の情報（{META_DIR}/{sdid}.json）が無い。"
+                        "Mac で uv run koten stats meta を実行する"
+                    )
+                else:
+                    for col, key in (
+                        ("survey", "stat_name"),
+                        ("publisher", "gov_org"),
+                        ("table_title", "title"),
+                    ):
+                        mine = r.get(col, "").strip()
+                        theirs = str(meta.get(key, "")).strip()
+                        if mine != theirs:
+                            out.append(f"{p}{col} {mine!r} が表の情報の {key} {theirs!r} と違う")
         if r.get("breaks", "").strip():
             br = _json_or_none(r["breaks"])
             if not isinstance(br, list):
