@@ -291,3 +291,136 @@ def test_list_days():
     assert C.list_days(5, datetime(2026, 11, 20, 8, 0), today) == 8                 # 11-20 の分から（その日は途中だった）
     assert C.list_days(5, datetime(2025, 1, 1, 8, 0), today) == C.LIST_DAYS_MAX
     assert C.list_days(0, datetime(2026, 11, 20, 8, 0), today) == 0
+
+
+# --------------------------------------------------------------------------- 読む一覧づくりを自動で（2026-11-28 利用者の決め）
+def auto_ns(root, **kw):
+    return Namespace(**{"root": str(root), "date": None, "each": None, "auto": True, **kw})
+
+
+def auto_tool(monkeypatch, name="agents_digest_auto"):
+    m = load_script(name)
+    sent = []
+    monkeypatch.setattr(m, "digest_notice", lambda folder, title, text: sent.append((title, text)) or [("imessage", True, "送った")])
+    return m, sent
+
+
+def test_auto_makes_the_lists_of_the_finished_days_that_have_none(tmp_path, capsys, monkeypatch):
+    root = world(tmp_path)
+    refreshed(root, "2026-11-04 08:00")
+    m, sent = auto_tool(monkeypatch)
+    made = m.cmd_digest(auto_ns(root))
+    assert [q.name for q in made] == ["2026-11-02.md", "2026-11-03.md"]                    # そろっている日のうち、直近 7 日の分（10-01 より前は作らない）
+    said = capsys.readouterr().out
+    assert "11-02（月）の分を作った" in said and "開示 6 件" in said and "初めての題名 1 件" in said and "中身が大きく違う 1 件" in said
+    assert "### 1-1" not in said                                                           # 毎朝の記録には、数だけ（一覧はファイルに）
+    assert [t for t, _ in sent] == ["読む一覧 11-03（火）"]                                # 知らせは、いちばん新しい日の分を 1 回だけ
+    assert m.cmd_digest(auto_ns(root)) == []
+    assert "新しく作る日は無い" in capsys.readouterr().out and len(sent) == 1
+
+
+def test_auto_never_makes_a_day_that_is_not_finished(tmp_path, capsys, monkeypatch):
+    root = world(tmp_path)
+    refreshed(root, "2026-11-03 13:05")
+    m, sent = auto_tool(monkeypatch)
+    assert [q.name for q in m.cmd_digest(auto_ns(root))] == ["2026-11-02.md"]
+    assert [t for t, _ in sent] == ["読む一覧 11-02（月）"]
+
+
+def test_auto_makes_a_list_again_once_the_missing_texts_have_come(tmp_path, capsys, monkeypatch):
+    root = world(tmp_path)
+    refreshed(root, "2026-11-03 08:00")
+    paths = {doc: C.text_path(root / "ir", next(r for r in disc().itertuples(index=False) if r.id == doc)) for doc in ("t3", "t4", "n2")}
+    for q in paths.values():
+        q.unlink()
+    m, sent = auto_tool(monkeypatch)
+    first = m.cmd_digest(auto_ns(root))[0]
+    assert "⚠ この日の開示 6 件のうち 4 件は、本文がまだ無い" in first.read_text(encoding="utf-8")
+    assert "⚠" in capsys.readouterr().out and "本文がまだ無い" in sent[0][1]
+    for doc, q in paths.items():
+        q.write_text(TEXTS[doc], encoding="utf-8")
+    again = m.cmd_digest(auto_ns(root))                                                    # 次の朝: 本文が入ったので、作り直す
+    assert [q.name for q in again] == ["2026-11-02.md"] and "⚠" not in again[0].read_text(encoding="utf-8").split("## 1. ")[0]
+    assert len(sent) == 1                                                                  # 作り直しでは、もう知らせない
+
+
+def test_auto_can_be_switched_off(tmp_path, capsys, monkeypatch):
+    root = world(tmp_path)
+    refreshed(root, "2026-11-04 08:00")
+    (root / "digest").mkdir()
+    (root / "digest" / "STOP").write_text("", encoding="utf-8")
+    m, sent = auto_tool(monkeypatch)
+    assert m.cmd_digest(auto_ns(root)) == [] and sent == []
+    assert "自動は止めてある" in capsys.readouterr().out
+    out = m.cmd_digest(Namespace(root=str(root), date=None, each=5))                       # 頼まれた分は、止めてあっても作る
+    assert out.name == "2026-11-03.md"
+
+
+def test_auto_says_when_the_disk_is_away(tmp_path, monkeypatch):
+    root = world(tmp_path)
+    import shutil
+
+    shutil.rmtree(root / "ir" / "text")
+    (root / "ir" / "text").symlink_to(tmp_path / "nowhere")
+    m, _ = auto_tool(monkeypatch)
+    with pytest.raises(SystemExit) as stop:
+        m.cmd_digest(auto_ns(root))
+    assert "本文の置き場所が見えない" in str(stop.value)
+
+
+def test_notice_is_short_and_names_the_top_ones():
+    table = D.describe(disc(), TEXTS.get, DAY)
+    title, text = D.notice(table, "11-02（月）", ["⚠ 注意の行"])
+    assert title == "読む一覧 11-02（月）"
+    assert "開示 6 件" in text and "初めての題名 1 件" in text and "⚠ 注意の行" in text
+    assert "トヨタ「特別調査委員会の設置に関するお知らせ」" in text and "ニッスイ「業績予想の修正に関するお知らせ」" in text
+    assert "勧めではない" in text and BUYBACK not in text and TEXTS["t4"][:30] not in text       # 本文は入れない（題名だけ）
+
+
+def test_notice_stays_within_the_limit():
+    rows = [(f"x{k:02d}", f"2026-11-02 1{k % 10}:00:00", f"{2000 + k}.T", f"とても長い名前の会社{k}", "めずらしい知らせ" + "あ" * 80 + f"{'あいうえおかきくけこ'[k % 10]}のお知らせ", "", "")
+            for k in range(12)]
+    texts = {f"x{k:02d}": "めずらしい知らせの本文です。" * 20 for k in range(12)}
+    _, text = D.notice(D.describe(pd.DataFrame(rows, columns=C.COLUMNS), texts.get, DAY), "11-02（月）", [])
+    assert len(text) <= D.NOTICE_MAX and "ほかに" in text
+
+
+class Done:
+    def __init__(self, code=0, out="読む一覧: 11-02（月）の分を作った\n", err=""):
+        self.returncode, self.stdout, self.stderr = code, out, err
+
+
+def test_collection_runs_the_list_as_a_separate_step_with_a_time_limit(tmp_path, capsys):
+    """読む一覧は、別の道具として動かして、時間を切る（読む一覧が止まっても、毎朝の収集は終わる）。"""
+    m = load_script("agents_digest_after")
+    seen = {}
+
+    def run(argv, **kw):
+        seen.update(argv=argv, **kw)
+        return Done()
+
+    m.digest_after_collect(Namespace(root=str(tmp_path / "agents"), data="data/stocks"), run=run)
+    assert seen["argv"][1].endswith("scripts/agents.py") and seen["argv"][2:] == ["digest", "--auto", "--root", str(tmp_path / "agents"), "--data", "data/stocks"]
+    assert seen["timeout"] == m.DIGEST_TIMEOUT and "11-02（月）の分を作った" in capsys.readouterr().out
+
+
+def test_collection_goes_on_when_the_list_fails_or_hangs(tmp_path, capsys):
+    import subprocess
+
+    m = load_script("agents_digest_after2")
+    args = Namespace(root=str(tmp_path / "agents"), data="data/stocks")
+
+    def slow(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    m.digest_after_collect(args, run=slow)
+    said = capsys.readouterr().out
+    assert "読む一覧: ⚠" in said and "終わらないので、やめた" in said and "収集は済んでいる" in said
+    m.digest_after_collect(args, run=lambda argv, **kw: Done(1, "", "読む一覧: ⚠ 本文の置き場所が見えない"))
+    assert "本文の置き場所が見えない" in capsys.readouterr().out
+
+    def broken(argv, **kw):
+        raise OSError("boom")
+
+    m.digest_after_collect(args, run=broken)
+    assert "読む一覧: ⚠ 作れなかった" in capsys.readouterr().out

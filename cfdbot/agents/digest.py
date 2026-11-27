@@ -25,6 +25,8 @@ TOP, HEAD, NEW_SHOWN = 5, 300, 5      # 一覧 1 つに、くわしく出す数�
 REST_SHOWN = 30                       # くわしく出さなかった分のうち、題名だけ並べる数
 FIRST, CHANGED = "初めての題名", "いつもの題名だが"
 NO_TEXT, UNREAD, FOREIGN = "本文がまだ無い", "本文が読めていない", "日本語が少ない"      # 比べられなかった理由（note の列）
+NOTICE_MAX, NOTICE_TITLE = 900, 60    # iPhone への知らせ: 本文の長さの上限（字。Pushover は 1,024 字まで）・題名 1 つの長さの上限
+NOTICE_FIRST, NOTICE_CHANGED = 5, 3   # 知らせに並べる数（初めての題名・中身が違う）
 COLUMNS = ["id", "time", "ticker", "company", "title", "kind", "key", "chars", "same", "rare", "diff", "ratio", "new", "new_share", "why", "note"]
 _NUMBER = re.compile(r"\d[\d,.]*")
 _WORD = re.compile(r"[一-鿿々]{2,}|[ァ-ヺー]{3,}")
@@ -114,19 +116,32 @@ def _titles(part: pd.DataFrame, tail: Callable = lambda r: "") -> list[str]:
     return out + ([f"（さらに {len(part) - REST_SHOWN} 件）"] if len(part) > REST_SHOWN else []) + [""]
 
 
+def picks(table: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """一覧に出す順に並べた 3 つ: 初めての題名（全部の会社を通して珍しい順）・いつもの題名だが中身が違う（違いの大きい順）・本文が無くて比べられなかった開示。"""
+    first = table[table["why"].str.startswith(FIRST)].sort_values(["rare", "new_share"], ascending=[True, False], kind="stable")
+    changed = table[table["why"].str.startswith(CHANGED)].sort_values("diff", ascending=False, kind="stable")
+    unread = table[table["note"].isin([NO_TEXT, UNREAD])].sort_values(["same", "rare"], kind="stable")       # その会社で初めての題名を先に
+    return first, changed, unread
+
+
+def summary(table: pd.DataFrame) -> str:
+    """その日の数を 1 行で（一覧の頭・毎朝の記録・知らせに使う）。"""
+    first, changed, _ = picks(table)
+    usual = int(((table["why"] == "") & (table["note"] == "")).sum())
+    skipped = "".join(f"・{why} {n} 件" for why, n in table.loc[table["note"] != "", "note"].value_counts().items())
+    return f"開示 {len(table)} 件: {FIRST} {len(first)} 件・{CHANGED}中身が大きく違う {len(changed)} 件・いつもどおり {usual} 件{skipped}"
+
+
 def render(table: pd.DataFrame, day: str, read: Callable[[str], str | None], top: int = TOP, note: str = "") -> str:
     """読む一覧（markdown）。上に 2 つの短い一覧、次に、本文が無くて比べられなかった開示の題名、下に、くわしく出した開示の本文（生成 AI に渡すときに使う）。
 
     note は、頭に付ける注意の行（その日の開示がまだそろっていない、など）。
     """
-    first = table[table["why"].str.startswith(FIRST)].sort_values(["rare", "new_share"], ascending=[True, False], kind="stable")
-    changed = table[table["why"].str.startswith(CHANGED)].sort_values("diff", ascending=False, kind="stable")
-    usual = int(((table["why"] == "") & (table["note"] == "")).sum())
-    skipped = "".join(f"・{why} {n} 件" for why, n in table.loc[table["note"] != "", "note"].value_counts().items())
+    first, changed, unread = picks(table)
     out = [f"# 読む一覧（{day} の開示）", "",
            "**その会社の「ふだん」と違う開示を、珍しさの順に並べただけ。大事さや株価への効き目を言うものではない。値段は使っていない。**", ""]
     out += [note, ""] if note else []
-    out += [f"この日の開示 {len(table)} 件: {FIRST} {len(first)} 件・{CHANGED}中身が大きく違う {len(changed)} 件・いつもどおり {usual} 件{skipped}", ""]
+    out += [f"この日の{summary(table)}", ""]
     shown = []
     for k, (title, part) in enumerate(((f"{FIRST}（その会社で {YEARS} 年のうちに無かった題名。全部の会社を通して珍しい順）", first),
                                        (f"{CHANGED}、中身が大きく違う（同じ題名の過去の本文との違いが {DIFF_LINE} 以上。違いの大きい順）", changed)), start=1):
@@ -138,10 +153,28 @@ def render(table: pd.DataFrame, day: str, read: Callable[[str], str | None], top
             shown.append(r)
         if len(part) > top:
             out += [f"ほかに {len(part) - top} 件（題名だけ。くわしく見るなら --each で増やす）:"] + _titles(part.iloc[top:])
-    unread = table[table["note"].isin([NO_TEXT, UNREAD])].sort_values(["same", "rare"], kind="stable")       # その会社で初めての題名を先に
     out += ["## 3. 本文が無くて、比べられなかった開示（題名だけ）", ""]
     out += _titles(unread, lambda r: f" — {r.note}" + ("・この会社では初めての題名" if r.same == 0 else "")) if len(unread) else ["（無い）", ""]
     out += ["## 4. 一覧に出た開示の本文（残してある最初の 3 ページ）", ""]
     for r in shown:
         out += [f"### {str(r.ticker)[:4]} {r.company}「{r.title}」（{r.id}・{str(r.time)[:16]}）", "", read(r.id) or "", ""]
     return "\n".join(out)
+
+
+def notice(table: pd.DataFrame, label: str, notes=()) -> tuple[str, str]:
+    """iPhone への短い知らせ（題と本文）。数と、上のほうの題名だけ（本文は入れない）。label は「11-27（金）」の形。"""
+    first, changed, _ = picks(table)
+    lines = [summary(table), *notes]
+    for head, part, top in ((f"■ {FIRST}", first, NOTICE_FIRST), (f"■ {CHANGED}、中身が違う", changed, NOTICE_CHANGED)):
+        if len(part):
+            lines.append(head)
+            for r in part.head(top).itertuples(index=False):
+                title = str(r.title)
+                lines.append(f"・{r.company}「{title if len(title) <= NOTICE_TITLE else title[:NOTICE_TITLE - 1] + '…'}」")
+            if len(part) > top:
+                lines.append(f"（ほかに {len(part) - top} 件）")
+    tail = "珍しさの順に並べただけ。勧めではない。くわしくは Mac の Claude に「今日の読む一覧は？」"
+    body, room = "\n".join(lines), NOTICE_MAX - len(tail) - 1
+    if len(body) > room:
+        body = body[:room - 1].rstrip() + "…"
+    return f"読む一覧 {label}", body + "\n" + tail

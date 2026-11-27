@@ -59,6 +59,10 @@ DOCS_DAYS = 30                # 毎朝の収集（collect --docs）がさかの�
 JOBS = {   # 自動実行: 名前 → （launchd の名前、動かすコマンド、時刻、説明）
     "run": (LABEL, ["agents", "run", "--prices"], [{"Weekday": d, "Hour": 13, "Minute": 5} for d in range(1, 6)], "平日 13:05 に ./cfd agents run --prices"),
     "collect": (LABEL + ".collect", ["agents", "collect", "--docs"], {"Hour": 8, "Minute": 0}, "毎日 8:00 に ./cfd agents collect --docs"),
+    # 過去の本文の続き（利用者の決め 2026-11-28: 自動に）。毎朝の収集にゆずる時間（〜8:45）の後。1 日に 2,000 件までで、道具が自分で止まる。
+    # 断られた後の数え・HDD・同時に 1 本、の決まりは、手で始めるときと同じに道具が守る（早めの印 --early は使わない）
+    "text_history": (LABEL + ".text_history", ["agents", "collect", "--text-history", "--auto"], {"Hour": 9, "Minute": 0},
+                     "毎日 9:00 に ./cfd agents collect --text-history --auto（過去の本文の続き。1 日に 2,000 件まで）"),
 }
 
 
@@ -228,14 +232,16 @@ def _text_history(args, C, df, ir_root) -> None:
           + f"を、新しい順に {C.HISTORY_INTERVAL:g} 秒に 1 件ずつ取る（東証 上場会社情報サービス。同時に 1 本。"
           f"1 日に {C.HISTORY_DAY_MAX:,} 件まで ＝ 全部で {-(-todo // max(C.HISTORY_DAY_MAX, 1)):,} 日ほど。今の速さは ./cfd agents status。毎朝 7:50〜8:45 は休む）", flush=True)
     print("過去の本文: " + C.text_place_line(place) + ("。原本の PDF も、となりの ir_pdf に残す" if keep_pdf else "。原本の PDF は残さない"), flush=True)
-    early = bool(getattr(args, "early", False))
+    auto = bool(getattr(args, "auto", False))                    # 自動の取得（毎日 9:00）。早めの印は使わない
+    early = bool(getattr(args, "early", False)) and not auto
     gate = C.history_gate(ir_root, datetime.now()) if early else None
     if gate and len(gate["days"]) >= gate["need"] - C.EARLY_SHORT:
         print(f"過去の本文: 利用者の頼みで、数えがそろう前に始める（今 {len(gate['days'])} 日。そろうのは {gate['need']} 日）。"
               "断られたら、すぐ止まって、数えは 0 に戻る（毎日の収集も、しばらくゆっくりになる）", flush=True)
     keep_awake()
     got = C.collect_text_history(df, ir_root, HISTORY_FROM, max_docs=args.history_max or None, keep_pdf=keep_pdf,
-                                 interval=C.HISTORY_INTERVAL, log=lambda s: print(s, flush=True), early=early)
+                                 interval=C.HISTORY_INTERVAL, log=lambda s: print(s, flush=True), early=early,
+                                 patience=C.AUTO_WAIT if auto else 0.0)
     print(f"過去の本文: 取れた +{got['text']:,}、サイトに無い {got['missing']:,}、取れなかった {got['failed']:,}、残り {got['left']:,}", flush=True)
     if got["stopped"] == "day_done":                            # ふつうの止まり方（1 日に取りに行く数を決めてある）
         print(f"過去の本文: 今日の分（1 日に {C.HISTORY_DAY_MAX:,} 件まで）は取り終えた。続きは明日以降に、同じコマンドで", flush=True)
@@ -246,6 +252,8 @@ def _text_history(args, C, df, ir_root) -> None:
                                                                              gate=C.gate_line(ir_root, datetime.now())
                                                                              or "サイトに断られた後なので、過去分はまだまとめて取らない"))
     print("過去の本文: " + ("終わった" if not got["left"] else "ここまで。続きは同じコマンドで（取れなかったものは、もう一度試す）"), flush=True)
+    if auto and not got["left"]:
+        print("過去の本文: もう取るものが無い。自動の取得は、外してよい（./cfd agents schedule --job text_history --off。残しておいても害は無い: 毎朝この行が出るだけ）", flush=True)
 
 
 def cmd_collect(args) -> None:
@@ -340,6 +348,32 @@ def cmd_collect(args) -> None:
             gate = C.gate_line(ir_root, datetime.now()) if not args.xbrl_history else None
             if gate:                                            # 断られた後: 過去分の取得を始められるまでの数え（毎朝 1 行）
                 print("情報収集: " + gate, flush=True)
+    if args.docs and not args.xbrl_history and not getattr(args, "no_digest", True):
+        digest_after_collect(args)                              # 読む一覧づくりは自動に（利用者の決め 2026-11-28）。本文を取った後に作る
+
+
+DIGEST_AUTO_DAYS = 7          # 毎朝の自動: いちばん新しい「そろった日」から、さかのぼってこの日数のうち、一覧のまだ無い日を作る
+DIGEST_TIMEOUT = 1800         # 毎朝の収集の後に読む一覧を作るときの、時間の切り（秒）。過ぎたら、やめる（収集は済んでいる）
+
+
+def digest_after_collect(args, run=None) -> None:
+    """毎朝の収集の後に、読む一覧を作る。別の道具として動かして、時間を切る: 読む一覧が止まっても・落ちても、毎朝の収集は終わる。"""
+    import subprocess
+
+    argv = [sys.executable, str(Path(__file__).resolve()), "digest", "--auto", "--root", str(args.root), "--data", str(args.data)]
+    try:
+        r = (run or subprocess.run)(argv, capture_output=True, text=True, timeout=DIGEST_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        print(f"読む一覧: ⚠ {DIGEST_TIMEOUT // 60} 分たっても終わらないので、やめた（収集は済んでいる。次の朝に、もう一度作る）", flush=True)
+        return
+    except Exception as e:  # noqa: BLE001  読む一覧のために、毎朝の収集を止めない
+        print(f"読む一覧: ⚠ 作れなかった（{type(e).__name__}: {str(e)[:120]}）。収集は済んでいる", flush=True)
+        return
+    for line in (r.stdout or "").splitlines():
+        print(line, flush=True)
+    if r.returncode != 0:
+        last = ((r.stderr or "").strip().splitlines() or [""])[-1]
+        print(last if last.startswith("読む一覧") else f"読む一覧: ⚠ 作れなかった（終わりの番号 {r.returncode}。{last[:200]}）。収集は済んでいる", flush=True)
 
 
 # --------------------------------------------------------------------------- IR 評価
@@ -1952,10 +1986,76 @@ def cmd_inventory(args) -> Path:
     return out
 
 
-def cmd_digest(args) -> Path:
+def digest_notice(folder: Path, title: str, text: str) -> list[tuple[str, bool, str]]:
+    """読む一覧を iPhone に知らせる（設定 ~/.bunkoko/notify.json が無ければ送らない）。結果は data/agents/digest/notify.log にも書く。"""
+    from cfdbot import notify as N
+
+    return N.notify(title, text, record=folder / "notify.log")
+
+
+def _day_label(day: str) -> str:
+    return f"{day[5:]}（{'月火水木金土日'[pd.Timestamp(day).weekday()]}）"
+
+
+def _digest_make(D, w: dict, day: str, each: int):
+    """day の読む一覧を作って書く。返すのは、ファイル・1 件ごとの表・頭に付けた注意の行。"""
+    table = D.describe(w["df"], w["read"], day)
+    notes = []
+    if day >= w["edge"]:
+        notes.append(f"⚠ この日（{day[5:]}）は、まだ途中: 開示の一覧を最後にそろえたのは {w['when']}。それより後に出た開示は、次の収集（毎朝 8 時・平日は 13 時すぎも）の後に入る")
+    lost = int((table["note"] == D.NO_TEXT).sum())
+    if lost >= 3 and lost >= 0.2 * len(table):
+        notes.append(f"⚠ この日の開示 {len(table)} 件のうち {lost} 件は、本文がまだ無い（収集が済んでいない？ ./cfd agents status と、毎朝の記録を見る）。"
+                     "本文が入ってから、同じコマンドでもう一度")
+    out = w["folder"] / f"{day}.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(D.render(table, day, w["read"], top=each, note="\n\n".join(notes)), encoding="utf-8")
+    return out, table, notes
+
+
+def _digest_auto(D, w: dict) -> list[Path]:
+    """毎朝の収集の後に: 開示のそろった日のうち、直近 DIGEST_AUTO_DAYS 日で、一覧のまだ無い日（と、本文が足りないまま作った日）の分を作る。
+
+    毎朝の記録には、数だけを 1 行ずつ（一覧はファイルに）。いちばん新しい日の分を初めて作ったときだけ、iPhone に短く知らせる（設定があれば）。
+    """
+    folder, ready = w["folder"], w["ready"]
+    if (folder / "STOP").exists():
+        print("読む一覧: 自動は止めてある（data/agents/digest/STOP を消すと、また毎朝作る）", flush=True)
+        return []
+    if not ready:
+        print("読む一覧: 開示のそろった日が、まだ無い", flush=True)
+        return []
+    floor = (pd.Timestamp(ready[-1]) - pd.Timedelta(days=DIGEST_AUTO_DAYS - 1)).strftime("%Y-%m-%d")
+
+    def stale(day: str) -> bool:                                # まだ無い。または、注意の行（本文が足りない）を付けて作った
+        try:
+            return "⚠" in (folder / f"{day}.md").read_text(encoding="utf-8").split("## 1. ")[0]
+        except OSError:
+            return True
+
+    todo = [d for d in ready if d >= floor and stale(d)]
+    if not todo:
+        print(f"読む一覧: 新しく作る日は無い（いちばん新しいのは {_day_label(ready[-1])}の分。data/agents/digest/）", flush=True)
+        return []
+    made = []
+    for day in todo:
+        new = not (folder / f"{day}.md").exists()
+        out, table, notes = _digest_make(D, w, day, D.TOP)
+        made.append(out)
+        print(f"読む一覧: {_day_label(day)}の分を作った（{D.summary(table)}）→ {out}", flush=True)
+        for note in notes:
+            print("読む一覧: " + note, flush=True)
+        if new and day == ready[-1]:
+            for kind, ok, detail in digest_notice(folder, *D.notice(table, _day_label(day), notes)):
+                print(f"読む一覧: 知らせ（{kind}）: {detail}" if ok or kind != "なし" else f"読む一覧: 知らせは送っていない（{detail}）", flush=True)
+    return made
+
+
+def cmd_digest(args):
     """読む一覧（docs/ir_text.md 2 章）: その日の開示のうち、その会社の「ふだん」と違うものを短い一覧にする。
 
     珍しさの順に並べるだけ。値段は使わない・判定しない・サイトに取りに行かない。一覧に出た開示の本文も、ファイルに付ける（生成 AI に渡すとき用）。
+    --auto（毎朝の収集の後）は、まだ無い日の分を作って、作ったファイルの並びを返す。そうでなければ、頼まれた 1 日の分を作って画面に出し、そのファイルを返す。
     """
     from cfdbot.agents import collector as C
     from cfdbot.agents import digest as D
@@ -1972,10 +2072,6 @@ def cmd_digest(args) -> Path:
     edge = f"{fresh:%Y-%m-%d}" if fresh else "9999-99-99"
     when = f"{fresh:%m-%d %H:%M}" if fresh else "分からない"
     ready = [d for d in counts.index if d < edge]
-    asked = getattr(args, "date", None)
-    day = asked or (ready[-1] if ready else counts.index[-1])
-    if day not in counts.index:
-        sys.exit(f"読む一覧: {day} の開示が無い（--date で日付を言う。開示がそろっている、いちばん新しい日は {ready[-1] if ready else '無い'}）")
     month = dict(zip(df["id"], df["time"].str[:7]))
 
     def read(doc: str) -> str | None:
@@ -1984,33 +2080,26 @@ def cmd_digest(args) -> Path:
         except (OSError, KeyError):
             return None
 
-    def named(d: str) -> str:
-        return f"{d[5:]}（{'月火水木金土日'[pd.Timestamp(d).weekday()]}）"
-
-    print(f"読む一覧: {named(day)}の開示 {counts[day]:,} 件を、その会社の過去 {D.YEARS} 年と比べる（外付けの HDD から読むので、1〜2 分かかることがある）", flush=True)
-    table = D.describe(df, read, day)
-    notes = []
-    if day >= edge:
-        notes.append(f"⚠ この日（{day[5:]}）は、まだ途中: 開示の一覧を最後にそろえたのは {when}。それより後に出た開示は、次の収集（毎朝 8 時・平日は 13 時すぎも）の後に入る")
-    lost = int((table["note"] == D.NO_TEXT).sum())
-    if lost >= 3 and lost >= 0.2 * len(table):
-        notes.append(f"⚠ この日の開示 {len(table)} 件のうち {lost} 件は、本文がまだ無い（収集が済んでいない？ ./cfd agents status と、毎朝の記録を見る）。"
-                     "本文が入ってから、同じコマンドでもう一度")
-    text = D.render(table, day, read, top=getattr(args, "each", None) or D.TOP, note="\n\n".join(notes))
-    out = p["root"] / "digest" / f"{day}.md"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(text, encoding="utf-8")
-    print(text.split("## 4. ")[0].rstrip(), flush=True)         # 画面には一覧だけ（本文はファイルに）
+    w = {"df": df, "read": read, "edge": edge, "when": when, "ready": ready, "folder": p["root"] / "digest"}
+    if getattr(args, "auto", False):
+        return _digest_auto(D, w)
+    asked = getattr(args, "date", None)
+    day = asked or (ready[-1] if ready else counts.index[-1])
+    if day not in counts.index:
+        sys.exit(f"読む一覧: {day} の開示が無い（--date で日付を言う。開示がそろっている、いちばん新しい日は {ready[-1] if ready else '無い'}）")
+    print(f"読む一覧: {_day_label(day)}の開示 {counts[day]:,} 件を、その会社の過去 {D.YEARS} 年と比べる（外付けの HDD から読むので、1〜2 分かかることがある）", flush=True)
+    out, _, _ = _digest_make(D, w, day, getattr(args, "each", None) or D.TOP)
+    print(out.read_text(encoding="utf-8").split("## 4. ")[0].rstrip(), flush=True)      # 画面には一覧だけ（本文はファイルに）
     print(f"\n保存先: {out}（一覧に出た開示の本文つき。値段は使っていない。コミットしない）", flush=True)
     if day < edge:
-        print(f"開示の一覧を最後にそろえたのは {when}。{named(day)}の開示はそろっている", flush=True)
+        print(f"開示の一覧を最後にそろえたのは {when}。{_day_label(day)}の開示はそろっている", flush=True)
     if not asked:
         for d in [d for d in counts.index if d > day]:          # 言われなければ、そろった日を出す。その後の日は、まだ途中
-            print(f"この後、{named(d)}の開示が {counts[d]:,} 件ある（まだ途中。夕方の分は、次の朝の収集の後にそろう。途中の分を見るなら --date {d}）", flush=True)
+            print(f"この後、{_day_label(d)}の開示が {counts[d]:,} 件ある（まだ途中。夕方の分は、次の朝の収集の後にそろう。途中の分を見るなら --date {d}）", flush=True)
     near = [d for d in counts.index if d < day][-4:][::-1]
     if near:
         made = {q.stem for q in out.parent.glob("*.md")}
-        print("ほかの日（--date で見られる）: " + "・".join(f"{named(d)}{counts[d]:,} 件{'' if d in made else '＊'}" for d in near)
+        print("ほかの日（--date で見られる）: " + "・".join(f"{_day_label(d)}{counts[d]:,} 件{'' if d in made else '＊'}" for d in near)
               + ("　＊ は、まだ一覧を作っていない日" if any(d not in made for d in near) else ""), flush=True)
     return out
 
@@ -2108,6 +2197,14 @@ def cmd_status(args) -> None:
     gate = C.gate_line(ir_root, datetime.now())                 # サイトに断られた後の様子（HDD を外している日も出す）
     if gate:
         print(gate)
+    on = job_registered("text_history")                         # 過去の本文の自動の取得（Mac でだけ分かる）
+    if on is not None:
+        print("過去の本文の自動の取得: " + (f"登録してある（毎日 9:00 に、その日の分〈{C.HISTORY_DAY_MAX:,} 件まで〉を自分で始める。Mac のふたを開けて、電源と HDD につないである日だけ進む。"
+                                             "外すのは ./cfd agents schedule --job text_history --off）" if on
+                                            else "登録していない（自動にするなら ./cfd agents schedule --job text_history）"))
+    lists = sorted((p["root"] / "digest").glob("2*.md"))
+    print("読む一覧: " + (f"いちばん新しいのは {lists[-1].stem} の分" if lists else "まだ無い")
+          + ("。毎朝の自動は止めてある（data/agents/digest/STOP）" if (p["root"] / "digest" / "STOP").exists() else "。毎朝の収集の後に、自動で作る"))
     if p["disclosures"].exists() and place["ready"]:            # 過去の本文（./cfd agents collect --text-history）の進み具合
         df = C.load_disclosures(p["disclosures"])
         past = df[df["time"] >= HISTORY_FROM]
@@ -2126,6 +2223,13 @@ def cmd_status(args) -> None:
         print("銘柄選定（点数）: まだ無い")
     reports = sorted(Path(args.out).glob("2*/report.md"))
     print(f"判断の評価（報告書）: {reports[-1] if reports else 'まだ無い'}")
+
+
+def job_registered(job: str, home: Path | None = None, platform: str | None = None) -> bool | None:
+    """自動実行（launchd）の登録ファイルがあるか。Mac でなければ None（確かめられない）。"""
+    if (platform or sys.platform) != "darwin":
+        return None
+    return ((home or Path.home()) / "Library" / "LaunchAgents" / f"{JOBS[job][0]}.plist").exists()
 
 
 def schedule_state(job: str = "run") -> list[str]:
@@ -2653,7 +2757,8 @@ def orders_report(args, p: dict, files, cfg: dict, plan, fills, ev, lots: dict, 
 
 
 def make_plist(root: Path, log: Path, job: str = "run") -> dict:
-    """run: 平日の 13:05 に、その日の寄りまでの値段と 13:00 までの開示で判断し、台帳に書き足す。collect: 毎日 8:00 に開示・本文・数字を集める。"""
+    """run: 平日の 13:05 に、その日の寄りまでの値段と 13:00 までの開示で判断し、台帳に書き足す。collect: 毎日 8:00 に開示・本文・数字を集める。
+    text_history: 毎日 9:00 に、過去の本文の続きを取る（1 日に 2,000 件まで。記録は、手で始めるときと同じ data/agents/text_history.log）。"""
     label, command, when, _ = JOBS[job]
     return {"Label": label, "ProgramArguments": [str(root / "cfd")] + command, "WorkingDirectory": str(root),
             "StartCalendarInterval": when, "StandardOutPath": str(log), "StandardErrorPath": str(log),
@@ -2693,11 +2798,15 @@ def main() -> None:
     p.add_argument("--reuse", action="store_true", help="extra: 入力を足した銘柄選定の点数が書いてあれば、学び直さずに使う")
     p.add_argument("--off", action="store_true", help="schedule: 自動実行を外す")
     p.add_argument("--check", action="store_true", help="reread: 見るだけ（一部を原本から読んでみて数える。何も書かない・消さない）")
-    p.add_argument("--date", help="digest: どの日の開示の一覧か（YYYY-MM-DD。言わなければ、開示のあるいちばん新しい日）")
+    p.add_argument("--date", help="digest: どの日の開示の一覧か（YYYY-MM-DD。言わなければ、開示がそろっている、いちばん新しい日）")
+    p.add_argument("--auto", action="store_true",
+                   help="自動実行から呼ぶとき。digest: 一覧のまだ無い日（直近 7 日のそろった日）の分を作る。collect --text-history: 数えがあと 1 日なら、その朝の収集を 2 時間まで待つ")
+    p.add_argument("--no-digest", action="store_true", help="collect --docs: 終わりに読む一覧を作らない")
     p.add_argument("--each", type=int, help="digest: 一覧 1 つに出す数（既定 5）")
     p.add_argument("--all", action="store_true", help="reread: 空の本文だけでなく、原本のある本文を全部読み直す（変わったものだけ書き直す）")
     p.add_argument("--refetch", action="store_true", help="reread: 空で、原本も無い本文を消して、次の収集に取り直させる（ここではサイトに取りに行かない）")
-    p.add_argument("--job", choices=list(JOBS), default="run", help="schedule: どの自動実行か（run = 平日 13:05 の判断、collect = 毎日 8:00 の収集）")
+    p.add_argument("--job", choices=list(JOBS), default="run",
+                   help="schedule: どの自動実行か（run = 平日 13:05 の判断、collect = 毎日 8:00 の収集、text_history = 毎日 9:00 の過去の本文の続き）")
     p.add_argument("--docs", action="store_true", help="collect: 本文（PDF）と決算の数字（XBRL）も取る")
     p.add_argument("--docs-days", type=int, default=DOCS_DAYS, help="collect --docs: さかのぼる日数")
     p.add_argument("--xbrl-history", action="store_true", help="collect: 過去の決算の数字（2016〜）を取る（時間がかかる）")

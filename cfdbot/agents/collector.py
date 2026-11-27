@@ -191,7 +191,7 @@ def gate_line(root: Path, when) -> str | None:
                 f"{CLEAN_NEED} 日そろったら始められる（今 {len(days)} 日{': ' + short if days else ''}。間に断られたら 0 から数え直す。利用者の決め 2026-11-25）")
     if when - seen < timedelta(days=GENTLE_DAYS):
         return (f"サイトに断られた後（{seen:%m-%d %H:%M}）、毎日の収集が、断られずに書類を受け取れた日が {CLEAN_NEED} 日そろった（{short}）。"
-                f"過去分の取得を始められる（1 日に {HISTORY_DAY_MAX:,} 件まで。始めるのは、利用者が頼んだとき）")
+                f"過去分の取得を始められる（1 日に {HISTORY_DAY_MAX:,} 件まで。自動の取得を登録してあれば、毎日 9:00 に自分で始まる。無ければ、利用者が頼んだとき）")
     return None
 
 
@@ -744,6 +744,7 @@ MISS_FILE = "text_missing.csv"            # サイトに無かった書類（404
 QUIET_FROM, QUIET_TO = (7, 50), (8, 45)   # 毎朝 8:00 の収集に場所をゆずる時間（その機械の時計）。この間は取らない・錠も持たない
 HISTORY_CHUNK = 200                       # 1 度の錠で取る数（3 分ちょっと。終わるたびに錠を放す）
 HISTORY_INTERVAL = 10.0                   # 過去分をまとめて取るときの間隔（秒）。毎日の収集（1 秒）より長くあける（2026-11-25 に断られた後の決まり）
+AUTO_WAIT, AUTO_STEP = 2 * 3600.0, 300.0  # 自動の取得（毎日 9:00）: 数えがあと 1 日で今日の分がまだ無いとき、その朝の収集を待つ長さと、確かめる間（秒）
 HISTORY_DAY_MAX = 2000                    # 過去分を 1 日に取りに行く数（断られたのは、1 日に 6 万件ほど続けて取った後だった。その 30 分の 1）
 DAY_FILE = ".text_history.day.json"       # その日に取りに行った数の覚え
 MAX_FAILS = 10                            # 続けてこれだけ取れなければ止める（回線・サイトの不調）
@@ -943,7 +944,7 @@ def _save_history(root: Path, r, blob: bytes, keep_pdf: bool) -> None:
 def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: int | None = None, keep_pdf: bool = True,
                          interval: float = INTERVAL, get: Callable[[str], bytes] | None = None, log: Callable[[str], None] = print,
                          now=None, sleep: Callable[[float], None] = time.sleep, free: Callable[[str], int] | None = None,
-                         day_max: int | None = None, early: bool = False) -> dict:
+                         day_max: int | None = None, early: bool = False, patience: float = 0.0) -> dict:
     """過去の開示の本文（PDF の最初の数ページを文字にしたもの。毎日の収集と同じ形）を、新しい順にまとめて取る。
 
     決まり: interval 秒に 1 件・同時に 1 本だけ（錠）。毎朝 8:00 の収集の時間（QUIET）は取らず、錠も持たない
@@ -952,6 +953,8 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
     断られた後は、毎日の収集が CLEAN_NEED 日、断られずに書類を受け取れるまで取らない（history_gate。取っている間も、区切りごとに確かめる）。
     early（利用者がはっきり頼んだときだけ。2026-11-28）: その数えがあと EARLY_SHORT 日のときに限り、そろう前に始める。
     始めた後に新しく断られたら（毎日の収集でも、この取得でも）、今までどおり止まる。数えがもっと足りないときは、取らない（too_early）。
+    patience（自動の取得だけ。秒）: 数えがあと 1 日で、今日の分がまだ無いときは、その朝の収集が書類を受け取るのを、この長さまで待つ
+    （Mac が眠っていて、毎朝の収集とこの取得が同時に動き出した朝に、1 日むだにしないため）。待ってもそろわなければ、取らない。
     置き場所は外付けのディスクへのリンクであること（2026-11-20 利用者の決め）。keep_pdf なら原本もそのとなりに残す。
     返すのは、取れた数（text）・サイトに無かった数（missing）・取れなかった数（failed）・残り（left）・止まった理由（stopped）。
     """
@@ -982,6 +985,13 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
     if not crypto_ready():                                      # 部品が無いと、保護つきの書類の本文が空になる。取りに行かない
         return dict(done, stopped="no_pdf_part")
     closed = shut()
+    waited = 0.0
+    while closed and waited < patience and closed["clean"] == closed["need"] - 1 and f"{now():%Y-%m-%d}" not in clean_days(root, now()):
+        if not waited:                                          # 今日の分が入れば、そろう。毎朝の収集を待つ（何も取りに行かない）
+            log(f"  数えがあと 1 日（今 {closed['clean']} 日）。今日の毎朝の収集が書類を受け取るのを待つ（{patience / 60:.0f} 分まで）")
+        sleep(AUTO_STEP)
+        waited += AUTO_STEP
+        closed = shut()
     if closed and early:                                        # 利用者の頼みで、数えがそろう前に始める（あと EARLY_SHORT 日のときだけ）
         if closed["clean"] < closed["need"] - EARLY_SHORT:
             return {**done, **closed, "stopped": "too_early"}

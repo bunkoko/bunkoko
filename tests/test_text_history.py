@@ -7,6 +7,7 @@
 import time
 import urllib.error
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -1232,3 +1233,138 @@ def test_tool_says_when_early_was_not_needed(tmp_path, capsys, monkeypatch, fast
     load_script().cmd_collect(ns(root, early=True))                                       # 断られたことが無い
     out = capsys.readouterr().out
     assert "数えがそろう前に始める" not in out and "取れた +3" in out
+
+
+# --------------------------------------------------------------------------- 過去分の取得を自動で（2026-11-28 利用者の決め）
+class Morning(Clock):
+    """作り物の時計。after 回目の待ちの間に、毎朝の収集が今日の書類を受け取る（after が None なら、受け取らない）。"""
+
+    def __init__(self, start, root, after):
+        super().__init__(start)
+        self.root, self.after = root, after
+
+    def sleep(self, seconds):
+        super().sleep(seconds)
+        if self.after is not None and len(self.slept) == self.after:
+            written(self.root / "xbrl" / f"{self.t:%Y-%m}" / "today.csv", self.t)
+
+
+def test_automatic_run_waits_for_the_morning_collection_on_the_last_day(tmp_path):
+    """自動の取得（毎日 9:00）: 数えがあと 1 日で、今日の分がまだ無いときは、その朝の収集が書類を受け取るのを待つ（Mac が眠っていて、2 つが同時に動き出した朝のため）。"""
+    root, _ = hdd(tmp_path)
+    two_clean_mornings(root)
+    clock = Morning(datetime(2026, 11, 28, 9, 0), root, after=3)
+    calls, said = [], []
+    got = run(root, lambda url: calls.append(url) or _pdf("a"), clock=clock, patience=C.AUTO_WAIT, log=said.append)
+    assert clock.slept[:3] == [C.AUTO_STEP] * 3 and got["text"] == 3 and got["stopped"] is None
+    assert any("毎朝の収集" in t and "待つ" in t for t in said)
+
+
+def test_automatic_run_gives_up_when_the_morning_brings_nothing(tmp_path):
+    root, _ = hdd(tmp_path)
+    two_clean_mornings(root)
+    clock = Morning(datetime(2026, 11, 28, 9, 0), root, after=None)
+    calls = []
+    got = run(root, lambda url: calls.append(url) or _pdf("a"), clock=clock, patience=C.AUTO_WAIT)
+    assert got["stopped"] == "cooling" and calls == [] and (got["clean"], got["need"]) == (2, 3)
+    assert sum(clock.slept) == C.AUTO_WAIT and C.AUTO_WAIT == 2 * 3600 and C.AUTO_STEP == 300
+
+
+def test_automatic_run_does_not_wait_when_waiting_cannot_help(tmp_path):
+    root, _ = hdd(tmp_path)
+    C.note_refused(root, 503, datetime(2026, 11, 25, 20, 15))
+    written(root / "xbrl" / "2026-11" / "n26.csv", datetime(2026, 11, 26, 8, 3))
+    clock = Morning(datetime(2026, 11, 27, 9, 0), root, after=1)                          # あと 2 日。今日の分が来ても、そろわない
+    assert run(root, lambda url: _pdf("a"), clock=clock, patience=C.AUTO_WAIT)["stopped"] == "cooling" and clock.slept == []
+    written(root / "xbrl" / "2026-11" / "n28.csv", datetime(2026, 11, 28, 8, 3))          # 27 日は何も無く、28 日は受け取れた（今日の分は、もう数えてある）
+    clock = Morning(datetime(2026, 11, 28, 9, 0), root, after=1)
+    assert run(root, lambda url: _pdf("a"), clock=clock, patience=C.AUTO_WAIT)["stopped"] == "cooling" and clock.slept == []
+
+
+def test_a_run_by_hand_does_not_wait(tmp_path):
+    root, _ = hdd(tmp_path)
+    two_clean_mornings(root)
+    clock = Morning(datetime(2026, 11, 28, 9, 0), root, after=1)
+    assert run(root, lambda url: _pdf("a"), clock=clock)["stopped"] == "cooling" and clock.slept == []
+
+
+def test_tool_passes_the_patience_only_to_the_automatic_run(tmp_path, capsys, monkeypatch, fast):
+    root, _, _ = world(tmp_path)
+    monkeypatch.setattr(C, "http_get", lambda url, tries=1: _pdf("a"))
+    seen = []
+    real = C.collect_text_history
+
+    def spy(*a, **kw):
+        seen.append((kw.get("patience"), kw.get("early")))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(C, "collect_text_history", spy)
+    m = load_script()
+    m.cmd_collect(ns(root))
+    m.cmd_collect(ns(root, auto=True, early=True))                                        # 自動の取得は、早めの印を使わない
+    assert seen == [(0.0, False), (C.AUTO_WAIT, False)]
+
+
+def test_automatic_run_says_how_to_switch_it_off_when_nothing_is_left(tmp_path, capsys, monkeypatch, fast):
+    root, _, _ = world(tmp_path)
+    monkeypatch.setattr(C, "http_get", lambda url, tries=1: _pdf("a"))
+    m = load_script()
+    m.cmd_collect(ns(root, auto=True))
+    capsys.readouterr()
+    m.cmd_collect(ns(root, auto=True))                                                    # もう取るものが無い
+    out = capsys.readouterr().out
+    assert "残り 0" in out and "schedule --job text_history --off" in out
+
+
+def test_the_job_for_the_bulk_fetch_runs_every_morning_after_the_collection():
+    m = load_script()
+    pl = m.make_plist(Path("/x"), Path("/x/data/agents/text_history.log"), "text_history")
+    assert pl["Label"] == "com.bunkoko.agents.text_history"
+    assert pl["ProgramArguments"] == ["/x/cfd", "agents", "collect", "--text-history", "--auto"]
+    assert pl["StartCalendarInterval"] == {"Hour": 9, "Minute": 0} and pl["StandardOutPath"] == "/x/data/agents/text_history.log"
+    assert C.QUIET_TO <= (9, 0)                                                           # 毎朝の収集にゆずる時間（〜8:45）の後
+
+
+def test_tool_knows_whether_the_job_is_registered(tmp_path):
+    m = load_script()
+    assert m.job_registered("text_history", home=tmp_path, platform="linux") is None      # Mac でなければ、分からない
+    assert m.job_registered("text_history", home=tmp_path, platform="darwin") is False
+    plist = tmp_path / "Library" / "LaunchAgents" / "com.bunkoko.agents.text_history.plist"
+    plist.parent.mkdir(parents=True)
+    plist.write_text("x")
+    assert m.job_registered("text_history", home=tmp_path, platform="darwin") is True
+
+
+@pytest.mark.parametrize("on, words", [(True, ("自動の取得: 登録してある", "毎日 9:00")), (False, ("自動の取得: 登録していない", "schedule --job text_history"))])
+def test_status_tells_whether_the_bulk_fetch_is_automatic(tmp_path, capsys, monkeypatch, on, words):
+    root, _, _ = world(tmp_path)
+    m = load_script()
+    monkeypatch.setattr(m, "job_registered", lambda job, **kw: on)
+    m.cmd_status(ns(root, out=str(tmp_path / "out")))
+    out = capsys.readouterr().out
+    assert all(w in out for w in words)
+
+
+def test_gate_line_mentions_the_automatic_start(tmp_path):
+    root, _ = hdd(tmp_path)
+    C.note_refused(root, 503, datetime(2026, 11, 25, 20, 15))
+    for d in (26, 27, 28):
+        written(root / "xbrl" / "2026-11" / f"n{d}.csv", datetime(2026, 11, d, 8, 3))
+    line = C.gate_line(root, datetime(2026, 11, 28, 9, 0))
+    assert "過去分の取得を始められる" in line and "自動の取得を登録してあれば" in line
+
+
+def test_morning_collection_makes_the_reading_list_afterwards(tmp_path, capsys, monkeypatch, fast):
+    """利用者の決め（2026-11-28）: 読む一覧づくりは自動に。毎朝の収集（本文つき）の終わりに作る。作れなくても、収集は終わる。"""
+    root, _, _ = daily_world(tmp_path)
+    monkeypatch.setattr(C, "http_get", lambda url, tries=1: _xbrl_zip() if url.endswith(".zip") else _pdf("a"))
+    m = load_script()
+    asked = []
+    monkeypatch.setattr(m, "digest_after_collect", lambda args: asked.append(args.root))
+    m.cmd_collect(daily_ns(root))                                                         # 印の無い呼び方（古い試験と同じ）では、作らない
+    m.cmd_collect(daily_ns(root, no_digest=True))
+    assert asked == []
+    m.cmd_collect(daily_ns(root, no_digest=False))
+    assert asked == [str(root)]
+    m.cmd_collect(daily_ns(root, no_digest=False, docs=False))                            # 平日 13 時すぎの回（一覧だけ）では、作らない
+    assert asked == [str(root)]
