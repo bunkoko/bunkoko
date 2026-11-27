@@ -2409,15 +2409,16 @@ def sources_merge(
     accept_rest: Annotated[
         bool,
         typer.Option(
-            help="押していない統計と CC BY の研究を、AI が確かめた行として入れる"
+            help="押していない統計・CC BY の研究・統計の系列を、AI が確かめた行として入れる"
             "（回で使ったら、承認の前に人が確かめる）"
         ),
     ] = False,
     settings: SettingsOpt = None,
 ) -> None:
-    """ページで押した結果を、config/stats.csv・findings.csv に書く。
+    """ページで押した結果を、config/stats.csv・findings.csv・stat_series.csv に書く。
 
-    書いたあとは `koten db init`（統計）と `koten findings build`（研究）で SSD に入れる。
+    書いたあとは `uv run koten db init`（統計・統計の系列）と `uv run koten findings build`
+    （研究）で SSD に入れる。押した結果が無いときは {} だけの JSON を --from に渡す。
     """
     import json
     from pathlib import Path
