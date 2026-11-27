@@ -98,6 +98,15 @@ def doctor(settings: SettingsOpt = None) -> None:
         typer.echo(f"  {typer.style(f'[{c.status}]', fg=colors[c.status])} {c.name}: {c.detail}")
 
 
+def _contact_ok(s: Settings) -> bool:
+    """User-Agent に入る連絡先（KOTEN_CONTACT）が使える形か。"""
+    user_agent = s.section("http").get("user_agent", "koten-videos/0.1 (+contact: {contact})")
+    contact = os.environ.get("KOTEN_CONTACT", "").strip()
+    user_agent = user_agent.replace("{contact}", contact)
+    looks_valid = "@" in contact or "://" in contact
+    return not (("contact:" in user_agent and not looks_valid) or "example.com" in user_agent)
+
+
 def _make_fetcher(s: Settings, raw_dir, client: httpx.Client | None = None):
     """外部サイトへの取得（net.py）。User-Agent に連絡先が無ければ取りに行かない（SPEC §8.1）。"""
     http = s.section("http")
@@ -2313,24 +2322,38 @@ def _source_drafts(drafts: list[str] | None, todo: str | None, s: Settings):
 
 
 def _series_excerpt(s: Settings):
-    """estat_file の系列の、数のまわりの表を出す関数。ファイルは net.py で取る（要るときだけ。
-    取れない・読めないときはその系列の表を出さない）。KOTEN_CONTACT が要る。"""
+    """estat_file の系列の、数のまわりの表を出す関数。ファイルは net.py で取る（要るときだけ）。
+
+    連絡先（KOTEN_CONTACT）が無い・取れない・読めないときは、その系列の表を出さずに
+    黄色の知らせを出す（ページは作る）。"""
     from koten.sources.check import file_excerpt
 
     holder: dict[str, Fetcher] = {}
+    off = {"contact": False}
 
     def provide(item: dict):
-        if "f" not in holder:
-            holder["f"] = _make_fetcher(s, _estat_cache(s))
+        if off["contact"]:
+            return None
         try:
+            if "f" not in holder:
+                if not _contact_ok(s):
+                    raise typer.Exit(2)
+                holder["f"] = _make_fetcher(s, _estat_cache(s))
             return file_excerpt(item, _file_fetch(holder["f"], False))
+        except typer.Exit:
+            off["contact"] = True
+            typer.secho(
+                "連絡先（KOTEN_CONTACT）が設定されていないので、ファイルの抜き出しは出しません",
+                fg="yellow",
+                err=True,
+            )
         except (*_estat_failures(), OSError, KeyError) as e:
             typer.secho(
                 f"{item.get('series_id')}：ファイルの抜き出しを作れません（{type(e).__name__}）",
                 fg="yellow",
                 err=True,
             )
-            return None
+        return None
 
     return provide
 
@@ -2411,10 +2434,10 @@ def sources_merge(
         raise typer.Exit(2) from e
     typer.echo(
         f"人が確かめた行：統計 {len(res.stats_added)}・研究 {len(res.findings_added)}"
-        f"・統計の系列 {len(res.series_added)}"
+        + (f"・統計の系列 {len(res.series_added)}" if res.series_added else "")
         + (
             f"／AI が確かめた行：統計 {len(res.stats_ai)}・研究 {len(res.findings_ai)}"
-            f"・統計の系列 {len(res.series_ai)}"
+            + (f"・統計の系列 {len(res.series_ai)}" if res.series_ai else "")
             if accept_rest
             else ""
         )
@@ -2443,6 +2466,8 @@ def sources_merge(
         )
     if res.stats_added or res.stats_ai or res.stats_removed:
         typer.echo("統計を SSD に入れる：uv run koten db init")
+    for sid in res.series_refetch:
+        typer.echo(f"数を取り直す：uv run koten stats fetch --series {sid}")
     if res.series_added or res.series_ai:
         typer.echo("統計の系列を SSD に入れる：uv run koten db init")
     if res.findings_added or res.findings_ai:

@@ -166,7 +166,7 @@ def test_selector_shapes(env):
     ]
     for sel in bad:
         assert series_problems([row(selector=sel)], [], **env), sel
-    part = {"statInfId": "x", "fileKind": "1", "sheet": "", "values": "B2:B9", "periods": ["2020"]}
+    part = {"statInfId": "1", "fileKind": "1", "sheet": "", "values": "B2:B9", "periods": ["2020"]}
     ok = json.dumps({"parts": [part]})
     assert series_problems([row(source_kind="estat_file", selector=ok)], [], **env) == []
     for broken in (
@@ -416,7 +416,7 @@ def test_load_meta_refuses_an_unsafe_series_id(tmp_path):
 
 
 def test_file_series_is_not_checked_against_metas(env):
-    part = {"statInfId": "x", "fileKind": "1", "sheet": "", "values": "B2:B9", "periods": ["2020"]}
+    part = {"statInfId": "1", "fileKind": "1", "sheet": "", "values": "B2:B9", "periods": ["2020"]}
     r = row(source_kind="estat_file", selector=json.dumps({"parts": [part]}), table_title="")
     assert series_problems([r], [], **{**env, "metas": {}}) == []
 
@@ -594,3 +594,15 @@ def test_is_stale_without_any_number():
     s = series(latest_known="2022")
     assert is_stale(s, [])
     assert is_stale(s, [point(period="2022", value="", mark="x")])
+
+
+def test_file_ids_must_be_ascii_digits(env):
+    for bad in ("../x", "1a", "１２"):
+        for key in ("statInfId", "fileKind"):
+            part = {"statInfId": "1", "fileKind": "1", "sheet": "", "values": "B2:B9",
+                    "periods": ["2020"], key: bad}  # fmt: skip
+            r = row(
+                source_kind="estat_file", selector=json.dumps({"parts": [part]}), table_title=""
+            )
+            probs = series_problems([r], [], **{**env, "metas": {}})
+            assert any("半角の数字だけ" in p for p in probs), (key, bad)

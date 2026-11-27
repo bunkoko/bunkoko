@@ -25,6 +25,7 @@ _XLSX_MAGIC = b"PK\x03\x04"
 _XLS_MAGIC = b"\xd0\xcf\x11\xe0"
 _REF_RE = re.compile(r"([A-Za-z]+)([0-9]+)")
 _BARE_YEAR_RE = re.compile(r"[0-9]{4}")
+_DIGITS_RE = re.compile(r"[0-9]+")
 _DECIMALS_RE = re.compile(r"\.([0#?]+)")
 
 
@@ -116,7 +117,7 @@ def _grid_from_bytes(data: bytes, sheet: str) -> list[list[str]]:
             wb.close()
         return _pad(rows)
     if sheet != "":
-        raise SeriesError(f"CSV に sheet は指定できない（\"\" にする）：{sheet!r}")
+        raise SeriesError(f'CSV に sheet は指定できない（"" にする）：{sheet!r}')
     try:
         rows = [[c.strip() for c in r] for r in csv.reader(io.StringIO(_decode(data), newline=""))]
     except csv.Error as e:
@@ -138,8 +139,13 @@ def _ref(ref: str) -> tuple[int, int]:
     return int(m[2]) - 1, _col(m[1])
 
 
+def cell_pos(ref: str) -> tuple[int, int]:
+    """ "D12" → (行, 列)（0 始まり）。範囲は渡さない。"""
+    return _ref(ref)
+
+
 def cells(grid: list[list[str]], ref: str) -> list[str]:
-    """"A3" か 1 方向の範囲 "D12:R12"・"D5:D20" のセルの文字。表の外は ""。"""
+    """ "A3" か 1 方向の範囲 "D12:R12"・"D5:D20" のセルの文字。表の外は ""。"""
     a, _, b = ref.partition(":")
     r1, c1 = _ref(a)
     r2, c2 = _ref(b) if b else (r1, c1)
@@ -176,6 +182,9 @@ def _require(spec: dict, idx: int) -> None:
     for k in ("statInfId", "fileKind", "values"):
         if not str(spec.get(k, "")).strip():
             raise SeriesError(f"{n} 番目の part に {k} が無い")
+    for k in ("statInfId", "fileKind"):
+        if not _DIGITS_RE.fullmatch(str(spec[k]).strip()):
+            raise SeriesError(f"{n} 番目の part の {k} は半角の数字だけ（{spec[k]!r}）")
     if not (spec.get("periods_cells") or spec.get("periods")):
         raise SeriesError(f"{n} 番目の part に periods_cells か periods が無い")
 
@@ -214,8 +223,9 @@ def _points_from_grid(s, idx, spec, grid, data, fetched_at) -> list[Point]:
         raise SeriesError(
             f"{n} 番目の part の時間の数（{len(periods)}）と値の数（{len(vals)}）が違う"
         )
-    label = "／".join(t for t in (x.strip() for ref in spec.get("label_cells", [])
-                                   for x in cells(grid, ref)) if t)
+    label = "／".join(
+        t for t in (x.strip() for ref in spec.get("label_cells", []) for x in cells(grid, ref)) if t
+    )
     unit = cells(grid, spec["unit_cell"])[0] if spec.get("unit_cell") else ""
     sha = hashlib.sha256(data).hexdigest()
     out = []
@@ -224,8 +234,19 @@ def _points_from_grid(s, idx, spec, grid, data, fetched_at) -> list[Point]:
         if not text:
             continue
         num = to_decimal(text) is not None
-        out.append(Point(s.series_id, period, text if num else "", "" if num else text,
-                         str(idx), label, unit, fetched_at, sha))
+        out.append(
+            Point(
+                s.series_id,
+                period,
+                text if num else "",
+                "" if num else text,
+                str(idx),
+                label,
+                unit,
+                fetched_at,
+                sha,
+            )
+        )
     return out
 
 

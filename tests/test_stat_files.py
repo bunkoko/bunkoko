@@ -16,11 +16,29 @@ FETCHED = "2026-11-27T00:00:00+09:00"
 
 def make_series(parts: list[dict], period_kind: str = "年") -> Series:
     return Series(
-        series_id="t_file", themes=("孤独",), label="テスト", unit="％", survey="調査",
-        publisher="省", source_kind="estat_file", period_kind=period_kind,
-        selector={"parts": parts}, table_title="", url="", latest_known="",
-        breaks=(), trend="", trend_from="", trend_to="", trend_note="",
-        status="draft", checked_by="", checked_at="", checked_sha="", where="", note="",
+        series_id="t_file",
+        themes=("孤独",),
+        label="テスト",
+        unit="％",
+        survey="調査",
+        publisher="省",
+        source_kind="estat_file",
+        period_kind=period_kind,
+        selector={"parts": parts},
+        table_title="",
+        url="",
+        latest_known="",
+        breaks=(),
+        trend="",
+        trend_from="",
+        trend_to="",
+        trend_note="",
+        status="draft",
+        checked_by="",
+        checked_at="",
+        checked_sha="",
+        where="",
+        note="",
     )
 
 
@@ -74,11 +92,15 @@ def test_csv_cp932_and_utf8sig(tmp_path):
     pa = file_points(s, fetch_local(a))
     pb = file_points(s, fetch_local(b))
     key = lambda ps: [(p.period, p.value, p.mark, p.src_label) for p in ps]  # noqa: E731
-    assert key(pa) == key(pb) == [
-        ("2021", "39.5", "", "孤独感が　ある人"),
-        ("2022", "40.0", "", "孤独感が　ある人"),
-        ("2023", "40.1", "", "孤独感が　ある人"),
-    ]
+    assert (
+        key(pa)
+        == key(pb)
+        == [
+            ("2021", "39.5", "", "孤独感が　ある人"),
+            ("2022", "40.0", "", "孤独感が　ある人"),
+            ("2023", "40.1", "", "孤独感が　ある人"),
+        ]
+    )
     assert pa[0].fetched_at == FETCHED
     assert pa[0].src_sha == hashlib.sha256(a.read_bytes()).hexdigest()
     assert pa[0].part == "0" and pa[0].series_id == "t_file"
@@ -89,8 +111,10 @@ def test_fetch_gets_url_and_rel_path(tmp_path):
     f = fetch_local(write_csv(tmp_path / "a", CSV_ROWS, "utf-8-sig"))
     file_points(s, f)
     assert f.calls == [
-        ("https://www.e-stat.go.jp/stat-search/file-download?statInfId=0003&fileKind=1",
-         "files/0003_1")
+        (
+            "https://www.e-stat.go.jp/stat-search/file-download?statInfId=0003&fileKind=1",
+            "files/0003_1",
+        )
     ]
 
 
@@ -102,7 +126,10 @@ def test_xlsx_row_range_with_marks(tmp_path):
     s = make_series([part(sheet="表1", values="B5:D5", periods_cells="B3:D3")])
     pts = file_points(s, fetch_local(x))
     assert [(p.period, p.value, p.mark) for p in pts] == [
-        ("2021", "39.5", ""), ("2022", "", "-"), ("2023", "40.1", "")]
+        ("2021", "39.5", ""),
+        ("2022", "", "-"),
+        ("2023", "40.1", ""),
+    ]
 
 
 def test_xlsx_number_format_decimals_and_integers(tmp_path):
@@ -125,7 +152,9 @@ def test_column_range_and_multi_letter_columns(tmp_path):
     x = write_xlsx(tmp_path / "a.bin", [[2021, 1.5], [2022, 2.5]])
     s = make_series([part(sheet="表1", values="B1:B2", periods_cells="A1:A2")])
     assert [(p.period, p.value) for p in file_points(s, fetch_local(x))] == [
-        ("2021", "1.5"), ("2022", "2.5")]
+        ("2021", "1.5"),
+        ("2022", "2.5"),
+    ]
     wide = [[""] * 26 + ["AA", "AB"], [""] * 26 + ["7", "8"]]
     g = read_grid(write_xlsx(tmp_path / "w.bin", wide), "表1")
     assert cells(g, "AA1:AB1") == ["AA", "AB"]
@@ -196,10 +225,12 @@ def test_periods_list_must_be_four_digits(tmp_path):
 def two_parts(tmp_path, label2="孤独感がある人", year2="2022"):
     f1 = write_csv(tmp_path / "f1", [["", "2021"], ["孤独感が　ある人", "39.5"]], "utf-8-sig")
     f2 = write_csv(tmp_path / "f2", [["", year2], [label2, "40.1"]], "utf-8-sig")
-    s = make_series([
-        part(statInfId="1", values="B2:B2", periods_cells="B1:B1", label_cells=["A2"]),
-        part(statInfId="2", values="B2:B2", periods_cells="B1:B1", label_cells=["A2"]),
-    ])
+    s = make_series(
+        [
+            part(statInfId="1", values="B2:B2", periods_cells="B1:B1", label_cells=["A2"]),
+            part(statInfId="2", values="B2:B2", periods_cells="B1:B1", label_cells=["A2"]),
+        ]
+    )
     return s, fetch_local(f1, f2)
 
 
@@ -219,8 +250,16 @@ def test_overlapping_years_between_parts_is_refused(tmp_path):
 def test_label_cells_unit_and_sorted(tmp_path):
     rows = [["", "2023", "2021"], ["ラベル", "1", "2"], ["％", "", ""]]
     p = write_csv(tmp_path / "a", rows, "utf-8-sig")
-    s = make_series([part(values="B2:C2", periods_cells="B1:C1",
-                          label_cells=["A2", "A9", "B3"], unit_cell="A3")])
+    s = make_series(
+        [
+            part(
+                values="B2:C2",
+                periods_cells="B1:C1",
+                label_cells=["A2", "A9", "B3"],
+                unit_cell="A3",
+            )
+        ]
+    )
     pts = file_points(s, fetch_local(p))
     assert [x.period for x in pts] == ["2021", "2023"]
     assert pts[0].src_label == "ラベル" and pts[0].src_unit == "％"
@@ -237,8 +276,13 @@ def _one(tmp_path, rows, fmts=None, values="B2:B2", periods_cells="B1:B1", **kw)
 
 def test_percent_format_renders_as_displayed(tmp_path):
     rows = [["", 2021, 2022, 2023], ["x", 0.395, 0.4, 0.1 + 0.2]]
-    pts = _one(tmp_path, rows, values="B2:D2", periods_cells="B1:D1",
-               fmts={"B2": "0.0%", "C2": "0%", "D2": "0.0%"})
+    pts = _one(
+        tmp_path,
+        rows,
+        values="B2:D2",
+        periods_cells="B1:D1",
+        fmts={"B2": "0.0%", "C2": "0%", "D2": "0.0%"},
+    )
     assert [p.value for p in pts] == ["39.5", "40", "30.0"]
 
 
@@ -297,3 +341,11 @@ def test_bom_with_ragged_rows(tmp_path):
     p.write_bytes("﻿,2021,2022\nx,1.5\n".encode())
     s = make_series([part(values="B2:C2", periods_cells="B1:C1")])
     assert [(x.period, x.value) for x in file_points(s, fetch_local(p))] == [("2021", "1.5")]
+
+
+def test_part_ids_must_be_digits_before_any_fetch():
+    s = make_series([part(statInfId="../etc", fileKind="0", values="B3:B3", periods=["2021"])])
+    calls = []
+    with pytest.raises(SeriesError, match="半角の数字だけ"):
+        file_points(s, lambda url, rel: calls.append(rel))
+    assert calls == []

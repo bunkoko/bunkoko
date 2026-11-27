@@ -52,7 +52,7 @@ from koten.findings import (
     read_findings,
 )
 from koten.script.placeholders import format_stat
-from koten.stats.files import FILE_URL, read_grid
+from koten.stats.files import FILE_URL, cell_pos, read_grid
 from koten.stats.report import series_from_draft
 from koten.stats.series import POINTS_COLUMNS as POINT_COLUMNS
 from koten.stats.series import (
@@ -71,6 +71,7 @@ from koten.stats.series import (
     series_problems,
     value_num,
     verify_trend,
+    write_points,
 )
 from koten.worries.master import load_blocked_keywords
 
@@ -96,6 +97,7 @@ LEAD_FINDING = (
     "authors_ja",
 )
 ASCII_ID = re.compile(r"[a-z0-9][a-z0-9_]*$")
+_DIGITS = re.compile(r"[0-9]+")
 
 
 class SourcesError(ValueError):
@@ -165,12 +167,21 @@ def with_series_data(drafts: dict[str, Any], config_dir: Path) -> dict[str, Any]
     """
     rows = read_point_rows(config_dir)
     meta_dir = meta_dir_for(config_dir)
+    ledger = {r.get("series_id", "").strip(): r for r in read_series_rows(config_dir)}
     out = []
     for item in drafts.get("series") or []:
         sid = str(item.get("series_id", "")).strip()
-        pts = sorted(
-            (dict(r) for r in rows if r.get("series_id", "").strip() == sid),
-            key=lambda r: r.get("period", ""),
+        # 台帳の行と選び方（selector）が違う下書きは、台帳の数が別の選び方のものなので数なしにする
+        changed = sid in ledger and (
+            series_from_draft(item).selector != series_from_draft(ledger[sid]).selector
+        )
+        pts = (
+            []
+            if changed
+            else sorted(
+                (dict(r) for r in rows if r.get("series_id", "").strip() == sid),
+                key=lambda r: r.get("period", ""),
+            )
         )
         meta = None
         if item.get("source_kind") == "estat_api":
@@ -179,7 +190,7 @@ def with_series_data(drafts: dict[str, Any], config_dir: Path) -> dict[str, Any]
             except SeriesError as e:
                 raise SourcesError(str(e)) from e
         out.append({**item, "points": [{c: r.get(c, "") for c in POINT_COLUMNS} for r in pts],
-                    "meta": meta})  # fmt: skip
+                    "meta": meta, "selector_changed": changed})  # fmt: skip
     return {**drafts, "series": out}
 
 
@@ -188,9 +199,21 @@ def _points_of(item: dict[str, Any]) -> list[Point]:
 
 
 def series_key(item: dict[str, Any]) -> str:
-    """数・名前・区切りのどれかが変われば変わる鍵（check_sha）。数がまだ無いうちは別の鍵。"""
-    sha = check_sha(series_from_draft(item), _points_of(item), item.get("meta"))
-    return _key("r", sha)
+    """数・名前・区切りのどれかが変われば変わる鍵（check_sha）。数がまだ無いうちは別の鍵。
+
+    check_sha に入らない series_id・period_kind・survey・publisher・trend も鍵に入れる
+    （同じ中身の2系列がぶつからず、増え方の言葉を直したら押し直しになる）。
+    """
+    s = series_from_draft(item)
+    sha = check_sha(s, _points_of(item), item.get("meta"))
+    return _key(
+        "r", s.series_id, sha, s.period_kind, s.survey, s.publisher,
+        s.trend, s.trend_from, s.trend_to, s.trend_note,
+    )  # fmt: skip
+
+
+def _has_numbers(item: dict[str, Any]) -> bool:
+    return _newest_numeric(_points_of(item)) is not None
 
 
 def _newest_numeric(points: list[Point]) -> Point | None:
@@ -222,26 +245,13 @@ def _newest_part(item: dict[str, Any], points: list[Point]) -> tuple[int, dict[s
     return (idx, parts[idx]) if isinstance(parts[idx], dict) else None
 
 
-_REF = re.compile(r"([A-Za-z]+)([0-9]+)")
-
-
-def _cell(ref: str) -> tuple[int, int]:
-    m = _REF.fullmatch(ref.strip())
-    if not m:
-        raise SourcesError(f"セルの指定を読めない：{ref!r}")
-    col = 0
-    for ch in m[1].upper():
-        col = col * 26 + ord(ch) - 64
-    return int(m[2]) - 1, col - 1
-
-
 def excerpt_from_grid(spec: dict[str, Any], grid: list[list[str]]) -> dict[str, Any]:
     """数のセルの前後3行・前後2列で切り出した表。数のセル全部（hl）と見出しの行の位置つき。
 
     縦の範囲は先頭の 12 セルまでを印にする（窓も、そこまで）。"""
     a, _, b = str(spec["values"]).partition(":")
-    r1, c1 = _cell(a)
-    r2, c2 = _cell(b) if b else (r1, c1)
+    r1, c1 = cell_pos(a)
+    r2, c2 = cell_pos(b) if b else (r1, c1)
     rend = min(r2, r1 + 11)
     top, bottom = max(0, r1 - 3), min(len(grid) - 1, rend + 3)
     left, right = max(0, c1 - 2), c2 + 2
@@ -256,7 +266,7 @@ def excerpt_from_grid(spec: dict[str, Any], grid: list[list[str]]) -> dict[str, 
         spec.get("periods_cells") or "",
     ]:
         if ref:
-            r, _ = _cell(str(ref).partition(":")[0])
+            r, _ = cell_pos(str(ref).partition(":")[0])
             if top <= r <= bottom:
                 label_rows.add(r - top)
     return {
@@ -277,6 +287,8 @@ def file_excerpt(
     sid, kind = str(spec.get("statInfId", "")).strip(), str(spec.get("fileKind", "")).strip()
     if not (sid and kind and spec.get("values")):
         return None
+    if not (_DIGITS.fullmatch(sid) and _DIGITS.fullmatch(kind)):
+        raise SourcesError(f"statInfId・fileKind は半角の数字だけ（{sid!r}・{kind!r}）")
     path, _ = fetch(FILE_URL.format(sid=sid, kind=kind), f"files/{sid}_{kind}")
     return excerpt_from_grid(spec, read_grid(Path(path), str(spec.get("sheet", ""))))
 
@@ -387,6 +399,7 @@ def _series_item(
         "source": source,
         "chosen": chosen,
         "link": link,
+        "has_numbers": _newest_numeric(points) is not None,
         "points": _point_rows(d, points),
         "breaks": [{"before": b.before, "note": b.note} for b in s.breaks],
         "excerpt": excerpt(d) if excerpt and s.source_kind == "estat_file" else None,
@@ -542,6 +555,7 @@ class MergeResult:
     findings_ai: list[str] = field(default_factory=list)
     series_added: list[str] = field(default_factory=list)
     series_ai: list[str] = field(default_factory=list)
+    series_refetch: list[str] = field(default_factory=list)  # 選び方が変わり、点を外した系列
 
 
 def _day(at: Any) -> str:
@@ -665,6 +679,7 @@ def _series_row(
 def _series_check(
     config_dir: Path,
     rows: list[dict[str, str]],
+    point_rows: list[dict[str, str]],
     stats_rows: list[dict[str, str]],
     themes: set[str],
 ) -> None:
@@ -678,13 +693,16 @@ def _series_check(
                 raise SourcesError(f"{SERIES_FILE} に問題が出るので書きません：{e}") from e
             if meta is not None:
                 metas[sid] = meta
-    blocked_path = config_dir / "blocked_keywords.yaml"
+    try:
+        blocked = load_blocked_keywords(config_dir)
+    except (OSError, KeyError, TypeError, AttributeError, yaml.YAMLError) as e:
+        raise SourcesError(f"blocked_keywords.yaml を読めない（{type(e).__name__}）") from e
     problems = series_problems(
         rows,
-        read_point_rows(config_dir),
+        point_rows,
         themes=themes,
         legacy_ids={(r.get("stat_id") or "").strip() for r in stats_rows},
-        blocked=load_blocked_keywords(config_dir) if blocked_path.exists() else {},
+        blocked=blocked,
         metas=metas,
     )
     if problems:
@@ -744,11 +762,23 @@ def merge_checks(
     new_findings: list[dict[str, str]] = []
     removes: set[str] = set()
     ledger_series = {r["series_id"]: r for r in old_series}
+    drop_points: set[str] = set()
     for key, (kind, d) in by_key.items():
         c = checks.get(key)
         name = (
             d.get("stat_id") or d.get("finding_id") or d.get("lead_id") or d.get("series_id") or key
         )
+        if kind == "series" and isinstance(c, dict) and c.get("v") == "ok" and not _has_numbers(d):
+            # 数が無い系列の「合っている」は押していないのと同じ（数が入ると鍵も変わる）
+            why = (
+                "選び方が変わったので数を取り直す" if d.get("selector_changed") else "数がまだ無い"
+            )
+            res.skipped.append(
+                f"{name}：{why}ので人の確かめには入れなかった（koten stats fetch のあと、"
+                "数が入ってから確かめる）"
+                + ("" if accept_rest else "。AI の行として入れるなら --accept-rest で取り込む")
+            )
+            c = None
         if not isinstance(c, dict) or c.get("v") not in ("ok", "ng"):
             if not accept_rest or kind not in ("stat", "finding", "series"):
                 continue
@@ -762,6 +792,8 @@ def merge_checks(
                     )
                 )
                 res.series_ai.append(d["series_id"])
+                if d.get("selector_changed"):
+                    drop_points.add(d["series_id"])
                 continue
             if kind == "stat" and d["stat_id"] in human_stats:
                 continue
@@ -785,12 +817,6 @@ def merge_checks(
             continue
         day = _day(c.get("at"))
         if kind == "series":
-            if not d["points"]:
-                res.skipped.append(
-                    f"{name}：数がまだ無いので入れなかった（koten stats fetch のあと、"
-                    "数が入ってから確かめる）"
-                )
-                continue
             new_series.append(
                 _series_row(d, c, by=CHECKER, day=day, old=ledger_series.get(d["series_id"]))
             )
@@ -846,12 +872,13 @@ def merge_checks(
     if problems := stats_problems(stats_rows):
         raise SourcesError("stats.csv に問題が出るので書きません：" + "、".join(problems))
 
-    if new_series:
-        # 同じ series_id の行は同じ場所で入れ替える（並びを変えない）
-        by_new = {r["series_id"]: r for r in new_series}
-        series_rows = [by_new.pop(r.get("series_id"), r) for r in old_series]
-        series_rows += list(by_new.values())
-        _series_check(config_dir, series_rows, stats_rows, themes)
+    # 同じ series_id の行は同じ場所で入れ替える（並びを変えない）
+    by_new = {r["series_id"]: r for r in new_series}
+    series_rows = [by_new.pop(r.get("series_id"), r) for r in old_series]
+    series_rows += list(by_new.values())
+    point_rows = [r for r in read_point_rows(config_dir) if r.get("series_id") not in drop_points]
+    if series_rows:  # stats だけの取り込みでも、stat_id と series_id がぶつかるのを見る
+        _series_check(config_dir, series_rows, point_rows, stats_rows, themes)
 
     fadded = {r["finding_id"] for r in new_findings}
     find_rows = [r for r in fold if r.get("finding_id") not in fadded] + new_findings
@@ -875,6 +902,9 @@ def merge_checks(
         find_path.write_text(find_text, "utf-8")
     if new_series:
         (config_dir / SERIES_FILE).write_text(_csv_text(SERIES_COLUMNS, series_rows), "utf-8")
+    if drop_points:
+        write_points(config_dir, drop_points, [])
+        res.series_refetch = sorted(drop_points)
     ai_series = set(res.series_ai)
     res.series_added = [r["series_id"] for r in new_series if r["series_id"] not in ai_series]
     ai_stats, ai_findings = set(res.stats_ai), set(res.findings_ai)
@@ -933,7 +963,7 @@ def todo_drafts(drafts: dict[str, Any], todo: dict[str, Any], config_dir: Path) 
             missing.append(fid)
             continue
         findings.append({**draft_f.get(fid, {}), **ledger_f[fid]})
-    _, series_rows = _read_csv(config_dir / SERIES_FILE)
+    series_rows = read_series_rows(config_dir)
     ledger_r = {r["series_id"]: r for r in series_rows}
     draft_r = {d["series_id"]: d for d in drafts.get("series") or []}
     series = []

@@ -104,6 +104,7 @@ def config_dir(tmp_path):
     d = tmp_path / "config"
     d.mkdir()
     shutil.copy(DEFAULT_CONFIG_DIR / "themes.yaml", d / "themes.yaml")
+    shutil.copy(DEFAULT_CONFIG_DIR / "blocked_keywords.yaml", d / "blocked_keywords.yaml")
     with (d / "stats.csv").open("w", encoding="utf-8", newline="") as f:
         w = csv.writer(f, lineterminator="\n")
         w.writerow(
@@ -651,12 +652,15 @@ def test_merge_ng_series_is_not_written(sconf):
 def test_merge_replaces_same_id_keeps_order_and_appends(sconf):
     other = _srow({**FILE_SERIES, "series_id": "zzz_other"})
     old = _srow(API_SERIES, label="古い", checked_by=AI_CHECKER, checked_at="2026-11-01")
-    _write_ledger(sconf, [_prow()], [other, old])
+    _write_ledger(sconf, [_prow()], [old, other])
     key = _skey(sconf)
     merge_checks(_sdrafts(API_SERIES), {key: {"v": "ok", "at": _at()}}, sconf)
     ids = [r["series_id"] for r in _series_file(sconf)]
-    assert ids == ["zzz_other", "work_rate"]
-    assert _series_file(sconf)[1]["label"] == API_SERIES["label"]
+    assert ids == ["work_rate", "zzz_other"]  # 同じ場所で入れ替える（後ろに回さない）
+    assert _series_file(sconf)[0]["label"] == API_SERIES["label"]
+    new = _sdrafts({**FILE_SERIES, "series_id": "work_rate2"})
+    assert merge_checks(new, {}, sconf, accept_rest=True).series_ai == ["work_rate2"]
+    assert [r["series_id"] for r in _series_file(sconf)][-1] == "work_rate2"  # 新しいのは末尾
 
 
 def test_accept_rest_series_is_ai_and_keeps_human_rows(sconf):
@@ -678,7 +682,7 @@ def test_accept_rest_series_is_ai_and_keeps_human_rows(sconf):
     others = [r for r in _series_file(sconf) if r["series_id"] != "work_rate"]
     _write_ledger(sconf, [_prow(), _prow("file_rate", "2020", "5")], [human, *others])
     res = merge_checks(drafts, {}, sconf, accept_rest=True)
-    assert res.series_ai == [] or "work_rate" not in res.series_ai
+    assert res.series_ai == ["file_rate"]
     row = next(r for r in _series_file(sconf) if r["series_id"] == "work_rate")
     assert row["label"] == "人の文" and row["checked_by"] == HUMAN_CHECKER
 
@@ -715,7 +719,11 @@ def test_broken_series_writes_nothing_anywhere(sconf):
     stats_before = (sconf / "stats.csv").read_text("utf-8")
     bad = {**API_SERIES, "themes": ["ない主題"]}
     drafts = {**_drafts(), "series": [bad]}
-    checks = {stat_key(STAT): {"v": "ok", "at": _at()}, _skey(sconf, bad): {"v": "ok", "at": _at()}}
+    checks = {
+        stat_key(STAT): {"v": "ok", "at": _at()},
+        finding_key(FINDING): {"v": "ok", "at": _at(), "read": True, "retr": True},
+        _skey(sconf, bad): {"v": "ok", "at": _at()},
+    }
     with pytest.raises(SourcesError, match="stat_series.csv"):
         merge_checks(drafts, checks, sconf)
     assert (sconf / "stats.csv").read_text("utf-8") == stats_before
@@ -819,3 +827,269 @@ def test_series_without_points_loads_into_the_ssd(sconf, tmp_path):
     assert load_series(conn, sconf, sconf.parent / "docs" / "estat")[0] == 1
     r = conn.execute("SELECT latest_period, stale FROM stat_series").fetchone()
     assert r["latest_period"] is None and r["stale"] == 1  # 数が無いので、今の数としては使えない
+
+
+# --- 選び方（selector）の変更・数なしの「合っている」・鍵・抜き出し -----------------------
+
+NEW_SELECTOR = {"parts": [{**FILE_SELECTOR["parts"][0], "values": "D13:F13"}]}
+
+
+def _file_ledger(config_dir, by=HUMAN_CHECKER):
+    """ファイル系列と api 系列が台帳にあり、それぞれ点がある。"""
+    _write_ledger(
+        config_dir,
+        [_prow(), _prow("file_rate", "2019", "5"), _prow("file_rate", "2020", "6")],
+        [
+            _srow(API_SERIES),
+            _srow(FILE_SERIES, checked_by=by, checked_at="2026-11-01"),
+        ],
+    )
+
+
+def _changed_item():
+    return {**FILE_SERIES, "selector": NEW_SELECTOR}
+
+
+def test_selector_change_shows_no_points_and_takes_no_owner_ok(sconf):
+    _file_ledger(sconf)
+    # 人が確かめた行と選び方が違う下書き：台帳の数（古い選び方のもの）は出さない
+    full = with_series_data(_sdrafts(_changed_item()), sconf)
+    it = page_items(full)[0]
+    assert it["points"] == [] and it["has_numbers"] is False and it["line"] == ""
+    same = page_items(with_series_data(_sdrafts(FILE_SERIES), sconf))[0]
+    assert [p["period"] for p in same["points"]] == ["2019", "2020"] and same["has_numbers"]
+    before = (sconf / SERIES_FILE).read_text("utf-8"), (sconf / POINTS_FILE).read_text("utf-8")
+    res = merge_checks(_sdrafts(_changed_item()), {it["k"]: {"v": "ok", "at": _at()}}, sconf)
+    assert res.series_added == [] and res.series_ai == [] and res.series_refetch == []
+    assert any("選び方が変わった" in x and "--accept-rest" in x for x in res.skipped)
+    assert (
+        (sconf / SERIES_FILE).read_text("utf-8"),
+        (sconf / POINTS_FILE).read_text("utf-8"),
+    ) == before
+
+
+def test_selector_change_with_accept_rest_drops_only_that_series_points(sconf):
+    _file_ledger(sconf, AI_CHECKER)
+    key = page_items(with_series_data(_sdrafts(_changed_item()), sconf))[0]["k"]
+    # 押した「合っている」も、押していないのと同じ。AI の行で入れて、その系列の点だけ外す
+    res = merge_checks(
+        _sdrafts(_changed_item()), {key: {"v": "ok", "at": _at()}}, sconf, accept_rest=True
+    )
+    assert res.series_ai == ["file_rate"] and res.series_refetch == ["file_rate"]
+    rows = {r["series_id"]: r for r in _series_file(sconf)}
+    assert json.loads(rows["file_rate"]["selector"]) == NEW_SELECTOR
+    assert rows["file_rate"]["checked_by"] == AI_CHECKER and rows["file_rate"]["checked_sha"] == ""
+    assert {r["series_id"] for r in read_point_rows(sconf)} == {"work_rate"}
+
+
+def test_selector_change_that_fails_the_check_drops_nothing(sconf):
+    _file_ledger(sconf, AI_CHECKER)
+    bad = {**_changed_item(), "themes": ["ない主題"]}
+    before = (sconf / POINTS_FILE).read_text("utf-8")
+    with pytest.raises(SourcesError):
+        merge_checks(_sdrafts(bad), {}, sconf, accept_rest=True)
+    assert (sconf / POINTS_FILE).read_text("utf-8") == before
+
+
+def test_label_only_change_keeps_the_points(sconf):
+    _file_ledger(sconf)
+    item = {**FILE_SERIES, "label": "言い直したファイルの系列"}
+    it = page_items(with_series_data(_sdrafts(item), sconf))[0]
+    assert it["has_numbers"] and [p["period"] for p in it["points"]] == ["2019", "2020"]
+
+
+def test_cli_prints_the_refetch_command(sconf, tmp_path):
+    _file_ledger(sconf, AI_CHECKER)
+    drafts = tmp_path / "d.json"
+    drafts.write_text(json.dumps(_sdrafts(_changed_item()), ensure_ascii=False), "utf-8")
+    checks = tmp_path / "c.json"
+    checks.write_text("{}", "utf-8")
+    shutil.copy(DEFAULT_CONFIG_DIR / "sources.yaml", sconf / "sources.yaml")
+    settings = sconf / "s.toml"
+    settings.write_text("[paths]\n", "utf-8")
+    res = CliRunner().invoke(
+        app,
+        ["sources", "merge", "--drafts", str(drafts), "--from", str(checks), "--accept-rest",
+         "--settings", str(settings)],
+    )  # fmt: skip
+    assert res.exit_code == 0, res.output
+    assert "数を取り直す：uv run koten stats fetch --series file_rate" in res.output
+
+
+def test_owner_ok_without_points_is_an_untapped_row(sconf):
+    _write_ledger(sconf, [])
+    drafts = _sdrafts(API_SERIES)
+    key = _skey(sconf)
+    res = merge_checks(drafts, {key: {"v": "ok", "at": _at()}}, sconf)
+    assert res.series_added == [] and res.series_ai == [] and _series_file(sconf) == []
+    assert any("--accept-rest" in x for x in res.skipped)
+    res = merge_checks(drafts, {key: {"v": "ok", "at": _at()}}, sconf, accept_rest=True)
+    assert res.series_ai == ["work_rate"] and res.series_added == []
+    assert any("数がまだ無い" in x for x in res.skipped)
+    assert _series_file(sconf)[0]["checked_by"] == AI_CHECKER
+
+
+def test_page_refuses_ok_when_a_series_has_no_numbers(sconf):
+    _write_ledger(sconf, [])
+    html = build_page(with_series_data(_sdrafts(API_SERIES), sconf))
+    assert 'it.kind === "series" && !it.has_numbers' in html and "数が入るまで押せません" in html
+    assert page_items(with_series_data(_sdrafts(API_SERIES), sconf))[0]["has_numbers"] is False
+    # 数でない印だけの系列も「数が無い」
+    _write_ledger(sconf, [_prow(value="", mark="x")])
+    assert page_items(with_series_data(_sdrafts(API_SERIES), sconf))[0]["has_numbers"] is False
+
+
+def test_series_link_and_count_ignore_gaps_and_bad_schemes():
+    html = build_page({"made": "", "stats": [], "findings": [], "leads": [], "series": []})
+    assert "const webUrl" in html and "filter((p) => !p.gap).length" in html
+    assert "opener(webUrl(it.link) || webUrl(it.url)" in html
+
+
+def test_series_key_has_id_and_trend_and_survey(sconf):
+    a = with_series_data(_sdrafts(API_SERIES), sconf)["series"][0]
+    b = {**a, "series_id": "work_rate_b"}
+    assert series_key(a) != series_key(b)  # 中身が同じでも、別の系列は別の鍵
+    assert series_key(a) != series_key({**a, "trend_note": "言い直した"})
+    assert series_key(a) != series_key({**a, "survey": "別の調査"})
+    assert series_key(a) != series_key({**a, "period_kind": "年度"})
+    # 取り込み：同じ中身の2系列がどちらも入る
+    _write_ledger(sconf, [_prow(), _prow("work_rate_b", "2019", "10")])
+    (sconf.parent / "docs" / "estat" / "work_rate_b.json").write_text(
+        json.dumps(API_META, ensure_ascii=False), "utf-8"
+    )
+    drafts = _sdrafts(API_SERIES, {**API_SERIES, "series_id": "work_rate_b"})
+    res = merge_checks(drafts, {}, sconf, accept_rest=True)
+    assert sorted(res.series_ai) == ["work_rate", "work_rate_b"]
+
+
+def test_stats_only_merge_cannot_reuse_a_series_id(sconf):
+    _write_ledger(sconf, [_prow()], [_srow(API_SERIES)])
+    before = (sconf / "stats.csv").read_text("utf-8")
+    stat = {**STAT, "stat_id": "work_rate", "replaces": ""}
+    with pytest.raises(SourcesError, match="work_rate"):
+        merge_checks(
+            {**_drafts(), "stats": [stat]}, {stat_key(stat): {"v": "ok", "at": _at()}}, sconf
+        )
+    assert (sconf / "stats.csv").read_text("utf-8") == before
+
+
+def test_missing_blocked_keywords_stops_the_series_merge(sconf):
+    (sconf / "blocked_keywords.yaml").unlink()
+    with pytest.raises(SourcesError, match="blocked_keywords"):
+        merge_checks(_sdrafts(API_SERIES), {}, sconf, accept_rest=True)
+    assert _series_file(sconf) == []
+
+
+def test_todo_survives_a_short_ledger_row(sconf):
+    (sconf / SERIES_FILE).write_text(",".join(SERIES_COLUMNS) + "\nwork_rate,仕事の量\n", "utf-8")
+    out = todo_drafts(_sdrafts(API_SERIES), {"series": ["work_rate"]}, sconf)
+    assert out["series"][0]["series_id"] == "work_rate"
+
+
+# --- ファイルの抜き出し（file_excerpt・_series_excerpt） --------------------------------
+
+
+def _csv_file(path):
+    rows = [[f"r{r}c{c}" for c in range(8)] for r in range(16)]
+    rows[11][3:6] = ["10.1", "10.2", "10.3"]
+    path.write_text("\n".join(",".join(r) for r in rows), "utf-8")
+    return path
+
+
+def _file_item():
+    spec = {**FILE_SELECTOR["parts"][0], "sheet": ""}
+    return {**FILE_SERIES, "selector": {"parts": [spec]}, "points": [], "meta": None}
+
+
+def test_file_excerpt_fetches_the_newest_part_and_cuts_the_cells(tmp_path):
+    from koten.sources.check import file_excerpt
+
+    seen = []
+
+    def fetch(url, rel):
+        seen.append((url, rel))
+        return _csv_file(tmp_path / "f.csv"), "2026-11-27"
+
+    x = file_excerpt(_file_item(), fetch)
+    assert seen == [
+        ("https://www.e-stat.go.jp/stat-search/file-download?statInfId=000031000001&fileKind=0",
+         "files/000031000001_0")
+    ]  # fmt: skip
+    assert [x["rows"][r][c] for r, c in x["hl"]] == ["10.1", "10.2", "10.3"]
+
+
+def test_file_excerpt_refuses_ids_that_are_not_digits(tmp_path):
+    from koten.sources.check import file_excerpt
+
+    item = _file_item()
+    item["selector"]["parts"][0]["statInfId"] = "../../etc"
+    with pytest.raises(SourcesError, match="数字"):
+        file_excerpt(item, lambda url, rel: pytest.fail("取りに行かない"))
+
+
+class _FakeFetcher:
+    def __init__(self, path=None, error=None):
+        self.path, self.error, self.manifest, self.calls = path, error, {}, []
+
+    def fetch(self, url, rel, refresh=False):
+        self.calls.append(rel)
+        if self.error:
+            raise self.error
+        return self.path, None
+
+
+def _cli_settings(config_dir):
+    import koten.cli as cli
+
+    path = config_dir / "s.toml"
+    root = config_dir.parent
+    path.write_text(
+        f'[paths]\nhdd_root = "{root / "nohdd"}"\nssd_root = "{root / "ssd"}"\n', "utf-8"
+    )
+    return cli, cli._settings(str(path))
+
+
+def test_series_excerpt_provider_reads_through_the_fetcher(sconf, tmp_path, monkeypatch):
+    cli, s = _cli_settings(sconf)
+    fake = _FakeFetcher(_csv_file(tmp_path / "f.csv"))
+    monkeypatch.setenv("KOTEN_CONTACT", "t@koten.invalid")
+    monkeypatch.setattr(cli, "_make_fetcher", lambda s, raw_dir, client=None: fake)
+    x = cli._series_excerpt(s)(_file_item())
+    assert x and fake.calls == ["files/000031000001_0"]
+
+
+def test_series_excerpt_provider_notes_failures_and_still_returns_none(
+    sconf, tmp_path, monkeypatch, capsys
+):
+    cli, s = _cli_settings(sconf)
+    monkeypatch.setenv("KOTEN_CONTACT", "t@koten.invalid")
+    fake = _FakeFetcher(error=OSError("取れない"))
+    monkeypatch.setattr(cli, "_make_fetcher", lambda s, raw_dir, client=None: fake)
+    assert cli._series_excerpt(s)(_file_item()) is None
+    assert "ファイルの抜き出しを作れません" in capsys.readouterr().err
+
+
+def test_sources_page_works_without_a_contact_and_says_so_once(sconf, tmp_path, monkeypatch):
+    monkeypatch.delenv("KOTEN_CONTACT", raising=False)
+    drafts = tmp_path / "d.json"
+    two = {**_file_item(), "series_id": "file_rate2"}
+    drafts.write_text(json.dumps(_sdrafts(_file_item(), two), ensure_ascii=False), "utf-8")
+    shutil.copy(DEFAULT_CONFIG_DIR / "sources.yaml", sconf / "sources.yaml")
+    settings = sconf / "s.toml"
+    settings.write_text("[paths]\n", "utf-8")
+    out = tmp_path / "p.html"
+    res = CliRunner().invoke(
+        app,
+        [
+            "sources",
+            "page",
+            "--drafts",
+            str(drafts),
+            "--out",
+            str(out),
+            "--settings",
+            str(settings),
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    assert res.output.count("KOTEN_CONTACT") == 1 and "file_rate2" in out.read_text("utf-8")

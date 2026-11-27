@@ -223,6 +223,10 @@ def _selector_problems(kind: str, sel: Any) -> list[str]:
             for k in ("statInfId", "fileKind", "values"):
                 if not str(part.get(k, "")).strip():
                     out.append(f"selector の parts[{i}] に {k} が無い")
+            for k in ("statInfId", "fileKind"):
+                v = str(part.get(k, "")).strip()
+                if v and not re.fullmatch(r"[0-9]+", v):
+                    out.append(f"selector の parts[{i}] の {k} は半角の数字だけ（{v!r}）")
             if "sheet" not in part:
                 out.append(f'selector の parts[{i}] に sheet が無い（CSV は ""）')
             if not (part.get("periods_cells") or part.get("periods")):
