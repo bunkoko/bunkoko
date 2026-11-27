@@ -52,6 +52,9 @@
 - uv run koten facts todo --episode <ID> → facts draft --episode <ID>（AI の下書き）→ facts review（下書きを読む）→ 人が別の資料で確かめ、CSV の accept に 1 → facts accept（--from を省くと最新の下書き）→ facts build → facts attach --episode <ID>（企画に事実を付け直す）→ script
 - uv run koten findings build（config/findings.csv の研究の一文を SSD に入れる。書き方は docs/findings.md）／ findings list
 - 統計と研究の候補（docs/sources_check.md）：Claude が下書き（docs/research/*-source-drafts.json）を作る → KOTEN_CONTACT=… uv run koten sources locate --drafts その下書き（元の資料の該当ページの画像に印・論文の該当の文。data/sources-img）→ uv run koten sources merge --from 押した結果の JSON --accept-rest（押していない統計と CC BY の研究は AI が確かめた行として台帳へ）。回で使った AI の行は承認の前に人が確かめる：Mac で uv run koten sources todo --episode E…（docs/checks/E….json を GitHub へ）→ Claude が uv run koten sources page --todo docs/checks/E….json でその行だけのページを作り、画像と一緒にアーティファクト「統計と研究の確かめ」に載せる → 人が押す → uv run koten sources merge --todo docs/checks/E….json --from その JSON（民間の調査・有料の論文は人が書いた数字と言葉だけ）
+- uv run koten stats meta --drafts docs/research/2026-11-27-series-drafts.json（Mac のみ・API の系列。KOTEN_ESTAT_APPID が .env に要る。分類の名前から符号を決めて下書きと docs/estat の系列ごとのファイル に書く。手順は docs/stat_series.md）
+- uv run koten stats fetch（e-Stat から系列の数を取り config/stat_points.csv に書く。--check＝書かずに確かめる・--refresh＝取り直す・--series 系列の ID・--drafts＝下書きを確かめるだけ。保留の系列は飛ばす。API の系列は Mac のみ。続けて db init。docs/stat_series.md）
+- uv run koten stats list（SSD の系列の一覧。--theme・--stale＝新しい年が出ているのに古い・--unchecked＝オーナーが未確認。docs/stat_series.md）
 - uv run koten ref check（config/ref_works.csv・ref_people.csv の資料を、関わった人全員の没年・団体名義・版・NDL の公開範囲で1冊ずつ判定する。書き込みはしない）
 - uv run koten ref build（台帳と、人が確かめた時代の解釈 renderings.csv・昔の辞書 dict_entries.csv から SSD の表を作り直す）→ ref show --word 普通 ／ --passage lunyu:1.1（手順は docs/ref_sources.md）
 - uv run koten ref fetch（台帳で使えると判定された古い英訳を Standard Ebooks と Project Gutenberg のミラー（sources.yaml の gutenberg.mirror）から net.py で取り、一節ごとに分けて HDD に置く）→ ref build

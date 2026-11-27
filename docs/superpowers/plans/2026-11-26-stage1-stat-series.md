@@ -49,7 +49,7 @@
 | src/koten/doctor.py（変更） | appId が設定されているか（値は出さない） |
 | src/koten/sources/check.py・page.html（変更） | 下書き・ページ・取り込み・回の確かめに「series」 |
 | config/stat_series.csv・stat_points.csv（新、見出しだけ） | 台帳 |
-| docs/estat/（新） | 表の情報（選んだ分類だけ） |
+| docs/estat/<series_id>.json（新。系列ごとに1つ。R17） | 表の情報（選んだ分類だけ） |
 | config/settings.toml・.env.example・pyproject.toml（変更） | 設定・依存 |
 | docs/stat_series.md（新）・docs/sources_check.md・docs/decisions.md・CLAUDE.md（変更） | 手順と記録 |
 
@@ -273,7 +273,7 @@ def test_owner_ok_lapses_after_a_refetch(tmp_conn, cfg):
   - `@dataclass class TableMeta: stats_data_id, stat_code, stat_name, gov_org_code, gov_org, statistics_name, title, title_no, cycle, survey_date, open_date, updated_date: str; classes: list[ClassObj]`
   - `parse_meta(data: dict) -> TableMeta`（`GET_META_INFO.METADATA_INF` か `GET_STATS_DATA.STATISTICAL_DATA` の TABLE_INF・CLASS_INF。属性は `@id`・`@code`・`@name`・`@level`・`@unit`・`@no`、値は `$`。TITLE は文字か {"@no","$"}）
   - `resolve_selector(meta: TableMeta, names: dict[str, str]) -> dict[str, str]`：names は「分類の名前（CLASS_OBJ の @name）→ 項目の名前（CLASS の @name）」。時間（id "time"）以外の分類ごとに1つの符号を決め、`{"statsDataId": …, "cdTab": …, "cdCat01": …, "cdArea": …}` を返す（鍵は `"cd" + id の頭を大文字`：tab→cdTab、cat01→cdCat01、area→cdArea）。項目が1つだけの分類は名前が無くてもそれを使う。名前が無い・見つからない・2つ当たるときは、その分類の項目の名前を（30 個まで）並べた EstatError。名前は全角半角と空白を揃えて比べる（unicodedata.normalize("NFKC") と空白の除去）。
-  - `meta_record(meta: TableMeta, selector: dict) -> dict`：docs/estat/<id>.json に書く形。`{"stats_data_id","stat_code","stat_name","gov_org","statistics_name","title","title_no","cycle","survey_date","open_date","updated_date","chosen": [{"class": 分類名, "item": 項目名, "code": 符号, "unit": 単位}], "times": [{"code","name"}], "fetched_at"}`。
+  - `meta_record(meta: TableMeta, selector: dict) -> dict`：docs/estat/<series_id>.json（R17） に書く形。`{"stats_data_id","stat_code","stat_name","gov_org","statistics_name","title","title_no","cycle","survey_date","open_date","updated_date","chosen": [{"class": 分類名, "item": 項目名, "code": 符号, "unit": 単位}], "times": [{"code","name"}], "fetched_at"}`。
   - `period_of(code: str, name: str) -> tuple[str, str]`：名前を series.parse_year で読み（SeriesError は EstatError にして投げ直す）、符号の頭4桁の年と合わなければ EstatError。
   - `parse_values(data: dict, selector: dict) -> tuple[list[tuple[str, str, str, str]], str | None]`：((period, value, mark, unit) の並び, NEXT_KEY)。VALUE の `$` が数として読めなければ mark にし value は ""。selector の符号と違う `@tab`・`@cat01`・`@area` の行があれば EstatError（1つの問いに決まっていない）。同じ年が2つあれば EstatError。
   - `cross_check(s: Series, meta: TableMeta, units: set[str]) -> list[str]`：unit（`％`→`%` に揃える）・survey == stat_name・publisher == gov_org・table_title == title。違えば何が違うかの文。
@@ -365,7 +365,7 @@ def test_overlapping_years_between_parts_is_refused(tmp_path): ...
   - settings：`[rate_limit.min_interval_sec]` に `"e-stat.go.jp" = 2.0`。新しい `[estat]`：`api_base = "https://api.e-stat.go.jp/rest/3.0/app/json"`、`lang = "J"`。
   - .env.example：`KOTEN_ESTAT_APPID=`（値は書かない）。
   - キャッシュの場所：HDD があれば `<hdd>/raw/estat`、無ければ `data/estat-cache`（.gitignore 済みの data/）。関数 `_estat_cache(s) -> Path`。
-  - `koten stats meta --drafts PATH`（Mac。appId が要る）：下書きの series のうち source_kind が estat_api で `selector_names` があるものについて、meta を取り、resolve_selector の結果を下書きの `selector` に書き戻し、`docs/estat/<statsDataId>.json` に meta_record を書く。名前が合わない系列は赤で理由（候補の名前）を出し、ほかは続ける。
+  - `koten stats meta --drafts PATH`（Mac。appId が要る）：下書きの series のうち source_kind が estat_api で `selector_names` があるものについて、meta を取り、resolve_selector の結果を下書きの `selector` に書き戻し、`docs/estat/<series_id>.json（R17。系列ごと）` に meta_record を書く。名前が合わない系列は赤で理由（候補の名前）を出し、ほかは続ける。
   - `koten stats fetch [--series ID]... [--refresh] [--check] [--drafts PATH]`：
     - 対象は、--drafts があれば下書きの series、無ければ台帳の系列（--series で絞る）。
     - API の系列は KOTEN_ESTAT_APPID が無ければ「この環境には e-Stat の ID が無いので飛ばす」と出して飛ばす。ファイルの系列はどこでも。

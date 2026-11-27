@@ -100,7 +100,7 @@ E20261124-01（形式B・北原白秋『フレップ・トリップ』）を ch2
 |---|---|---|
 | config/stat_series.csv（Git） | 系列の定義 | `koten sources merge`（Claude の下書き → 見直し役 → オーナーの確かめ） |
 | config/stat_points.csv（Git） | 年ごとの数 | `koten stats fetch`（Mac。ファイルの系列はクラウドでも `--check` で確かめるだけ） |
-| docs/estat/<統計表ID>.json（Git） | 表の情報（政府統計名・作成機関・表題と表番号・調査年月・公開日・最終更新日）と、**選んだ分類の符号と名前だけ** | `koten stats meta`／`stats fetch`（Mac） |
+| docs/estat/<series_id>.json（Git。系列ごとに1つ。R17） | 表の情報（政府統計名・作成機関・表題と表番号・調査年月・公開日・最終更新日）と、**選んだ分類の符号と名前だけ** | `koten stats meta`／`stats fetch`（Mac） |
 | HDD raw/estat/（Mac）、data/estat-cache/（クラウド、Git に入れない） | 取ったままの応答とファイル（net.py のキャッシュ） | net.py |
 | SSD の stat_series・stat_points 表 | 上の CSV ＋ 読み込みのときに計算する値 | `koten db init` |
 

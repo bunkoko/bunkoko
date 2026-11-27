@@ -391,6 +391,7 @@ yet → planned → script_done → voice_done → image_done → composed → r
 | 収集元 | 使い道 | 取り込み方 | 注意 |
 |---|---|---|---|
 | 公的統計 | テーマの重み | config/stats.csv を年1回、手で更新 | 数値と出典URLを必ず残す |
+| 公的統計（e-Stat の系列。API とファイル） | 複数年の数（今と昔を比べる） | `koten stats meta`・`stats fetch`（数はプログラムが e-Stat から写す）→ config/stat_series.csv・stat_points.csv。手順は docs/stat_series.md | appId は Mac の .env にだけ（KOTEN_ESTAT_APPID）。数は AI が書かない。回で使った系列は人が確かめる |
 | 検索データ（Googleキーワードプランナー、Googleトレンド、YouTubeの検索候補、YouTube Studioで見られる視聴者の検索語） | 言い回しと需要 | 手で書き出したCSVを `koten worries import --from csv` で取り込む | 自動スクレイピングはしない |
 | 自分のチャンネルのコメント・フォーム | 生の声 | YouTube Data API の commentThreads.list を動画ごとに呼ぶ | 名前・地名など個人が分かる語を除き、そのまま使わず一般化する |
 | Q&Aサイト（知恵袋・発言小町・Redditなど） | 傾向の把握 | 人が読み、一般化した文を手で入力する | 自動収集・転載はしない |
@@ -513,6 +514,7 @@ yet → planned → script_done → voice_done → image_done → composed → r
 | `koten kit --episode <id>` | 説明欄・チャプター・字幕・サムネイルを作る |
 | `koten review export --date <YYYY-MM-DD>` | 確認画面（HTML）を出す |
 | `koten eval retrieval` | 評価セットで検索の指標を出す |
+| `koten stats meta --drafts <下書き>`（Mac）、`koten stats fetch [--check] [--refresh] [--series ID] [--drafts <下書き>]`、`koten stats list [--theme] [--stale] [--unchecked]` | e-Stat の系列：分類の符号を決める・数を取る・一覧（docs/stat_series.md） |
 
 **API**（FastAPI、127.0.0.1のみで待ち受ける）
 
@@ -582,7 +584,7 @@ bitrate = "8M"
 per_host_per_sec = 1
 ```
 
-APIキー（ANTHROPIC_API_KEY、OPENALEX_API_KEY、YOUTUBE_API_KEY）は .env に置き、コミットしません。
+APIキー（ANTHROPIC_API_KEY、OPENALEX_API_KEY、YOUTUBE_API_KEY、KOTEN_ESTAT_APPID）は .env に置き、コミットしません。
 
 ## 12. 品質評価とテスト
 検索は評価セットの数字で、台本はゲート通過率と人の承認率で、公開後は視聴維持率で良し悪しを見ます。結果は docs/decisions.md に記録して比べます。
