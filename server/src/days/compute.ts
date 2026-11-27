@@ -17,9 +17,11 @@ import {
   type SleepSegment,
 } from "./sleep";
 
-export const ALGO_VERSION = 4;
+export const ALGO_VERSION = 5;
 /** センサーの値を取る間隔（分）。「目安を超えた回数 × 5分」で時間にする */
 export const POLL_INTERVAL_MIN = 5;
+/** 部屋が暗くなった時刻を探すとき、最後に明るかった時刻を、布団に入る何時間前までさかのぼるか（寝る前の2時間より前に暗くした夜もとらえる） */
+export const DARK_LOOKBACK_MS = 6 * HOUR_MS;
 /** 人感センサー Pro の明るさ（1〜20）がこれ以上なら「明るい」。実測（2026-11-25〜26）: 天井の照明 11、間接照明 2〜4、消灯 1（docs/phase1-design.md の 4.3） */
 export const BRIGHT_LIGHT_LEVEL = 5;
 /** プラグミニの消費電力（W）がこれを超えたら「動いている」 [TBD: 実データで調整] */
@@ -363,7 +365,7 @@ export async function computeDay(
            AND metric = 'power' AND lower(value_text) = 'on' AND measured_at >= ?3 AND measured_at < ?4`,
       )
       .bind(userId, ceiling, preStart, sleepStart + HOUR_MS),
-    // 部屋が暗くなった時刻（人感センサーの照度）。同じ範囲で、最後に明るかった時刻より後の、最初の暗い値
+    // 部屋が暗くなった時刻（人感センサーの照度）。布団に入る6時間前から寝ついて1時間後までで、最後に明るかった時刻より後の、最初の暗い値
     db
       .prepare(
         `SELECT MIN(d.measured_at) AS dark_at FROM readings AS d
@@ -374,7 +376,7 @@ export async function computeDay(
              WHERE b.user_id = ?1 AND b.source = 'poll' AND b.device_id IN (SELECT value FROM json_each(?2))
                AND b.metric = 'lightLevel' AND b.value_num >= ?3 AND b.measured_at >= ?4 AND b.measured_at < ?5)`,
       )
-      .bind(userId, JSON.stringify(roles.bedPresence), BRIGHT_LIGHT_LEVEL, preStart, sleepStart + HOUR_MS),
+      .bind(userId, JSON.stringify(roles.bedPresence), BRIGHT_LIGHT_LEVEL, bedRef - DARK_LOOKBACK_MS, sleepStart + HOUR_MS),
     // 寝る前に窓を開けた回数（Webhook の「開いた」の数）
     db
       .prepare(

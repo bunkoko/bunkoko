@@ -198,6 +198,16 @@ describe("computeDay", () => {
     });
   });
 
+  it("布団に入る2時間より前に暗くした夜も、部屋が暗くなった時刻を出す（布団に入る6時間前まで見る）", async () => {
+    seedNight();
+    // 20:30 から間接照明（明るさ 3）。寝る前の2時間（21:10〜23:10）は、ずっと暗い
+    db.sqlite.prepare(`UPDATE readings SET value_num = 3 WHERE device_id = 'P1' AND metric = 'lightLevel' AND measured_at >= ?`).run(at(PREV, "20:30"));
+    const metrics = await computeDay(db.d1, "me", D, settings, await loadRoles(db.d1, "me", {}));
+    expect(metrics.preBed.roomDarkAt).toBe(at(PREV, "20:30"));
+    expect(metrics.preBed.roomBrightMin).toBe(0);
+    expect(metrics.preBed.roomLightLevelAvg).toBe(3);
+  });
+
   it("照明をつけたまま寝た夜は、部屋が暗くなった時刻を出さない", async () => {
     seedNight();
     db.sqlite.prepare(`UPDATE readings SET value_num = 12 WHERE device_id = 'P1' AND metric = 'lightLevel'`).run();
