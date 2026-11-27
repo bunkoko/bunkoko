@@ -78,7 +78,7 @@ def cfg(tmp_path):
     )
     meta = tmp_path / "docs" / "estat"
     meta.mkdir(parents=True)
-    (meta / "0003000001.json").write_text(json.dumps(META, ensure_ascii=False), encoding="utf-8")
+    (meta / "work_rate.json").write_text(json.dumps(META, ensure_ascii=False), encoding="utf-8")
     write_csv(c / SERIES_FILE, SERIES_COLUMNS, [srow()])
     write_csv(c / POINTS_FILE, POINTS_COLUMNS, GOOD_POINTS)
     return c
@@ -129,7 +129,7 @@ def test_bad_reload_keeps_the_previous_load(conn, cfg, meta_dir):
 
 
 def test_missing_meta_is_a_problem(conn, cfg, meta_dir):
-    (meta_dir / "0003000001.json").unlink()
+    (meta_dir / "work_rate.json").unlink()
     with pytest.raises(StatsError):
         load_series(conn, cfg, meta_dir)
     assert count(conn, "stat_series") == 0
@@ -152,7 +152,7 @@ def test_loaded_points_carry_segment_value_num_and_label(conn, cfg, meta_dir):
 
 def test_owner_ok_lapses_after_a_refetch(conn, cfg, meta_dir):
     s = parse_series([srow()])[0]
-    sha = check_sha(s, parse_points(GOOD_POINTS), load_meta(meta_dir, "0003000001"))
+    sha = check_sha(s, parse_points(GOOD_POINTS), load_meta(meta_dir, "work_rate"))
     write_csv(
         cfg / SERIES_FILE,
         SERIES_COLUMNS,

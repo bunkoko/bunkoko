@@ -90,7 +90,7 @@ def env():
         themes={"仕事", "孤独"},
         legacy_ids=set(),
         blocked={"医療": ["うつ病"]},
-        metas={"0003000001": META},
+        metas={"work_rate": META},
     )
 
 
@@ -385,13 +385,18 @@ def test_write_points_replaces_only_the_fetched_series(tmp_path):
 def test_meta_is_required_and_must_match_for_api_series(env):
     assert series_problems([row()], [], **env) == []
     probs = series_problems([row()], [], **{**env, "metas": {}})
-    assert any("0003000001.json" in x and "stats meta" in x for x in probs)
+    assert any("work_rate.json" in x and "stats meta" in x for x in probs)
     for col, key in (("survey", "stat_name"), ("publisher", "gov_org"), ("table_title", "title")):
         bad = {**META, key: "別の名前"}
-        probs = series_problems([row()], [], **{**env, "metas": {"0003000001": bad}})
+        probs = series_problems([row()], [], **{**env, "metas": {"work_rate": bad}})
         assert any(col in x and "別の名前" in x for x in probs), col
     padded = {k: f" {v} " for k, v in META.items()}
-    assert series_problems([row()], [], **{**env, "metas": {"0003000001": padded}}) == []
+    assert series_problems([row()], [], **{**env, "metas": {"work_rate": padded}}) == []
+
+
+def test_load_meta_refuses_an_unsafe_series_id(tmp_path):
+    with pytest.raises(SeriesError):
+        load_meta(tmp_path, "../x")
 
 
 def test_file_series_is_not_checked_against_metas(env):
@@ -458,10 +463,10 @@ def test_label_year_forms(env, label):
 
 def test_blocked_word_in_chosen_names(env):
     meta = {**META, "chosen": [{"class": "区分", "item": "うつ病の人", "code": "1", "unit": "％"}]}
-    probs = series_problems([row()], [], **{**env, "metas": {"0003000001": meta}})
+    probs = series_problems([row()], [], **{**env, "metas": {"work_rate": meta}})
     assert has(probs, "item", "うつ病")
     meta = {**META, "chosen": [{"class": "うつ病", "item": "計", "code": "1", "unit": "％"}]}
-    probs = series_problems([row()], [], **{**env, "metas": {"0003000001": meta}})
+    probs = series_problems([row()], [], **{**env, "metas": {"work_rate": meta}})
     assert has(probs, "class", "うつ病")
 
 
@@ -534,7 +539,7 @@ def test_gate_gaps(env):
     assert has(series_problems([row(**swapped)], [], **env), "trend_from", "後")
     assert has(series_problems([row(selector="{}")], [], **env), "selector", "空")
     nulled = {**META, "title": None}
-    probs = series_problems([row()], [], **{**env, "metas": {"0003000001": nulled}})
+    probs = series_problems([row()], [], **{**env, "metas": {"work_rate": nulled}})
     assert has(probs, "title", "文字列でない") and not has(probs, "'None'")
 
 

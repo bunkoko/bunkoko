@@ -132,9 +132,16 @@ def read_point_rows(config_dir: Path) -> list[dict[str, str]]:
     return _read_rows(Path(config_dir) / POINTS_FILE)
 
 
-def load_meta(meta_dir: Path, stats_data_id: str) -> dict | None:
-    """docs/estat/<statsDataId>.json（選んだ分類だけの表の情報）。無ければ None。"""
-    path = Path(meta_dir) / f"{stats_data_id}.json"
+def valid_series_id(text: str) -> bool:
+    """series_id として使える形か（docs/estat/<series_id>.json の名前にもなる）。"""
+    return bool(_ID_RE.fullmatch(text))
+
+
+def load_meta(meta_dir: Path, series_id: str) -> dict | None:
+    """docs/estat/<series_id>.json（その系列が選んだ分類だけの表の情報）。無ければ None。"""
+    if not valid_series_id(series_id):
+        raise SeriesError(f"series_id {series_id!r} は表の情報のファイル名にできない")
+    path = Path(meta_dir) / f"{series_id}.json"
     if not path.exists():
         return None
     try:
@@ -234,7 +241,8 @@ def series_problems(
 ) -> list[str]:
     """「何行目：何が」の文の一覧。空なら全部読める（読み込みは全部か無しか）。
 
-    metas は statsDataId → 表の情報（load_meta が1表ごとに返すもの）。estat_api の系列は
+    metas は series_id → 表の情報（docs/estat/<series_id>.json を load_meta が返したもの。
+    表ごとでなく系列ごと：同じ表の別の選び方が上書きし合わない）。estat_api の系列は
     表の情報が無ければ問題、あれば survey=stat_name・publisher=gov_org・
     table_title=title が（前後の空白を除いて）一致すること。estat_file の系列は照らさない。
     """
@@ -286,10 +294,10 @@ def series_problems(
                 out.append(f"{p}{m}")
             sdid = sel.get("statsDataId") if isinstance(sel, dict) else None
             if kind == "estat_api" and isinstance(sdid, str) and sdid.strip():
-                meta = metas.get(sdid)
+                meta = metas.get(sid)
                 if meta is None:
                     out.append(
-                        f"{p}{sid} の表の情報（{META_DIR}/{sdid}.json）が無い。"
+                        f"{p}{sid} の表の情報（{META_DIR}/{sid}.json）が無い。"
                         "Mac で uv run koten stats meta を実行する"
                     )
                 else:

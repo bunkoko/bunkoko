@@ -80,15 +80,19 @@ def estat_server(seen, state):
     def handler(req: httpx.Request) -> httpx.Response:
         seen.append(req)
         if "file-download" in req.url.path:
-            return httpx.Response(200, content=state["files"][req.url.params["statInfId"]])
+            body = state["files"].get(req.url.params["statInfId"])
+            return httpx.Response(404 if body is None else 200, content=body or b"")
         q = req.url.params
         assert q.get("appId") == SECRET
         if q.get("statsDataId") == OTHER_SID:
+            if state.get("html"):
+                return httpx.Response(200, text="<html>メンテナンス中</html>")
             return httpx.Response(403, text="forbidden")
         table = table_inf(TITLE={"@no": "410101", "$": state["title"]})
         if req.url.path.endswith("getMetaInfo"):
             return httpx.Response(200, json=meta_json(CLASSES, table=table))
-        body = data_json(state["values"], classes=CLASSES)
+        vals = [{**x, "@cat01": q.get("cdCat01", "2")} for x in state["values"]]
+        body = data_json(vals, classes=CLASSES)
         body["GET_STATS_DATA"]["STATISTICAL_DATA"]["TABLE_INF"] = table
         return httpx.Response(200, json=body)
 
@@ -162,7 +166,7 @@ def test_fetch_writes_points_and_never_prints_the_id(env, monkeypatch):
     )
     rows = read_point_rows(env.config)
     assert [x["period"] for x in rows] == ["2019", "2021", "2022"]
-    rec = json.loads((env.docs / f"{SID}.json").read_text("utf-8"))
+    rec = json.loads((env.docs / "age_rate.json").read_text("utf-8"))
     assert [c["item"] for c in rec["chosen"]] == ["割合", "20～29歳", "全国"]
     assert SECRET not in tree_text(env)  # マニフェスト・キャッシュ・CSV・docs/estat のどこにも無い
     assert env.seen and all(req.url.params["appId"] == SECRET for req in env.seen)
@@ -198,15 +202,16 @@ def test_changed_values_report_and_owner_warning(env, monkeypatch):
     write_csv(env.config / POINTS_FILE, POINTS_COLUMNS, [prow("2019", "9"), prow("2021", "12")])
     r = stats(env, "fetch", "--check")
     assert "2019: 9 → 10" in r.output and "2021:" not in r.output.split("前から")[1]
-    assert "オーナーの確かめが外れる" not in r.output
-    assert "オーナーの確かめが外れる" not in r.output
+    assert "オーナーの確かめが外れる" not in r.output  # 台帳の確かめがオーナーでないので出さない
+    assert "増えた年：2022" in r.output and "消えた年" not in r.output
+    assert read_point_rows(env.config)[0]["value"] == "9"  # --check は書かない
 
 
 def owner_checked(env):
     """今の取り方で台帳に書いたあと、その数・表の情報に対してオーナーが確かめた形にする。"""
     assert stats(env, "fetch").exit_code == 0
     s = parse_series(read_series_rows(env.config))[0]
-    sha = check_sha(s, parse_points(read_point_rows(env.config)), load_meta(env.docs, SID))
+    sha = check_sha(s, parse_points(read_point_rows(env.config)), load_meta(env.docs, "age_rate"))
     row = srow(checked_by=HUMAN_CHECKER, checked_at="2026-11-01", checked_sha=sha)
     write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, [row])
 
@@ -316,7 +321,7 @@ def test_meta_writes_selector_into_drafts_and_chosen_items_only(env, monkeypatch
     assert r.exit_code == 0, r.output
     data = json.loads(path.read_text("utf-8"))
     assert data["series"][0]["selector"] == SEL and "selector" not in data["series"][1]
-    text = (env.docs / f"{SID}.json").read_text("utf-8")
+    text = (env.docs / "age_rate.json").read_text("utf-8")
     assert "20～29歳" in text and "総数" not in text and text.endswith("\n")
     assert "git add docs/estat docs/research" in r.output
     assert SECRET not in r.output and SECRET not in tree_text(env)
@@ -384,5 +389,132 @@ def test_crash_never_shows_locals():
     assert app.pretty_exceptions_show_locals is False
 
 
-def test_secret_pattern_sanity():
-    assert re.fullmatch(r"[0-9a-f]{40}", SECRET)
+def two_series(env, **kw):
+    other = srow(
+        series_id="all_rate", label="全体の割合", selector=json.dumps({**SEL, "cdCat01": "1"})
+    )
+    write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, [srow(**kw), other])
+
+
+def test_failed_file_series_does_not_stop_the_others(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    served_files(env)
+    env.state["files"].pop("000001")  # csv_rate のファイルは 404
+    csv_row = next(r for r in read_series_rows(env.config) if r["series_id"] == "csv_rate")
+    write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, [csv_row, srow()])
+    write_csv(env.config / POINTS_FILE, POINTS_COLUMNS, [prow("2020", "7", series_id="csv_rate")])
+    r = stats(env, "fetch")
+    assert r.exit_code == 1 and "csv_rate" in r.output and "404" in r.output
+    rows = read_point_rows(env.config)
+    assert [(x["series_id"], x["period"]) for x in rows] == [
+        ("age_rate", "2019"), ("age_rate", "2021"), ("age_rate", "2022"), ("csv_rate", "2020"),
+    ]  # fmt: skip
+    assert (env.docs / "age_rate.json").exists()  # 点が書けた系列の表の情報だけ
+    assert SECRET not in r.output and SECRET not in tree_text(env)
+
+
+def test_non_json_answer_is_a_series_failure(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    env.state["html"] = True
+    bad = srow(series_id="bad_rate", selector=json.dumps({**SEL, "statsDataId": OTHER_SID}))
+    write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, [bad, srow()])
+    r = stats(env, "fetch")
+    assert r.exit_code == 1 and "bad_rate" in r.output
+    assert [x["series_id"] for x in read_point_rows(env.config)] == ["age_rate"] * 3
+    assert not (env.docs / "bad_rate.json").exists()
+
+
+def test_nothing_is_written_when_check_only_even_for_meta(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    assert stats(env, "fetch", "--check", "--refresh").exit_code == 0
+    assert not list(env.docs.glob("*.json"))
+
+
+def test_same_table_two_series_keep_their_own_meta_and_owner_check(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    two_series(env)
+    assert stats(env, "fetch").exit_code == 0
+    a = json.loads((env.docs / "age_rate.json").read_text("utf-8"))
+    b = json.loads((env.docs / "all_rate.json").read_text("utf-8"))
+    assert [c["item"] for c in a["chosen"]] == ["割合", "20～29歳", "全国"]
+    assert [c["item"] for c in b["chosen"]] == ["割合", "総数", "全国"]
+    rows = []
+    for s in parse_series(read_series_rows(env.config)):
+        mine = [r for r in read_point_rows(env.config) if r["series_id"] == s.series_id]
+        sha = check_sha(s, parse_points(mine), load_meta(env.docs, s.series_id))
+        rows.append(
+            srow(
+                series_id=s.series_id,
+                label=s.label,
+                selector=json.dumps(s.selector),
+                checked_by=HUMAN_CHECKER,
+                checked_at="2026-11-01",
+                checked_sha=sha,
+            )
+        )
+    write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, rows)
+    before_b = (env.docs / "all_rate.json").read_bytes()
+    r = stats(env, "fetch", "--series", "age_rate", "--refresh")  # 片方だけ取り直す
+    assert r.exit_code == 0 and "all_rate" not in r.output
+    assert "オーナーの確かめが外れる" not in r.output
+    assert (env.docs / "all_rate.json").read_bytes() == before_b
+    r = stats(env, "fetch", "--check")  # 両方とも、確かめは残っている
+    assert r.exit_code == 0 and "オーナーの確かめが外れる" not in r.output
+
+
+def test_series_option_narrows_the_run(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    two_series(env)
+    write_csv(env.config / POINTS_FILE, POINTS_COLUMNS, [prow("2019", "9", series_id="age_rate")])
+    r = stats(env, "fetch", "--series", "all_rate")
+    assert r.exit_code == 0 and "all_rate：" in r.output and "age_rate：" not in r.output
+    rows = read_point_rows(env.config)
+    assert [(x["series_id"], x["value"]) for x in rows if x["series_id"] == "age_rate"] == [
+        ("age_rate", "9")
+    ]  # 頼まなかった系列は触らない
+    assert len([x for x in rows if x["series_id"] == "all_rate"]) == 3
+    assert not (env.docs / "age_rate.json").exists()
+
+
+def test_empty_message_names_the_drafts_file(env):
+    path = env.tmp / "empty.json"
+    path.write_text('{"series": []}', encoding="utf-8")
+    r = stats(env, "fetch", "--drafts", str(path))
+    assert "empty.json" in r.output and SERIES_FILE not in r.output
+
+
+def test_meta_bad_items_are_reported_and_skipped(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    names = {"年齢": "20～29歳"}
+    items = [
+        {"source_kind": "estat_api", "stats_data_id": SID, "selector_names": names},
+        {"series_id": "../evil", "source_kind": "estat_api", "stats_data_id": SID,
+         "selector_names": names},
+        {"series_id": "str_sel", "source_kind": "estat_api", "selector": "oops",
+         "selector_names": names},
+        {"series_id": "list_names", "source_kind": "estat_api", "stats_data_id": SID,
+         "selector_names": ["年齢"]},
+        {"series_id": "age_rate", "source_kind": "estat_api", "stats_data_id": SID,
+         "selector_names": names},
+    ]  # fmt: skip
+    path = env.tmp / "draft.json"
+    path.write_text(json.dumps({"series": items}, ensure_ascii=False), encoding="utf-8")
+    r = stats(env, "meta", "--drafts", str(path))
+    assert r.exit_code == 1
+    for name in ("series_id なし", "../evil", "str_sel", "list_names"):
+        assert name in r.output
+    assert [p.name for p in env.docs.glob("*.json")] == ["age_rate.json"]
+    assert not list(env.root.rglob("evil*")) and not list(env.docs.glob("*.tmp"))
+    assert json.loads(path.read_text("utf-8"))["series"][4]["selector"] == SEL
+
+
+def test_list_shows_a_lapsed_owner_check(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    assert stats(env, "fetch").exit_code == 0
+    owner = srow(checked_by=HUMAN_CHECKER, checked_at="2026-11-01", checked_sha="old")
+    write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, [owner])
+    assert runner.invoke(app, ["db", "init", "--settings", env.settings]).exit_code == 0
+    out = stats(env, "list").output
+    assert "確かめが外れた" in out and "確かめ 未" not in out and "確かめ オーナー" not in out
+    out = stats(env, "list", "--theme", "孤独").output
+    assert "条件に合う系列がありません" in out and "db init" not in out

@@ -509,15 +509,11 @@ def load_series(conn: sqlite3.Connection, config_dir: Path, meta_dir: Path) -> t
         for r in series_rows:
             if r.get("source_kind", "").strip() != "estat_api":
                 continue
-            try:
-                sel = json.loads(r.get("selector", ""))
-            except ValueError:
-                continue
-            sdid = sel.get("statsDataId") if isinstance(sel, dict) else None
-            if isinstance(sdid, str) and sdid.isascii() and sdid.isdigit() and sdid not in metas:
-                meta = ss.load_meta(meta_dir, sdid)
+            sid = r.get("series_id", "").strip()
+            if sid and sid not in metas and ss.valid_series_id(sid):
+                meta = ss.load_meta(meta_dir, sid)
                 if meta is not None:
-                    metas[sdid] = meta
+                    metas[sid] = meta
     except ss.SeriesError as e:
         raise StatsError(str(e)) from e
     problems = ss.series_problems(
@@ -544,7 +540,7 @@ def load_series(conn: sqlite3.Connection, config_dir: Path, meta_dir: Path) -> t
         pts = by_series.get(s.series_id, [])
         meta = None
         if s.source_kind == "estat_api":
-            meta = metas.get(s.selector.get("statsDataId", ""))
+            meta = metas.get(s.series_id)
         sha = ss.check_sha(s, pts, meta)
         numeric = [p.period for p in pts if ss.value_num(p) is not None]
         trend_ok = ss.verify_trend(s, pts)[0] if s.trend else False

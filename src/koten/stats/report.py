@@ -73,8 +73,8 @@ def report_lines(
     units: set[str],
     diffs: list[str],
     changed: list[str],
-    added: list[str] = (),
-    removed: list[str] = (),
+    added: list[str] | None = None,
+    removed: list[str] | None = None,
     lapsed: bool = False,
 ) -> list[str]:
     """系列1つ分の報告。1行目が要約、続きが気をつける点。"""
