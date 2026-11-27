@@ -102,3 +102,17 @@ def test_ingest_requires_contact(settings_file, monkeypatch):
     monkeypatch.setenv("KOTEN_CONTACT", "me@example.org")
     result = CliRunner().invoke(app, ["ingest", "aozora", "--settings", str(settings_file)])
     assert result.exit_code == 2
+
+
+def test_doctor_reports_app_id_without_value(monkeypatch):
+    import os
+
+    secret = "0123456789abcdef0123456789abcdef01234567"
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", secret)
+    c = doctor.check_estat_app_id(os.environ)
+    assert c.name == "e-Stat の ID" and c.status == doctor.OK
+    assert c.detail == "設定済み（40 字）" and secret not in c.detail
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", "  ")
+    c = doctor.check_estat_app_id(os.environ)
+    assert c.status == doctor.WARN and "KOTEN_ESTAT_APPID" in c.detail
+    assert doctor.check_estat_app_id({}).status == doctor.WARN

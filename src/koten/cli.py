@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Annotated
 
+import httpx
 import typer
 
 from koten import doctor as doctor_mod
@@ -14,7 +15,13 @@ from koten.authors import author_label
 from koten.config import HddNotConnectedError, Settings, load_settings
 from koten.net import Fetcher
 
-app = typer.Typer(no_args_is_help=True, add_completion=False, help=__doc__)
+# 異常終了のとき変数の中身（e-Stat の appId など）を画面に出さない
+app = typer.Typer(
+    no_args_is_help=True,
+    add_completion=False,
+    help=__doc__,
+    pretty_exceptions_show_locals=False,
+)
 
 SUPPORTED_SOURCES = {"aozora"}
 SettingsOpt = Annotated[
@@ -91,7 +98,7 @@ def doctor(settings: SettingsOpt = None) -> None:
         typer.echo(f"  {typer.style(f'[{c.status}]', fg=colors[c.status])} {c.name}: {c.detail}")
 
 
-def _make_fetcher(s: Settings, raw_dir):
+def _make_fetcher(s: Settings, raw_dir, client: httpx.Client | None = None):
     """外部サイトへの取得（net.py）。User-Agent に連絡先が無ければ取りに行かない（SPEC §8.1）。"""
     http = s.section("http")
     user_agent = http.get("user_agent", "koten-videos/0.1 (+contact: {contact})")
@@ -114,6 +121,7 @@ def _make_fetcher(s: Settings, raw_dir):
         per_host_per_sec=rate.get("per_host_per_sec", 1),
         timeout_sec=http.get("timeout_sec", 30),
         host_intervals={k: float(v) for k, v in (rate.get("min_interval_sec") or {}).items()},
+        client=client,
     )
 
 
@@ -3974,3 +3982,267 @@ def serve(
 
 if __name__ == "__main__":
     app()
+
+
+# --- 統計の系列（段1：e-Stat から複数年の数） -----------------------------------
+
+stats_app = typer.Typer(no_args_is_help=True, help="統計の系列（e-Stat から複数年の数を取る）")
+app.add_typer(stats_app, name="stats")
+
+NO_APP_ID = "この環境には e-Stat の ID（KOTEN_ESTAT_APPID）が無い。Mac の .env に書いてから動かす"
+POINTS_WARN_BYTES = 5 * 1024 * 1024
+
+
+def _estat_cache(s: Settings) -> Path:
+    """e-Stat の応答とファイルの置き場所。HDD があれば HDD、無ければ data/（Git に入れない）。"""
+    from koten.config import REPO_ROOT
+
+    if s.hdd_root.exists():
+        return s.hdd_root / "raw" / "estat"
+    return REPO_ROOT / "data" / "estat-cache"
+
+
+def _estat_app_id() -> str:
+    """値は返すだけ。画面・ログ・ファイル・例外の文に出してはいけない。"""
+    from koten.stats.estat import APP_ID_ENV
+
+    return os.environ.get(APP_ID_ENV, "").strip()
+
+
+def _estat_failure(label: str, e: Exception) -> str:
+    from koten.net import FetchError
+
+    hint = ""
+    if isinstance(e, FetchError) and e.status_code == 403:
+        hint = "（ID が違うか、使えなくなっている）"
+    return f"{label}：{e}{hint}"
+
+
+def _file_fetch(fetcher: Fetcher, refresh: bool):
+    """files.file_points に渡す fetch。(ファイル, 取った日時) を返す。"""
+
+    def fetch(url: str, rel: str):
+        path = fetcher.fetch(url, rel, refresh=refresh)[0]
+        entry = fetcher.manifest.get(url)
+        return path, (entry.fetched_at if entry else "")
+
+    return fetch
+
+
+def _write_json(path: Path, data) -> None:
+    import json
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+
+
+@stats_app.command("meta")
+def stats_meta(
+    drafts: Annotated[
+        str, typer.Option(help="下書き（JSON）。series の selector_names から selector を決める")
+    ],
+    refresh: Annotated[bool, typer.Option(help="表の情報を取り直す")] = False,
+    settings: SettingsOpt = None,
+) -> None:
+    """e-Stat の表の情報を取り、名前から符号を決めて下書きに書き戻す（Mac。ID が要る）。
+
+    下書きの series の項目：source_kind が estat_api で selector_names（分類の名前→項目の名前）が
+    あるもの。表の番号は項目の stats_data_id（無ければ selector.statsDataId）。
+    docs/estat/<表の番号>.json には選んだ分類・項目だけを書く。
+    """
+    import json
+
+    from koten.net import ApiError, FetchError
+    from koten.stats.estat import EstatClient, EstatError, meta_record, resolve_selector
+    from koten.stats.series import meta_dir_for
+
+    s = _settings(settings)
+    app_id = _estat_app_id()
+    if not app_id:
+        typer.secho(NO_APP_ID, fg="red", err=True)
+        raise typer.Exit(2)
+    path = Path(drafts)
+    data = json.loads(path.read_text("utf-8"))
+    client = EstatClient(_make_fetcher(s, _estat_cache(s)), app_id)
+    meta_dir = meta_dir_for(s.config_dir)
+    done = failed = 0
+    for item in data.get("series", []):
+        names = item.get("selector_names")
+        if item.get("source_kind") != "estat_api" or not names:
+            continue
+        sid = item.get("series_id", "?")
+        sdid = str(item.get("stats_data_id") or (item.get("selector") or {}).get("statsDataId", ""))
+        try:
+            if not sdid.strip():
+                raise EstatError("stats_data_id（表の番号）が無い")
+            meta = client.meta(sdid.strip(), refresh=refresh)
+            sel = resolve_selector(meta, names)
+        except (EstatError, ApiError, FetchError) as e:
+            typer.secho(_estat_failure(sid, e), fg="red", err=True)
+            failed += 1
+            continue
+        item["selector"] = sel
+        _write_json(meta_dir / f"{sdid.strip()}.json", meta_record(meta, sel))
+        typer.echo(f"{sid}：selector を決めた {json.dumps(sel, ensure_ascii=False)}")
+        done += 1
+    _write_json(path, data)
+    typer.echo(f"{done} 系列を決め、{failed} 系列が失敗（{path} を書き直した）")
+    if done:
+        typer.echo("次：git add docs/estat docs/research して push")
+    if failed:
+        raise typer.Exit(1)
+
+
+@stats_app.command("fetch")
+def stats_fetch(
+    series: Annotated[
+        list[str] | None, typer.Option("--series", help="この系列だけ（何度でも）")
+    ] = None,
+    refresh: Annotated[bool, typer.Option(help="キャッシュを使わず取り直す")] = False,
+    check: Annotated[bool, typer.Option("--check", help="確かめるだけで何も書かない")] = False,
+    drafts: Annotated[
+        list[str] | None,
+        typer.Option("--drafts", help="下書き（JSON）の series を確かめる。台帳には書かない"),
+    ] = None,
+    settings: SettingsOpt = None,
+) -> None:
+    """系列の数を e-Stat（API・ファイル）から取り、config/stat_points.csv に書く。
+
+    --drafts のときは確かめるだけ（下書きは台帳に書かない）。
+    """
+    import json
+
+    from koten.db import HUMAN_CHECKER
+    from koten.net import ApiError, FetchError
+    from koten.stats import report as rp
+    from koten.stats.estat import EstatClient, EstatError, cross_check, meta_record, units_of
+    from koten.stats.files import file_points
+    from koten.stats.series import (
+        POINTS_FILE,
+        SeriesError,
+        meta_dir_for,
+        parse_series,
+        read_point_rows,
+        read_series_rows,
+        write_points,
+    )
+
+    s = _settings(settings)
+    only = bool(check or drafts)
+    if drafts:
+        typer.echo("下書きの系列は確かめるだけ（台帳には書かない）")
+        targets = []
+        for d in drafts:
+            targets += [
+                rp.series_from_draft(i)
+                for i in json.loads(Path(d).read_text("utf-8")).get("series", [])
+            ]
+    else:
+        targets = parse_series(read_series_rows(s.config_dir))
+    if series:
+        known = {t.series_id for t in targets}
+        if unknown := [x for x in series if x not in known]:
+            typer.secho(f"系列が無い：{'・'.join(unknown)}", fg="red", err=True)
+            raise typer.Exit(2)
+        targets = [t for t in targets if t.series_id in set(series)]
+    if not targets:
+        typer.echo("取る系列がありません（config/stat_series.csv が空です）")
+        return
+    app_id = _estat_app_id()
+    old_rows = read_point_rows(s.config_dir)
+    meta_dir = meta_dir_for(s.config_dir)
+    cache: dict = {}
+
+    def fetcher() -> Fetcher:
+        if "f" not in cache:
+            cache["f"] = _make_fetcher(s, _estat_cache(s))
+        return cache["f"]
+
+    ok: dict[str, list] = {}
+    failed = 0
+    for t in targets:
+        if t.source_kind == "estat_api" and not app_id:
+            typer.secho(f"{t.series_id}：この環境には e-Stat の ID が無いので飛ばす", fg="yellow")
+            continue
+        try:
+            meta = None
+            if t.source_kind == "estat_api":
+                client = cache.setdefault("c", EstatClient(fetcher(), app_id))
+                points, meta = client.points(t, refresh=refresh)
+                units = units_of(points, meta, t.selector)
+                diffs = cross_check(t, meta, units)
+            elif t.source_kind == "estat_file":
+                points = file_points(t, _file_fetch(fetcher(), refresh))
+                units, diffs = set(), []
+            else:
+                raise SeriesError(
+                    f"source_kind {t.source_kind!r} は取れない（estat_api か estat_file）"
+                )
+        except (EstatError, ApiError, FetchError, SeriesError) as e:
+            typer.secho(_estat_failure(t.series_id, e), fg="red", err=True)
+            failed += 1
+            continue
+        changed = rp.changed_values(rp.stored_points(old_rows, t.series_id), points)
+        for line in rp.report_lines(
+            t,
+            points,
+            units=units,
+            diffs=diffs,
+            changed=changed,
+            owner_checked=t.checked_by == HUMAN_CHECKER,
+        ):
+            typer.echo(line)
+        ok[t.series_id] = points
+        if meta is not None and not only:
+            _write_json(meta_dir / f"{meta.stats_data_id}.json", meta_record(meta, t.selector))
+    if not only and ok:
+        try:
+            write_points(s.config_dir, set(ok), [p for ps in ok.values() for p in ps])
+        except SeriesError as e:
+            typer.secho(str(e), fg="red", err=True)
+            raise typer.Exit(1) from e
+        if (s.config_dir / POINTS_FILE).stat().st_size > POINTS_WARN_BYTES:
+            typer.secho("config/stat_points.csv が 5MB を超えた。置き方を考え直す", fg="yellow")
+        typer.echo("次：uv run koten db init")
+        typer.echo("    git add config/stat_points.csv docs/estat")
+    if failed:
+        raise typer.Exit(1)
+
+
+@stats_app.command("list")
+def stats_list(
+    theme: Annotated[str | None, typer.Option(help="このテーマの系列だけ")] = None,
+    stale: Annotated[
+        bool, typer.Option("--stale", help="新しい年が出ているのに古い系列だけ")
+    ] = False,
+    unchecked: Annotated[
+        bool, typer.Option("--unchecked", help="オーナーが確かめていない系列だけ")
+    ] = False,
+    settings: SettingsOpt = None,
+) -> None:
+    """SSD の系列の一覧（series_id・label・最新の年・点の数・確かめ・stale）。"""
+    import json
+
+    from koten.db import AI_CHECKER
+
+    conn = _connect_ssd(settings)
+    rows = conn.execute(
+        "SELECT s.*, (SELECT count(*) FROM stat_points p WHERE p.series_id = s.series_id) AS n "
+        "FROM stat_series s ORDER BY s.series_id"
+    ).fetchall()
+    shown = 0
+    for r in rows:
+        if theme and theme not in json.loads(r["themes"] or "[]"):
+            continue
+        if stale and not r["stale"]:
+            continue
+        if unchecked and r["owner_ok"]:
+            continue
+        mark = "オーナー" if r["owner_ok"] else ("AI" if r["checked_by"] == AI_CHECKER else "未")
+        typer.echo(
+            f"{r['series_id']}  {r['label']}  最新 {r['latest_period'] or '-'}  {r['n']} 点  "
+            f"確かめ {mark}" + ("  [stale]" if r["stale"] else "")
+        )
+        shown += 1
+    if not shown:
+        typer.echo("該当する系列がありません。系列を入れるなら uv run koten db init")

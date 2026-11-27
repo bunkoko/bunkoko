@@ -212,6 +212,7 @@ per_host_per_sec = 1
 
 [rate_limit.min_interval_sec]   # ホスト名の末尾ごとの最小の間隔（秒）
 "ndl.go.jp" = 3.0             # 国会図書館：続けて取ると止められた記録がある（docs/decisions.md D-003）
+"e-stat.go.jp" = 2.0          # e-Stat API：API 規約 第8条（短い間隔で続けて取らない）
 
 [http]
 # User-Agent に連絡先を入れる（SPEC §8.1）。{contact} は .env の KOTEN_CONTACT に置き換わる

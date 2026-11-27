@@ -6,6 +6,7 @@ import os
 import platform
 import shutil
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -138,6 +139,14 @@ def check_python(system: str | None = None, machine: str | None = None) -> Check
     return Check("Python", OK, version)
 
 
+def check_estat_app_id(env: Mapping[str, str]) -> Check:
+    """e-Stat の appId があるか。値は出さない（字数だけ）。"""
+    value = (env.get("KOTEN_ESTAT_APPID") or "").strip()
+    if value:
+        return Check("e-Stat の ID", OK, f"設定済み（{len(value)} 字）")
+    return Check("e-Stat の ID", WARN, "未設定（Mac の .env に KOTEN_ESTAT_APPID を書く）")
+
+
 def run_checks(s: Settings, client: httpx.Client | None = None) -> list[Check]:
     client = client or httpx.Client(timeout=3.0)
     return [
@@ -156,4 +165,5 @@ def run_checks(s: Settings, client: httpx.Client | None = None) -> list[Check]:
         ),
         check_embed(s),
         check_ffmpeg(),
+        check_estat_app_id(os.environ),
     ]
