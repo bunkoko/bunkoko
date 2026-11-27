@@ -1498,3 +1498,77 @@ def test_selector_that_is_not_an_object_is_named_and_writes_nothing(sconf):
     assert with_series_data(_sdrafts(as_text), sconf)["series"][0]["selector_state"] == "same"
     out = todo_drafts(_sdrafts(API_SERIES), {"series": ["work_rate"]}, sconf)
     assert out["series"][0]["selector_state"] == "same"
+
+
+# --- 最後の見直しの直し：単位・公の名前（R25・R33） --------------------------------------
+
+
+def test_api_card_shows_the_e_stat_unit_next_to_the_ledger_unit(sconf):
+    meta = {**API_META, "chosen": [{"class": "表章項目", "item": "人数", "code": "001",
+                                    "unit": "千人"}]}  # fmt: skip
+    (sconf.parent / "docs" / "estat" / "work_rate.json").write_text(
+        json.dumps(meta, ensure_ascii=False), "utf-8"
+    )
+    _write_ledger(sconf, [_prow(period="2021", value="12", src_unit="千人")])
+    it = page_items(with_series_data(_sdrafts(API_SERIES), sconf))[0]
+    pairs = [p[0] for p in it["source"]]
+    src = dict(it["source"])
+    assert src["台帳の単位"] == "％"
+    chosen_units = src["e-Stat の単位（選んだ項目）"]
+    assert "千人" in chosen_units and "表章項目" in chosen_units
+    assert src["e-Stat の単位（数）"] == "千人"
+    assert pairs.index("台帳の単位") + 1 == pairs.index("e-Stat の単位（選んだ項目）")
+    # 数がまだ無い系列は、選んだ項目の単位だけ
+    _write_ledger(sconf, [])
+    src = dict(page_items(with_series_data(_sdrafts(API_SERIES), sconf))[0]["source"])
+    assert "e-Stat の単位（数）" not in src and "千人" in src["e-Stat の単位（選んだ項目）"]
+    # 表が単位を出さないときは「なし」と出す
+    (sconf.parent / "docs" / "estat" / "work_rate.json").write_text(
+        json.dumps(API_META, ensure_ascii=False), "utf-8"
+    )
+    src = dict(page_items(with_series_data(_sdrafts(API_SERIES), sconf))[0]["source"])
+    assert src["e-Stat の単位（選んだ項目）"] == "なし"
+
+
+def test_file_card_shows_the_unit_cell_next_to_the_ledger_unit(sconf):
+    _file_ledger(sconf, AI_CHECKER)
+    _write_ledger(sconf, [_prow("file_rate", "2019", "5", src_unit="（％）")])
+    src = page_items(with_series_data(_sdrafts(FILE_SERIES), sconf))[0]["source"]
+    names = [p[0] for p in src]
+    assert dict(src)["台帳の単位"] == "％" and dict(src)["単位のセル"] == "（％）"
+    assert names.index("台帳の単位") + 1 == names.index("単位のセル")
+    _write_ledger(sconf, [_prow("file_rate", "2019", "5", src_unit="")])
+    src = dict(page_items(with_series_data(_sdrafts(FILE_SERIES), sconf))[0]["source"])
+    assert src["単位のセル"] == "（なし）"
+
+
+def test_merge_refuses_an_api_unit_that_differs_from_the_fetched_unit(sconf):
+    _write_ledger(sconf, [_prow(period="2021", value="12", src_unit="千人")])
+    before = _ledger_bytes(sconf)
+    with pytest.raises(SourcesError, match="e-Stat の単位 '千人' と unit '％' が違う"):
+        merge_checks(_sdrafts(API_SERIES), {}, sconf, accept_rest=True)
+    key = _skey(sconf)
+    with pytest.raises(SourcesError, match="e-Stat の単位"):
+        merge_checks(_sdrafts(API_SERIES), {key: {"v": "ok", "at": _at()}}, sconf)
+    assert _ledger_bytes(sconf) == before
+
+
+def test_title_with_a_full_width_space_merges(sconf):
+    meta = {**API_META, "title": "就業状態別　人口"}
+    (sconf.parent / "docs" / "estat" / "new_rate.json").write_text(
+        json.dumps(meta, ensure_ascii=False), "utf-8"
+    )
+    item = {**API_SERIES, "series_id": "new_rate", "table_title": "就業状態別　人口"}
+    res = merge_checks(_sdrafts(item), {}, sconf, accept_rest=True)
+    assert res.series_ai == ["new_rate"]
+    from koten.db import connect, load_series
+
+    conn = connect(sconf.parent / "ssd")
+    assert load_series(conn, sconf, sconf.parent / "docs" / "estat")[0] == 2
+    # 空白を抜いた題は違う題
+    bad = {**item, "series_id": "bad_rate", "table_title": "就業状態別人口"}
+    (sconf.parent / "docs" / "estat" / "bad_rate.json").write_text(
+        json.dumps(meta, ensure_ascii=False), "utf-8"
+    )
+    with pytest.raises(SourcesError, match="と違う"):
+        merge_checks(_sdrafts(bad), {}, sconf, accept_rest=True)

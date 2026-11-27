@@ -18,7 +18,15 @@ from datetime import UTC, datetime
 from urllib.parse import urlencode
 
 from koten.net import Fetcher
-from koten.stats.series import Point, Series, SeriesError, parse_period_name, to_decimal
+from koten.stats.series import (
+    Point,
+    Series,
+    SeriesError,
+    norm_name,
+    norm_unit,
+    parse_period_name,
+    to_decimal,
+)
 
 API_BASE = "https://api.e-stat.go.jp/rest/3.0/app/json"
 APP_ID_ENV = "KOTEN_ESTAT_APPID"
@@ -109,7 +117,7 @@ def _norm_name(text: str) -> str:
 
 
 def _norm_unit(text: str) -> str:
-    return unicodedata.normalize("NFKC", text).replace("％", "%").strip()
+    return norm_unit(text)
 
 
 def _root(data: object) -> tuple[str, dict]:
@@ -297,6 +305,7 @@ def meta_record(meta: TableMeta, selector: dict) -> dict:
 
 # --- 年 -----------------------------------------------------------------------
 
+
 def period_of(code: str, name: str) -> tuple[str, str]:
     """時間の符号と名前から (YYYY, 年|年度)。月・四半期は断る。"""
     try:
@@ -388,8 +397,40 @@ def cross_check(s: Series, meta: TableMeta, units: set[str]) -> list[str]:
         ("公表元 publisher", s.publisher, meta.gov_org),
         ("表の題 table_title", s.table_title, meta.title),
     ):
-        if ours.strip() != theirs.strip():
+        if norm_name(ours) != norm_name(theirs):  # series_problems と同じ比べ方（R33）
             out.append(f"{label} が違う：台帳 {ours!r}・e-Stat {theirs!r}")
+    return out
+
+
+OFFICIAL_LABELS = {
+    "survey": "調査名",
+    "publisher": "作成機関",
+    "table_title": "表の題",
+    "unit": "単位",
+}
+
+
+def official_fields(meta: TableMeta, points: list[Point]) -> dict[str, str]:
+    """台帳に写す e-Stat の公の言葉（R25）：調査名・作成機関・表の題と、数の単位。
+
+    単位は点の src_unit（norm_unit）。点ごとに違えば EstatError（その系列は取らない）。
+    e-Stat が出さない言葉（空）は入れない（台帳のまま）。
+    """
+    units = sorted({norm_unit(p.src_unit) for p in points})
+    if len(units) > 1:
+        shown = "・".join(repr(u) if u else "（なし）" for u in units)
+        raise EstatError(
+            f"数の単位が年ごとに違う（{shown}）。"
+            "表章項目か分類の選び方を確かめる（Claude に伝える）"
+        )
+    out = {
+        "survey": meta.stat_name.strip(),
+        "publisher": meta.gov_org.strip(),
+        "table_title": meta.title.strip(),
+    }
+    out = {k: v for k, v in out.items() if v}
+    if units and units[0]:
+        out["unit"] = units[0]
     return out
 
 

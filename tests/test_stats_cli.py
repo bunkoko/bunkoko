@@ -634,3 +634,81 @@ def test_fetch_skips_held_rows_unless_named(env, monkeypatch):
     r = stats(env, "fetch", "--check")
     assert r.exit_code == 0 and "held_rate：保留なので飛ばす" in r.output
     assert "取る系列がありません（保留でない系列が無い）" in r.output
+
+
+# --- 最後の見直しの直し：e-Stat の公の名前と単位を台帳に写す（R25） ------------------------
+
+
+def _renamed_row():
+    return srow(unit="人", publisher="総務省統計局", table_title="古い題")
+
+
+def test_fetch_copies_official_names_and_unit_into_the_ledger(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, [_renamed_row()])
+    r = stats(env, "fetch")
+    assert r.exit_code == 0, r.output
+    assert "age_rate：表の題（table_title）を e-Stat のとおりにする：'古い題' → '年齢別の割合'" in (
+        r.output
+    )
+    assert "age_rate：作成機関（publisher）を e-Stat のとおりにする：'総務省統計局' → '総務省'" in (
+        r.output
+    )
+    assert "age_rate：単位（unit）を e-Stat のとおりにする：'人' → '%'" in r.output
+    assert "調査名（survey）" not in r.output  # 同じものは書かない
+    (row,) = read_series_rows(env.config)
+    assert (row["table_title"], row["publisher"], row["unit"]) == ("年齢別の割合", "総務省", "%")
+    assert {k: v for k, v in row.items() if k not in ("table_title", "publisher", "unit")} == {
+        k: v for k, v in _renamed_row().items() if k not in ("table_title", "publisher", "unit")
+    }
+    assert not list(env.config.glob("*.tmp"))
+    assert runner.invoke(app, ["db", "init", "--settings", env.settings]).exit_code == 0
+    assert SECRET not in r.output and SECRET not in tree_text(env)
+
+
+def test_check_and_drafts_modes_never_write_the_ledger(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, [_renamed_row()])
+    before = (env.config / SERIES_FILE).read_bytes()
+    r = stats(env, "fetch", "--check")
+    assert r.exit_code == 0 and "'古い題' → '年齢別の割合'" in r.output
+    assert (env.config / SERIES_FILE).read_bytes() == before
+    draft = {"series": [{**_renamed_row(), "series_id": "draft_rate", "themes": ["仕事"],
+                         "selector": SEL}]}  # fmt: skip
+    path = env.tmp / "draft.json"
+    path.write_text(json.dumps(draft, ensure_ascii=False), encoding="utf-8")
+    r = stats(env, "fetch", "--drafts", str(path))
+    assert r.exit_code == 0 and "draft_rate：表の題（table_title）が e-Stat と違う" in r.output
+    assert (env.config / SERIES_FILE).read_bytes() == before
+
+
+def test_owner_check_lapses_when_e_stat_renames_the_table(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    owner_checked(env)
+    env.state["title"] = "新しい題"
+    r = stats(env, "fetch", "--refresh")
+    assert r.exit_code == 0, r.output
+    assert "オーナーの確かめが外れる" in r.output and "'年齢別の割合' → '新しい題'" in r.output
+    assert read_series_rows(env.config)[0]["table_title"] == "新しい題"
+    assert load_meta(env.docs, "age_rate")["title"] == "新しい題"
+    r = runner.invoke(app, ["db", "init", "--settings", env.settings])
+    assert r.exit_code == 0, r.output  # 台帳と表の情報がそろっているので通る
+    assert "確かめが外れた" in stats(env, "list").output
+
+
+def test_units_that_differ_by_year_fail_the_series(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    env.state["values"] = [v(2019, "10"), v(2021, "12", **{"@unit": "千人"})]
+    before = (env.config / SERIES_FILE).read_bytes()
+    r = stats(env, "fetch")
+    assert r.exit_code == 1 and "age_rate：" in r.output and "単位が年ごとに違う" in r.output
+    assert read_point_rows(env.config) == [] and not list(env.docs.glob("*.json"))
+    assert (env.config / SERIES_FILE).read_bytes() == before
+
+
+def test_unit_edited_after_fetch_stops_db_init(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    assert stats(env, "fetch").exit_code == 0
+    write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, [srow(unit="千人")])
+    r = runner.invoke(app, ["db", "init", "--settings", env.settings])
+    assert r.exit_code == 2 and "e-Stat の単位 '%' と unit '千人' が違う" in r.output

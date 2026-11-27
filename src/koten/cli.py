@@ -4257,14 +4257,17 @@ def stats_fetch(
 ) -> None:
     """系列の数を e-Stat（API・ファイル）から取り、config/stat_points.csv に書く。
 
-    --drafts のときは確かめるだけ（下書きは台帳に書かない）。台帳の status が 保留 の系列
-    （外した系列）は、--series で名前を挙げたときだけ取る。
+    API の系列は、e-Stat の調査名・作成機関・表の題と数の単位も、数と同じにプログラムが
+    config/stat_series.csv に写す（違っていた欄は黄色で出す。R25）。数の単位が年ごとに
+    違えば、その系列は取らない。--check・--drafts のときは確かめるだけ（何も書かない）。
+    台帳の status が 保留 の系列（外した系列）は、--series で名前を挙げたときだけ取る。
     """
     import json
+    from dataclasses import replace
 
     from koten.db import HUMAN_CHECKER
     from koten.stats import report as rp
-    from koten.stats.estat import cross_check, meta_record, units_of
+    from koten.stats.estat import OFFICIAL_LABELS, meta_record, official_fields, units_of
     from koten.stats.files import file_points
     from koten.stats.series import (
         POINTS_FILE,
@@ -4272,11 +4275,14 @@ def stats_fetch(
         SeriesError,
         check_sha,
         meta_dir_for,
+        norm_name,
+        norm_unit,
         parse_series,
         read_point_rows,
         read_series_rows,
         valid_series_id,
         write_points,
+        write_series_rows,
     )
 
     s = _settings(settings)
@@ -4317,6 +4323,7 @@ def stats_fetch(
     run = _EstatRun(s)
     ok: dict[str, list] = {}
     records: dict[str, dict] = {}
+    official: dict[str, dict[str, str]] = {}  # 台帳に写す e-Stat の公の言葉（R25）
     failed = 0
     for t in targets:
         if t.source_kind == "estat_api" and not app_id:
@@ -4326,14 +4333,18 @@ def stats_fetch(
             if not valid_series_id(t.series_id):
                 raise SeriesError(f"series_id {t.series_id!r} が使えない形")
             record = None
+            fix: dict[str, str] = {}
             if t.source_kind == "estat_api":
                 points, meta = run.client(app_id).points(t, refresh=refresh)
                 record = meta_record(meta, t.selector)
                 units = units_of(points, meta, t.selector)
-                diffs = cross_check(t, meta, units)
+                for col, new in official_fields(meta, points).items():
+                    norm = norm_unit if col == "unit" else norm_name
+                    if norm(getattr(t, col)) != norm(new):
+                        fix[col] = new
             elif t.source_kind == "estat_file":
                 points = file_points(t, _file_fetch(run.fetcher(), refresh))
-                units, diffs = set(), []
+                units = set()
             else:
                 raise SeriesError(
                     f"source_kind {t.source_kind!r} は取れない（estat_api か estat_file）"
@@ -4345,25 +4356,46 @@ def stats_fetch(
         old = rp.stored_points(old_rows, t.series_id)
         changed = rp.changed_values(old, points)
         added, removed = rp.added_removed_years(old, points)
-        lapsed = t.checked_by == HUMAN_CHECKER and check_sha(t, points, record) != t.checked_sha
+        now = replace(t, **fix)  # 公の言葉を写したあとの台帳の行
+        lapsed = t.checked_by == HUMAN_CHECKER and check_sha(now, points, record) != t.checked_sha
         for line in rp.report_lines(
             t,
             points,
             units=units,
-            diffs=diffs,
+            diffs=[],
             changed=changed,
             added=added,
             removed=removed,
             lapsed=lapsed,
         ):
             typer.echo(line)
+        for col, new in fix.items():
+            name = f"{OFFICIAL_LABELS[col]}（{col}）"
+            if drafts:
+                text = (
+                    f"{t.series_id}：{name}が e-Stat と違う：下書き {getattr(t, col)!r}・"
+                    f"e-Stat {new!r}。下書きを e-Stat のとおりに直す"
+                )
+            else:
+                text = (
+                    f"{t.series_id}：{name}を e-Stat のとおりにする：{getattr(t, col)!r} → {new!r}"
+                ) + ("（--check なので書かない）" if check else "")
+            typer.secho(text, fg="yellow")
         ok[t.series_id] = points
         if record is not None:
             records[t.series_id] = record
+        if fix:
+            official[t.series_id] = fix
     if not only and ok:
         try:
             write_points(s.config_dir, set(ok), [p for ps in ok.values() for p in ps])
-        except SeriesError as e:
+            if official:
+                # 数と同じに、プログラムが写す公の言葉（数を書けた系列だけ）
+                rows = read_series_rows(s.config_dir)
+                for r in rows:
+                    r.update(official.get(r.get("series_id", "").strip(), {}))
+                write_series_rows(s.config_dir, rows)
+        except (SeriesError, OSError) as e:
             typer.secho(str(e), fg="red", err=True)
             raise typer.Exit(1) from e
         meta_dir = meta_dir_for(s.config_dir)

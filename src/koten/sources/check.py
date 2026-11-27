@@ -382,6 +382,18 @@ def _source_words(
             for c in meta.get("chosen") or []
             if isinstance(c, dict)
         ]
+        # 台帳の単位の隣に、e-Stat の単位（選んだ項目の単位と、数に付いた単位）
+        units = [
+            f"{c.get('unit')}（{c.get('class', '')}：{c.get('item', '')}）"
+            for c in meta.get("chosen") or []
+            if isinstance(c, dict) and str(c.get("unit") or "").strip()
+        ]
+        pairs.append(["台帳の単位", series_from_draft(item).unit])
+        if meta:
+            pairs.append(["e-Stat の単位（選んだ項目）", "・".join(units) or "なし"])
+        if points:
+            got = sorted({p.src_unit.strip() for p in points if p.src_unit.strip()})
+            pairs.append(["e-Stat の単位（数）", "・".join(got) or "なし"])
         sdid = str(
             series_from_draft(item).selector.get("statsDataId") or item.get("stats_data_id") or ""
         )
@@ -401,7 +413,11 @@ def _source_words(
                 pairs.append(["更新日", str(updated)])
         newest = max(points, key=lambda p: p.period) if points else None
         if newest is not None:
-            pairs += [["見出しのセル", newest.src_label], ["単位のセル", newest.src_unit]]
+            pairs += [
+                ["見出しのセル", newest.src_label],
+                ["台帳の単位", series_from_draft(item).unit],
+                ["単位のセル", newest.src_unit or "（なし）"],
+            ]
     return [p for p in pairs if p[1] != ""], chosen, link
 
 

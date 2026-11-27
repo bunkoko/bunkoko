@@ -716,3 +716,36 @@ def test_resolve_refuses_a_non_string_item_name():
     with pytest.raises(EstatError) as e:
         resolve_selector(meta, {"年齢": 20})
     assert "年齢" in str(e.value) and "文字列" in str(e.value)
+
+
+# --- 最後の見直しの直し（R25・R33） ------------------------------------------------------
+
+
+def test_official_fields_copy_names_and_one_unit():
+    from koten.stats.estat import official_fields
+    from koten.stats.series import Point
+
+    m = parse_meta(meta_json(table=table_inf(TITLE={"@no": "1", "$": "年齢別の　割合"})))
+    pts = [Point("a", y, "1", "", "", "", u, "", "") for y, u in (("2013", "％"), ("2014", "%"))]
+    got = official_fields(m, pts)
+    assert got == {
+        "survey": "就業構造基本調査", "publisher": "総務省", "table_title": "年齢別の　割合",
+        "unit": "%",
+    }  # fmt: skip
+    # e-Stat が単位を出さないときは unit を写さない（台帳の単位のまま）
+    blank = [Point("a", "2013", "1", "", "", "", "", "", "")]
+    assert "unit" not in official_fields(m, blank)
+    # 点ごとに単位が違えば、その系列は取れない
+    pairs = (("2013", "%"), ("2014", "千人"))
+    mixed = [Point("a", y, "1", "", "", "", u, "", "") for y, u in pairs]
+    with pytest.raises(EstatError, match="単位"):
+        official_fields(m, mixed)
+    half = [Point("a", y, "1", "", "", "", u, "", "") for y, u in (("2013", "%"), ("2014", ""))]
+    with pytest.raises(EstatError, match="単位"):
+        official_fields(m, half)
+
+
+def test_cross_check_compares_names_like_the_gate():
+    m = parse_meta(meta_json(table=table_inf(TITLE={"@no": "1", "$": "年齢別の　割合"})))
+    assert cross_check(make_series(table_title="年齢別の 割合"), m, {"%"}) == []
+    assert cross_check(make_series(table_title="年齢別の割合"), m, {"%"})

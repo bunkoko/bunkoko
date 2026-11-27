@@ -13,6 +13,7 @@ from __future__ import annotations
 import csv
 import datetime
 import hashlib
+import io
 import json
 import os
 import re
@@ -60,6 +61,21 @@ _AD_YEAR_RE = re.compile(r"(?<![0-9])(?P<ad>[0-9]{4})\s*年(?P<fy>度?)")
 
 class SeriesError(ValueError):
     """系列・点の読み書き・年の読み取りの失敗。"""
+
+
+def norm_unit(text: str) -> str:
+    """単位の比べ用：NFKC・％→%・前後の空白を取る（e-Stat と台帳で同じ比べ方）。"""
+    return unicodedata.normalize("NFKC", text or "").replace("％", "%").strip()
+
+
+def norm_name(text: str) -> str:
+    """表の名前（調査名・作成機関・表の題）の比べ用：NFKC のあと、空白（全角の空白・改行も）を
+    1つの空白にまとめ、前後を取る。書くときの形は変えない（比べるときだけ）。"""
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text or "")).strip()
+
+
+# e-Stat の API の URL（appId=…）や JSON の appId の鍵。台帳のどの欄にも入れない（値は出さない）
+_APPID_RE = re.compile(r'(?i)appid\s*=|"appid"\s*:')
 
 
 @dataclass(frozen=True)
@@ -154,6 +170,33 @@ def load_meta(meta_dir: Path, series_id: str) -> dict | None:
     return meta
 
 
+def csv_text(columns: list[str], rows: list[dict[str, str]]) -> str:
+    """CSV の文（改行は \\n。列に無い鍵は書かない）。"""
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=columns, lineterminator="\n", extrasaction="ignore")
+    w.writeheader()
+    for r in rows:
+        w.writerow({c: r.get(c, "") or "" for c in columns})
+    return buf.getvalue()
+
+
+def write_text_atomic(path: Path, text: str) -> None:
+    """同じ場所の一時ファイルに書いてから置き換える（途中で止まっても前のファイルが残る）。"""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8", newline="")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def write_series_rows(config_dir: Path, rows: list[dict[str, str]]) -> None:
+    """stat_series.csv を書き直す（列は SERIES_COLUMNS。一時ファイルから置き換える）。"""
+    write_text_atomic(Path(config_dir) / SERIES_FILE, csv_text(SERIES_COLUMNS, rows))
+
+
 def write_points(config_dir: Path, series_ids: set[str], new: list[Point]) -> None:
     """series_ids の系列の行だけを new で入れ替えて書く。ほかの系列の行はそのまま。
 
@@ -166,14 +209,7 @@ def write_points(config_dir: Path, series_ids: set[str], new: list[Point]) -> No
     kept = [r for r in read_point_rows(config_dir) if r.get("series_id", "") not in series_ids]
     rows = kept + [{c: getattr(p, c) for c in POINTS_COLUMNS} for p in new]
     rows.sort(key=lambda r: (r["series_id"], r["period"]))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    with tmp.open("w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=POINTS_COLUMNS, lineterminator="\n")
-        w.writeheader()
-        for r in rows:
-            w.writerow({c: r.get(c, "") for c in POINTS_COLUMNS})
-    os.replace(tmp, path)
+    write_text_atomic(path, csv_text(POINTS_COLUMNS, rows))
 
 
 # --- 決まりの確かめ -----------------------------------------------------------
@@ -249,13 +285,25 @@ def series_problems(
     metas は series_id → 表の情報（docs/estat/<series_id>.json を load_meta が返したもの。
     表ごとでなく系列ごと：同じ表の別の選び方が上書きし合わない）。estat_api の系列は
     表の情報が無ければ問題、あれば survey=stat_name・publisher=gov_org・
-    table_title=title が（前後の空白を除いて）一致すること。estat_file の系列は照らさない。
+    table_title=title が一致すること（NFKC のあと空白をまとめて比べる：norm_name）。
+    estat_api の系列の unit は、点の src_unit（空でないもの）と同じ単位であること（norm_unit）。
+    estat_file の系列は照らさない。どの欄にも appId=（API の URL）を入れない。
     """
     out: list[str] = []
     seen: dict[str, int] = {}
     ids: set[str] = set()
+    api_unit: dict[str, str] = {}
     for n, r in enumerate(series_rows, 2):
         p = f"{SERIES_FILE} {n}行目："
+        leak = [c for c, v in r.items() if c and _APPID_RE.search(str(v or ""))]
+        if leak:
+            # 値を文に出さないよう、この行のほかの確かめはしない
+            out += [
+                f"{p}{c} に appId が入っている（e-Stat の API の URL は貼らない。"
+                "dbview?sid= の URL にする）"
+                for c in leak
+            ]
+            continue
         sid = r.get("series_id", "").strip()
         if not _ID_RE.fullmatch(sid):
             out.append(f"{p}series_id は英小文字・数字・_ にする（{sid!r}）")
@@ -291,6 +339,8 @@ def series_problems(
         kind = r.get("source_kind", "").strip()
         if kind not in ("estat_api", "estat_file"):
             out.append(f"{p}source_kind は estat_api か estat_file（{kind!r}）")
+        if kind == "estat_api" and sid:
+            api_unit.setdefault(sid, r.get("unit", ""))
         if r.get("period_kind", "").strip() not in ("年", "年度"):
             out.append(f"{p}period_kind は 年 か 年度（{r.get('period_kind', '')!r}）")
         if r.get("selector", "").strip():
@@ -315,7 +365,7 @@ def series_problems(
                         theirs = meta.get(key)
                         if not isinstance(theirs, str):
                             out.append(f"{p}表の情報の {key} が文字列でない（{theirs!r}）")
-                        elif mine != theirs.strip():
+                        elif norm_name(mine) != norm_name(theirs):
                             out.append(
                                 f"{p}{col} {mine!r} が表の情報の {key} {theirs.strip()!r} と違う"
                             )
@@ -379,9 +429,15 @@ def series_problems(
             out.append(f"{p}checked_by を書いたら checked_at（YYYY-MM-DD、実在する日）も要る")
 
     pseen: set[tuple[str, str]] = set()
+    bad_units: dict[str, list[str]] = {}
     for n, r in enumerate(point_rows, 2):
         p = f"{POINTS_FILE} {n}行目："
         sid, period = r.get("series_id", "").strip(), r.get("period", "").strip()
+        unit = r.get("src_unit", "")
+        if sid in api_unit and norm_unit(unit) and norm_unit(unit) != norm_unit(api_unit[sid]):
+            got = bad_units.setdefault(sid, [])
+            if unit.strip() not in got:
+                got.append(unit.strip())
         if sid not in ids:
             out.append(f"{p}series_id {sid!r} が {SERIES_FILE} に無い")
         if not _YEAR_RE.fullmatch(period):
@@ -394,6 +450,12 @@ def series_problems(
             out.append(f"{p}value と mark はどちらか一方だけ")
         elif value and to_decimal(value) is None:
             out.append(f"{p}value {value!r} を数として読めない")
+    for sid, units in bad_units.items():
+        got = "・".join(repr(u) for u in units)
+        out.append(
+            f"{sid}：e-Stat の単位 {got} と unit {api_unit[sid].strip()!r} が違う"
+            "（unit は e-Stat の単位にする。uv run koten stats fetch が写す）"
+        )
     return out
 
 
@@ -741,7 +803,10 @@ def is_stale(s: Series, points: list[Point]) -> bool:
 
 
 def check_sha(s: Series, points: list[Point], meta: dict | None) -> str:
-    """人が確かめた内容の指紋。数・名前・区切りのどれかが変われば変わる。"""
+    """人が確かめた内容の指紋。数・名前・区切り・単位のどれかが変われば変わる。
+
+    カードに出る年か年度か（period_kind）・調査名・作成機関・点の単位（src_unit）も入れる。
+    """
     meta_names = [meta.get("title"), meta.get("chosen")] if meta is not None else None
     body = json.dumps(
         [
@@ -749,8 +814,11 @@ def check_sha(s: Series, points: list[Point], meta: dict | None) -> str:
             s.unit,
             s.selector,
             meta_names,
-            sorted((p.period, p.value, p.mark, p.src_label) for p in points),
+            sorted((p.period, p.value, p.mark, p.src_label, p.src_unit) for p in points),
             [(b.before, b.note) for b in s.breaks],
+            s.period_kind,
+            s.survey,
+            s.publisher,
         ],
         ensure_ascii=False,
         sort_keys=True,

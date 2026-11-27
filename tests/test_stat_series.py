@@ -606,3 +606,70 @@ def test_file_ids_must_be_ascii_digits(env):
             )
             probs = series_problems([r], [], **{**env, "metas": {}})
             assert any("半角の数字だけ" in p for p in probs), (key, bad)
+
+
+# --- 最後の見直しの直し（R25・R33・L8・S3） ---------------------------------------------
+
+
+def test_norm_unit_is_nfkc_percent_and_strip():
+    from koten.stats.series import norm_unit
+
+    assert norm_unit("％") == "%" and norm_unit(" 千人 ") == "千人" and norm_unit("ｋｇ") == "kg"
+    assert norm_unit("") == ""
+
+
+def test_api_unit_must_match_the_points_src_unit(env):
+    probs = series_problems([row(unit="人")], [prow(src_unit="千人")], **env)
+    assert has(probs, "work_rate：e-Stat の単位 '千人' と unit '人' が違う")
+    # ％ と % は同じ。src_unit が空の点は照らさない（e-Stat が単位を出さない表）
+    assert series_problems([row(unit="％")], [prow(src_unit="%")], **env) == []
+    assert series_problems([row(unit="人")], [prow(src_unit="")], **env) == []
+    # 1系列に1つの文（年ごとには出さない）
+    two = [prow(src_unit="千人"), prow(period="2021", src_unit="千人")]
+    probs = series_problems([row(unit="人")], two, **env)
+    assert len([x for x in probs if "e-Stat の単位" in x]) == 1
+    # ファイルの系列は照らさない（単位のセルは文の一部のことがある）
+    part = {"statInfId": "1", "fileKind": "1", "sheet": "", "values": "B2:B9", "periods": ["2020"]}
+    f = row(source_kind="estat_file", selector=json.dumps({"parts": [part]}), unit="人")
+    assert series_problems([f], [prow(src_unit="千人")], **{**env, "metas": {}}) == []
+
+
+def test_official_names_compare_nfkc_and_collapsed_whitespace(env):
+    for theirs in ("就業状態別　人口", "就業状態別\n人口", "就業状態別  人口", "就業状態別\t人口"):
+        meta = {**META, "title": theirs}
+        probs = series_problems(
+            [row(table_title="就業状態別 人口")], [], **{**env, "metas": {"work_rate": meta}}
+        )
+        assert probs == [], theirs
+    meta = {**META, "title": "就業状態別　人口"}
+    probs = series_problems(
+        [row(table_title="就業状態別人口")], [], **{**env, "metas": {"work_rate": meta}}
+    )
+    assert has(probs, "table_title", "と違う")
+    meta = {**META, "stat_name": "労働力　調査"}
+    env2 = {**env, "metas": {"work_rate": meta}}
+    probs = series_problems([row(survey="労働力 調査")], [], **env2)
+    assert probs == []
+
+
+def test_appid_in_any_field_is_refused_without_echoing_it(env):
+    fake = "f" * 40
+    url = f"https://api.e-stat.go.jp/rest/3.0/app/json/getStatsData?appId={fake}&statsDataId=1"
+    for col in ("url", "note", "where", "latest_known", "label"):
+        probs = series_problems([row(**{col: url})], [], **env)
+        assert has(probs, col, "appId"), col
+        assert all(fake not in x for x in probs), col
+    sel = json.dumps({**API_SELECTOR, "appId": fake})
+    probs = series_problems([row(selector=sel)], [], **env)
+    assert has(probs, "selector", "appId") and all(fake not in x for x in probs)
+    # 変数の名前を書いただけのメモは断らない
+    assert series_problems([row(note="KOTEN_ESTAT_APPID は Mac だけ")], [], **env) == []
+
+
+def test_check_sha_covers_period_kind_survey_publisher_and_src_unit():
+    s = series()
+    base = check_sha(s, [point(value="10")], None)
+    assert check_sha(replace(s, period_kind="年度"), [point(value="10")], None) != base
+    assert check_sha(replace(s, survey="別の調査"), [point(value="10")], None) != base
+    assert check_sha(replace(s, publisher="別の機関"), [point(value="10")], None) != base
+    assert check_sha(s, [point(value="10", src_unit="千人")], None) != base
