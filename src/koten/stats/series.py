@@ -619,7 +619,7 @@ def parse_year(text: str) -> tuple[str, str]:
     for m in (ad, era):
         if m:
             rest = rest.replace(m.group(0), "", 1)
-    if (not ad and not era) or rest.strip(" \t()") != "":
+    if (not ad and not era) or re.sub(r"\s", "", rest).strip("()") != "":
         raise SeriesError(f"年として読めない：{text!r}")
     era_year = None
     if era:
@@ -636,14 +636,27 @@ def parse_year(text: str) -> tuple[str, str]:
 
 
 _AVG_RE = re.compile(r"(?P<base>.*?年度?)\s*(?:年)?平均")
+# 年の名前の終わりの注の印：（1）・(1)・1)・注1)・注・※・※1・*（NFKC のあと）
+_NOTE_TAIL_RE = re.compile(
+    r"(?:\s*(?:\(注?[0-9]{1,2}\)|(?<![0-9])[0-9]{1,2}\)|注[0-9]*\)?|※[0-9]*|\*+))+\s*$"
+)
+
+
+def strip_period_notes(text: str) -> str:
+    """年の名前の終わりの注の印と改行を外す（「平成23年 1)」「2013年\\n(平成25年)」。F10）。
+
+    年の数には触らない（「2019)」のような数の続きは外さない）。"""
+    t = unicodedata.normalize("NFKC", text or "")
+    t = re.sub(r"[\r\n]+", " ", t).strip()
+    return _NOTE_TAIL_RE.sub("", t).strip()
 
 
 def parse_period_name(text: str) -> tuple[str, str]:
-    """parse_year に、年のあとの「平均」「年平均」を外す規則を足したもの。
+    """parse_year に、注の印・改行と、年のあとの「平均」「年平均」を外す規則を足したもの。
 
     「2013年度平均」は年度の平均として実在する。
     """
-    t = unicodedata.normalize("NFKC", text or "").strip()
+    t = strip_period_notes(text)
     m = _AVG_RE.fullmatch(t)
     return parse_year(m["base"] if m else t)
 
@@ -805,7 +818,9 @@ def segments(s: Series, points: list[Point]) -> dict[str, int]:
 
     breaks の before をまたぐ（前の点 < before <= この点）、または src_label が
     空でなく、それまでに見た最後の空でない src_label と違うところで番号を1つ進める
-    （間に src_label が空の点があっても食い違いは隠れない）。
+    （間に src_label が空の点があっても食い違いは隠れない）。部分（part）の境で、どちらかの
+    部分の src_label が空なら、比べられるか分からないので、そこでも番号を進める（R32）。
+    1つの部分の中は変えない（API の点は part が空で、部分の境が無い）。
     """
     seg: dict[str, int] = {}
     cur = 0
@@ -815,7 +830,8 @@ def segments(s: Series, points: list[Point]) -> dict[str, int]:
         if prev is not None:
             crossed = any(prev.period < b.before <= p.period for b in s.breaks)
             drift = bool(p.src_label and last_label and p.src_label != last_label)
-            if crossed or drift:
+            unknown = p.part.strip() != prev.part.strip() and not (p.src_label and prev.src_label)
+            if crossed or drift or unknown:
                 cur += 1
         if p.src_label:
             last_label = p.src_label
@@ -839,7 +855,9 @@ def comparable(s: Series, points: list[Point], a: str, b: str) -> tuple[bool, st
     lo, hi = sorted((a, b))
     notes = [bk.note for bk in s.breaks if lo < bk.before <= hi]
     why = "調べ方が変わっている" + (
-        f"（{'／'.join(notes)}）" if notes else "（元の資料の項目名が変わった）"
+        f"（{'／'.join(notes)}）"
+        if notes
+        else "（元の資料の項目名が変わったか、見出しの分からない部分をまたぐ）"
     )
     return False, why
 

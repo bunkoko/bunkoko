@@ -4181,13 +4181,15 @@ def stats_meta(
 ) -> None:
     """e-Stat の表の情報を取り、名前から符号を決めて下書きに書き戻す（Mac。ID が要る）。
 
-    下書きの series の項目：source_kind が estat_api で selector_names（分類の名前→項目の名前）が
-    あるもの。表の番号は項目の stats_data_id（無ければ selector.statsDataId）。
+    下書きの series の項目：source_kind が estat_api のもの。selector_names（分類の名前→
+    項目の名前。符号で選ぶときは "#符号"）があれば名前から符号を決める。無ければ selector の
+    符号（cdTab・cdCat01 など）が表にあるかを確かめる（時間以外の分類ごとに1つ）。どちらも
+    無い項目は赤で出す。表の番号は項目の stats_data_id（無ければ selector.statsDataId）。
     docs/estat/<series_id>.json にはその系列が選んだ分類・項目だけを書く（系列ごと）。
     """
     import json
 
-    from koten.stats.estat import EstatError, meta_record, resolve_selector
+    from koten.stats.estat import EstatError, meta_record, resolve_selector, selector_from_codes
     from koten.stats.series import (
         meta_dir_for,
         parse_series,
@@ -4208,17 +4210,23 @@ def stats_meta(
     in_ledger = {r.series_id: r.selector for r in parse_series(read_series_rows(s.config_dir))}
     done = failed = 0
     for item in data.get("series", []):
-        names = item.get("selector_names")
-        if item.get("source_kind") != "estat_api" or not names:
+        if str(item.get("source_kind") or "").strip() != "estat_api":
             continue
+        names = item.get("selector_names")
         sid = str(item.get("series_id", "")).strip()
         label = sid or "（series_id なし）"
         try:
             if not valid_series_id(sid):
                 raise EstatError("series_id が無いか、使えない形（半角の小文字・数字・_）")
-            if not isinstance(names, dict):
-                raise EstatError("selector_names は 分類の名前→項目の名前 のオブジェクトにする")
             old = item.get("selector")
+            codes = isinstance(old, dict) and any(k.startswith("cd") for k in old)
+            if names is None and not codes:
+                raise EstatError(
+                    'selector_names（分類の名前→項目の名前。符号で選ぶときは "#符号"）も、'
+                    "selector の符号（cdTab など）も無いので、表の情報を書けない。下書きに書き足す"
+                )
+            if names is not None and not isinstance(names, dict):
+                raise EstatError("selector_names は 分類の名前→項目の名前 のオブジェクトにする")
             sdid = str(
                 item.get("stats_data_id")
                 or (old.get("statsDataId") if isinstance(old, dict) else "")
@@ -4227,7 +4235,10 @@ def stats_meta(
             if not sdid:
                 raise EstatError("stats_data_id（表の番号）が無い")
             meta = run.client(app_id).meta(sdid, refresh=refresh)
-            sel = resolve_selector(meta, names)
+            if names is None:
+                sel = selector_from_codes(meta, old)  # 符号だけの下書き（R37）
+            else:
+                sel = resolve_selector(meta, names)
         except (*_estat_failures(), TypeError, AttributeError) as e:
             # TypeError・AttributeError も、その項目の失敗（型の名前を前に付ける。R30）
             typer.secho(_estat_failure(label, e), fg="red", err=True)

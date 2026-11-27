@@ -78,7 +78,7 @@ figcaption { font-size: 13px; color: var(--muted); }
 .scroll { overflow: auto; max-height: 18em; border: 1px solid var(--rule); border-radius: 8px; -webkit-overflow-scrolling: touch; }
 .excerpt { border-collapse: collapse; font-size: 12px; white-space: nowrap; }
 .excerpt td { border: 1px solid var(--rule); padding: 2px 6px; }
-.excerpt tr.lab td { background: #f3e2a9; color: #1f2420; }
+.excerpt tr.lab td, .excerpt td.lab { background: #f3e2a9; color: #1f2420; }
 .excerpt td.hl { background: #f6c9c4; color: #7a1010; font-weight: 700; outline: 2px solid #c0392b; outline-offset: -2px; }
 dl.words { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; font-size: 14px; }
 dl.words dt { color: var(--muted); } dl.words dd { margin: 0; overflow-wrap: anywhere; }
@@ -327,9 +327,10 @@ function pointTable(it) {
     el("tr", {}, el("th", {}, it.period_kind === "年度" ? "年度" : "年"), el("th", {}, `数（${it.unit}）`)), ...rows));
 }
 function excerptTable(x) {
-  const hl = new Set((x.hl || []).map(([r, c]) => `${r},${c}`)), labRows = new Set(x.label_rows || []);
+  const key = ([r, c]) => `${r},${c}`;
+  const hl = new Set((x.hl || []).map(key)), lab = new Set((x.lab || []).map(key)), labRows = new Set(x.label_rows || []);
   const rows = (x.rows || []).map((r, i) => el("tr", { class: labRows.has(i) ? "lab" : "" },
-    ...r.map((c, j) => el("td", { class: hl.has(`${i},${j}`) ? "hl" : "" }, c))));
+    ...r.map((c, j) => el("td", { class: hl.has(`${i},${j}`) ? "hl" : lab.has(`${i},${j}`) ? "lab" : "" }, c))));
   return el("div", { class: "scroll" }, el("table", { class: "excerpt" }, ...rows));
 }
 
@@ -347,7 +348,11 @@ function cardSeries(it) {
     ...(it.chosen || []).map((c) => el("p", { class: "small" }, `選んだ分類｜${c}`))));
   kids.push(el("div", {}, el("span", { class: "label" }, `年ごとの数（${it.points.filter((p) => !p.gap).length} 件。抜けた年・数でない印・調べ方の変わり目に印）`), pointTable(it)));
   if ((it.breaks || []).length) kids.push(el("p", { class: "small" }, "決めた区切り：" + it.breaks.map((b) => `${b.before}年から（${b.note}）`).join("、")));
-  if (it.excerpt) kids.push(el("div", {}, el("span", { class: "label" }, "元のファイルの該当のまわり（赤が数、黄色が見出し）"), excerptTable(it.excerpt)));
+  if (it.excerpt) {
+    const tables = it.excerpt.tables || [it.excerpt];
+    kids.push(el("div", {}, el("span", { class: "label" }, "元のファイルの該当のまわり（赤が数、黄色が見出し・年・単位）"),
+      ...tables.map((x) => el("div", {}, x.caption ? el("p", { class: "small" }, x.caption) : null, excerptTable(x)))));
+  }
   kids.push(opener(webUrl(it.link) || webUrl(it.url), it.source_kind === "estat_api" ? "e-Stat の元の表を開く" : "e-Stat の元のファイルを開く"));
   if (it.evidence) kids.push(el("details", {}, el("summary", {}, "調べ役が写したもの"), el("div", {}, el("pre", { class: "evidence" }, it.evidence))));
   if (it.check_note) kids.push(el("p", { class: "note" }, `見直し役のメモ：${it.check_note}`));

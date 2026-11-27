@@ -801,10 +801,20 @@ def test_excerpt_from_grid_marks_value_cells_and_label_rows():
     from koten.sources.check import excerpt_from_grid
 
     grid = [[f"r{r}c{c}" for c in range(10)] for r in range(30)]
-    x = excerpt_from_grid(FILE_SELECTOR["parts"][0], grid)  # values D12:F12, label A12, unit B3
+    # values D12:F12、periods_cells D5:F5、label A12、unit B3：全部が1つの表に入る
+    x = excerpt_from_grid(FILE_SELECTOR["parts"][0], grid)
     assert [x["rows"][r][c] for r, c in x["hl"]] == ["r11c3", "r11c4", "r11c5"]
-    assert len(x["rows"][0]) == 7 and len(x["rows"]) == 7  # 数の前後 2 列・3 行
-    assert all(i != x["hl"][0][0] for i in x["label_rows"])
+    assert (
+        len(x["rows"]) <= 14
+        and len(x["rows"][0]) <= 10
+        and x["tables"] == [{k: x[k] for k in ("rows", "hl", "lab", "label_rows")}]
+    )
+    lab = {x["rows"][r][c] for r, c in x["lab"]}
+    assert lab == {"r11c0", "r2c1", "r4c3", "r4c4", "r4c5"}  # 見出し・単位・年のセル
+    red_row = x["hl"][0][0]
+    assert x["rows"][red_row][0] == "r11c0"  # 見出しは数と同じ行の左に見える
+    yellow = {x["rows"][i][3] for i in x["label_rows"]}
+    assert {"r4c3", "r2c3"} <= yellow and red_row not in x["label_rows"]
 
 
 def test_excerpt_from_grid_marks_every_cell_of_a_vertical_range():
@@ -820,7 +830,7 @@ def test_excerpt_from_grid_marks_every_cell_of_a_vertical_range():
     x = excerpt_from_grid(spec, grid)
     assert [x["rows"][r][c] for r, c in x["hl"]] == [f"r{r}c3" for r in range(4, 9)]
     # 数の列の中にある見出しの行（A6）は黄色にしない。窓の中の単位の行（B2）は黄色
-    assert x["label_rows"] == [0]
+    assert [x["rows"][i][1] for i in x["label_rows"]] == ["r1c1"]
 
 
 def test_accept_rest_takes_in_a_series_without_points_as_ai(sconf):
@@ -1785,3 +1795,69 @@ def test_ledgers_are_written_through_temp_files(sconf, monkeypatch):
         merge_checks(drafts, checks, sconf, accept_rest=True)
     assert _ledger_bytes(sconf) == before and not (sconf / "findings.csv").exists()
     assert sorted(p.name for p in sconf.glob("*.tmp")) == [f"{SERIES_FILE}.tmp"]
+
+
+# --- ファイルの抜き出しに、見出しと年のセルも入れる（R36） ----------------------------------------
+
+
+def _layout_grid():
+    grid = [["" for _ in range(20)] for _ in range(30)]
+    grid[2][0] = "（％）"
+    for i, y in enumerate(range(2019, 2034)):
+        grid[4][3 + i] = f"{y}年"
+    for r, name in ((11, "30〜34歳"), (12, "35〜39歳")):
+        grid[r][0] = name
+        for i in range(15):
+            grid[r][3 + i] = f"{r}.{i}"
+    return grid
+
+
+def test_excerpt_puts_years_unit_and_row_label_next_to_the_numbers():
+    from koten.sources.check import excerpt_from_grid
+
+    spec = {"values": "D12:H12", "periods_cells": "D5:H5", "label_cells": ["A12"],
+            "unit_cell": "A3"}  # fmt: skip
+    x = excerpt_from_grid(spec, _layout_grid())
+    red = {r for r, _ in x["hl"]}
+    assert len(red) == 1 and x["rows"][red.pop()][0] == "30〜34歳"
+    texts = [" ".join(r) for r in x["rows"]]
+    assert any("2019年" in t and "2023年" in t for t in texts) and any("（％）" in t for t in texts)
+    years_row = next(i for i, t in enumerate(texts) if "2019年" in t)
+    unit_row = next(i for i, t in enumerate(texts) if "（％）" in t)
+    assert years_row in x["label_rows"] and unit_row in x["label_rows"]
+
+
+def test_excerpt_shows_a_values_row_that_is_one_off_from_its_label():
+    from koten.sources.check import excerpt_from_grid
+
+    spec = {"values": "D13:H13", "periods_cells": "D5:H5", "label_cells": ["A12"]}
+    x = excerpt_from_grid(spec, _layout_grid())
+    (red,) = {r for r, _ in x["hl"]}
+    (lab_row,) = {r for r, c in x["lab"] if x["rows"][r][c] == "30〜34歳"}
+    assert lab_row != red and x["rows"][red][0] == "35〜39歳"  # 数の行の見出しが違うのが見える
+
+
+def test_wide_excerpt_splits_into_small_tables():
+    from koten.sources.check import excerpt_from_grid
+
+    spec = {"values": "D12:R12", "periods_cells": "D5:R5", "label_cells": ["A12", "D6"],
+            "unit_cell": "A3"}  # fmt: skip
+    grid = _layout_grid()
+    grid[5][3] = "割合"
+    x = excerpt_from_grid(spec, grid)
+    main, *small = x["tables"]
+    assert main["rows"] == x["rows"] and len(main["rows"]) <= 3  # 年の行・（…）・数の行
+    (red,) = {r for r, _ in main["hl"]}
+    assert main["rows"][red][0] == "30〜34歳" and "…" in main["rows"][red]
+    assert len(main["hl"]) == 15 and "2033年" in main["rows"][0]
+    caps = [s["caption"] for s in small]
+    assert caps == ["見出しのセル D6", "単位のセル A3"]
+    assert small[0]["rows"] == [["割合"]] and small[0]["lab"] == [[0, 0]]
+    assert small[1]["rows"] == [["（％）"]]
+
+
+def test_page_draws_every_excerpt_table():
+    html = build_page({"made": "", "stats": [], "findings": [], "leads": [], "series": []})
+    body = html.split("function cardSeries")[1].split("\nfunction ")[0]
+    assert "it.excerpt.tables" in body and "caption" in body
+    assert "td.lab" in html

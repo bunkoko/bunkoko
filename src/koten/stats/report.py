@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 from collections.abc import Mapping
 from typing import Any
 
@@ -42,6 +44,15 @@ def missing_years(points: list[Point]) -> list[str]:
 def mark_list(points: list[Point]) -> list[str]:
     return [
         f"{p.period}:{p.mark}" for p in sorted(points, key=lambda p: p.period) if p.mark.strip()
+    ]
+
+
+def numeric_marks(points: list[Point]) -> list[str]:
+    """数字を含む印（△1.5・全角の数字・「12.3 1)」など）。読めなかった数かもしれない（F11）。"""
+    return [
+        f"{p.period}:{p.mark}"
+        for p in sorted(points, key=lambda p: p.period)
+        if re.search(r"[0-9]", unicodedata.normalize("NFKC", p.mark))
     ]
 
 
@@ -111,6 +122,10 @@ def report_lines(
     ]
     lines = [f"{s.series_id}：" + "、".join(head)]
     lines += [f"  台帳との違い：{d}" for d in diffs]
+    if odd := numeric_marks(points):
+        lines.append(
+            "  数字を含む印（数として読めない。CSV の版か別のセルを選ぶ）：" + "・".join(odd)
+        )
     if changed:
         lines.append("  前から変わった数：" + "、".join(changed))
     if added:

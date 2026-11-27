@@ -770,3 +770,18 @@ def test_status_1_drops_the_cached_answer_and_names_the_selector(tmp_path):
     points, _ = client.points(make_series())  # --refresh なしでも、次は取り直す
     assert [p.period for p in points] == ["2013"]
     assert len([r for r in seen if r.url.path.endswith("getStatsData")]) == 2
+
+
+def test_selector_from_codes_checks_every_class():
+    from koten.stats.estat import selector_from_codes
+
+    m = parse_meta(meta_json())
+    assert selector_from_codes(m, SEL) == SEL
+    assert selector_from_codes(m, {**SEL, "cdCat01": " 2 "}) == SEL
+    with pytest.raises(EstatError, match="cdTime"):
+        selector_from_codes(m, {**SEL, "cdTime": "2013000000"})
+    with pytest.raises(EstatError, match="地域") as e:
+        selector_from_codes(m, {k: v for k, v in SEL.items() if k != "cdArea"})
+    assert "全国（00000）" in str(e.value)  # 候補は名前と符号
+    with pytest.raises(EstatError, match="表の番号"):
+        selector_from_codes(m, {**SEL, "statsDataId": "0000000001"})

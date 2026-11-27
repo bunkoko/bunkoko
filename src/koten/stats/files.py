@@ -23,6 +23,7 @@ from koten.stats.series import (
     SeriesError,
     parse_period_name,
     part_problems,
+    strip_period_notes,
     to_decimal,
 )
 
@@ -275,7 +276,7 @@ def _period(text: str, kind: str) -> str:
         raise SeriesError(f"年の欄が日付のセルになっている（{text}）。年の文字か数のセルを指す")
     if isinstance(text, _BoolCell):
         raise SeriesError(f"年の欄が真偽値のセルになっている（{text}）")
-    t = text.strip()
+    t = strip_period_notes(text)  # 終わりの注の印（1)・※ など）と改行は外す（F10）
     if _BARE_YEAR_RE.fullmatch(t):
         return t
     year, k = parse_period_name(t)

@@ -549,3 +549,10 @@ def test_a_zero_shown_as_a_dash_is_a_mark_in_the_grid_points_and_trend(tmp_path)
     trend = replace(s, trend="増加", trend_from="2019", trend_to="2022", trend_note="n")
     ok, why = verify_trend(trend, pts)
     assert not ok and "2019" in why
+
+
+def test_period_cells_with_footnote_marks_and_line_breaks(tmp_path):
+    p = tmp_path / "a"
+    p.write_text(',2010 1),平成23年 1),"2013年\n(平成25年)",2014年※\nx,1,2,3,4\n', "utf-8")
+    s = make_series([part(values="B2:E2", periods_cells="B1:E1")])
+    assert [x.period for x in file_points(s, fetch_local(p))] == ["2010", "2011", "2013", "2014"]

@@ -337,35 +337,118 @@ def _newest_part(item: dict[str, Any], points: list[Point]) -> tuple[int, dict[s
     return (idx, parts[idx]) if isinstance(parts[idx], dict) else None
 
 
-def excerpt_from_grid(spec: dict[str, Any], grid: list[list[str]]) -> dict[str, Any]:
-    """数のセルの前後3行・前後2列で切り出した表。数のセル全部（hl）と見出しの行の位置つき。
+EXCERPT_ROWS, EXCERPT_COLS = 14, 10  # 1つの表で見せる大きさの上限
+_VERTICAL_CELLS = 12  # 縦の範囲は先頭の 12 セルまで
 
-    縦の範囲は先頭の 12 セルまでを印にする（窓も、そこまで）。"""
+
+def _ref_cells(ref: Any, limit: int | None = None) -> list[tuple[int, int]]:
+    """ "A3"・"D12:R12"・"D5:D20" のセルの位置（行, 列。0 始まり）。"""
+    a, _, b = str(ref).partition(":")
+    r1, c1 = cell_pos(a)
+    r2, c2 = cell_pos(b) if b else (r1, c1)
+    out = [(r, c) for r in range(r1, r2 + 1) for c in range(c1, c2 + 1)]
+    return out[:limit] if limit else out
+
+
+def _excerpt_table(
+    grid: list[list[str]],
+    rows: list[int],
+    cols: list[int],
+    values: list[tuple[int, int]],
+    heads: list[tuple[int, int]],
+) -> dict[str, Any]:
+    """rows・cols（並んだ番号）の表。番号が飛ぶところには「…」の行・列を入れる。
+
+    hl は数のセル、lab は見出し・年・単位のセルの位置。label_rows は見出しのセルがあって
+    数のセルの無い行（行ごと黄色）。"""
+
+    def with_gaps(nums: list[int]) -> list[int | None]:
+        out: list[int | None] = []
+        for n in sorted(set(nums)):
+            if out and out[-1] is not None and n > out[-1] + 1:
+                out.append(None)
+            out.append(n)
+        return out
+
+    rr, cc = with_gaps(rows), with_gaps(cols)
+    rpos = {r: i for i, r in enumerate(rr) if r is not None}
+    cpos = {c: j for j, c in enumerate(cc) if c is not None}
+
+    def text(r: int | None, c: int | None) -> str:
+        if r is None or c is None:
+            return "…"
+        row = grid[r] if r < len(grid) else []
+        return row[c] if c < len(row) else ""
+
+    def where(cells: list[tuple[int, int]]) -> list[list[int]]:
+        seen: list[list[int]] = []
+        for r, c in cells:
+            if r in rpos and c in cpos and [rpos[r], cpos[c]] not in seen:
+                seen.append([rpos[r], cpos[c]])
+        return seen
+
+    value_rows = {rpos[r] for r, c in values if r in rpos and c in cpos}
+    return {
+        "rows": [[text(r, c) for c in cc] for r in rr],
+        "hl": where(values),
+        "lab": where(heads),
+        "label_rows": sorted({i for i, _ in where(heads)} - value_rows),
+    }
+
+
+def excerpt_from_grid(spec: dict[str, Any], grid: list[list[str]]) -> dict[str, Any]:
+    """数のセル（赤）と、年・見出し・単位のセル（黄色）が並んで見える抜き出し（R36）。
+
+    全部が 14 行 × 10 列に入るなら、まわりを含めた1つの表。大きいときは、数の行（列）と
+    その年のセル・その行（列）の見出しの列（行）を1つの表にし（飛ぶところは「…」）、
+    そこに入らない見出し・単位のセルは小さい表（caption つき）にする。表は tables に並べ、
+    先頭の表は rows・hl・lab・label_rows にもある。縦の範囲は先頭の 12 セルまで。"""
     a, _, b = str(spec["values"]).partition(":")
     r1, c1 = cell_pos(a)
     r2, c2 = cell_pos(b) if b else (r1, c1)
-    rend = min(r2, r1 + 11)
-    top, bottom = max(0, r1 - 3), min(len(grid) - 1, rend + 3)
-    left, right = max(0, c1 - 2), c2 + 2
-    rows = [
-        [(grid[r][c] if r < len(grid) and c < len(grid[r]) else "") for c in range(left, right + 1)]
-        for r in range(top, bottom + 1)
-    ]
-    label_rows = set()
-    for ref in [
-        *(spec.get("label_cells") or []),
-        spec.get("unit_cell") or "",
-        spec.get("periods_cells") or "",
-    ]:
-        if ref:
-            r, _ = cell_pos(str(ref).partition(":")[0])
-            if top <= r <= bottom:
-                label_rows.add(r - top)
-    return {
-        "rows": rows,
-        "hl": [[r - top, c - left] for r in range(r1, rend + 1) for c in range(c1, c2 + 1)],
-        "label_rows": sorted(label_rows - set(range(r1 - top, rend - top + 1))),
-    }
+    vertical = c1 == c2 and r2 > r1
+    limit = _VERTICAL_CELLS if vertical else None
+    values = _ref_cells(spec["values"], limit)
+    periods = _ref_cells(spec["periods_cells"], limit) if spec.get("periods_cells") else []
+    refs = [("見出しのセル", ref) for ref in spec.get("label_cells") or []]
+    if spec.get("unit_cell"):
+        refs.append(("単位のセル", spec["unit_cell"]))
+    named = [(name, ref, _ref_cells(ref, _VERTICAL_CELLS)) for name, ref in refs]
+    heads = periods + [cell for _, _, cells in named for cell in cells]
+    every = values + heads
+    top, bottom = min(r for r, _ in every), max(r for r, _ in every)
+    left, right = min(c for _, c in every), max(c for _, c in every)
+    if bottom - top + 1 <= EXCERPT_ROWS and right - left + 1 <= EXCERPT_COLS:
+        # まわりを1行・1列ずつ（上限まで）
+        if bottom - top + 1 < EXCERPT_ROWS and top > 0:
+            top -= 1
+        if bottom - top + 1 < EXCERPT_ROWS and bottom + 1 < len(grid):
+            bottom += 1
+        if right - left + 1 < EXCERPT_COLS and left > 0:
+            left -= 1
+        if right - left + 1 < EXCERPT_COLS:
+            right += 1
+        main = _excerpt_table(
+            grid, list(range(top, bottom + 1)), list(range(left, right + 1)), values, heads
+        )
+        return {**main, "tables": [main]}
+    vrows, vcols = {r for r, _ in values}, {c for _, c in values}
+    label_cells = [cell for name, _, cells in named if name == "見出しのセル" for cell in cells]
+    if vertical:  # 数の列・年の列と、数の行の上下にある見出しの行
+        rows = sorted(vrows | {r for r, c in label_cells if c in vcols})
+        cols = sorted(vcols | {c for _, c in periods})
+    else:  # 数の行・年の行と、数の行の左右にある見出しの列
+        rows = sorted(vrows | {r for r, _ in periods})
+        cols = sorted(vcols | {c for r, c in label_cells if r in vrows})
+    main = _excerpt_table(grid, rows, cols, values, heads)
+    shown = {(r, c) for r in rows for c in cols}
+    tables = [main]
+    for name, ref, cells in named:
+        if all(cell in shown for cell in cells):
+            continue
+        small = _excerpt_table(grid, [r for r, _ in cells], [c for _, c in cells], [], cells)
+        tables.append({**small, "caption": f"{name} {str(ref).strip()}"})
+    return {**main, "tables": tables}
 
 
 def file_excerpt(

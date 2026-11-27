@@ -268,6 +268,45 @@ def resolve_selector(meta: TableMeta, names: dict[str, str]) -> dict[str, str]:
     return sel
 
 
+def _code_candidates(c: ClassObj) -> str:
+    items = c.items[:MAX_CANDIDATES]
+    more = f"…ほか {len(c.items) - MAX_CANDIDATES} 個" if len(c.items) > MAX_CANDIDATES else ""
+    return "／".join(f"{it.name}（{it.code}）" for it in items) + more
+
+
+def selector_from_codes(meta: TableMeta, sel: dict) -> dict[str, str]:
+    """下書きの selector の符号（selector_names が無いとき）を表の情報で確かめる（R37）。
+
+    時間以外の分類ごとに、表にある符号がちょうど1つ書いてあること。表に無い分類の鍵・時間の
+    鍵（cdTime）は断る。足りないもの・表に無いものを全部並べて EstatError。"""
+    fixed = _fixed_classes(meta)
+    want = {_cd_key(c.id): c for c in fixed}
+    problems = []
+    extra = sorted(k for k in sel if k.startswith("cd") and k not in want)
+    if extra:
+        problems.append(f"表に無い分類の鍵がある（{'・'.join(extra)}。時間の cdTime は書かない）")
+    sdid = sel.get("statsDataId")
+    if sdid not in (None, "") and str(sdid).strip() != meta.stats_data_id:
+        problems.append(f"selector の statsDataId {sdid!r} が表の番号 {meta.stats_data_id} と違う")
+    out = {"statsDataId": meta.stats_data_id}
+    for key, c in want.items():
+        code = sel.get(key)
+        if not isinstance(code, str) or not code.strip():
+            problems.append(f"分類「{c.name}」の符号（{key}）が無い。候補：{_code_candidates(c)}")
+            continue
+        hits = [it for it in c.items if it.code == code.strip()]
+        if not hits:
+            problems.append(
+                f"分類「{c.name}」（{key}）に符号 {code!r} の項目が無い。"
+                f"候補：{_code_candidates(c)}"
+            )
+            continue
+        out[key] = hits[0].code
+    if problems:
+        raise EstatError("、".join(problems))
+    return out
+
+
 def _chosen(meta: TableMeta, selector: dict) -> list[tuple[ClassObj, ClassItem]]:
     out = []
     for c in _fixed_classes(meta):

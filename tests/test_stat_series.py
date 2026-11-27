@@ -736,3 +736,64 @@ def test_periods_cells_must_line_up_with_the_values(env, values, periods_cells, 
     assert (probs == []) is ok, probs
     if not ok:
         assert has(probs, "periods_cells", "並んでいない")
+
+
+# --- 部分の境の見出し・年の注の印（R32・F10） ------------------------------------------------
+
+
+def test_unknown_label_at_a_part_boundary_is_a_break():
+    pts = [
+        point(period="2021", part="0", src_label="強い不安"),
+        point(period="2022", part="1", src_label=""),
+        point(period="2023", part="2", src_label="強い不安"),
+    ]
+    assert segments(series(), pts) == {"2021": 0, "2022": 1, "2023": 2}
+    ok, why = comparable(series(), pts, "2021", "2023")
+    assert not ok and "見出し" in why
+    # 1つの部分の中は今までどおり（空の見出しの点は区切らない）
+    one = [point(period=y, part="0", src_label="") for y in ("2021", "2022")]
+    assert segments(series(), one) == {"2021": 0, "2022": 0}
+    # 見出しのそろった部分の境は区切らない。API の点（part が空）は部分の境が無い
+    same = [point(period=y, part=n, src_label="A") for y, n in (("2021", "0"), ("2022", "1"))]
+    assert segments(series(), same) == {"2021": 0, "2022": 0}
+    api = [point(period=y, part="", src_label="") for y in ("2021", "2022")]
+    assert segments(series(), api) == {"2021": 0, "2022": 0}
+
+
+def test_trend_cannot_cross_a_part_with_an_unknown_label():
+    s = series(trend="増加", trend_from="2021", trend_to="2023", trend_note="n")
+    pts = [
+        point(period="2021", value="1", part="0", src_label="A"),
+        point(period="2022", value="2", part="1", src_label=""),
+        point(period="2023", value="3", part="1", src_label=""),
+    ]
+    assert not verify_trend(s, pts)[0]
+
+
+@pytest.mark.parametrize(
+    "text,want",
+    [
+        ("平成23年 1)", ("2011", "年")),
+        ("2010年注1)", ("2010", "年")),
+        ("2019年 2)", ("2019", "年")),
+        ("2013年\n(平成25年)", ("2013", "年")),
+        ("2021年（1）", ("2021", "年")),
+        ("2021年(1)", ("2021", "年")),
+        ("2021年※", ("2021", "年")),
+        ("2021年※1", ("2021", "年")),
+        ("2021年*", ("2021", "年")),
+        ("2021年度 2)\n", ("2021", "年度")),
+    ],
+)
+def test_period_names_with_footnote_marks_and_line_breaks(text, want):
+    from koten.stats.series import parse_period_name
+
+    assert parse_period_name(text) == want
+
+
+@pytest.mark.parametrize("text", ["2019)", "2021年 x)", "2021年(注意)", "2021年1月 1)"])
+def test_other_leftovers_are_still_refused(text):
+    from koten.stats.series import parse_period_name
+
+    with pytest.raises(SeriesError):
+        parse_period_name(text)

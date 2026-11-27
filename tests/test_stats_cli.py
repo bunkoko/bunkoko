@@ -808,3 +808,76 @@ def test_fetch_reports_a_changed_heading(env):
     r = stats(env, "fetch", "--refresh", "--series", "csv_rate")
     assert r.exit_code == 0, r.output
     assert "見出しが変わった：'孤独' → '孤立'（2021・2022・2023）" in r.output
+
+
+def test_report_warns_about_marks_that_look_like_numbers():
+    from koten.stats import report as rp
+    from koten.stats.series import Point
+
+    s = parse_series([srow(source_kind="estat_file")])[0]
+    pts = [
+        Point("age_rate", y, v, m, "0", "", "", "", "")
+        for y, v, m in (("2019", "1", ""), ("2020", "", "x"), ("2021", "", "△1.5"),
+                        ("2022", "", "１２３４"), ("2023", "", "12.3 1)"))
+    ]  # fmt: skip
+    lines = rp.report_lines(s, pts, units=set(), diffs=[], changed=[])
+    warn = [x for x in lines if "数字を含む印" in x]
+    assert len(warn) == 1 and "2021:△1.5" in warn[0] and "2023:12.3 1)" in warn[0]
+    assert "2022:１２３４" in warn[0] and "2020:x" not in warn[0]
+
+
+# --- stats meta：符号だけの下書き・種類の空白（R37・R26） ----------------------------------------
+
+
+def _drafts_file(env, *items):
+    path = env.tmp / "draft.json"
+    path.write_text(json.dumps({"series": list(items)}, ensure_ascii=False), "utf-8")
+    return path
+
+
+def test_meta_from_codes_writes_the_meta(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    item = {"series_id": "code_rate", "source_kind": "estat_api", "selector": SEL}
+    path = _drafts_file(env, item)
+    r = stats(env, "meta", "--drafts", str(path))
+    assert r.exit_code == 0, r.output
+    rec = json.loads((env.docs / "code_rate.json").read_text("utf-8"))
+    assert [c["code"] for c in rec["chosen"]] == ["01", "2", "00000"]
+    assert json.loads(path.read_text("utf-8"))["series"][0]["selector"] == SEL
+    assert "1 系列を決め" in r.output
+
+
+def test_meta_from_codes_names_what_is_missing(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    bad = {"statsDataId": SID, "cdTab": "01", "cdCat01": "9"}  # 地域が無い・年齢の 9 は表に無い
+    extra = {**SEL, "cdCat02": "1"}
+    path = _drafts_file(
+        env,
+        {"series_id": "bad_rate", "source_kind": "estat_api", "selector": bad},
+        {"series_id": "extra_rate", "source_kind": "estat_api", "selector": extra},
+    )
+    r = stats(env, "meta", "--drafts", str(path))
+    assert r.exit_code == 1
+    bad_line = next(x for x in r.output.splitlines() if x.startswith("bad_rate："))
+    assert "地域" in bad_line and "cdArea" in bad_line and "'9'" in bad_line
+    assert "extra_rate：" in r.output and "cdCat02" in r.output
+    assert not list(env.docs.glob("*.json"))
+
+
+def test_meta_says_what_to_add_when_neither_names_nor_codes(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    path = _drafts_file(
+        env, {"series_id": "bare_rate", "source_kind": "estat_api", "stats_data_id": SID}
+    )
+    r = stats(env, "meta", "--drafts", str(path))
+    assert r.exit_code == 1 and "bare_rate：" in r.output and "selector_names" in r.output
+    assert "0 系列を決め、1 系列が失敗" in r.output
+
+
+def test_meta_reads_a_padded_kind(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    item = {"series_id": "age_rate", "source_kind": "estat_api ", "stats_data_id": SID,
+            "selector_names": {"年齢": "20～29歳"}}  # fmt: skip
+    r = stats(env, "meta", "--drafts", str(_drafts_file(env, item)))
+    assert r.exit_code == 0, r.output
+    assert (env.docs / "age_rate.json").exists()
