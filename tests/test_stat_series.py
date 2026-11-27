@@ -331,14 +331,23 @@ def test_read_rows_and_load_meta(tmp_path):
     config = tmp_path / "config"
     config.mkdir()
     assert read_series_rows(config) == [] and read_point_rows(config) == []
-    (config / SERIES_FILE).write_text("﻿" + ",".join(SERIES_COLUMNS) + "\n", encoding="utf-8")
-    assert read_series_rows(config) == []
+    line = ",".join(row()[c] for c in SERIES_COLUMNS)
+    text = "\ufeff" + ",".join(SERIES_COLUMNS) + "\n" + line + "\n"
+    (config / SERIES_FILE).write_text(text, encoding="utf-8")
+    rows = read_series_rows(config)
+    assert rows[0]["series_id"] == "work_rate" and "\ufeffseries_id" not in rows[0]
     meta = meta_dir_for(config)
     assert meta == tmp_path / "docs" / "estat"
     assert load_meta(meta, "0001") is None
     meta.mkdir(parents=True)
     (meta / "0001.json").write_text('{"title": "表"}', encoding="utf-8")
     assert load_meta(meta, "0001") == {"title": "表"}
+    (meta / "0002.json").write_text("{oops", encoding="utf-8")
+    with pytest.raises(SeriesError, match="0002.json"):
+        load_meta(meta, "0002")
+    (meta / "0003.json").write_text("[1]", encoding="utf-8")
+    with pytest.raises(SeriesError, match="0003.json"):
+        load_meta(meta, "0003")
 
 
 def test_write_points_replaces_only_the_fetched_series(tmp_path):
@@ -346,7 +355,7 @@ def test_write_points_replaces_only_the_fetched_series(tmp_path):
     config.mkdir()
     write_points(
         config,
-        set(),
+        {"a", "b"},
         [
             point(series_id="b", period="2021", value="2"),
             point(series_id="a", period="2020", value="1,5"),
@@ -389,3 +398,178 @@ def test_file_series_is_not_checked_against_metas(env):
     part = {"statInfId": "x", "fileKind": "1", "sheet": "", "values": "B2:B9", "periods": ["2020"]}
     r = row(source_kind="estat_file", selector=json.dumps({"parts": [part]}), table_title="")
     assert series_problems([r], [], **{**env, "metas": {}}) == []
+
+
+def has(probs, *frags):
+    return any(all(f in x for f in frags) for x in probs)
+
+
+def test_full_width_digits_are_refused_in_years_and_dates(env):
+    probs = series_problems([row(breaks='[{"before":"２０２０","note":"郵送"}]')], [], **env)
+    assert has(probs, "breaks")
+    assert has(
+        series_problems(
+            [
+                row(),
+            ],
+            [prow(period="２０２０")],
+            **env,
+        ),
+        "period",
+    )
+    assert has(
+        series_problems(
+            [
+                row(),
+            ],
+            [prow(period="٢٠٢٠")],
+            **env,
+        ),
+        "period",
+    )
+    probs = series_problems(
+        [row(trend="増加", trend_from="２０１５", trend_to="2020", trend_note="n")], [], **env
+    )
+    assert has(probs, "trend_from")
+    probs = series_problems([row(checked_by=AI_CHECKER, checked_at="２０２６-11-27")], [], **env)
+    assert has(probs, "checked_at")
+    assert has(series_problems([row()], [prow(value="１２")], **env), "value")
+
+
+def test_latest_known_must_be_a_year(env):
+    assert has(series_problems([row(latest_known="2022年度")], [], **env), "latest_known")
+    assert has(series_problems([row(latest_known="２０２２")], [], **env), "latest_known")
+    assert series_problems([row(latest_known="2022")], [], **env) == []
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "２０２０年度の就業率",
+        "二〇二〇年の就業率",
+        "平成二十五年の就業率",
+        "昭和六十年の就業率",
+        "令和元年の就業率",
+    ],
+)
+def test_label_year_forms(env, label):
+    assert has(series_problems([row(label=label)], [], **env), "label")
+
+
+def test_blocked_word_in_chosen_names(env):
+    meta = {**META, "chosen": [{"class": "区分", "item": "うつ病の人", "code": "1", "unit": "％"}]}
+    probs = series_problems([row()], [], **{**env, "metas": {"0003000001": meta}})
+    assert has(probs, "item", "うつ病")
+    meta = {**META, "chosen": [{"class": "うつ病", "item": "計", "code": "1", "unit": "％"}]}
+    probs = series_problems([row()], [], **{**env, "metas": {"0003000001": meta}})
+    assert has(probs, "class", "うつ病")
+
+
+def test_comparable_refuses_a_mark_side():
+    pts = [point(period="2019", value="1"), point(period="2020", value="", mark="x")]
+    ok, why = comparable(series(), pts, "2019", "2020")
+    assert not ok and "2020" in why and "x" in why
+
+
+def test_label_drift_is_not_hidden_by_an_empty_label():
+    pts = [
+        point(period="2020", src_label="A"),
+        point(period="2021", src_label=""),
+        point(period="2022", src_label="B"),
+    ]
+    assert segments(series(), pts) == {"2020": 0, "2021": 0, "2022": 1}
+
+
+def test_trend_range_must_be_covered_and_not_cross_a_break():
+    s = series(trend="増加", trend_from="2015", trend_to="2020", trend_note="n")
+    only_late = pts_values({"2017": "1", "2018": "2", "2020": "3"})
+    ok, why = verify_trend(s, only_late)
+    assert not ok and "2015" in why
+    ok, why = verify_trend(s, pts_values({"2015": "1", "2018": "2"}))
+    assert not ok and "2020" in why
+    brk = replace(s, breaks=(Break("2016", "x"),))
+    ok, why = verify_trend(brk, pts_values({"2015": "1", "2017": "2", "2020": "3"}))
+    assert not ok and "区切り" in why
+    brk_at_from = replace(s, breaks=(Break("2015", "x"),))
+    assert verify_trend(brk_at_from, pts_values({"2015": "1", "2020": "3"}))[0]
+    ok, why = verify_trend(s, pts_values({"2015": "1", "2018": "2", "2020": "3"}))
+    assert ok and "2016" in why
+
+
+def test_parse_strips_key_fields_but_not_values():
+    p = parse_points([prow(series_id=" work_rate ", period=" 2020", value=" 1,234 ")])[0]
+    assert p.series_id == "work_rate" and p.period == "2020" and p.value == " 1,234 "
+    assert parse_series([row(series_id=" work_rate ")])[0].series_id == "work_rate"
+
+
+def test_write_points_refuses_stray_series_and_leaves_no_temp(tmp_path):
+    config = tmp_path / "config"
+    config.mkdir()
+    write_points(config, {"a"}, [point(series_id="a", period="2020")])
+    before = (config / POINTS_FILE).read_bytes()
+    with pytest.raises(SeriesError, match="b"):
+        write_points(config, {"a"}, [point(series_id="b", period="2020")])
+    assert (config / POINTS_FILE).read_bytes() == before
+    assert [f.name for f in config.iterdir()] == [POINTS_FILE]
+
+
+def test_problem_prefixes_and_row_numbers(env):
+    probs = series_problems(
+        [row(), row(series_id="other", unit="")], [prow(), prow(period="x")], **env
+    )
+    assert any(x.startswith("stat_series.csv 3行目：") and "unit" in x for x in probs)
+    assert any(x.startswith("stat_points.csv 3行目：") for x in probs)
+    assert not any("2行目" in x for x in probs)
+
+
+def test_gate_gaps(env):
+    int_id = json.dumps({"statsDataId": 3000001, "cdCat01": "001"})
+    assert has(series_problems([row(selector=int_id)], [], **env), "statsDataId")
+    assert has(series_problems([row(themes="仕事;仕事")], [], **env), "themes", "2回")
+    assert has(
+        series_problems([row(checked_by=HUMAN_CHECKER, checked_at="2026-13-45")], [], **env),
+        "checked_at",
+    )
+    swapped = dict(trend="増加", trend_from="2020", trend_to="2015", trend_note="n")
+    assert has(series_problems([row(**swapped)], [], **env), "trend_from", "後")
+    assert has(series_problems([row(selector="{}")], [], **env), "selector", "空")
+    nulled = {**META, "title": None}
+    probs = series_problems([row()], [], **{**env, "metas": {"0003000001": nulled}})
+    assert has(probs, "title", "文字列でない") and not has(probs, "'None'")
+
+
+@pytest.mark.parametrize(
+    "text,want",
+    [
+        ("2013年（平成25年）", ("2013", "年")),
+        ("2013年度（平成25年度）", ("2013", "年度")),
+        ("2013年(平成25年)", ("2013", "年")),
+        ("平成31年", ("2019", "年")),
+        ("令和8年", ("2026", "年")),
+    ],
+)
+def test_parse_year_parenthetical_era(text, want):
+    assert parse_year(text) == want
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "2013年（平成26年）",
+        "2013年度（平成25年）",
+        "平成32年",
+        "昭和65年",
+        "大正16年",
+        "明治46年",
+        "平成0年",
+    ],
+)
+def test_parse_year_refuses_disagreement_and_overrun(text):
+    with pytest.raises(SeriesError):
+        parse_year(text)
+
+
+def test_is_stale_without_any_number():
+    s = series(latest_known="2022")
+    assert is_stale(s, [])
+    assert is_stale(s, [point(period="2022", value="", mark="x")])

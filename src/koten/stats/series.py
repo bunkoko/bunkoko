@@ -11,8 +11,10 @@ DB もネットワークも使わない、形と決まりだけの層。
 from __future__ import annotations
 
 import csv
+import datetime
 import hashlib
 import json
+import os
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -38,16 +40,21 @@ POINTS_FILE = "stat_points.csv"
 META_DIR = "docs/estat"  # REPO_ROOT から。config_dir があるときは meta_dir_for を使う
 
 _ID_RE = re.compile(r"[a-z0-9][a-z0-9_]*")
-_YEAR_RE = re.compile(r"\d{4}")
-_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
-# label に年を入れない（年度も「年」に当たる）。4桁の数だけ（従業員2000人以上）は許す。
+_YEAR_RE = re.compile(r"[0-9]{4}")  # \d は全角などの数字にも当たるので使わない
+_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_STATS_DATA_ID_RE = re.compile(r"[0-9]+")
+# label に年を入れない（年度も「年」に当たる）。NFKC で全角数字を半角にしてから当てる。
+# 4桁の数だけ（従業員2000人以上）は許す。漢数字の年（二〇二〇年・平成二十五年）も断る。
+_KANJI_NUM = "〇一二三四五六七八九"
 _LABEL_YEAR_RE = re.compile(
-    r"(?<!\d)(?:19|20)\d{2}\s*年|(?:明治|大正|昭和|平成|令和)\s*[0-9０-９元]+\s*年"
+    r"(?<![0-9])(?:19|20)[0-9]{2}\s*年"
+    rf"|[{_KANJI_NUM}]{{4}}\s*年"
+    rf"|(?:明治|大正|昭和|平成|令和)\s*[0-9元{_KANJI_NUM}十百]+\s*年"
 )
 _ERA_BASE = {"明治": 1868, "大正": 1912, "昭和": 1926, "平成": 1989, "令和": 2019}
-_YEAR_TEXT_RE = re.compile(
-    r"(?:(?P<era>明治|大正|昭和|平成|令和)\s*(?P<en>\d+|元)|(?P<ad>\d{4}))\s*年(?P<fy>度?)"
-)
+_ERA_LAST = {"明治": 45, "大正": 15, "昭和": 64, "平成": 31}  # 令和は終わりが無い
+_ERA_YEAR_RE = re.compile(r"(?P<era>明治|大正|昭和|平成|令和)\s*(?P<en>[0-9]+|元)\s*年(?P<fy>度?)")
+_AD_YEAR_RE = re.compile(r"(?<![0-9])(?P<ad>[0-9]{4})\s*年(?P<fy>度?)")
 
 
 class SeriesError(ValueError):
@@ -130,7 +137,13 @@ def load_meta(meta_dir: Path, stats_data_id: str) -> dict | None:
     path = Path(meta_dir) / f"{stats_data_id}.json"
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        meta = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise SeriesError(f"{path} を読めない（JSON が壊れている）：{type(e).__name__}") from e
+    if not isinstance(meta, dict):
+        raise SeriesError(f"{path} は JSON のオブジェクトでない")
+    return meta
 
 
 def write_points(config_dir: Path, series_ids: set[str], new: list[Point]) -> None:
@@ -139,18 +152,33 @@ def write_points(config_dir: Path, series_ids: set[str], new: list[Point]) -> No
     並びは (series_id, period)。ファイルが無ければ作る。
     """
     path = Path(config_dir) / POINTS_FILE
+    stray = sorted({p.series_id for p in new} - set(series_ids))
+    if stray:
+        raise SeriesError(f"入れ替える系列に入っていない series_id の点がある：{'・'.join(stray)}")
     kept = [r for r in read_point_rows(config_dir) if r.get("series_id", "") not in series_ids]
     rows = kept + [{c: getattr(p, c) for c in POINTS_COLUMNS} for p in new]
     rows.sort(key=lambda r: (r["series_id"], r["period"]))
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as f:
+    tmp = path.with_name(path.name + ".tmp")
+    with tmp.open("w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=POINTS_COLUMNS, lineterminator="\n")
         w.writeheader()
         for r in rows:
             w.writerow({c: r.get(c, "") for c in POINTS_COLUMNS})
+    os.replace(tmp, path)
 
 
 # --- 決まりの確かめ -----------------------------------------------------------
+
+
+def _is_date(text: str) -> bool:
+    if not _DATE_RE.fullmatch(text):
+        return False
+    try:
+        datetime.date.fromisoformat(text)
+    except ValueError:
+        return False
+    return True
 
 
 def _json_or_none(text: str) -> Any:
@@ -161,12 +189,15 @@ def _json_or_none(text: str) -> Any:
 
 
 def _selector_problems(kind: str, sel: Any) -> list[str]:
-    if not isinstance(sel, dict) or not sel:
+    if isinstance(sel, dict) and not sel:
+        return ["selector が空（{}）"]
+    if not isinstance(sel, dict):
         return ["selector が JSON のオブジェクトになっていない"]
     out: list[str] = []
     if kind == "estat_api":
-        if not str(sel.get("statsDataId", "")).strip():
-            out.append("selector に statsDataId が無い")
+        sdid = sel.get("statsDataId")
+        if not isinstance(sdid, str) or not _STATS_DATA_ID_RE.fullmatch(sdid):
+            out.append("selector の statsDataId は半角数字の文字列（先頭の 0 を落とさない）にする")
         cds = [k for k in sel if k.startswith("cd")]
         if not cds:
             out.append("selector に cd で始まる鍵が1つも無い")
@@ -225,6 +256,8 @@ def series_problems(
         th = [t.strip() for t in r.get("themes", "").split(";") if t.strip()]
         if not 1 <= len(th) <= 3:
             out.append(f"{p}themes は ; 区切りで1〜3個")
+        if len(set(th)) != len(th):
+            out.append(f"{p}themes に同じ語が2回ある")
         for t in th:
             if t not in themes:
                 out.append(f"{p}themes の {t!r} は themes.yaml に無い")
@@ -233,12 +266,15 @@ def series_problems(
                 out.append(f"{p}{col} が空")
         if r.get("url", "").strip() and not re.match(r"https?://", r["url"].strip()):
             out.append(f"{p}url は http(s) で始める")
-        if _LABEL_YEAR_RE.search(r.get("label", "")):
+        if _LABEL_YEAR_RE.search(unicodedata.normalize("NFKC", r.get("label", ""))):
             out.append(f"{p}label に年を入れない（年は点の側で持つ）")
         for col in ("label", "table_title", "survey"):
             hit = keyword_block(r.get(col, ""), blocked)
             if hit:
                 out.append(f"{p}{col} が除外カテゴリ（{hit[0]}：{hit[1]}）に当たる")
+        lk = r.get("latest_known", "").strip()
+        if lk and not _YEAR_RE.fullmatch(lk):
+            out.append(f"{p}latest_known は空か YYYY（半角）（{lk!r}）")
         kind = r.get("source_kind", "").strip()
         if kind not in ("estat_api", "estat_file"):
             out.append(f"{p}source_kind は estat_api か estat_file（{kind!r}）")
@@ -248,8 +284,8 @@ def series_problems(
             sel = _json_or_none(r["selector"])
             for m in _selector_problems(kind, sel):
                 out.append(f"{p}{m}")
-            sdid = str(sel.get("statsDataId", "")).strip() if isinstance(sel, dict) else ""
-            if kind == "estat_api" and sdid:
+            sdid = sel.get("statsDataId") if isinstance(sel, dict) else None
+            if kind == "estat_api" and isinstance(sdid, str) and sdid.strip():
                 meta = metas.get(sdid)
                 if meta is None:
                     out.append(
@@ -263,9 +299,23 @@ def series_problems(
                         ("table_title", "title"),
                     ):
                         mine = r.get(col, "").strip()
-                        theirs = str(meta.get(key, "")).strip()
-                        if mine != theirs:
-                            out.append(f"{p}{col} {mine!r} が表の情報の {key} {theirs!r} と違う")
+                        theirs = meta.get(key)
+                        if not isinstance(theirs, str):
+                            out.append(f"{p}表の情報の {key} が文字列でない（{theirs!r}）")
+                        elif mine != theirs.strip():
+                            out.append(
+                                f"{p}{col} {mine!r} が表の情報の {key} {theirs.strip()!r} と違う"
+                            )
+                    for c in meta.get("chosen") or []:
+                        if not isinstance(c, dict):
+                            continue
+                        for key in ("class", "item"):
+                            hit = keyword_block(str(c.get(key) or ""), blocked)
+                            if hit:
+                                out.append(
+                                    f"{p}選んだ分類の {key}（{c.get(key)}）が"
+                                    f"除外カテゴリ（{hit[0]}：{hit[1]}）に当たる"
+                                )
         if r.get("breaks", "").strip():
             br = _json_or_none(r["breaks"])
             if not isinstance(br, list):
@@ -283,6 +333,9 @@ def series_problems(
             for col in ("trend_from", "trend_to"):
                 if not _YEAR_RE.fullmatch(r.get(col, "").strip()):
                     out.append(f"{p}trend を書いたら {col}（YYYY）も要る")
+            tf, tt = r.get("trend_from", "").strip(), r.get("trend_to", "").strip()
+            if _YEAR_RE.fullmatch(tf) and _YEAR_RE.fullmatch(tt) and tf > tt:
+                out.append(f"{p}trend_from が trend_to より後")
             if not r.get("trend_note", "").strip():
                 out.append(f"{p}trend を書いたら trend_note も要る")
         if r.get("status", "").strip() not in ("", "保留"):
@@ -290,8 +343,8 @@ def series_problems(
         by = r.get("checked_by", "").strip()
         if by not in ("", AI_CHECKER, HUMAN_CHECKER):
             out.append(f"{p}checked_by は空・{AI_CHECKER}・{HUMAN_CHECKER}")
-        if by and not _DATE_RE.fullmatch(r.get("checked_at", "").strip()):
-            out.append(f"{p}checked_by を書いたら checked_at（YYYY-MM-DD）も要る")
+        if by and not _is_date(r.get("checked_at", "").strip()):
+            out.append(f"{p}checked_by を書いたら checked_at（YYYY-MM-DD、実在する日）も要る")
 
     pseen: set[tuple[str, str]] = set()
     for n, r in enumerate(point_rows, 2):
@@ -334,13 +387,22 @@ def parse_series(rows: list[dict[str, str]]) -> list[Series]:
 
 
 def parse_points(rows: list[dict[str, str]]) -> list[Point]:
-    return [Point(**{c: r.get(c, "") for c in POINTS_COLUMNS}) for r in rows]
+    """キー（series_id・period）の前後の空白は取る。value は元の文字のまま（R6）。"""
+    out = []
+    for r in rows:
+        vals = {c: r.get(c, "") for c in POINTS_COLUMNS}
+        vals["series_id"] = vals["series_id"].strip()
+        vals["period"] = vals["period"].strip()
+        out.append(Point(**vals))
+    return out
 
 
 # --- 数・年 -------------------------------------------------------------------
 
 
 def _to_decimal(text: str) -> Decimal | None:
+    if not text.isascii():
+        return None
     try:
         d = Decimal(text.replace(",", "").strip())
     except InvalidOperation:
@@ -360,21 +422,34 @@ def period_label(period: str, period_kind: str) -> str:
 
 
 def parse_year(text: str) -> tuple[str, str]:
-    """「2013年」「平成25年度」「令和元年」→ ("2013", "年"|"年度")。月・期は断る。"""
+    """「2013年」「平成25年度」「令和元年」「2013年（平成25年）」→ ("2013", "年"|"年度")。
+
+    月・四半期は断る。西暦と和暦が両方あるときは同じ年でなければ断る（括弧の和暦は
+    西暦を優先して読む）。元号の最後の年（平成31・昭和64 など）を超える年も断る。
+    """
     t = unicodedata.normalize("NFKC", text or "").strip()
     if any(w in t for w in ("月", "期")):
         raise SeriesError(f"月・四半期の時間軸は扱わない（年・年度だけ）：{text!r}")
-    m = _YEAR_TEXT_RE.fullmatch(t)
-    if not m:
+    ad = _AD_YEAR_RE.search(t)
+    era = _ERA_YEAR_RE.search(t)
+    rest = t
+    for m in (ad, era):
+        if m:
+            rest = rest.replace(m.group(0), "", 1)
+    if (not ad and not era) or rest.strip(" \t()") != "":
         raise SeriesError(f"年として読めない：{text!r}")
-    if m["era"]:
-        n = 1 if m["en"] == "元" else int(m["en"])
-        if n < 1:
-            raise SeriesError(f"年として読めない：{text!r}")
-        year = _ERA_BASE[m["era"]] + n - 1
-    else:
-        year = int(m["ad"])
-    return f"{year:04d}", "年度" if m["fy"] else "年"
+    era_year = None
+    if era:
+        n = 1 if era["en"] == "元" else int(era["en"])
+        if n < 1 or n > _ERA_LAST.get(era["era"], 10**4):
+            raise SeriesError(f"元号の年が範囲外：{text!r}")
+        era_year = _ERA_BASE[era["era"]] + n - 1
+    ad_year = int(ad["ad"]) if ad else None
+    if ad and era and (ad_year != era_year or ad["fy"] != era["fy"]):
+        raise SeriesError(f"西暦と和暦が食い違っている：{text!r}")
+    year = ad_year if ad else era_year
+    fy = (ad or era)["fy"]
+    return f"{year:04d}", "年度" if fy else "年"
 
 
 # --- 区切り・比べられるか・傾向 ------------------------------------------------
@@ -388,17 +463,21 @@ def segments(s: Series, points: list[Point]) -> dict[str, int]:
     """period → 区切りの番号（0 から）。
 
     breaks の before をまたぐ（前の点 < before <= この点）、または src_label が
-    両方空でなく前の点と違うところで番号を1つ進める。
+    空でなく、それまでに見た最後の空でない src_label と違うところで番号を1つ進める
+    （間に src_label が空の点があっても食い違いは隠れない）。
     """
     seg: dict[str, int] = {}
     cur = 0
     prev: Point | None = None
+    last_label = ""
     for p in _by_period(points):
         if prev is not None:
             crossed = any(prev.period < b.before <= p.period for b in s.breaks)
-            drift = bool(prev.src_label and p.src_label and prev.src_label != p.src_label)
+            drift = bool(p.src_label and last_label and p.src_label != last_label)
             if crossed or drift:
                 cur += 1
+        if p.src_label:
+            last_label = p.src_label
         seg[p.period] = cur
         prev = p
     return seg
@@ -407,9 +486,13 @@ def segments(s: Series, points: list[Point]) -> dict[str, int]:
 def comparable(s: Series, points: list[Point], a: str, b: str) -> tuple[bool, str]:
     """a 年と b 年を同じ区切りで比べてよいか。だめなら理由。"""
     seg = segments(s, points)
+    by = {p.period: p for p in points}
     for y in (a, b):
         if y not in seg:
             return False, f"{y} の点が無い"
+    for y in (a, b):
+        if value_num(by[y]) is None:
+            return False, f"{y} は数が無い（{by[y].mark or '値なし'}）"
     if seg[a] == seg[b]:
         return True, ""
     lo, hi = sorted((a, b))
@@ -432,6 +515,12 @@ def verify_trend(s: Series, points: list[Point]) -> tuple[bool, str]:
     nums = [(p, v) for p, v in nums if v is not None]
     if len(nums) < 2:
         return False, "trend の期間に数のある点が2つ未満"
+    have = {p.period for p, _ in nums}
+    for y in (lo, hi):
+        if f"{y:04d}" not in have:
+            return False, f"trend の端の年 {y} に数が無い"
+    if any(f"{lo:04d}" < b.before <= f"{hi:04d}" for b in s.breaks):
+        return False, "trend の期間の中に調べ方の区切りがある"
     seg = segments(s, points)
     if len({seg[p.period] for p, _ in nums}) != 1:
         return False, "trend の期間が調べ方の区切りをまたいでいる"
@@ -441,13 +530,15 @@ def verify_trend(s: Series, points: list[Point]) -> tuple[bool, str]:
     if not ok:
         word = "増え続けて" if s.trend == "増加" else "減り続けて"
         return False, f"数が{word}いない"
-    have = {p.period for p, _ in nums}
     missing = [str(y) for y in range(lo, hi + 1) if f"{y:04d}" not in have]
     return True, ("数が無い年：" + "・".join(missing)) if missing else ""
 
 
 def is_stale(s: Series, points: list[Point]) -> bool:
-    """元の資料に新しい年があるはずなのに、最新の数のある年がそれより古い。"""
+    """元の資料に新しい年があるはずなのに、最新の数のある年がそれより古い。
+
+    latest_known があって数のある点が1つも無いときも True（今の数として使えない）。
+    """
     if not s.latest_known.strip():
         return False
     years = [int(p.period) for p in points if value_num(p) is not None]
