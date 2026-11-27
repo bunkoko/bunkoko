@@ -1191,6 +1191,19 @@ def test_an_early_start_that_is_refused_sets_the_count_back_to_zero(tmp_path):
     assert again["stopped"] == "too_early" and calls == []
 
 
+def test_documents_received_by_an_early_start_count_as_a_clean_day(tmp_path):
+    """早めに始めた取得が、直近の月の書類を断られずに受け取れたら、その日も数えに入る（サイトが書類を渡した証拠）。"""
+    root, _ = hdd(tmp_path)
+    clock = two_clean_mornings(root)
+    rows = [("w1", "2026-10-05 15:00:00", "7203.T", "トヨタ", "お知らせ", "", "")]       # 7 日より前・直近の月の開示（取り直しに回した本文 など）
+    assert run(root, lambda url: _pdf("a"), clock=clock, rows=rows, early=True)["text"] == 1
+    import os
+
+    path = root / "text" / "2026-10" / "w1.txt"
+    os.utime(path, (clock.t.timestamp(), clock.t.timestamp()))                            # 作り物の時計の時刻に書かれたことにする
+    assert C.clean_days(root, clock.t) == ["2026-11-26", "2026-11-27", "2026-11-28"] and C.history_gate(root, clock.t) is None
+
+
 def test_early_changes_nothing_when_the_wait_is_already_over(tmp_path):
     root, _ = hdd(tmp_path)
     clock = two_clean_mornings(root)

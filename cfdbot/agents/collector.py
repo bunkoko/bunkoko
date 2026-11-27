@@ -136,7 +136,8 @@ def clean_days(root: Path, when) -> list[str]:
     証拠は、決算の数字（xbrl）と本文のファイルが書かれた日。道具が別に覚えを書くのではなく、ファイルの書かれた時刻を見るので、
     道具を新しくする前の朝の分も数えられる。断られた日そのものは数えない（その日に、待って取り直せた分があっても）。
     書類が 1 件も無かった朝は、証拠が無いので数えない（数え直しにもならない）。断られたことが無ければ、空。
-    過去分の取得は、この日数がそろうまで動かないので、この間に書かれるのは毎日の収集の分だけ。
+    過去分の取得は、この日数がそろうまで動かないので、この間に書かれるのは毎日の収集の分だけ
+    （利用者の頼みで早めに始めたとき〈early〉だけは別: その取得が、直近の月の書類を断られずに受け取れた日も数えに入る。サイトが書類を渡した証拠なので、そのまま数える）。
     """
     import os
     from datetime import datetime, timedelta
@@ -972,10 +973,12 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
         return dict(done, stopped="no_text_place")
 
     ahead = None                                                # 早めに始めたときの「その前に断られた時刻」。これより後に断られたら、止まる
+    seen: dict = {}                                             # いちばん新しく見た、断られた時刻
 
     def shut() -> dict | None:
         """断られた後で、まだ取ってはいけない間なら、止まる理由（毎日の収集を守る。確かめの 1 件も取らない）。"""
         gate = history_gate(root, now())
+        seen["since"] = gate["since"] if gate else None
         if gate is None or (ahead is not None and gate["since"] == ahead):
             return None
         return {"stopped": "cooling", "since": f"{gate['since']:%Y-%m-%d %H:%M}", "clean": len(gate["days"]), "need": gate["need"]}
@@ -995,7 +998,7 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
     if closed and early:                                        # 利用者の頼みで、数えがそろう前に始める（あと EARLY_SHORT 日のときだけ）
         if closed["clean"] < closed["need"] - EARLY_SHORT:
             return {**done, **closed, "stopped": "too_early"}
-        ahead, closed = history_gate(root, now())["since"], None
+        ahead, closed = seen["since"], None                     # 今見た数えのまま始める（もう一度見に行かない）
     if closed:
         return dict(done, **closed)
     todo = len(jobs) if max_docs is None else min(len(jobs), max_docs)
