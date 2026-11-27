@@ -14,7 +14,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -302,6 +302,54 @@ CREATE TABLE IF NOT EXISTS ndl_checks (
     access_checked_at TEXT,              -- マニフェストを取った日時
     recorded_at TEXT NOT NULL
 );
+
+-- 統計の系列（複数年の数の並び。koten db init が config の CSV から作り直す）
+CREATE TABLE IF NOT EXISTS stat_series (
+    series_id TEXT PRIMARY KEY,
+    themes TEXT NOT NULL,                -- JSON の配列
+    label TEXT NOT NULL,
+    unit TEXT,
+    survey TEXT,
+    publisher TEXT,
+    source_kind TEXT,
+    period_kind TEXT,
+    selector TEXT,                       -- JSON
+    table_title TEXT,
+    url TEXT,
+    latest_known TEXT,
+    breaks TEXT,                         -- JSON
+    trend TEXT,
+    trend_from TEXT,
+    trend_to TEXT,
+    trend_note TEXT,
+    status TEXT,
+    checked_by TEXT,
+    checked_at TEXT,
+    checked_sha TEXT,
+    "where" TEXT,
+    note TEXT,
+    check_sha TEXT,                      -- 今の数・名前・区切りの指紋
+    owner_ok INTEGER,                    -- 人の確認が今の指紋と合っている
+    latest_period TEXT,                  -- 数のある最新の年（無ければ NULL）
+    stale INTEGER,                       -- 元の資料の最新年より古い
+    trend_ok INTEGER                     -- trend が数で言える（trend なしは 0）
+);
+
+CREATE TABLE IF NOT EXISTS stat_points (
+    series_id TEXT NOT NULL,
+    period TEXT NOT NULL,
+    value TEXT,                          -- 元の文字のまま
+    mark TEXT,
+    part TEXT,
+    src_label TEXT,
+    src_unit TEXT,
+    fetched_at TEXT,
+    src_sha TEXT,
+    value_num REAL,                      -- 数として読めるときだけ（特殊文字は NULL）
+    segment INTEGER,                     -- 調べ方の区切りの番号
+    period_label TEXT,
+    PRIMARY KEY (series_id, period)
+);
 """
 
 
@@ -427,3 +475,123 @@ def stats_problems(rows: list[dict[str, str]]) -> list[str]:
             problems.append(f"{i}行目：stat_id {r['stat_id']} が重複")
         seen.add(r.get("stat_id"))
     return problems
+
+
+def load_series(conn: sqlite3.Connection, config_dir: Path, meta_dir: Path) -> tuple[int, int]:
+    """config/stat_series.csv・stat_points.csv を stat_series・stat_points に読み込む。
+
+    問題が1つでもあれば StatsError で止めて、何も書かない（全部か無しか）。
+    成功したら両表を1回の取引で入れ替え、(系列の数, 点の数) を返す。
+    """
+    import json
+
+    import yaml
+
+    from koten.stats import series as ss
+    from koten.worries.master import load_blocked_keywords
+
+    config_dir = Path(config_dir)
+    series_rows = ss.read_series_rows(config_dir)
+    point_rows = ss.read_point_rows(config_dir)
+    themes_path = config_dir / "themes.yaml"
+    themes = (
+        set(yaml.safe_load(themes_path.read_text("utf-8")).get("themes") or [])
+        if themes_path.exists()
+        else set()
+    )
+    stats_csv = config_dir / "stats.csv"
+    legacy_ids: set[str] = set()
+    if stats_csv.exists():
+        with stats_csv.open(encoding="utf-8-sig", newline="") as f:
+            legacy_ids = {(r.get("stat_id") or "").strip() for r in csv.DictReader(f)}
+    metas: dict[str, dict] = {}
+    try:
+        for r in series_rows:
+            if r.get("source_kind", "").strip() != "estat_api":
+                continue
+            try:
+                sel = json.loads(r.get("selector", ""))
+            except ValueError:
+                continue
+            sdid = sel.get("statsDataId") if isinstance(sel, dict) else None
+            if isinstance(sdid, str) and sdid.isascii() and sdid.isdigit() and sdid not in metas:
+                meta = ss.load_meta(meta_dir, sdid)
+                if meta is not None:
+                    metas[sdid] = meta
+    except ss.SeriesError as e:
+        raise StatsError(str(e)) from e
+    problems = ss.series_problems(
+        series_rows,
+        point_rows,
+        themes=themes,
+        legacy_ids=legacy_ids,
+        blocked=load_blocked_keywords(config_dir),
+        metas=metas,
+    )
+    if problems:
+        raise StatsError(
+            f"{config_dir / ss.SERIES_FILE}・{config_dir / ss.POINTS_FILE} に問題があります："
+            + "、".join(problems)
+        )
+
+    all_points = ss.parse_points(point_rows)
+    by_series: dict[str, list[ss.Point]] = {}
+    for p in all_points:
+        by_series.setdefault(p.series_id, []).append(p)
+    series_out: list[list[Any]] = []
+    points_out: list[list[Any]] = []
+    for s in ss.parse_series(series_rows):
+        pts = by_series.get(s.series_id, [])
+        meta = None
+        if s.source_kind == "estat_api":
+            meta = metas.get(s.selector.get("statsDataId", ""))
+        sha = ss.check_sha(s, pts, meta)
+        numeric = [p.period for p in pts if ss.value_num(p) is not None]
+        trend_ok = ss.verify_trend(s, pts)[0] if s.trend else False
+        raw = {
+            **{c: getattr(s, c) for c in ss.SERIES_COLUMNS},
+            "themes": json.dumps(list(s.themes), ensure_ascii=False),
+            "selector": json.dumps(s.selector, ensure_ascii=False),
+            "breaks": json.dumps(
+                [{"before": b.before, "note": b.note} for b in s.breaks], ensure_ascii=False
+            ),
+        }
+        series_out.append(
+            [raw[c] for c in ss.SERIES_COLUMNS]
+            + [
+                sha,
+                int(ss.owner_ok(s, sha)),
+                max(numeric) if numeric else None,
+                int(ss.is_stale(s, pts)),
+                int(trend_ok),
+            ]
+        )
+        seg = ss.segments(s, pts)
+        for p in pts:
+            num = ss.value_num(p)
+            points_out.append(
+                [getattr(p, c) for c in ss.POINTS_COLUMNS]
+                + [
+                    float(num) if num is not None else None,
+                    seg[p.period],
+                    ss.period_label(p.period, s.period_kind),
+                ]
+            )
+    s_cols = [f'"{c}"' for c in ss.SERIES_COLUMNS] + [
+        "check_sha", "owner_ok", "latest_period", "stale", "trend_ok",
+    ]  # fmt: skip
+    p_cols = [*ss.POINTS_COLUMNS, "value_num", "segment", "period_label"]
+    with conn:
+        conn.execute("DELETE FROM stat_series")
+        conn.execute("DELETE FROM stat_points")
+        conn.executemany(
+            f"INSERT INTO stat_series({', '.join(s_cols)}) "
+            f"VALUES ({', '.join('?' for _ in s_cols)})",
+            series_out,
+        )
+        conn.executemany(
+            f"INSERT INTO stat_points({', '.join(p_cols)}) "
+            f"VALUES ({', '.join('?' for _ in p_cols)})",
+            points_out,
+        )
+    return len(series_out), len(points_out)

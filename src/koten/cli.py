@@ -1057,7 +1057,8 @@ app.add_typer(db_app, name="db")
 @db_app.command("init")
 def db_init(settings: SettingsOpt = None) -> None:
     """SSD に SQLite を作り（あれば表を足すだけ）、config/stats.csv を読み込む。"""
-    from koten.db import StatsError, connect, db_path, load_stats
+    from koten.db import StatsError, connect, db_path, load_series, load_stats
+    from koten.stats.series import meta_dir_for
 
     s = _settings(settings)
     conn = connect(s.ssd_root)
@@ -1068,6 +1069,15 @@ def db_init(settings: SettingsOpt = None) -> None:
         raise typer.Exit(2) from e
     typer.echo(f"データベース：{db_path(s.ssd_root)}")
     typer.echo(f"統計 {n} 件を読み込みました（config/stats.csv）")
+    try:
+        n_series, n_points = load_series(conn, s.config_dir, meta_dir_for(s.config_dir))
+    except StatsError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(2) from e
+    typer.echo(
+        f"統計の系列 {n_series} 件・年ごとの数 {n_points} 件を読み込みました"
+        "（config/stat_series.csv・stat_points.csv）"
+    )
 
 
 worries_app = typer.Typer(no_args_is_help=True, help="悩みマスター（SPEC §9）")
