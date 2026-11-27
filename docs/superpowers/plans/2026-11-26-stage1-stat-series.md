@@ -363,7 +363,7 @@ def test_overlapping_years_between_parts_is_refused(tmp_path): ...
 - Consumes: Task 2〜5。今の `_settings`・`_make_fetcher`・`REPO_ROOT`。
 - Produces:
   - settings：`[rate_limit.min_interval_sec]` に `"e-stat.go.jp" = 2.0`。新しい `[estat]`：`api_base = "https://api.e-stat.go.jp/rest/3.0/app/json"`、`lang = "J"`。
-  - .env.example：`KOTEN_ESTAT_APPID=`（値は書かない）。
+  - .env.example：`KOTEN_ESTAT_APPI[D]=` と同じ形で名前だけ書く（値は書かない）。
   - キャッシュの場所：HDD があれば `<hdd>/raw/estat`、無ければ `data/estat-cache`（.gitignore 済みの data/）。関数 `_estat_cache(s) -> Path`。
   - `koten stats meta --drafts PATH`（Mac。appId が要る）：下書きの series のうち source_kind が estat_api で `selector_names` があるものについて、meta を取り、resolve_selector の結果を下書きの `selector` に書き戻し、`docs/estat/<series_id>.json（R17。系列ごと）` に meta_record を書く。名前が合わない系列は赤で理由（候補の名前）を出し、ほかは続ける。
   - `koten stats fetch [--series ID]... [--refresh] [--check] [--drafts PATH]`：
@@ -450,6 +450,6 @@ def test_draft_key_changes_once_points_exist(config_dir): ...
 
 - [ ] **Step 1:** 文書を書く。受け入れの条件は設計 §5.11 のとおり。
 - [ ] **Step 2:** Run `uv run pytest -q` → 全部 PASS（今は 1003 passed, 1 skipped。それより減らない）。Run `uv run ruff check .` → All checks passed。
-- [ ] **Step 3:** appId が残っていないことを確かめる：Run `git grep -n "KOTEN_ESTAT_APPID=" -- ':!.env.example'` → 何も出ない。
+- [ ] **Step 3:** appId が残っていないことを確かめる：Run `git grep -n "KOTEN_ESTAT_APPI[D]=" -- ':!.env.example'` → 何も出ない。
 - [ ] **Step 4:** Commit と push：`git commit -m "段1 統計の系列：手順と記録"` → `git push -u origin claude/koten-pipeline-m0-m1`。
 - [ ] **Step 5:** Claude が最初の系列の下書きを作る（段1 の受け入れ用。W0007 の「仕事の量」のテーマから、API の系列 3 つ以上・ファイルの系列 3 つ以上。国民生活基礎調査の生活意識の系列を1つ入れる）。別の AI の見直し役が確かめる。下書きを push し、オーナーに Mac のコマンドを渡す（`uv run koten stats meta --drafts …` → push → Claude の merge → `uv run koten stats fetch` → `uv run koten db init`）。スマホの確かめは系列のカードを API とファイルで1枚ずつ。

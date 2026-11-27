@@ -49,7 +49,7 @@
    ```
 
    - 名前が表の分類と合わない系列は、赤で候補の名前を出します。Claude に伝えれば下書きを直します。
-3. **クラウド（Claude）**：`sources merge --accept-rest` で、下書きを台帳（config/stat_series.csv）に「AI が確かめた行」として入れます。
+3. **クラウド（Claude）**：`sources merge --accept-rest`（押した結果の JSON を --from に渡す）で、下書きを台帳（config/stat_series.csv）に「AI が確かめた行」として入れます。
 4. **Mac**：数を取って、DB に読み込みます。
 
    ```sh
@@ -173,11 +173,35 @@ uv run koten stats fetch --check
 - Mac で、API の系列 3 つ以上とファイルの系列 3 つ以上を取り、`uv run koten db init` で読める。
 - 国民生活基礎調査の系列で、2020 年の抜けが分かる。
 - スマホで、API の系列のカードとファイルの系列のカードを1枚ずつ確かめ、取り込める。
-- appId が、リポジトリ・HDD の取得の記録・キャッシュ・ログのどこにも無い。Mac で確かめるには：
+- appId の値が、リポジトリ・HDD の取得の記録・キャッシュのどこにも無い。Mac で確かめるには（値は画面に出ません）：
 
   ```sh
   cd /Users/bunkoko/koten
-  git grep -n "KOTEN_ESTAT_APPID=" -- ':!.env.example'
+  uv run python - <<'EOF'
+  import os
+  from pathlib import Path
+  from koten.config import load_settings
+  s = load_settings()  # .env も読む
+  v = os.environ.get("KOTEN_ESTAT_APPID", "").strip().encode()
+  roots = [Path("."), s.hdd_root / "raw" / "estat", Path("data/estat-cache")]
+  hits = []
+  for root in roots:
+      if not root.exists():
+          continue
+      for p in root.rglob("*"):
+          if not p.is_file() or {".git", ".venv"} & set(p.parts) or p.name == ".env":
+              continue
+          try:
+              if v and v in p.read_bytes():
+                  hits.append(str(p))
+          except OSError:
+              pass
+  print("ID の字数:", len(v))
+  print("ID が見つかったファイル:", len(hits))
+  for h in hits:
+      print(" ", h)
+  EOF
   ```
 
-  - 何も出なければ合格。キャッシュ・取得の記録は、.env の ID の値で grep します（値をチャットに貼らないでください）。
+  - 「ID が見つかったファイル: 0」なら合格。「ID の字数」が 0 なら、.env に ID が無いので確かめになっていません。
+  - 見つかったファイルがあれば、その名前を Claude に伝えます（値は貼らないでください）。
