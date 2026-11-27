@@ -54,8 +54,8 @@ from koten.findings import (
 from koten.script.placeholders import format_stat
 from koten.stats.files import FILE_URL, cell_pos, read_grid
 from koten.stats.report import series_from_draft
-from koten.stats.series import POINTS_COLUMNS as POINT_COLUMNS
 from koten.stats.series import (
+    DIGITS_RE,
     SERIES_COLUMNS,
     SERIES_FILE,
     Point,
@@ -71,8 +71,8 @@ from koten.stats.series import (
     series_problems,
     value_num,
     verify_trend,
-    write_points,
 )
+from koten.stats.series import POINTS_COLUMNS as POINT_COLUMNS
 from koten.worries.master import load_blocked_keywords
 
 TEMPLATE = Path(__file__).with_name("page.html")
@@ -97,7 +97,6 @@ LEAD_FINDING = (
     "authors_ja",
 )
 ASCII_ID = re.compile(r"[a-z0-9][a-z0-9_]*$")
-_DIGITS = re.compile(r"[0-9]+")
 
 
 class SourcesError(ValueError):
@@ -159,10 +158,14 @@ def finding_lines(d: dict[str, Any]) -> list[str]:
 # --- 統計の系列（e-Stat の複数年の数） ---------------------------------------------
 
 
+SELECTOR_CHANGED = "台帳の {id} と選び方が違う。新しい series_id で下書きする"
+
+
 def with_series_data(drafts: dict[str, Any], config_dir: Path) -> dict[str, Any]:
     """series の各項目に、台帳の点（points）と表の情報（meta）を足した写しを返す。
 
     ページの鍵と取り込みの鍵は、どちらもこの写しから作る（同じデータから鍵を出すため）。
+    台帳に無い系列と、台帳の行と選び方が違う系列は、数なし（selector_changed が真）。
     表の情報は estat_api の系列だけ（docs/estat/<series_id>.json。db.py と同じ）。
     """
     rows = read_point_rows(config_dir)
@@ -171,13 +174,13 @@ def with_series_data(drafts: dict[str, Any], config_dir: Path) -> dict[str, Any]
     out = []
     for item in drafts.get("series") or []:
         sid = str(item.get("series_id", "")).strip()
-        # 台帳の行と選び方（selector）が違う下書きは、台帳の数が別の選び方のものなので数なしにする
+        # 選び方は変えられない（R21）。台帳に無い系列・選び方が違う下書きは、数なしにする
         changed = sid in ledger and (
             series_from_draft(item).selector != series_from_draft(ledger[sid]).selector
         )
         pts = (
             []
-            if changed
+            if (changed or sid not in ledger)
             else sorted(
                 (dict(r) for r in rows if r.get("series_id", "").strip() == sid),
                 key=lambda r: r.get("period", ""),
@@ -287,7 +290,7 @@ def file_excerpt(
     sid, kind = str(spec.get("statInfId", "")).strip(), str(spec.get("fileKind", "")).strip()
     if not (sid and kind and spec.get("values")):
         return None
-    if not (_DIGITS.fullmatch(sid) and _DIGITS.fullmatch(kind)):
+    if not (DIGITS_RE.fullmatch(sid) and DIGITS_RE.fullmatch(kind)):
         raise SourcesError(f"statInfId・fileKind は半角の数字だけ（{sid!r}・{kind!r}）")
     path, _ = fetch(FILE_URL.format(sid=sid, kind=kind), f"files/{sid}_{kind}")
     return excerpt_from_grid(spec, read_grid(Path(path), str(spec.get("sheet", ""))))
@@ -399,6 +402,7 @@ def _series_item(
         "source": source,
         "chosen": chosen,
         "link": link,
+        "selector_changed": bool(d.get("selector_changed")),
         "has_numbers": _newest_numeric(points) is not None,
         "points": _point_rows(d, points),
         "breaks": [{"before": b.before, "note": b.note} for b in s.breaks],
@@ -555,7 +559,6 @@ class MergeResult:
     findings_ai: list[str] = field(default_factory=list)
     series_added: list[str] = field(default_factory=list)
     series_ai: list[str] = field(default_factory=list)
-    series_refetch: list[str] = field(default_factory=list)  # 選び方が変わり、点を外した系列
 
 
 def _day(at: Any) -> str:
@@ -762,19 +765,23 @@ def merge_checks(
     new_findings: list[dict[str, str]] = []
     removes: set[str] = set()
     ledger_series = {r["series_id"]: r for r in old_series}
-    drop_points: set[str] = set()
     for key, (kind, d) in by_key.items():
         c = checks.get(key)
         name = (
             d.get("stat_id") or d.get("finding_id") or d.get("lead_id") or d.get("series_id") or key
         )
+        if (
+            kind == "series"
+            and d.get("selector_changed")
+            and not (isinstance(c, dict) and c.get("v") == "ng")
+        ):
+            # 台帳の行の選び方は変えない（AI の行も人の行も）。行も数もそのまま
+            res.skipped.append(f"{name}：" + SELECTOR_CHANGED.format(id=name))
+            continue
         if kind == "series" and isinstance(c, dict) and c.get("v") == "ok" and not _has_numbers(d):
             # 数が無い系列の「合っている」は押していないのと同じ（数が入ると鍵も変わる）
-            why = (
-                "選び方が変わったので数を取り直す" if d.get("selector_changed") else "数がまだ無い"
-            )
             res.skipped.append(
-                f"{name}：{why}ので人の確かめには入れなかった（koten stats fetch のあと、"
+                f"{name}：数がまだ無いので、人の確かめには入れなかった（koten stats fetch のあと、"
                 "数が入ってから確かめる）"
                 + ("" if accept_rest else "。AI の行として入れるなら --accept-rest で取り込む")
             )
@@ -792,8 +799,6 @@ def merge_checks(
                     )
                 )
                 res.series_ai.append(d["series_id"])
-                if d.get("selector_changed"):
-                    drop_points.add(d["series_id"])
                 continue
             if kind == "stat" and d["stat_id"] in human_stats:
                 continue
@@ -876,7 +881,7 @@ def merge_checks(
     by_new = {r["series_id"]: r for r in new_series}
     series_rows = [by_new.pop(r.get("series_id"), r) for r in old_series]
     series_rows += list(by_new.values())
-    point_rows = [r for r in read_point_rows(config_dir) if r.get("series_id") not in drop_points]
+    point_rows = read_point_rows(config_dir)
     if series_rows:  # stats だけの取り込みでも、stat_id と series_id がぶつかるのを見る
         _series_check(config_dir, series_rows, point_rows, stats_rows, themes)
 
@@ -902,9 +907,6 @@ def merge_checks(
         find_path.write_text(find_text, "utf-8")
     if new_series:
         (config_dir / SERIES_FILE).write_text(_csv_text(SERIES_COLUMNS, series_rows), "utf-8")
-    if drop_points:
-        write_points(config_dir, drop_points, [])
-        res.series_refetch = sorted(drop_points)
     ai_series = set(res.series_ai)
     res.series_added = [r["series_id"] for r in new_series if r["series_id"] not in ai_series]
     ai_stats, ai_findings = set(res.stats_ai), set(res.findings_ai)

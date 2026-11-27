@@ -43,6 +43,7 @@ _ID_RE = re.compile(r"[a-z0-9][a-z0-9_]*")
 _YEAR_RE = re.compile(r"[0-9]{4}")  # \d は全角などの数字にも当たるので使わない
 _DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _STATS_DATA_ID_RE = re.compile(r"[0-9]+")
+DIGITS_RE = re.compile(r"[0-9]+")  # 半角の数字だけ（statInfId・fileKind）
 # label に年を入れない（年度も「年」に当たる）。NFKC で全角数字を半角にしてから当てる。
 # 4桁の数だけ（従業員2000人以上）は許す。漢数字の年（二〇二〇年・平成二十五年）も断る。
 _KANJI_NUM = "〇一二三四五六七八九"
@@ -225,7 +226,7 @@ def _selector_problems(kind: str, sel: Any) -> list[str]:
                     out.append(f"selector の parts[{i}] に {k} が無い")
             for k in ("statInfId", "fileKind"):
                 v = str(part.get(k, "")).strip()
-                if v and not re.fullmatch(r"[0-9]+", v):
+                if v and not DIGITS_RE.fullmatch(v):
                     out.append(f"selector の parts[{i}] の {k} は半角の数字だけ（{v!r}）")
             if "sheet" not in part:
                 out.append(f'selector の parts[{i}] に sheet が無い（CSV は ""）')

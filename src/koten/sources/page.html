@@ -350,6 +350,7 @@ function cardSeries(it) {
   kids.push(opener(webUrl(it.link) || webUrl(it.url), it.source_kind === "estat_api" ? "e-Stat の元の表を開く" : "e-Stat の元のファイルを開く"));
   if (it.evidence) kids.push(el("details", {}, el("summary", {}, "調べ役が写したもの"), el("div", {}, el("pre", { class: "evidence" }, it.evidence))));
   if (it.check_note) kids.push(el("p", { class: "note" }, `見直し役のメモ：${it.check_note}`));
+  if (it.selector_changed) kids.push(el("p", { class: "note" }, `台帳の ${it.id} と選び方が違う。新しい series_id で下書きする（この下書きは台帳に入りません）`));
   kids.push(el("p", { class: "small" }, "数はプログラムが e-Stat から写した。確かめるのは、何の数か・分類・変わり目・読む文"));
   if (it.trend) kids.push(tick(it, "trend", `増え方（${it.trend}：${it.trend_from}〜${it.trend_to}年）も確かめた：${it.trend_note}`));
   kids.push(el("details", {}, el("summary", {}, "言い方を直す"), el("div", {},
@@ -438,6 +439,7 @@ function cardPaid(it) {
 // 「合っている」「入れる」を押せるか。押せなければ理由を出す
 function blocker(it) {
   const f = form(it), x = f.fix || {};
+  if (it.kind === "series" && it.selector_changed) return `台帳の ${it.id} と選び方が違う。新しい series_id で下書きする`;
   if (it.kind === "series" && !it.has_numbers) return "数が入るまで押せません（「あとで」）";
   if (it.kind === "finding" && !(f.read && f.retr)) return "本文の結果と、取り下げ・訂正の2つに印を付けると押せます";
   if (it.kind === "private_survey") {

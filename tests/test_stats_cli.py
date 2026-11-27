@@ -548,16 +548,38 @@ def test_broken_manifest_is_reported_as_local(env, monkeypatch):
     assert "JSONDecodeError：" not in r.output
 
 
-def test_meta_warns_when_the_ledger_has_another_table(env, monkeypatch):
-    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
-    moved = srow(selector=json.dumps({**SEL, "statsDataId": "0001112223"}))
-    write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, [moved])
+def _meta_draft(env):
     d = {"series": [{"series_id": "age_rate", "source_kind": "estat_api", "stats_data_id": SID,
                      "selector_names": {"年齢": "20～29歳"}}]}  # fmt: skip
     path = env.tmp / "draft.json"
     path.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
-    r = stats(env, "meta", "--drafts", str(path))
-    assert r.exit_code == 0 and "0001112223" in r.output and SID in r.output
+    return path
+
+
+def test_meta_refuses_a_selection_different_from_the_ledger_row(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    for moved in (
+        {**SEL, "statsDataId": "0001112223"},  # 別の表
+        {**SEL, "cdCat01": "1"},  # 同じ表の別の選び方
+    ):
+        write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, [srow(selector=json.dumps(moved))])
+        path = _meta_draft(env)
+        before = path.read_text("utf-8")
+        r = stats(env, "meta", "--drafts", str(path))
+        assert r.exit_code == 1, r.output
+        assert "台帳の age_rate と選び方が違う。新しい series_id で下書きする" in r.output
+        assert not (env.docs / "age_rate.json").exists()  # 表の情報は書き換えない
+        assert "selector" not in json.loads(path.read_text("utf-8"))["series"][0]
+        assert json.loads(path.read_text("utf-8")) == json.loads(before)
+
+
+def test_meta_writes_when_the_selection_equals_the_ledger_row(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    path = _meta_draft(env)
+    r = stats(env, "meta", "--drafts", str(path))  # 台帳の行は SEL と同じ
+    assert r.exit_code == 0, r.output
+    assert (env.docs / "age_rate.json").exists()
+    assert json.loads(path.read_text("utf-8"))["series"][0]["selector"] == SEL
 
 
 def test_meta_with_non_string_name_value_is_an_item_failure(env, monkeypatch):

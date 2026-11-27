@@ -17,7 +17,14 @@ from pathlib import Path
 
 import openpyxl
 
-from koten.stats.series import Point, Series, SeriesError, parse_period_name, to_decimal
+from koten.stats.series import (
+    DIGITS_RE,
+    Point,
+    Series,
+    SeriesError,
+    parse_period_name,
+    to_decimal,
+)
 
 FILE_URL = "https://www.e-stat.go.jp/stat-search/file-download?statInfId={sid}&fileKind={kind}"
 
@@ -25,7 +32,6 @@ _XLSX_MAGIC = b"PK\x03\x04"
 _XLS_MAGIC = b"\xd0\xcf\x11\xe0"
 _REF_RE = re.compile(r"([A-Za-z]+)([0-9]+)")
 _BARE_YEAR_RE = re.compile(r"[0-9]{4}")
-_DIGITS_RE = re.compile(r"[0-9]+")
 _DECIMALS_RE = re.compile(r"\.([0#?]+)")
 
 
@@ -183,7 +189,7 @@ def _require(spec: dict, idx: int) -> None:
         if not str(spec.get(k, "")).strip():
             raise SeriesError(f"{n} 番目の part に {k} が無い")
     for k in ("statInfId", "fileKind"):
-        if not _DIGITS_RE.fullmatch(str(spec[k]).strip()):
+        if not DIGITS_RE.fullmatch(str(spec[k]).strip()):
             raise SeriesError(f"{n} 番目の part の {k} は半角の数字だけ（{spec[k]!r}）")
     if not (spec.get("periods_cells") or spec.get("periods")):
         raise SeriesError(f"{n} 番目の part に periods_cells か periods が無い")

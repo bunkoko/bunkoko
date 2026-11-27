@@ -114,8 +114,7 @@ def _make_fetcher(s: Settings, raw_dir, client: httpx.Client | None = None):
     contact = os.environ.get("KOTEN_CONTACT", "").strip()
     if "{contact}" in user_agent:
         user_agent = user_agent.replace("{contact}", contact)
-    looks_valid = "@" in contact or "://" in contact
-    if ("contact:" in user_agent and not looks_valid) or "example.com" in user_agent:
+    if not _contact_ok(s):
         typer.secho(
             f"連絡先（KOTEN_CONTACT）が正しく設定されていません（今の値：{contact or 'なし'}）。"
             "リポジトリ直下の .env に、メールアドレスか URL を書いてから実行してください",
@@ -2342,12 +2341,17 @@ def _series_excerpt(s: Settings):
             return file_excerpt(item, _file_fetch(holder["f"], False))
         except typer.Exit:
             off["contact"] = True
+            state = (
+                "設定されていない"
+                if not os.environ.get("KOTEN_CONTACT", "").strip()
+                else "形が正しくない（メールアドレスか URL）"
+            )
             typer.secho(
-                "連絡先（KOTEN_CONTACT）が設定されていないので、ファイルの抜き出しは出しません",
+                f"連絡先（KOTEN_CONTACT）が{state}ので、ファイルの抜き出しは出しません",
                 fg="yellow",
                 err=True,
             )
-        except (*_estat_failures(), OSError, KeyError) as e:
+        except (*_estat_failures(), OSError, KeyError, TypeError) as e:
             typer.secho(
                 f"{item.get('series_id')}：ファイルの抜き出しを作れません（{type(e).__name__}）",
                 fg="yellow",
@@ -2466,8 +2470,6 @@ def sources_merge(
         )
     if res.stats_added or res.stats_ai or res.stats_removed:
         typer.echo("統計を SSD に入れる：uv run koten db init")
-    for sid in res.series_refetch:
-        typer.echo(f"数を取り直す：uv run koten stats fetch --series {sid}")
     if res.series_added or res.series_ai:
         typer.echo("統計の系列を SSD に入れる：uv run koten db init")
     if res.findings_added or res.findings_ai:
@@ -4189,10 +4191,7 @@ def stats_meta(
     data = _read_drafts(path)
     run = _EstatRun(s)
     meta_dir = meta_dir_for(s.config_dir)
-    in_ledger = {
-        r.series_id: str(r.selector.get("statsDataId", ""))
-        for r in parse_series(read_series_rows(s.config_dir))
-    }
+    in_ledger = {r.series_id: r.selector for r in parse_series(read_series_rows(s.config_dir))}
     done = failed = 0
     for item in data.get("series", []):
         names = item.get("selector_names")
@@ -4219,12 +4218,12 @@ def stats_meta(
             typer.secho(_estat_failure(label, e), fg="red", err=True)
             failed += 1
             continue
-        if in_ledger.get(sid) and in_ledger[sid] != sel["statsDataId"]:
-            typer.secho(
-                f"{sid}：台帳ではこの系列の表は {in_ledger[sid]}、下書きは {sel['statsDataId']}。"
-                "台帳に入れるときは取り違えに気をつける",
-                fg="yellow",
-            )
+        if sid in in_ledger and in_ledger[sid] != sel:
+            # 台帳の系列の選び方は変えない（変えるなら別の系列）。表の情報も下書きも書き換えない
+            typer.secho(f"{sid}：台帳の {sid} と選び方が違う。新しい series_id で下書きする",
+                        fg="red", err=True)  # fmt: skip
+            failed += 1
+            continue
         item["selector"] = sel
         _write_json(meta_dir / f"{sid}.json", meta_record(meta, sel))
         typer.echo(f"{sid}：selector を決めた {json.dumps(sel, ensure_ascii=False)}")
