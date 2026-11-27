@@ -21,8 +21,10 @@ from .inventory import JP_LOW, SHORT, text_stats
 YEARS = 3                  # 「ふだん」を作る過去の長さ（年）
 RARE_DAYS = 365            # 題名の珍しさを数える過去の長さ（日。全部の会社で）
 DIFF_LINE = 0.5            # 同じ題名の過去の本文と、これ以上違えば「中身が大きく違う」
-TOP, HEAD, NEW_SHOWN = 5, 300, 5      # 一覧 1 つに出す数・本文の頭として見せる字数・初めて出る言葉を見せる数
+TOP, HEAD, NEW_SHOWN = 5, 300, 5      # 一覧 1 つに、くわしく出す数・本文の頭として見せる字数・初めて出る言葉を見せる数
+REST_SHOWN = 30                       # くわしく出さなかった分のうち、題名だけ並べる数
 FIRST, CHANGED = "初めての題名", "いつもの題名だが"
+NO_TEXT, UNREAD, FOREIGN = "本文がまだ無い", "本文が読めていない", "日本語が少ない"      # 比べられなかった理由（note の列）
 COLUMNS = ["id", "time", "ticker", "company", "title", "kind", "key", "chars", "same", "rare", "diff", "ratio", "new", "new_share", "why", "note"]
 _NUMBER = re.compile(r"\d[\d,.]*")
 _WORD = re.compile(r"[一-鿿々]{2,}|[ァ-ヺー]{3,}")
@@ -74,7 +76,7 @@ def describe(disc: pd.DataFrame, read: Callable[[str], str | None], day: str) ->
         rare = int((before & (d["key"] == r.key) & (d["time"] >= _back(r.time, days=RARE_DAYS))).sum())
         text = text_of(r.id)
         stats = text_stats(text) if text is not None else {"chars": 0, "jp": 0.0}
-        note = "本文がまだ無い" if text is None else "本文が読めていない" if stats["chars"] < SHORT else "日本語が少ない" if stats["jp"] < JP_LOW else ""
+        note = NO_TEXT if text is None else UNREAD if stats["chars"] < SHORT else FOREIGN if stats["jp"] < JP_LOW else ""
         diff = ratio = share = np.nan
         new = ""
         if not note:
@@ -106,15 +108,25 @@ def _item(n: str, r, read: Callable[[str], str | None]) -> list[str]:
             f"- 本文の頭: {head}", ""]
 
 
-def render(table: pd.DataFrame, day: str, read: Callable[[str], str | None], top: int = TOP) -> str:
-    """読む一覧（markdown）。上に 2 つの短い一覧、下に、一覧に出た開示の本文（生成 AI に渡すときに使う）。"""
+def _titles(part: pd.DataFrame, tail: Callable = lambda r: "") -> list[str]:
+    """題名だけの並び（REST_SHOWN 件まで）。"""
+    out = [f"- {r.company}（{str(r.ticker)[:4]}）{str(r.time)[11:16]} 「{r.title}」{tail(r)}" for r in part.head(REST_SHOWN).itertuples(index=False)]
+    return out + ([f"（さらに {len(part) - REST_SHOWN} 件）"] if len(part) > REST_SHOWN else []) + [""]
+
+
+def render(table: pd.DataFrame, day: str, read: Callable[[str], str | None], top: int = TOP, note: str = "") -> str:
+    """読む一覧（markdown）。上に 2 つの短い一覧、次に、本文が無くて比べられなかった開示の題名、下に、くわしく出した開示の本文（生成 AI に渡すときに使う）。
+
+    note は、頭に付ける注意の行（その日の開示がまだそろっていない、など）。
+    """
     first = table[table["why"].str.startswith(FIRST)].sort_values(["rare", "new_share"], ascending=[True, False], kind="stable")
     changed = table[table["why"].str.startswith(CHANGED)].sort_values("diff", ascending=False, kind="stable")
     usual = int(((table["why"] == "") & (table["note"] == "")).sum())
     skipped = "".join(f"・{why} {n} 件" for why, n in table.loc[table["note"] != "", "note"].value_counts().items())
     out = [f"# 読む一覧（{day} の開示）", "",
-           "**その会社の「ふだん」と違う開示を、珍しさの順に並べただけ。大事さや株価への効き目を言うものではない。値段は使っていない。**", "",
-           f"この日の開示 {len(table)} 件: {FIRST} {len(first)} 件・{CHANGED}中身が大きく違う {len(changed)} 件・いつもどおり {usual} 件{skipped}", ""]
+           "**その会社の「ふだん」と違う開示を、珍しさの順に並べただけ。大事さや株価への効き目を言うものではない。値段は使っていない。**", ""]
+    out += [note, ""] if note else []
+    out += [f"この日の開示 {len(table)} 件: {FIRST} {len(first)} 件・{CHANGED}中身が大きく違う {len(changed)} 件・いつもどおり {usual} 件{skipped}", ""]
     shown = []
     for k, (title, part) in enumerate(((f"{FIRST}（その会社で {YEARS} 年のうちに無かった題名。全部の会社を通して珍しい順）", first),
                                        (f"{CHANGED}、中身が大きく違う（同じ題名の過去の本文との違いが {DIFF_LINE} 以上。違いの大きい順）", changed)), start=1):
@@ -125,8 +137,11 @@ def render(table: pd.DataFrame, day: str, read: Callable[[str], str | None], top
             out += _item(f"{k}-{j}", r, read)
             shown.append(r)
         if len(part) > top:
-            out += [f"（ほかに {len(part) - top} 件。--each で増やせる）", ""]
-    out += ["## 3. 一覧に出た開示の本文（残してある最初の 3 ページ）", ""]
+            out += [f"ほかに {len(part) - top} 件（題名だけ。くわしく見るなら --each で増やす）:"] + _titles(part.iloc[top:])
+    unread = table[table["note"].isin([NO_TEXT, UNREAD])].sort_values(["same", "rare"], kind="stable")       # その会社で初めての題名を先に
+    out += ["## 3. 本文が無くて、比べられなかった開示（題名だけ）", ""]
+    out += _titles(unread, lambda r: f" — {r.note}" + ("・この会社では初めての題名" if r.same == 0 else "")) if len(unread) else ["（無い）", ""]
+    out += ["## 4. 一覧に出た開示の本文（残してある最初の 3 ページ）", ""]
     for r in shown:
         out += [f"### {str(r.ticker)[:4]} {r.company}「{r.title}」（{r.id}・{str(r.time)[:16]}）", "", read(r.id) or "", ""]
     return "\n".join(out)

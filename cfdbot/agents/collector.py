@@ -253,6 +253,40 @@ def merge_disclosures(old: pd.DataFrame, new: pd.DataFrame, tickers: set[str] | 
     return df.drop_duplicates("id", keep="first").sort_values(["time", "id"]).reset_index(drop=True)
 
 
+LIST_STAMP = "disclosures_refreshed.txt"   # 開示の一覧を、直近の日の分まで全部そろえた、最後の時刻の控え（日本の時刻。一覧のとなりに置く）
+LIST_DAYS_MAX = 31                         # 前にそろえてから間があいたときに、一覧をさかのぼって取る日数の上限
+
+
+def note_list_refreshed(path: Path, when) -> None:
+    """開示の一覧（path）を、直近の日の分まで全部そろえた時刻を控える。"""
+    path.with_name(LIST_STAMP).write_text(f"{pd.Timestamp(when):%Y-%m-%d %H:%M}\n", encoding="utf-8")
+
+
+def list_refreshed(path: Path):
+    """開示の一覧を最後にそろえた時刻（datetime）。控えが無ければ、一覧のファイルの時刻。どちらも無ければ None。
+
+    夕方に出た開示は、次の日の収集で一覧に入る。だから、この時刻の日より前の日の開示はそろっていて、この時刻の日の分は、まだ途中。
+    """
+    from datetime import datetime
+
+    try:
+        return datetime.strptime(path.with_name(LIST_STAMP).read_text(encoding="utf-8").strip(), "%Y-%m-%d %H:%M")
+    except (OSError, ValueError):
+        pass
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime).replace(second=0, microsecond=0)
+    except OSError:
+        return None
+
+
+def list_days(base: int, last, today) -> int:
+    """開示の一覧を、今日から何日ぶん取るか。ふだんは base 日。前にそろえた日（last）から間があいていたら、その日の分から（LIST_DAYS_MAX 日まで）。"""
+    if base <= 0 or last is None:
+        return max(base, 0)
+    gap = (pd.Timestamp(today).normalize() - pd.Timestamp(last).normalize()).days + 1
+    return min(max(base, gap), LIST_DAYS_MAX)
+
+
 # --------------------------------------------------------------------------- 本文（PDF）と数字（XBRL）
 def doc_url(ticker: str, filename: str) -> str:
     """上場会社情報サービスの書類の場所（会社コード 5 桁 / ファイル名）。"""

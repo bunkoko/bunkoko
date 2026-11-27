@@ -270,14 +270,25 @@ def cmd_collect(args) -> None:
                 print(f"  {i + 1}/{len(todo)} 社、{len(df):,} 件", flush=True)
             time.sleep(0.5)
     else:
-        today = pd.Timestamp.now(tz=JST).tz_localize(None).normalize()
-        for k in range(args.days):
+        clock = pd.Timestamp.now(tz=JST).tz_localize(None)
+        today = clock.normalize()
+        last = C.list_refreshed(p["disclosures"])                # 一覧を最後にそろえた時刻（控え。無ければ、ファイルの時刻）
+        days = C.list_days(args.days, last, today)               # 前にそろえてから間があいていたら（Mac を何日も切っていた など）、その間の日の分も取る
+        if days > args.days:
+            print(f"情報収集: 前に開示の一覧をそろえてから（{last:%m-%d %H:%M}）間があいたので、{days} 日ぶんの一覧を取る", flush=True)
+        failed = 0
+        for k in range(days):
             try:
                 df = C.merge_disclosures(df, C.fetch_day(today - pd.Timedelta(days=k)), tickers, prefer_new=True)
             except Exception as e:  # noqa: BLE001
+                failed += 1
                 print(f"  {today - pd.Timedelta(days=k):%Y-%m-%d}: 一覧が取れない（{str(e)[:60]}）", flush=True)
             time.sleep(0.5)
         kept = save_disclosures(df, start, p["disclosures"])
+        if days >= 2 and not failed:                             # きのうの分まで全部取れたときだけ「そろえた」と控える（読む一覧が、そろった日を選ぶのに使う）
+            C.note_list_refreshed(p["disclosures"], clock)
+        elif last is not None and not p["disclosures"].with_name(C.LIST_STAMP).exists():
+            C.note_list_refreshed(p["disclosures"], last)        # 控えがまだ無いとき: 今ファイルを書き直したので、前の時刻のほうを控えておく
         if kept:
             print(f"情報収集: 一覧から外れた会社の開示 {kept:,} 件を disclosures_removed.csv に残した（消さない）", flush=True)
     print(f"情報収集: 開示 {len(df):,} 件（+{len(df) - before:,}）、{df['ticker'].nunique()} 社、{df['time'].min()[:10]}〜{df['time'].max()[:16]}", flush=True)
@@ -1950,10 +1961,15 @@ def cmd_digest(args) -> Path:
     ir_root = p["disclosures"].parent
     if not C.text_root(ir_root).is_dir():                       # 行き先の無いリンク ＝ 外付けの HDD がつながっていない
         sys.exit("読む一覧: ⚠ 本文の置き場所が見えない（外付けの HDD がつながっていない？）。つないでから、同じコマンドで")
-    latest = df["time"].max()[:10]
-    day = getattr(args, "date", None) or latest
-    if not (df["time"].str[:10] == day).any():
-        sys.exit(f"読む一覧: {day} の開示が無い（--date で日付を言う。いちばん新しい開示は {latest}）")
+    counts = df["time"].str[:10].value_counts().sort_index()
+    fresh = C.list_refreshed(p["disclosures"])                  # 一覧を最後にそろえた時刻。その日より前の日の開示は、そろっている（夕方の分は、次の朝の収集で入る）
+    edge = f"{fresh:%Y-%m-%d}" if fresh else "9999-99-99"
+    when = f"{fresh:%m-%d %H:%M}" if fresh else "分からない"
+    ready = [d for d in counts.index if d < edge]
+    asked = getattr(args, "date", None)
+    day = asked or (ready[-1] if ready else counts.index[-1])
+    if day not in counts.index:
+        sys.exit(f"読む一覧: {day} の開示が無い（--date で日付を言う。開示がそろっている、いちばん新しい日は {ready[-1] if ready else '無い'}）")
     month = dict(zip(df["id"], df["time"].str[:7]))
 
     def read(doc: str) -> str | None:
@@ -1962,13 +1978,34 @@ def cmd_digest(args) -> Path:
         except (OSError, KeyError):
             return None
 
+    def named(d: str) -> str:
+        return f"{d[5:]}（{'月火水木金土日'[pd.Timestamp(d).weekday()]}）"
+
+    print(f"読む一覧: {named(day)}の開示 {counts[day]:,} 件を、その会社の過去 {D.YEARS} 年と比べる（外付けの HDD から読むので、1〜2 分かかることがある）", flush=True)
     table = D.describe(df, read, day)
-    text = D.render(table, day, read, top=getattr(args, "each", None) or D.TOP)
+    notes = []
+    if day >= edge:
+        notes.append(f"⚠ この日（{day[5:]}）は、まだ途中: 開示の一覧を最後にそろえたのは {when}。それより後に出た開示は、次の収集（毎朝 8 時・平日は 13 時すぎも）の後に入る")
+    lost = int((table["note"] == D.NO_TEXT).sum())
+    if lost >= 3 and lost >= 0.2 * len(table):
+        notes.append(f"⚠ この日の開示 {len(table)} 件のうち {lost} 件は、本文がまだ無い（収集が済んでいない？ ./cfd agents status と、毎朝の記録を見る）。"
+                     "本文が入ってから、同じコマンドでもう一度")
+    text = D.render(table, day, read, top=getattr(args, "each", None) or D.TOP, note="\n\n".join(notes))
     out = p["root"] / "digest" / f"{day}.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
-    print(text.split("## 3. ")[0].rstrip(), flush=True)         # 画面には一覧だけ（本文はファイルに）
+    print(text.split("## 4. ")[0].rstrip(), flush=True)         # 画面には一覧だけ（本文はファイルに）
     print(f"\n保存先: {out}（一覧に出た開示の本文つき。値段は使っていない。コミットしない）", flush=True)
+    if day < edge:
+        print(f"開示の一覧を最後にそろえたのは {when}。{named(day)}の開示はそろっている", flush=True)
+    if not asked:
+        for d in [d for d in counts.index if d > day]:          # 言われなければ、そろった日を出す。その後の日は、まだ途中
+            print(f"この後、{named(d)}の開示が {counts[d]:,} 件ある（まだ途中。夕方の分は、次の朝の収集の後にそろう。途中の分を見るなら --date {d}）", flush=True)
+    near = [d for d in counts.index if d < day][-4:][::-1]
+    if near:
+        made = {q.stem for q in out.parent.glob("*.md")}
+        print("ほかの日（--date で見られる）: " + "・".join(f"{named(d)}{counts[d]:,} 件{'' if d in made else '＊'}" for d in near)
+              + ("　＊ は、まだ一覧を作っていない日" if any(d not in made for d in near) else ""), flush=True)
     return out
 
 

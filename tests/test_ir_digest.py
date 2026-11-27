@@ -3,7 +3,9 @@
 人が読む量を減らす道具。値段は使わない・判定しない（docs/ir_text.md 2 章）。「ふだん」は、その開示より前の 3 年の、同じ会社の開示から作る。
 """
 
+import os
 from argparse import Namespace
+from datetime import datetime, timedelta
 
 import pandas as pd
 import pytest
@@ -91,7 +93,7 @@ def test_render_shows_two_short_lists_and_says_what_it_is_not():
     text = D.render(D.describe(disc(), TEXTS.get, DAY), DAY, TEXTS.get, top=5)
     assert "珍しさの順" in text and "値段は使っていない" in text
     assert "この日の開示 6 件" in text and "初めての題名 1 件" in text and "中身が大きく違う 1 件" in text and "いつもどおり 1 件" in text
-    first, second, bodies = text.index("## 1. 初めての題名"), text.index("## 2. いつもの題名だが"), text.index("## 3. 一覧に出た開示の本文")
+    first, second, bodies = text.index("## 1. 初めての題名"), text.index("## 2. いつもの題名だが"), text.index("## 4. 一覧に出た開示の本文")
     assert first < text.index("特別調査委員会の設置に関するお知らせ") < second < text.index("業績予想の修正に関するお知らせ") < bodies
     assert BUYBACK not in text                                                     # いつもどおりの開示は、数だけ
     assert TEXTS["t4"] in text[bodies:] and TEXTS["n2"] in text[bodies:]           # 一覧に出た開示の本文は、下に付ける（生成 AI に渡す分）
@@ -101,7 +103,40 @@ def test_render_keeps_each_list_short(monkeypatch):
     rows = [(f"x{k}", f"2026-11-02 1{k}:00:00", f"{2000 + k}.T", f"会社{k}", f"めずらしい知らせ{'あいうえおかきくけこ'[k]}のお知らせ", "", "") for k in range(8)]
     texts = {f"x{k}": "めずらしい知らせの本文です。" * 20 for k in range(8)}
     text = D.render(D.describe(pd.DataFrame(rows, columns=C.COLUMNS), texts.get, DAY), DAY, texts.get, top=3)
-    assert text.count("### 1-") == 3 and "ほかに 5 件" in text
+    assert text.count("### 1-") == 3 and "ほかに 5 件（題名だけ" in text
+    rest = text[text.index("ほかに 5 件"):text.index("## 2. ")]
+    assert rest.count("\n- ") == 5 and "会社7（2007）" in rest and "のお知らせ」" in rest          # くわしく出さなかった分も、題名は見える
+    assert text[text.index("## 3. "):].count("### ") == 3                                          # 本文を付けるのは、くわしく出した分だけ
+
+
+def test_render_stops_the_title_only_part_too(monkeypatch):
+    monkeypatch.setattr(D, "REST_SHOWN", 2)
+    rows = [(f"x{k}", f"2026-11-02 1{k}:00:00", f"{2000 + k}.T", f"会社{k}", f"めずらしい知らせ{'あいうえおかきくけこ'[k]}のお知らせ", "", "") for k in range(8)]
+    texts = {f"x{k}": "めずらしい知らせの本文です。" * 20 for k in range(8)}
+    text = D.render(D.describe(pd.DataFrame(rows, columns=C.COLUMNS), texts.get, DAY), DAY, texts.get, top=3)
+    rest = text[text.index("ほかに 5 件"):text.index("## 2. ")]
+    assert rest.count("\n- ") == 2 and "さらに 3 件" in rest
+
+
+def test_render_names_what_it_could_not_read():
+    """本文が無い・読めていない開示は、比べられない。黙って落とさずに、題名を並べる（英文の版は数だけ）。"""
+    text = D.render(D.describe(disc(), TEXTS.get, DAY), DAY, TEXTS.get, top=5)
+    part = text[text.index("## 3. 本文が無くて"):text.index("## 4. ")]
+    assert "人事異動のお知らせ" in part and "本文がまだ無い" in part and "組織変更のお知らせ" in part and "本文が読めていない" in part
+    assert "Notice of Revision" not in part and "日本語が少ない 1 件" in text
+    assert "## 4. 一覧に出た開示の本文" in text
+
+
+def test_render_says_nothing_about_unread_ones_when_all_were_read():
+    rows = [r for r in ROWS if r[0] in ("t1", "t2", "t3", "t4")]
+    text = D.render(D.describe(pd.DataFrame(rows, columns=C.COLUMNS), TEXTS.get, DAY), DAY, TEXTS.get)
+    part = text[text.index("## 3. 本文が無くて"):text.index("## 4. ")]
+    assert "（無い）" in part
+
+
+def test_render_carries_a_warning_line():
+    text = D.render(D.describe(disc(), TEXTS.get, DAY), DAY, TEXTS.get, note="⚠ この日は、まだ途中")
+    assert text.index("⚠ この日は、まだ途中") < text.index("## 1. ")
 
 
 def world(tmp_path):
@@ -134,3 +169,125 @@ def test_tool_says_when_there_is_nothing_for_the_day(tmp_path):
     with pytest.raises(SystemExit) as stop:
         load_script("agents_digest").cmd_digest(Namespace(root=str(root), date="2026-01-01", each=5))
     assert "開示が無い" in str(stop.value)
+
+
+def refreshed(root, when):
+    C.note_list_refreshed(root / "ir" / "disclosures.csv", pd.Timestamp(when))
+
+
+def test_tool_shows_the_latest_finished_day_unless_told(tmp_path, capsys):
+    """夕方の開示は、次の朝の収集で一覧にそろう。一覧を最後にそろえた日の分は、まだ途中なので、言われなければ、その前の日を出す。"""
+    root = world(tmp_path)
+    refreshed(root, "2026-11-03 13:05")
+    out = load_script("agents_digest").cmd_digest(Namespace(root=str(root), date=None, each=5))
+    said = capsys.readouterr().out
+    assert out.name == "2026-11-02.md"
+    assert "開示の一覧を最後にそろえたのは 11-03 13:05" in said and "11-02（月）の開示はそろっている" in said
+    assert "11-03（火）の開示が 1 件" in said and "まだ途中" in said and "--date 2026-11-03" in said
+    assert "⚠" not in said
+
+
+def test_tool_warns_about_a_day_that_is_not_finished(tmp_path, capsys):
+    root = world(tmp_path)
+    refreshed(root, "2026-11-03 13:05")
+    out = load_script("agents_digest").cmd_digest(Namespace(root=str(root), date="2026-11-03", each=5))
+    said = capsys.readouterr().out
+    line = "⚠ この日（11-03）は、まだ途中"
+    assert line in said and "11-03 13:05" in said and line in out.read_text(encoding="utf-8")
+
+
+def test_tool_uses_the_time_of_the_list_file_when_there_is_no_note(tmp_path, capsys):
+    """控えが無い間（道具を新しくしてから最初の収集まで）は、一覧のファイルの時刻で見る。"""
+    root = world(tmp_path)
+    when = datetime(2026, 11, 3, 8, 5).timestamp()
+    os.utime(root / "ir" / "disclosures.csv", (when, when))
+    out = load_script("agents_digest").cmd_digest(Namespace(root=str(root), date=None, each=5))
+    assert out.name == "2026-11-02.md" and "11-03 08:05" in capsys.readouterr().out
+
+
+def test_tool_lists_the_days_around(tmp_path, capsys):
+    root = world(tmp_path)
+    refreshed(root, "2026-11-04 08:00")
+    m = load_script("agents_digest")
+    m.cmd_digest(Namespace(root=str(root), date="2026-11-02", each=5))
+    capsys.readouterr()
+    m.cmd_digest(Namespace(root=str(root), date=None, each=5))                      # 11-03（そろっている、いちばん新しい日）
+    said = capsys.readouterr().out
+    assert "ほかの日" in said and "11-02（月）6 件" in said and "10-01（木）1 件＊" in said and "＊ は、まだ一覧を作っていない日" in said
+
+
+def test_tool_warns_when_many_texts_of_the_day_are_missing(tmp_path, capsys):
+    root = world(tmp_path)
+    for doc in ("t3", "t4", "n2"):
+        C.text_path(root / "ir", next(r for r in disc().itertuples(index=False) if r.id == doc)).unlink()
+    load_script("agents_digest").cmd_digest(Namespace(root=str(root), date=DAY, each=5))
+    said = capsys.readouterr().out
+    assert "⚠ この日の開示 6 件のうち 4 件は、本文がまだ無い" in said and "./cfd agents status" in said
+
+
+def collect_ns(root, **kw):
+    base = {"root": str(root), "data": str(root.parent / "stocks"), "text_history": False, "text_history_stop": False, "backfill": False,
+            "force": False, "days": 5, "no_embed": True, "docs": False, "xbrl_history": False}
+    return Namespace(**{**base, **kw})
+
+
+def collect_world(tmp_path, monkeypatch):
+    root = world(tmp_path)
+    (root.parent / "stocks").mkdir()
+    pd.DataFrame({"ticker": ["7203.T", "1332.T", "6758.T"], "name": ["トヨタ", "ニッスイ", "ソニー"]}).to_csv(root.parent / "stocks" / "universe_jp.csv", index=False)
+    m = load_script("agents_digest_collect")
+    monkeypatch.setattr(m.time, "sleep", lambda s: None)
+    return root, m, root / "ir" / "disclosures.csv"
+
+
+def test_collection_notes_when_it_refreshed_the_list(tmp_path, monkeypatch):
+    root, m, path = collect_world(tmp_path, monkeypatch)
+    asked = []
+    monkeypatch.setattr(C, "fetch_day", lambda day: asked.append(f"{day:%Y-%m-%d}") or pd.DataFrame(columns=C.COLUMNS))
+    m.cmd_collect(collect_ns(root))
+    assert len(asked) == 5 and path.with_name(C.LIST_STAMP).exists()
+    assert abs(C.list_refreshed(path) - datetime.now()) < timedelta(hours=10)       # 日本の時刻で控える（試験の機械の時刻とは、ずれてよい）
+
+
+def test_collection_keeps_the_old_note_when_a_day_could_not_be_fetched(tmp_path, monkeypatch, capsys):
+    """一覧を取れなかった日があれば、「そろえた」とは控えない（ファイルを書き直しても、読む一覧が、途中の日を「そろった」と見ないように）。"""
+    root, m, path = collect_world(tmp_path, monkeypatch)
+    when = datetime(2026, 11, 3, 8, 5).timestamp()
+    os.utime(path, (when, when))
+
+    def broken(day):
+        raise OSError("つながらない")
+
+    monkeypatch.setattr(C, "fetch_day", broken)
+    m.cmd_collect(collect_ns(root))
+    assert "一覧が取れない" in capsys.readouterr().out
+    assert C.list_refreshed(path) == datetime(2026, 11, 3, 8, 5)                     # 控えが無かったときは、前のファイルの時刻を控える
+    refreshed(root, "2026-11-04 08:00")
+    m.cmd_collect(collect_ns(root))
+    assert C.list_refreshed(path) == datetime(2026, 11, 4, 8, 0)
+
+
+def test_collection_looks_further_back_after_a_gap(tmp_path, monkeypatch, capsys):
+    """前にそろえてから間があいていたら（Mac を何日も切っていた など）、その間の日の一覧も取る（31 日まで）。"""
+    root, m, path = collect_world(tmp_path, monkeypatch)
+    asked = []
+    monkeypatch.setattr(C, "fetch_day", lambda day: asked.append(f"{day:%Y-%m-%d}") or pd.DataFrame(columns=C.COLUMNS))
+    C.note_list_refreshed(path, datetime.now() - timedelta(days=9))
+    m.cmd_collect(collect_ns(root))
+    assert 10 <= len(asked) <= 12 and "間があいたので" in capsys.readouterr().out      # 日本の時刻との差で 1 日ずれてもよい
+    asked.clear()
+    C.note_list_refreshed(path, datetime.now() - timedelta(days=200))
+    m.cmd_collect(collect_ns(root))
+    assert len(asked) == C.LIST_DAYS_MAX
+    asked.clear()
+    m.cmd_collect(collect_ns(root, days=0))                                         # 0 と言われたら、取りに行かない（控えも動かさない）
+    assert asked == []
+
+
+def test_list_days():
+    today = pd.Timestamp("2026-11-27")
+    assert C.list_days(5, None, today) == 5
+    assert C.list_days(5, datetime(2026, 11, 26, 13, 5), today) == 5
+    assert C.list_days(5, datetime(2026, 11, 20, 8, 0), today) == 8                 # 11-20 の分から（その日は途中だった）
+    assert C.list_days(5, datetime(2025, 1, 1, 8, 0), today) == C.LIST_DAYS_MAX
+    assert C.list_days(0, datetime(2026, 11, 20, 8, 0), today) == 0
