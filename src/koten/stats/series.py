@@ -42,7 +42,6 @@ META_DIR = "docs/estat"  # REPO_ROOT から。config_dir があるときは meta
 _ID_RE = re.compile(r"[a-z0-9][a-z0-9_]*")
 _YEAR_RE = re.compile(r"[0-9]{4}")  # \d は全角などの数字にも当たるので使わない
 _DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
-_STATS_DATA_ID_RE = re.compile(r"[0-9]+")
 DIGITS_RE = re.compile(r"[0-9]+")  # 半角の数字だけ（statInfId・fileKind）
 # label に年を入れない（年度も「年」に当たる）。NFKC で全角数字を半角にしてから当てる。
 # 4桁の数だけ（従業員2000人以上）は許す。漢数字の年（二〇二〇年・平成二十五年）も断る。
@@ -204,7 +203,7 @@ def _selector_problems(kind: str, sel: Any) -> list[str]:
     out: list[str] = []
     if kind == "estat_api":
         sdid = sel.get("statsDataId")
-        if not isinstance(sdid, str) or not _STATS_DATA_ID_RE.fullmatch(sdid):
+        if not isinstance(sdid, str) or not DIGITS_RE.fullmatch(sdid):
             out.append("selector の statsDataId は半角数字の文字列（先頭の 0 を落とさない）にする")
         cds = [k for k in sel if k.startswith("cd")]
         if not cds:
@@ -495,6 +494,38 @@ def parse_period_name(text: str) -> tuple[str, str]:
     t = unicodedata.normalize("NFKC", text or "").strip()
     m = _AVG_RE.fullmatch(t)
     return parse_year(m["base"] if m else t)
+
+
+# --- 選び方（selector）の変更 --------------------------------------------------
+
+_PART_IDENTITY = ("statInfId", "fileKind", "sheet", "values", "periods_cells", "periods")
+
+
+def selection_change(kind: str, draft: dict, ledger: dict) -> str:
+    """台帳の行の選び方と下書きの選び方の比べ方：same・growth・different。
+
+    estat_api は、少しでも違えば different。estat_file は、parts が台帳の parts と同じ並びで、
+    あとに部分を足しただけ（既存の部分の statInfId・fileKind・sheet・values・
+    periods_cells・periods が同じ。updated・label_cells・unit_cell の変更は許す）なら growth。
+    部分を外す・並べ替える・既存の部分の上の鍵を変えるのは different。
+    """
+    if draft == ledger:
+        return "same"
+    if kind != "estat_file":
+        return "different"
+    dp, lp = draft.get("parts"), ledger.get("parts")
+    if not (isinstance(dp, list) and isinstance(lp, list)) or len(dp) < len(lp):
+        return "different"
+    if {k: v for k, v in draft.items() if k != "parts"} != {
+        k: v for k, v in ledger.items() if k != "parts"
+    }:
+        return "different"
+    for new, old in zip(dp, lp, strict=False):
+        if not (isinstance(new, dict) and isinstance(old, dict)):
+            return "different"
+        if any(new.get(k) != old.get(k) for k in _PART_IDENTITY):
+            return "different"
+    return "growth"
 
 
 # --- 区切り・比べられるか・傾向 ------------------------------------------------

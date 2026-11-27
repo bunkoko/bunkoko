@@ -68,6 +68,7 @@ from koten.stats.series import (
     read_point_rows,
     read_series_rows,
     segments,
+    selection_change,
     series_problems,
     value_num,
     verify_trend,
@@ -159,13 +160,21 @@ def finding_lines(d: dict[str, Any]) -> list[str]:
 
 
 SELECTOR_CHANGED = "台帳の {id} と選び方が違う。新しい series_id で下書きする"
+SELECTOR_UNRESOLVED = "selector がまだ無い（Mac で uv run koten stats meta）"
+SELECTOR_GROWTH = (
+    "新しく足した部分の数を取ってから確かめる"
+    "（merge --accept-rest のあと Mac で koten stats fetch）"
+)
+_SELECTOR_NOTES = {"different": SELECTOR_CHANGED, "unresolved": SELECTOR_UNRESOLVED,
+                   "growth": SELECTOR_GROWTH}  # fmt: skip
 
 
 def with_series_data(drafts: dict[str, Any], config_dir: Path) -> dict[str, Any]:
     """series の各項目に、台帳の点（points）と表の情報（meta）を足した写しを返す。
 
     ページの鍵と取り込みの鍵は、どちらもこの写しから作る（同じデータから鍵を出すため）。
-    台帳に無い系列と、台帳の行と選び方が違う系列は、数なし（selector_changed が真）。
+    台帳に無い系列・selector が空の系列・台帳の行と選び方が違う系列（部分を足しただけの
+    growth も）は数なし。selector_state は new・same・growth・different・unresolved。
     表の情報は estat_api の系列だけ（docs/estat/<series_id>.json。db.py と同じ）。
     """
     rows = read_point_rows(config_dir)
@@ -174,17 +183,23 @@ def with_series_data(drafts: dict[str, Any], config_dir: Path) -> dict[str, Any]
     out = []
     for item in drafts.get("series") or []:
         sid = str(item.get("series_id", "")).strip()
-        # 選び方は変えられない（R21）。台帳に無い系列・選び方が違う下書きは、数なしにする
-        changed = sid in ledger and (
-            series_from_draft(item).selector != series_from_draft(ledger[sid]).selector
-        )
+        # 選び方は変えられない（R21）。足せるのは estat_file の部分だけ（R22）
+        s = series_from_draft(item)
+        if not s.selector:
+            state = "unresolved"
+        elif sid not in ledger:
+            state = "new"
+        else:
+            state = selection_change(
+                s.source_kind, s.selector, series_from_draft(ledger[sid]).selector
+            )
         pts = (
-            []
-            if (changed or sid not in ledger)
-            else sorted(
+            sorted(
                 (dict(r) for r in rows if r.get("series_id", "").strip() == sid),
                 key=lambda r: r.get("period", ""),
             )
+            if state == "same"
+            else []
         )
         meta = None
         if item.get("source_kind") == "estat_api":
@@ -193,7 +208,7 @@ def with_series_data(drafts: dict[str, Any], config_dir: Path) -> dict[str, Any]
             except SeriesError as e:
                 raise SourcesError(str(e)) from e
         out.append({**item, "points": [{c: r.get(c, "") for c in POINT_COLUMNS} for r in pts],
-                    "meta": meta, "selector_changed": changed})  # fmt: skip
+                    "meta": meta, "selector_state": state})  # fmt: skip
     return {**drafts, "series": out}
 
 
@@ -402,7 +417,10 @@ def _series_item(
         "source": source,
         "chosen": chosen,
         "link": link,
-        "selector_changed": bool(d.get("selector_changed")),
+        "selector_state": d.get("selector_state", ""),
+        "selector_note": _SELECTOR_NOTES.get(d.get("selector_state", ""), "").format(
+            id=s.series_id
+        ),
         "has_numbers": _newest_numeric(points) is not None,
         "points": _point_rows(d, points),
         "breaks": [{"before": b.before, "note": b.note} for b in s.breaks],
@@ -559,6 +577,7 @@ class MergeResult:
     findings_ai: list[str] = field(default_factory=list)
     series_added: list[str] = field(default_factory=list)
     series_ai: list[str] = field(default_factory=list)
+    series_downgraded: list[str] = field(default_factory=list)  # 部分が増えて AI の行に戻した
 
 
 def _day(at: Any) -> str:
@@ -770,13 +789,25 @@ def merge_checks(
         name = (
             d.get("stat_id") or d.get("finding_id") or d.get("lead_id") or d.get("series_id") or key
         )
-        if (
-            kind == "series"
-            and d.get("selector_changed")
-            and not (isinstance(c, dict) and c.get("v") == "ng")
-        ):
+        ng = isinstance(c, dict) and c.get("v") == "ng"
+        state = d.get("selector_state") if kind == "series" else None
+        if state in ("different", "unresolved") and not ng:
             # 台帳の行の選び方は変えない（AI の行も人の行も）。行も数もそのまま
-            res.skipped.append(f"{name}：" + SELECTOR_CHANGED.format(id=name))
+            res.skipped.append(f"{name}：" + _SELECTOR_NOTES[state].format(id=name))
+            continue
+        if state == "growth" and not ng:
+            if not accept_rest:
+                res.skipped.append(
+                    f"{name}：部分が増えた。AI の行として入れるなら --accept-rest で取り込む"
+                )
+                continue
+            # 部分を足した行は AI の行（人の行も AI に戻す）。数はそのまま
+            if d["series_id"] in human_series:
+                res.series_downgraded.append(d["series_id"])
+            new_series.append(
+                _series_row(d, {}, by=AI_CHECKER, day=ai_day, old=ledger_series.get(d["series_id"]))
+            )
+            res.series_ai.append(d["series_id"])
             continue
         if kind == "series" and isinstance(c, dict) and c.get("v") == "ok" and not _has_numbers(d):
             # 数が無い系列の「合っている」は押していないのと同じ（数が入ると鍵も変わる）

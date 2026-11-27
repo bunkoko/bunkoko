@@ -573,6 +573,18 @@ def test_meta_refuses_a_selection_different_from_the_ledger_row(env, monkeypatch
         assert json.loads(path.read_text("utf-8")) == json.loads(before)
 
 
+def test_meta_writes_for_an_id_not_in_the_ledger(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    d = {"series": [{"series_id": "new_rate", "source_kind": "estat_api", "stats_data_id": SID,
+                     "selector_names": {"年齢": "20～29歳"}}]}  # fmt: skip
+    path = env.tmp / "draft.json"
+    path.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    r = stats(env, "meta", "--drafts", str(path))
+    assert r.exit_code == 0, r.output
+    assert (env.docs / "new_rate.json").exists()
+    assert json.loads(path.read_text("utf-8"))["series"][0]["selector"] == SEL
+
+
 def test_meta_writes_when_the_selection_equals_the_ledger_row(env, monkeypatch):
     monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
     path = _meta_draft(env)

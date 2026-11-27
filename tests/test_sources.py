@@ -538,11 +538,8 @@ def _skey(config_dir, item=API_SERIES):
 
 
 def _only_ai_row(d):
-    """台帳の系列の行が、最初の AI の行のまま（何も書いていない）。"""
-    rows = _series_file(d)
-    return [(r["series_id"], r["checked_by"], r["checked_sha"]) for r in rows] == [
-        ("work_rate", AI_CHECKER, "")
-    ]
+    """台帳の系列の行が、最初の AI の行のまま（何も書いていない。全部の列を比べる）。"""
+    return _series_file(d) == [_srow(API_SERIES, checked_by=AI_CHECKER, checked_at="2026-11-01")]
 
 
 def _series_file(d):
@@ -656,8 +653,10 @@ def test_merge_ok_series_records_owner_and_sha(sconf):
 
 
 def test_merge_ng_series_is_not_written(sconf):
+    before = (sconf / SERIES_FILE).read_bytes()
     res = merge_checks(_sdrafts(API_SERIES), {_skey(sconf): {"v": "ng", "at": _at()}}, sconf)
-    assert res.rejected == ["work_rate"] and res.series_added == []
+    assert (sconf / SERIES_FILE).read_bytes() == before
+    assert res.rejected == ["work_rate"] and res.series_added == [] and res.series_ai == []
     assert _only_ai_row(sconf)
 
 
@@ -823,11 +822,14 @@ def test_excerpt_from_grid_marks_every_cell_of_a_vertical_range():
 
 
 def test_accept_rest_takes_in_a_series_without_points_as_ai(sconf):
-    _write_ledger(sconf, [])
-    res = merge_checks(_sdrafts(API_SERIES), {}, sconf, accept_rest=True)
-    assert res.series_ai == ["work_rate"]
-    row = _series_file(sconf)[0]
+    new = {**FILE_SERIES, "series_id": "brand_new"}  # 台帳に無い系列
+    res = merge_checks(_sdrafts(new), {}, sconf, accept_rest=True)
+    assert res.series_ai == ["brand_new"]
+    row = {r["series_id"]: r for r in _series_file(sconf)}["brand_new"]
     assert row["checked_by"] == AI_CHECKER and row["checked_sha"] == ""
+    assert read_point_rows(sconf) and "brand_new" not in {
+        r["series_id"] for r in read_point_rows(sconf)
+    }
 
 
 def test_series_without_points_loads_into_the_ssd(sconf, tmp_path):
@@ -868,7 +870,7 @@ def test_selector_change_is_never_taken_in_ai_or_owner_row(sconf):
         _file_ledger(sconf, by)
         it = page_items(with_series_data(_sdrafts(_changed_item()), sconf))[0]
         assert it["points"] == [] and it["has_numbers"] is False and it["line"] == ""
-        assert it["selector_changed"] is True
+        assert it["selector_state"] == "different"
         before = [(sconf / f).read_text("utf-8") for f in (SERIES_FILE, POINTS_FILE)]
         for checks, rest in (({it["k"]: {"v": "ok", "at": _at()}}, False), ({}, True),
                              ({it["k"]: {"v": "ok", "at": _at()}}, True)):  # fmt: skip
@@ -879,19 +881,19 @@ def test_selector_change_is_never_taken_in_ai_or_owner_row(sconf):
             assert [(sconf / f).read_text("utf-8") for f in (SERIES_FILE, POINTS_FILE)] == before
     same = page_items(with_series_data(_sdrafts(FILE_SERIES), sconf))[0]
     assert [p["period"] for p in same["points"]] == ["2019", "2020"] and same["has_numbers"]
-    assert same["selector_changed"] is False
+    assert same["selector_state"] == "same"
 
 
 def test_series_not_in_the_ledger_never_shows_stray_points(sconf):
     _write_ledger(sconf, [_prow(), _prow("stray_id", "2020", "9")])
     it = page_items(with_series_data(_sdrafts({**FILE_SERIES, "series_id": "stray_id"}), sconf))[0]
-    assert it["points"] == [] and it["has_numbers"] is False and it["selector_changed"] is False
+    assert it["points"] == [] and it["has_numbers"] is False and it["selector_state"] == "new"
 
 
 def test_page_shows_the_instruction_and_refuses_ok_for_a_changed_selector(sconf):
     _file_ledger(sconf)
     html = build_page(with_series_data(_sdrafts(_changed_item()), sconf))
-    assert 'it.kind === "series" && it.selector_changed' in html
+    assert 'it.kind === "series" && it.selector_note' in html
     assert "新しい series_id で下書きする" in html
 
 
@@ -981,9 +983,10 @@ def test_stats_only_merge_cannot_reuse_a_series_id(sconf):
 
 def test_missing_blocked_keywords_stops_the_series_merge(sconf):
     (sconf / "blocked_keywords.yaml").unlink()
+    before = [(sconf / f).read_bytes() for f in (SERIES_FILE, POINTS_FILE, "stats.csv")]
     with pytest.raises(SourcesError, match="blocked_keywords"):
         merge_checks(_sdrafts(API_SERIES), {}, sconf, accept_rest=True)
-    assert _only_ai_row(sconf)
+    assert [(sconf / f).read_bytes() for f in (SERIES_FILE, POINTS_FILE, "stats.csv")] == before
 
 
 def test_todo_survives_a_short_ledger_row(sconf):
@@ -1121,3 +1124,129 @@ def test_contact_note_tells_unset_from_malformed(sconf, monkeypatch, capsys):
     monkeypatch.setenv("KOTEN_CONTACT", "nowhere")
     assert cli._series_excerpt(s)(_file_item()) is None
     assert "形が正しくない" in capsys.readouterr().err
+
+
+# --- 部分を足した estat_file の系列（growth）・selector がまだ無い下書き ------------------
+
+PART2 = {**FILE_SELECTOR["parts"][0], "statInfId": "000031000002", "values": "D12:F12"}
+
+
+def _grown(**over):
+    parts = [{**FILE_SELECTOR["parts"][0], **over.pop("first", {})}, PART2]
+    return {**FILE_SERIES, "selector": {"parts": parts[: over.pop("n", 2)]}, **over}
+
+
+def test_selection_change_rules():
+    from koten.stats.series import selection_change as sc
+
+    one = FILE_SELECTOR
+    p0 = one["parts"][0]
+    assert sc("estat_file", one, one) == "same"
+    assert sc("estat_file", {"parts": [p0, PART2]}, one) == "growth"
+    assert sc("estat_file", {"parts": [{**p0, "updated": "2027-01-01"}]}, one) == "growth"
+    assert (
+        sc("estat_file", {"parts": [{**p0, "label_cells": ["A13"], "unit_cell": "B4"}]}, one)
+        == "growth"
+    )
+    assert sc("estat_file", {"parts": [{**p0, "values": "D13:F13"}]}, one) == "different"
+    for key in ("statInfId", "fileKind", "sheet", "periods_cells"):
+        assert sc("estat_file", {"parts": [{**p0, key: "9"}]}, one) == "different"
+    assert sc("estat_file", {"parts": []}, one) == "different"  # 外す
+    assert (
+        sc("estat_file", {"parts": [PART2, p0]}, {"parts": [p0, PART2]}) == "different"
+    )  # 並べ替え
+    assert sc("estat_file", {"parts": [PART2]}, {"parts": [p0, PART2]}) == "different"
+    assert (
+        sc("estat_api", {"statsDataId": "1", "cdCat01": "2"}, {"statsDataId": "1"}) == "different"
+    )
+
+
+def _growth_ledger(config_dir, by):
+    _write_ledger(
+        config_dir,
+        [_prow(), _prow("file_rate", "2019", "5"), _prow("file_rate", "2020", "6")],
+        [_srow(API_SERIES), _srow(FILE_SERIES, checked_by=by, checked_at="2026-11-01",
+                                  checked_sha="abc")],
+    )  # fmt: skip
+
+
+def test_growth_card_is_pointless_and_refuses_ok(sconf):
+    _growth_ledger(sconf, HUMAN_CHECKER)
+    it = page_items(with_series_data(_sdrafts(_grown()), sconf))[0]
+    assert it["selector_state"] == "growth" and it["points"] == [] and not it["has_numbers"]
+    assert it["selector_note"].startswith("新しく足した部分の数を取ってから確かめる")
+    assert "merge --accept-rest のあと Mac で koten stats fetch" in it["selector_note"]
+
+
+def test_growth_merge_downgrades_an_owner_row_and_keeps_the_points(sconf):
+    _growth_ledger(sconf, HUMAN_CHECKER)
+    item = _grown()
+    it = page_items(with_series_data(_sdrafts(item), sconf))[0]
+    points = (sconf / POINTS_FILE).read_bytes()
+    # 押さないとき：何も書かない（--accept-rest の案内）
+    before = (sconf / SERIES_FILE).read_bytes()
+    res = merge_checks(_sdrafts(item), {it["k"]: {"v": "ok", "at": _at()}}, sconf)
+    assert res.series_ai == [] and (sconf / SERIES_FILE).read_bytes() == before
+    assert any("--accept-rest" in x for x in res.skipped)
+    res = merge_checks(_sdrafts(item), {it["k"]: {"v": "ok", "at": _at()}}, sconf, accept_rest=True)
+    assert res.series_ai == ["file_rate"] and res.series_downgraded == ["file_rate"]
+    assert res.series_added == []
+    row = {r["series_id"]: r for r in _series_file(sconf)}["file_rate"]
+    assert row["checked_by"] == AI_CHECKER and row["checked_sha"] == ""
+    assert len(json.loads(row["selector"])["parts"]) == 2
+    assert (sconf / POINTS_FILE).read_bytes() == points  # 数は外さない
+
+
+def test_growth_merge_on_an_ai_row_is_not_a_downgrade_and_cli_prints_it(sconf, tmp_path):
+    _growth_ledger(sconf, AI_CHECKER)
+    res = merge_checks(_sdrafts(_grown()), {}, sconf, accept_rest=True)
+    assert res.series_ai == ["file_rate"] and res.series_downgraded == []
+    _growth_ledger(sconf, HUMAN_CHECKER)
+    drafts = tmp_path / "d.json"
+    drafts.write_text(
+        json.dumps(_sdrafts(_grown(first={"updated": "2027-01-01"})), ensure_ascii=False), "utf-8"
+    )
+    checks = tmp_path / "c.json"
+    checks.write_text("{}", "utf-8")
+    shutil.copy(DEFAULT_CONFIG_DIR / "sources.yaml", sconf / "sources.yaml")
+    settings = sconf / "s.toml"
+    settings.write_text("[paths]\n", "utf-8")
+    res = CliRunner().invoke(
+        app,
+        ["sources", "merge", "--drafts", str(drafts), "--from", str(checks), "--accept-rest",
+         "--settings", str(settings)],
+    )  # fmt: skip
+    assert res.exit_code == 0, res.output
+    assert "file_rate：部分が増えたので AI の行に戻した。数を取ってから確かめ直す" in res.output
+
+
+def test_updated_only_is_growth_and_identity_changes_are_different(sconf):
+    _growth_ledger(sconf, AI_CHECKER)
+    upd = _grown(n=1, first={"updated": "2027-01-01"})
+    assert page_items(with_series_data(_sdrafts(upd), sconf))[0]["selector_state"] == "growth"
+    for item in (_grown(n=1, first={"values": "D13:F13"}), {**_grown(), "selector": {"parts": []}},
+                 {**FILE_SERIES, "selector": {"parts": [PART2]}}):  # fmt: skip
+        full = with_series_data(_sdrafts(item), sconf)
+        got = page_items(full)[0]
+        assert got["selector_state"] == "different"
+        res = merge_checks(_sdrafts(item), {}, sconf, accept_rest=True)
+        assert res.series_ai == [] and any(
+            "新しい series_id で下書きする" in x for x in res.skipped
+        )
+
+
+def test_unresolved_selector_gets_the_meta_instruction(sconf):
+    item = {**API_SERIES, "selector": {}, "series_id": "later_rate"}
+    it = page_items(with_series_data(_sdrafts(item), sconf))[0]
+    assert it["selector_state"] == "unresolved"
+    assert it["selector_note"] == "selector がまだ無い（Mac で uv run koten stats meta）"
+    html = build_page(with_series_data(_sdrafts(item), sconf))
+    assert "it.selector_note" in html
+    before = (sconf / SERIES_FILE).read_bytes()
+    res = merge_checks(_sdrafts(item), {}, sconf, accept_rest=True)
+    assert res.series_ai == [] and (sconf / SERIES_FILE).read_bytes() == before
+    assert any("selector がまだ無い" in x and "選び方が違う" not in x for x in res.skipped)
+    # 台帳にある系列でも、selector が空なら「違う」ではなく「まだ無い」
+    ledger_item = {**API_SERIES, "selector": {}}
+    it = page_items(with_series_data(_sdrafts(ledger_item), sconf))[0]
+    assert it["selector_state"] == "unresolved" and "選び方が違う" not in it["selector_note"]

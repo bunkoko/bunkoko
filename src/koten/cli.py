@@ -2342,12 +2342,12 @@ def _series_excerpt(s: Settings):
         except typer.Exit:
             off["contact"] = True
             state = (
-                "設定されていない"
+                "が設定されていない"
                 if not os.environ.get("KOTEN_CONTACT", "").strip()
-                else "形が正しくない（メールアドレスか URL）"
+                else "の形が正しくない（メールアドレスか URL）"
             )
             typer.secho(
-                f"連絡先（KOTEN_CONTACT）が{state}ので、ファイルの抜き出しは出しません",
+                f"連絡先（KOTEN_CONTACT）{state}ので、ファイルの抜き出しは出しません",
                 fg="yellow",
                 err=True,
             )
@@ -2470,6 +2470,8 @@ def sources_merge(
         )
     if res.stats_added or res.stats_ai or res.stats_removed:
         typer.echo("統計を SSD に入れる：uv run koten db init")
+    for sid in res.series_downgraded:
+        typer.echo(f"{sid}：部分が増えたので AI の行に戻した。数を取ってから確かめ直す")
     if res.series_added or res.series_ai:
         typer.echo("統計の系列を SSD に入れる：uv run koten db init")
     if res.findings_added or res.findings_ai:
@@ -4179,6 +4181,7 @@ def stats_meta(
         meta_dir_for,
         parse_series,
         read_series_rows,
+        selection_change,
         valid_series_id,
     )
 
@@ -4218,7 +4221,7 @@ def stats_meta(
             typer.secho(_estat_failure(label, e), fg="red", err=True)
             failed += 1
             continue
-        if sid in in_ledger and in_ledger[sid] != sel:
+        if sid in in_ledger and selection_change("estat_api", sel, in_ledger[sid]) != "same":
             # 台帳の系列の選び方は変えない（変えるなら別の系列）。表の情報も下書きも書き換えない
             typer.secho(f"{sid}：台帳の {sid} と選び方が違う。新しい series_id で下書きする",
                         fg="red", err=True)  # fmt: skip
