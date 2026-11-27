@@ -25,6 +25,8 @@ struct KenkoKanriApp: App {
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        // 朝の体感・夜のふり返りの通知のボタン（アプリが閉じていても、ボタンの答えを受け取れるように、起動するたびに登録する）
+        UNUserNotificationCenter.current().setNotificationCategories(Reminders.categories)
         // バックグラウンドで新しい HealthKit のデータを受け取れるように、起動するたびに登録する
         Task { await HealthSync.shared.startBackgroundDelivery() }
         // 通知を許可済みなら、通知の送り先（デバイストークン）をサーバーに登録し直す
