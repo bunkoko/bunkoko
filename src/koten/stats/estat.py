@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from urllib.parse import urlencode
 
 from koten.net import Fetcher
-from koten.stats.series import Point, Series, SeriesError, _to_decimal, parse_year
+from koten.stats.series import Point, Series, SeriesError, parse_year, to_decimal
 
 API_BASE = "https://api.e-stat.go.jp/rest/3.0/app/json"
 APP_ID_ENV = "KOTEN_ESTAT_APPID"
@@ -71,6 +71,7 @@ class TableMeta:
     open_date: str
     updated_date: str
     classes: list[ClassObj]
+    fetched_at: str = ""  # この表の情報を取った日時（マニフェストの記録。無ければ空）
 
 
 # --- 小さな道具 ---------------------------------------------------------------
@@ -204,17 +205,28 @@ def _fixed_classes(meta: TableMeta) -> list[ClassObj]:
 def _candidates(c: ClassObj) -> str:
     names = [it.name for it in c.items[:MAX_CANDIDATES]]
     more = f"…ほか {len(c.items) - MAX_CANDIDATES} 個" if len(c.items) > MAX_CANDIDATES else ""
-    return "・".join(names) + more
+    return "／".join(names) + more
 
 
 def resolve_selector(meta: TableMeta, names: dict[str, str]) -> dict[str, str]:
     """分類の名前→項目の名前から、時間以外の分類ごとに符号を1つ決める。"""
-    want = {_norm_name(k): (k, v) for k, v in names.items()}
-    known = {_norm_name(c.name) for c in _fixed_classes(meta)}
-    for k, (orig, _) in want.items():
-        if k not in known:
-            have = "・".join(c.name for c in _fixed_classes(meta))
-            raise EstatError(f"分類の名前 {orig!r} が表に無い（ある分類：{have}）")
+    fixed = _fixed_classes(meta)
+    by_norm: dict[str, list[ClassObj]] = {}
+    for c in fixed:
+        by_norm.setdefault(_norm_name(c.name), []).append(c)
+    for group in by_norm.values():
+        if len(group) > 1:
+            both = "／".join(f"{c.name}（{c.id}）" for c in group)
+            raise EstatError(f"分類の名前が重なっていて名前では選べない：{both}")
+    want: dict[str, tuple[str, str]] = {}
+    for k, val in names.items():
+        nk = _norm_name(k)
+        if nk not in by_norm:
+            have = "／".join(c.name for c in fixed)
+            raise EstatError(f"分類の名前 {k!r} が表に無い（ある分類：{have}）")
+        if nk in want:
+            raise EstatError(f"分類の名前 {want[nk][0]!r} と {k!r} が同じ分類を指している")
+        want[nk] = (k, val)
     sel = {"statsDataId": meta.stats_data_id}
     for c in _fixed_classes(meta):
         given = want.get(_norm_name(c.name))
@@ -223,13 +235,25 @@ def resolve_selector(meta: TableMeta, names: dict[str, str]) -> dict[str, str]:
                 sel[_cd_key(c.id)] = c.items[0].code
                 continue
             raise EstatError(f"分類「{c.name}」の項目の名前が要る。候補：{_candidates(c)}")
+        if given[1].strip().startswith("#"):
+            code = given[1].strip()[1:].strip()
+            hits = [it for it in c.items if it.code == code]
+            if not hits:
+                raise EstatError(
+                    f"分類「{c.name}」に符号 {code!r} の項目が無い。候補：{_candidates(c)}"
+                )
+            sel[_cd_key(c.id)] = hits[0].code
+            continue
         target = _norm_name(given[1])
         hits = [it for it in c.items if _norm_name(it.name) == target]
         if not hits:
             raise EstatError(f"分類「{c.name}」に項目 {given[1]!r} が無い。候補：{_candidates(c)}")
         if len(hits) > 1:
-            both = "・".join(f"{it.name}（{it.code}）" for it in hits)
-            raise EstatError(f"分類「{c.name}」の項目 {given[1]!r} が複数に当たる：{both}")
+            both = "／".join(f"{it.name}（{it.code}）" for it in hits)
+            raise EstatError(
+                f"分類「{c.name}」の項目 {given[1]!r} が複数に当たる：{both}。"
+                '符号で選ぶときは "#001" のように書く'
+            )
         sel[_cd_key(c.id)] = hits[0].code
     return sel
 
@@ -265,7 +289,7 @@ def meta_record(meta: TableMeta, selector: dict) -> dict:
             for c, it in _chosen(meta, selector)
         ],
         "times": [{"code": i.code, "name": i.name} for i in (time_obj.items if time_obj else [])],
-        "fetched_at": _now(),
+        "fetched_at": meta.fetched_at or _now(),
     }
 
 
@@ -277,6 +301,7 @@ _AVG_RE = re.compile(r"(?P<base>.*?年度?)\s*(?:年)?平均")
 def period_of(code: str, name: str) -> tuple[str, str]:
     """時間の符号と名前から (YYYY, 年|年度)。月・四半期は断る。"""
     text = unicodedata.normalize("NFKC", name or "").strip()
+    # 年度のあとの「平均」も外す（「2013年度平均」は年度の平均として実在する）
     m = _AVG_RE.fullmatch(text)
     base = m["base"] if m else text
     try:
@@ -346,7 +371,7 @@ def _parse_values(
         raw = _text(r.get("$"))
         if not raw.strip():
             raise EstatError(f"{period} の値が空（応答の形が想定と違う）")
-        if _to_decimal(raw.replace(",", "")) is not None:
+        if to_decimal(raw) is not None:
             out.append((period, raw, "", _attr(r, "@unit")))
         else:
             out.append((period, "", raw, _attr(r, "@unit")))
@@ -360,7 +385,7 @@ def cross_check(s: Series, meta: TableMeta, units: set[str]) -> list[str]:
     """系列の台帳と e-Stat の表の食い違い。空なら全部一致。"""
     out = []
     mine = _norm_unit(s.unit)
-    for u in sorted(units):
+    for u in sorted(u for u in units if u.strip()):
         if _norm_unit(u) != mine:
             out.append(f"単位が違う：台帳 {s.unit!r}・e-Stat {u!r}")
     for label, ours, theirs in (
@@ -370,6 +395,13 @@ def cross_check(s: Series, meta: TableMeta, units: set[str]) -> list[str]:
     ):
         if ours.strip() != theirs.strip():
             out.append(f"{label} が違う：台帳 {ours!r}・e-Stat {theirs!r}")
+    return out
+
+
+def units_of(points: list[Point], meta: TableMeta, selector: dict) -> set[str]:
+    """cross_check に渡す単位：点の src_unit（空でないもの）と選んだ表章項目の単位。"""
+    out = {p.src_unit for p in points if p.src_unit.strip()}
+    out |= {it.unit for c, it in _chosen(meta, selector) if c.id == "tab" and it.unit.strip()}
     return out
 
 
@@ -383,18 +415,23 @@ class EstatClient:
         self.fetcher = fetcher
         self._secret = {"appId": app_id.strip()}
 
-    def _get(self, endpoint: str, params: dict[str, str], refresh: bool) -> dict:
+    def _get(self, endpoint: str, params: dict[str, str], refresh: bool) -> tuple[dict, str]:
+        """(応答, 取った日時)。日時はマニフェストの記録（取り直さなければ前のまま）。"""
         url = f"{API_BASE}/{endpoint}?" + urlencode(sorted(params.items()))
         data = self.fetcher.fetch_json(
             url, SUBDIR, secret_params=self._secret, error_of=status_error, refresh=refresh
         )
         if _status_of(data) == 1:
             raise EstatNoData(f"{endpoint}：該当データなし（STATUS 1）")
-        return data  # type: ignore[return-value]
+        entry = self.fetcher.manifest.get(url)
+        return data, (entry.fetched_at if entry else "")  # type: ignore[return-value]
 
     def meta(self, stats_data_id: str, *, refresh: bool = False) -> TableMeta:
         params = {"lang": "J", "statsDataId": stats_data_id, "explanationGetFlg": "N"}
-        return parse_meta(self._get("getMetaInfo", params, refresh))
+        data, fetched = self._get("getMetaInfo", params, refresh)
+        meta = parse_meta(data)
+        meta.fetched_at = fetched
+        return meta
 
     def points(self, s: Series, *, refresh: bool = False) -> tuple[list[Point], TableMeta]:
         sel = s.selector
@@ -423,12 +460,14 @@ class EstatClient:
         rows: list[dict] = []
         values: list[tuple[str, str, str, str]] = []
         seen: set[str] = set()
+        stamps: list[str] = []
         start: str | None = None
         for _ in range(MAX_PAGES):
             params = dict(base)
             if start is not None:
                 params["startPosition"] = start
-            data = self._get("getStatsData", params, refresh)
+            data, got = self._get("getStatsData", params, refresh)
+            stamps.append(got)
             if meta is None:
                 meta = parse_meta(data)
             page, start, kinds = _parse_values(data, sel)
@@ -454,7 +493,8 @@ class EstatClient:
         sha = hashlib.sha256(
             json.dumps(rows, sort_keys=True, ensure_ascii=False).encode("utf-8")
         ).hexdigest()
-        fetched = _now()
+        fetched = min((t for t in stamps if t), default=_now())
+        meta.fetched_at = fetched
         points = []
         for period, value, mark, unit in sorted(values):
             points.append(

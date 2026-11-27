@@ -360,7 +360,7 @@ def series_problems(
         value, mark = r.get("value", "").strip(), r.get("mark", "").strip()
         if bool(value) == bool(mark):
             out.append(f"{p}value と mark はどちらか一方だけ")
-        elif value and _to_decimal(value) is None:
+        elif value and to_decimal(value) is None:
             out.append(f"{p}value {value!r} を数として読めない")
     return out
 
@@ -400,7 +400,7 @@ def parse_points(rows: list[dict[str, str]]) -> list[Point]:
 # --- 数・年 -------------------------------------------------------------------
 
 
-def _to_decimal(text: str) -> Decimal | None:
+def to_decimal(text: str) -> Decimal | None:
     if not text.isascii():
         return None
     try:
@@ -414,7 +414,7 @@ def value_num(p: Point) -> Decimal | None:
     """数として読めるときだけ Decimal。mark（特殊文字）・空は None（0 にしない）。"""
     if p.mark.strip() or not p.value.strip():
         return None
-    return _to_decimal(p.value)
+    return to_decimal(p.value)
 
 
 def period_label(period: str, period_kind: str) -> str:

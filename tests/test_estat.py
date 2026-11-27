@@ -23,6 +23,7 @@ from koten.stats.estat import (
     period_of,
     resolve_selector,
     status_error,
+    units_of,
 )
 from koten.stats.series import Series
 
@@ -388,7 +389,7 @@ def test_empty_app_id_refused_without_echo(tmp_path):
     for bad in ("", "   "):
         with pytest.raises(EstatError) as e:
             EstatClient(f, bad)
-        assert bad.strip() == "" and "KOTEN_ESTAT_APPID" in str(e.value)
+        assert "KOTEN_ESTAT_APPID" in str(e.value) and "appId" in str(e.value)
 
 
 def respond_by_path(pages):
@@ -424,6 +425,11 @@ def test_next_key_pages_are_joined(tmp_path):
     assert q["limit"] == "100000" and q["metaGetFlg"] == "Y" and q["lang"] == "J"
     assert q["cdTab"] == "01" and q["cdCat01"] == "2" and q["cdArea"] == "00000"
     assert q["statsDataId"] == SID and q["annotationGetFlg"] == "Y" and q["replaceSpChar"] == "0"
+    assert q["cntGetFlg"] == "N" and q["explanationGetFlg"] == "N"
+    mq = next(r for r in seen if r.url.path.endswith("getMetaInfo")).url.params
+    assert dict(mq) == {
+        "appId": APP_ID, "lang": "J", "statsDataId": SID, "explanationGetFlg": "N",
+    }  # fmt: skip
     assert "startPosition" not in q and data_reqs[1].url.params["startPosition"] == "3"
     assert len({p.src_sha for p in points}) == 1
 
@@ -473,15 +479,21 @@ def test_status_100_drops_cache_and_status_1_is_no_data(tmp_path):
         if req.url.path.endswith("getMetaInfo"):
             return httpx.Response(200, json=meta_json())
         d = data_json([], status=100)
-        d["GET_STATS_DATA"]["RESULT"]["ERROR_MSG"] = "アプリケーションIDが正しくありません"
+        d["GET_STATS_DATA"]["RESULT"]["ERROR_MSG"] = (
+            f"アプリケーションIDが正しくありません {APP_ID}"
+        )
+        d["ECHO"] = str(req.url)  # 応答が送った URL（appId つき）をそのまま返す
         return httpx.Response(200, json=d)
 
     client, _, fetcher = make_client(tmp_path, responder)
     with pytest.raises(ApiError, match="正しくありません") as e:
         client.points(make_series())
-    assert APP_ID not in str(e.value)
+    assert APP_ID not in str(e.value) and "***" in str(e.value)
     cached = list((fetcher.raw_dir / "estat").glob("*.json"))
     assert all("GET_STATS_DATA" not in c.read_text("utf-8") for c in cached)
+    for f in fetcher.raw_dir.rglob("*"):
+        if f.is_file():
+            assert APP_ID not in f.read_text("utf-8", errors="replace"), f
 
     def responder1(req):
         if req.url.path.endswith("getMetaInfo"):
@@ -530,14 +542,23 @@ def test_refresh_is_passed_through(tmp_path):
 
 def test_app_id_never_in_files_or_errors(tmp_path):
     pages = {None: data_json([v("2013", "1")], next_key=2), "2": data_json([v("2014", "2")])}
-    client, seen, fetcher = make_client(tmp_path, respond_by_path(pages))
+
+    def echoing(req):
+        resp = respond_by_path(pages)(req)
+        body = resp.json()
+        body["ECHO"] = str(req.url)  # 送った URL（appId つき）が本文に入る
+        return httpx.Response(200, json=body)
+
+    client, seen, fetcher = make_client(tmp_path, echoing)
     client.points(make_series())
     client.meta(SID)
     # 送った URL には appId がある（これが無いと API は動かない）
     assert all(r.url.params.get("appId") == APP_ID for r in seen)
-    for f in (tmp_path / "raw").rglob("*"):
-        if f.is_file():
-            assert APP_ID not in f.read_text("utf-8", errors="replace"), f
+    files = [f for f in (tmp_path / "raw").rglob("*") if f.is_file()]
+    assert len(files) >= 3
+    for f in files:
+        assert APP_ID not in f.read_text("utf-8", errors="replace"), f
+    assert any("***" in f.read_text("utf-8") for f in files)
     for line in (tmp_path / "raw" / "manifest.jsonl").read_text("utf-8").splitlines():
         entry = json.loads(line)
         assert "appId" not in entry["url"] and APP_ID not in line
@@ -558,3 +579,133 @@ def test_app_id_never_in_files_or_errors(tmp_path):
     with pytest.raises(Exception) as e3:
         client3.meta(SID)
     assert APP_ID not in str(e3.value)
+
+
+# --- 修正 1 回目 --------------------------------------------------------------
+
+
+def test_fetched_at_kept_when_cached_and_new_when_bytes_change(tmp_path):
+    state = {"val": "1"}
+    clock = iter(f"2026-11-27T00:00:{i:02d}+00:00" for i in range(60))
+
+    def responder(req):
+        if req.url.path.endswith("getMetaInfo"):
+            return httpx.Response(200, json=meta_json())
+        return httpx.Response(200, json=data_json([v("2013", state["val"])]))
+
+    import koten.net as net
+
+    class FakeDT:
+        @staticmethod
+        def now(tz=None):
+            class T:
+                @staticmethod
+                def isoformat(timespec=None):
+                    return next(clock)
+
+            return T
+
+    orig = net.datetime
+    net.datetime = FakeDT
+    try:
+        client, seen, _ = make_client(tmp_path, responder)
+        p1, m1 = client.points(make_series())
+        p2, m2 = client.points(make_series())
+        assert p1[0].fetched_at == p2[0].fetched_at and m1.fetched_at == p1[0].fetched_at
+        assert meta_record(m1, SEL)["fetched_at"] == p1[0].fetched_at
+        state["val"] = "2"
+        p3, _ = client.points(make_series(), refresh=True)
+        assert p3[0].fetched_at != p1[0].fetched_at and p3[0].src_sha != p1[0].src_sha
+    finally:
+        net.datetime = orig
+
+
+def test_meta_fetched_at_from_manifest(tmp_path):
+    client, _, fetcher = make_client(tmp_path, respond_by_path({}))
+    m = client.meta(SID)
+    entry = next(iter(fetcher.manifest.entries.values()))
+    assert m.fetched_at == entry.fetched_at != ""
+
+
+def test_duplicate_normalized_class_names_refused():
+    cl = classes_default()
+    cl[2] = cls("cat02", "年 齢", [item("1", "総数"), item("2", "他")])
+    m = parse_meta(meta_json(classes=cl))
+    with pytest.raises(EstatError, match="cat01.*cat02|cat02.*cat01"):
+        resolve_selector(m, {"年齢": "総数"})
+
+
+def test_two_keys_for_one_class_refused():
+    m = parse_meta(meta_json())
+    with pytest.raises(EstatError, match="同じ分類"):
+        resolve_selector(m, {"年齢": "総数", "年 齢": "20～29歳"})
+
+
+def test_units_of_and_cross_check_skips_empty():
+    m = parse_meta(meta_json())
+    from koten.stats.series import Point
+
+    pt = [Point("a", "2013", "1", "", "", "", u, "", "") for u in ("%", "", "％")]
+    assert units_of(pt, m, SEL) == {"%", "％"}
+    assert units_of([], m, SEL) == {"%"}  # 表章項目の単位
+    assert cross_check(make_series(), m, {"", " "}) == []
+
+
+def test_average_after_fiscal_year():
+    assert period_of("2013100000", "2013年度平均") == ("2013", "年度")
+
+
+def test_candidates_joined_with_slash():
+    cl = classes_default()
+    cl[1] = cls("cat01", "年齢", [item("1", "農業・林業"), item("2", "他")])
+    m = parse_meta(meta_json(classes=cl))
+    with pytest.raises(EstatError, match="農業・林業／他"):
+        resolve_selector(m, {})
+
+
+def test_select_by_code_with_hash():
+    cl = classes_default()
+    cl[1] = cls("cat01", "年齢", [item("001", "総数", level="1"), item("002", "総数", level="2")])
+    m = parse_meta(meta_json(classes=cl))
+    with pytest.raises(EstatError, match='"#001"'):
+        resolve_selector(m, {"年齢": "総数"})
+    assert resolve_selector(m, {"年齢": "#002"})["cdCat01"] == "002"
+    assert resolve_selector(m, {"年齢": " # 001 "})["cdCat01"] == "001"
+    with pytest.raises(EstatError, match="999"):
+        resolve_selector(m, {"年齢": "#999"})
+
+
+@pytest.mark.parametrize("extra", ["cdCat02", "cdTime"])
+def test_extra_cd_key_refused_without_data_request(tmp_path, extra):
+    client, seen, _ = make_client(tmp_path, respond_by_path({None: data_json([v("2013", "1")])}))
+    with pytest.raises(EstatError, match=extra):
+        client.points(make_series(selector={**SEL, extra: "x"}))
+    assert not any(r.url.path.endswith("getStatsData") for r in seen)
+
+
+def test_zero_rows_is_no_data_through_client(tmp_path):
+    client, _, _ = make_client(tmp_path, respond_by_path({None: data_json([])}))
+    with pytest.raises(EstatNoData):
+        client.points(make_series())
+
+
+def test_empty_value_refused():
+    with pytest.raises(EstatError, match="空"):
+        parse_values(data_json([v("2013", "")]), SEL)
+
+
+def test_row_missing_selector_attribute_refused():
+    row_ = v("2013", "1")
+    del row_["@cat01"]
+    with pytest.raises(EstatError, match="cat01"):
+        parse_values(data_json([row_]), SEL)
+
+
+def test_points_refresh_true_requests_again(tmp_path):
+    client, seen, _ = make_client(tmp_path, respond_by_path({None: data_json([v("2013", "1")])}))
+    client.points(make_series())
+    n = len(seen)
+    client.points(make_series())
+    assert len(seen) == n
+    client.points(make_series(), refresh=True)
+    assert len(seen) == n + 2  # 表の情報と値の両方を取り直す
