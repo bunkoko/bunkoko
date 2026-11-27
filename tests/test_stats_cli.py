@@ -919,3 +919,90 @@ def test_hold_refuses_unknown_ids_and_app_id_urls(env):
     r = stats(env, "hold", "--series", "age_rate", "--note", f"https://x/?appId={fake}")
     assert r.exit_code == 2 and fake not in r.output
     assert (env.config / SERIES_FILE).read_bytes() == before
+
+
+# --- 取ったあとの取り込み：台帳の名前と単位を使う（N1） ---------------------------------------
+
+STAT_DRAFT = {
+    "stat_id": "long_hours_rate", "theme": "仕事", "label": "週60時間以上働く人の割合",
+    "value": "5.1", "unit": "%", "survey": "労働力調査", "year": "2024",
+    "url": "https://www.stat.go.jp/data/roudou/index.html", "publisher": "総務省統計局",
+}  # fmt: skip
+
+
+def sources(env, *args):
+    return runner.invoke(app, ["sources", *args, "--settings", env.settings])
+
+
+def _research(env, name, body):
+    path = env.root / "docs" / "research" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def _merged_and_fetched(env, monkeypatch, **draft):
+    """下書き（台帳にまだ無い系列）→ stats meta → 取り込み（AI の行）→ stats fetch まで。"""
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, [])
+    item_ = {c: v for c, v in srow(**draft).items() if not c.startswith("checked_")}
+    item_.update(themes=["仕事"], selector={}, breaks=[], stats_data_id=SID,
+                 selector_names={"年齢": "20～29歳"}, evidence="表の 20～29歳")  # fmt: skip
+    path = _research(
+        env, "2026-11-20-source-drafts.json", {"made": "2026-11-20", "series": [item_]}
+    )
+    assert stats(env, "meta", "--drafts", str(path)).exit_code == 0
+    no_taps = env.tmp / "no-taps.json"
+    no_taps.write_text("{}", encoding="utf-8")
+    r = sources(env, "merge", "--from", str(no_taps), "--accept-rest", "--drafts", str(path))
+    assert r.exit_code == 0 and "統計の系列 1" in r.output, r.output
+    r = stats(env, "fetch")
+    assert r.exit_code == 0, r.output
+    return no_taps, r
+
+
+def _stats_only_merge(env, no_taps):
+    """統計だけの新しい下書きを、--drafts なし（docs/research の下書き全部）で取り込む。"""
+    _research(env, "2026-11-27-source-drafts.json", {"made": "2026-11-27", "stats": [STAT_DRAFT]})
+    return sources(env, "merge", "--from", str(no_taps), "--accept-rest")
+
+
+def test_merge_after_the_fetch_copied_the_unit_keeps_it_and_writes_the_new_stat(env, monkeypatch):
+    env.state["values"] = [v(y, n, **{"@unit": "千人"}) for y, n in ((2019, "10"), (2021, "12"))]
+    no_taps, r = _merged_and_fetched(env, monkeypatch, unit="人")
+    assert "age_rate：単位（unit）を e-Stat のとおりにする：'人' → '千人'" in r.output
+    assert read_series_rows(env.config)[0]["unit"] == "千人"
+    r = _stats_only_merge(env, no_taps)
+    assert r.exit_code == 0, r.output  # 下書きの古い単位（人）を書き戻して止まらない
+    assert "AI が確かめた統計：long_hours_rate" in r.output
+    with (env.config / "stats.csv").open(encoding="utf-8") as f:
+        assert [x["stat_id"] for x in csv.DictReader(f)] == ["long_hours_rate"]
+    (row,) = read_series_rows(env.config)
+    assert row["unit"] == "千人" and row["checked_by"] == AI_CHECKER
+    assert runner.invoke(app, ["db", "init", "--settings", env.settings]).exit_code == 0
+
+
+def test_merge_after_an_e_stat_retitle_keeps_the_copied_title(env, monkeypatch):
+    no_taps, _ = _merged_and_fetched(env, monkeypatch)
+    env.state["title"] = "新しい題"
+    r = stats(env, "fetch", "--refresh")
+    assert r.exit_code == 0 and "'年齢別の割合' → '新しい題'" in r.output, r.output
+    r = _stats_only_merge(env, no_taps)
+    assert r.exit_code == 0, r.output  # 下書きの古い題は書き戻さない
+    assert "AI が確かめた統計：long_hours_rate" in r.output
+    (row,) = read_series_rows(env.config)
+    assert row["table_title"] == "新しい題" == load_meta(env.docs, "age_rate")["title"]
+    assert runner.invoke(app, ["db", "init", "--settings", env.settings]).exit_code == 0
+
+
+def test_unit_message_names_the_fetch_that_fixes_the_ledger(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    assert stats(env, "fetch").exit_code == 0
+    write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, [srow(unit="千人")])  # 台帳が数と食い違う
+    r = runner.invoke(app, ["db", "init", "--settings", env.settings])
+    assert r.exit_code == 2 and "e-Stat の単位 '%' と unit '千人' が違う" in r.output
+    assert "uv run koten stats fetch --series age_rate" in r.output
+    assert "stats fetch が写す" not in r.output
+    r = stats(env, "fetch", "--series", "age_rate")  # 言われたとおりにすると直る
+    assert r.exit_code == 0 and "単位（unit）を e-Stat のとおりにする：'千人' → '%'" in r.output
+    assert runner.invoke(app, ["db", "init", "--settings", env.settings]).exit_code == 0

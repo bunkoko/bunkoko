@@ -1711,7 +1711,8 @@ def test_growth_keeps_the_ledger_label_and_names_and_says_so(sconf):
     row = _file_row(sconf)
     assert row["label"] == "オーナーが直した文" and row["survey"] == FILE_SERIES["survey"]
     assert row["url"] == "https://a.jp/" and row["status"] == "保留"
-    assert row["latest_known"] == "2023" and row["note"] == ""
+    # 下書きの note が空なら、台帳の note のまま（N2）
+    assert row["latest_known"] == "2023" and row["note"] == "人のメモ"
     assert len(json.loads(row["selector"])["parts"]) == 2
     assert row["checked_by"] == AI_CHECKER and row["checked_sha"] == "" and row["trend"] == ""
 
@@ -1870,3 +1871,169 @@ def test_series_hint_asks_what_the_number_is_not_the_numbers():
     hint = next(x for x in html.splitlines() if x.strip().startswith('["series",'))
     assert "何の数か・分類・変わり目・読む文" in hint and "年ごとの数・分類" not in hint
     assert "Mac で uv run koten stats fetch のあとに作り直す" in html
+
+
+# --- 取ったあとの下書きは台帳の名前と単位（N1）・growth の note（N2）・下書きの appId（S3） ---
+
+
+FETCHED_TITLE = "就業状態別の人口（新）"
+
+
+def _fetched_ledger(config_dir):
+    """stats fetch が e-Stat の単位（千人）と新しい題を台帳と表の情報に写したあとの形。"""
+    meta = {**API_META, "title": FETCHED_TITLE}
+    (config_dir.parent / "docs" / "estat" / "work_rate.json").write_text(
+        json.dumps(meta, ensure_ascii=False), "utf-8"
+    )
+    row = _srow(API_SERIES, unit="千人", table_title=FETCHED_TITLE, checked_by=AI_CHECKER,
+                checked_at="2026-11-01")  # fmt: skip
+    years = (("2019", "10"), ("2020", "11"), ("2021", "12"))
+    pts = [_prow(period=y, value=n, src_unit="千人") for y, n in years]
+    _write_ledger(config_dir, pts, [row])
+    return meta
+
+
+# 取る前の下書き：単位も題も e-Stat が今出すものと違う
+STALE = {**API_SERIES, "unit": "人"}
+
+
+def test_card_shows_the_names_and_unit_the_fetch_copied(sconf):
+    _fetched_ledger(sconf)
+    it = page_items(with_series_data(_sdrafts(STALE), sconf))[0]
+    assert (it["unit"], it["table_title"]) == ("千人", FETCHED_TITLE)
+    assert (it["survey"], it["publisher"]) == ("労働力調査", "総務省統計局")
+    assert dict(it["source"])["台帳の単位"] == "千人"
+    assert it["line"] == "就業している人の割合は12千人（労働力調査、2021年）"
+    # 台帳に無い系列は下書きのまま
+    (sconf.parent / "docs" / "estat" / "new_rate.json").write_text(
+        json.dumps({**API_META, "title": FETCHED_TITLE}, ensure_ascii=False), "utf-8"
+    )
+    new = page_items(with_series_data(_sdrafts({**STALE, "series_id": "new_rate"}), sconf))[0]
+    assert (new["unit"], new["table_title"]) == ("人", API_SERIES["table_title"])
+    # 台帳にあっても、数がまだ無い系列は下書きのまま
+    _write_ledger(sconf, [])
+    early = page_items(with_series_data(_sdrafts(STALE), sconf))[0]
+    assert (early["unit"], early["table_title"]) == ("人", API_SERIES["table_title"])
+    # ファイルの系列は写さないので、下書きのまま
+    _file_ledger(sconf, AI_CHECKER)
+    item = {**FILE_SERIES, "unit": "人", "table_title": "表2"}
+    got = page_items(with_series_data(_sdrafts(item), sconf))[0]
+    assert (got["unit"], got["table_title"]) == ("人", "表2")
+
+
+def test_tap_on_a_card_with_the_copied_names_is_taken_by_merge(sconf, tmp_path):
+    from koten.db import connect, load_series
+
+    _fetched_ledger(sconf)
+    it = page_items(with_series_data(_sdrafts(STALE), sconf))[0]
+    # 鍵は下書きの古い言葉によらない（台帳と同じ言葉の下書きと同じ鍵）
+    fresh = {**API_SERIES, "unit": "千人", "table_title": FETCHED_TITLE}
+    assert it["k"] == page_items(with_series_data(_sdrafts(fresh), sconf))[0]["k"]
+    res = merge_checks(_sdrafts(STALE), {it["k"]: {"v": "ok", "at": _at()}}, sconf)
+    assert res.series_added == ["work_rate"] and res.unknown == [] and res.skipped == []
+    (row,) = _series_file(sconf)
+    assert (row["unit"], row["table_title"], row["checked_by"]) == (
+        "千人", FETCHED_TITLE, HUMAN_CHECKER,
+    )  # fmt: skip
+    conn = connect(tmp_path / "ssd")
+    load_series(conn, sconf, sconf.parent / "docs" / "estat")
+    assert conn.execute("SELECT owner_ok, unit FROM stat_series").fetchone()[:] == (1, "千人")
+    # 押していない行（--accept-rest）も、台帳の言葉で書く
+    _fetched_ledger(sconf)
+    res = merge_checks(_sdrafts(STALE), {}, sconf, accept_rest=True)
+    assert res.series_ai == ["work_rate"] and _series_file(sconf)[0]["unit"] == "千人"
+
+
+def test_growth_keeps_the_hold_and_owner_notes_and_adds_the_draft_note(sconf):
+    _growth_ledger(sconf, AI_CHECKER)
+    it = page_items(with_series_data(_sdrafts(FILE_SERIES), sconf))[0]
+    merge_checks(
+        _sdrafts(FILE_SERIES), {it["k"]: {"v": "ng", "at": _at(), "note": "分類が違う"}}, sconf
+    )
+    shutil.copy(DEFAULT_CONFIG_DIR / "sources.yaml", sconf / "sources.yaml")
+    settings = sconf / "s.toml"
+    settings.write_text("[paths]\n", "utf-8")
+    r = CliRunner().invoke(
+        app, ["stats", "hold", "--series", "file_rate", "--note", "新しい表を待つ",
+              "--settings", str(settings)],
+    )  # fmt: skip
+    assert r.exit_code == 0, r.output
+    held = _file_row(sconf)["note"]
+    assert "オーナーが「違う」：分類が違う" in held and "保留：新しい表を待つ" in held
+    res = merge_checks(_sdrafts(_grown(note="2021 年の部分を足した")), {}, sconf, accept_rest=True)
+    assert res.series_ai == ["file_rate"]
+    row = _file_row(sconf)
+    assert row["note"] == f"{held} ／ 2021 年の部分を足した" and row["status"] == "保留"
+    # 下書きの note が空・台帳の末尾と同じなら、台帳の note のまま（同じ文を2回足さない）
+    for note in ("", "2021 年の部分を足した"):
+        _growth_ledger(sconf, AI_CHECKER)
+        rows = _series_file(sconf)
+        for x in rows:
+            if x["series_id"] == "file_rate":
+                x["note"] = f"{held} ／ 2021 年の部分を足した"
+        _write_ledger(sconf, read_point_rows(sconf), rows)
+        merge_checks(_sdrafts(_grown(note=note)), {}, sconf, accept_rest=True)
+        assert _file_row(sconf)["note"] == f"{held} ／ 2021 年の部分を足した", note
+
+
+LEAK = "f" * 40
+API_URL = f"https://api.e-stat.go.jp/rest/3.0/app/json/getStatsData?appId={LEAK}&statsDataId=1"
+
+
+@pytest.mark.parametrize(
+    ("col", "value"),
+    [("evidence", f"表は {API_URL}"), ("check_note", API_URL), ("where", API_URL),
+     ("note", f"appId={LEAK}"), ("url", API_URL),
+     ("selector", {**FILE_SELECTOR, "appId": LEAK})],
+    ids=["evidence", "check_note", "where", "note", "url", "selector"],
+)  # fmt: skip
+def test_draft_series_with_an_app_id_is_refused_by_the_page_and_the_merge(sconf, col, value):
+    bad = {**FILE_SERIES, "series_id": "leak_rate", col: value}
+    fine = {**FILE_SERIES, "series_id": "fine_rate"}
+    with pytest.raises(SourcesError, match=f"leak_rate：{col} に appId が入っている") as e:
+        page_items(with_series_data(_sdrafts(fine, bad), sconf))
+    assert LEAK not in str(e.value) and "dbview?sid=" in str(e.value)
+    res = merge_checks(_sdrafts(bad, fine), {}, sconf, accept_rest=True)
+    assert res.series_ai == ["fine_rate"]  # ほかの系列は入る
+    (note,) = [x for x in res.skipped if x.startswith("leak_rate：")]
+    assert f"{col} に appId が入っている" in note and LEAK not in note
+    assert "leak_rate" not in {r["series_id"] for r in _series_file(sconf)}
+    assert LEAK not in (sconf / SERIES_FILE).read_text("utf-8")
+    if col == "selector":  # 台帳の系列の selector を変えると、選び方が違うので別の理由で入らない
+        return
+    # 数のある台帳の系列に押した「合っている」も入れない（appId が無ければ入る結果）
+    tapped = {**API_SERIES, col: value}
+    key = series_key(with_series_data(_sdrafts(tapped), sconf)["series"][0])
+    before = _ledger_bytes(sconf)
+    res = merge_checks(_sdrafts(tapped), {key: {"v": "ok", "at": _at()}}, sconf)
+    assert res.series_added == [] and _ledger_bytes(sconf) == before
+    assert any(x.startswith(f"work_rate：{col} に appId が入っている") for x in res.skipped)
+    # appId の無い下書きなら、同じように押した結果は入る
+    clean = {**API_SERIES, col: "https://www.e-stat.go.jp/dbview?sid=0003000001"}
+    key = series_key(with_series_data(_sdrafts(clean), sconf)["series"][0])
+    res = merge_checks(_sdrafts(clean), {key: {"v": "ok", "at": _at()}}, sconf)
+    assert res.series_added == ["work_rate"]
+
+
+def test_cli_page_refuses_and_merge_skips_a_draft_with_an_app_id(sconf, tmp_path):
+    drafts = tmp_path / "d.json"
+    bad = {**FILE_SERIES, "series_id": "leak_rate", "evidence": API_URL}
+    drafts.write_text(json.dumps(_sdrafts(bad), ensure_ascii=False), "utf-8")
+    shutil.copy(DEFAULT_CONFIG_DIR / "sources.yaml", sconf / "sources.yaml")
+    settings = sconf / "s.toml"
+    settings.write_text("[paths]\n", "utf-8")
+    out = tmp_path / "page.html"
+    res = CliRunner().invoke(app, ["sources", "page", "--drafts", str(drafts), "--out", str(out),
+                                   "--settings", str(settings)])  # fmt: skip
+    assert res.exit_code == 2 and "leak_rate：evidence に appId が入っている" in res.output
+    assert LEAK not in res.output and not out.exists()
+    checks = tmp_path / "c.json"
+    checks.write_text("{}", "utf-8")
+    res = CliRunner().invoke(
+        app,
+        ["sources", "merge", "--drafts", str(drafts), "--from", str(checks), "--accept-rest",
+         "--settings", str(settings)],
+    )  # fmt: skip
+    assert res.exit_code == 0, res.output
+    assert "入れなかった：leak_rate：evidence に appId が入っている" in res.output
+    assert LEAK not in res.output

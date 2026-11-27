@@ -53,6 +53,7 @@ from koten.findings import (
     read_findings,
 )
 from koten.script.placeholders import format_stat
+from koten.stats.estat import OFFICIAL_LABELS
 from koten.stats.files import FILE_URL, cell_pos, read_grid
 from koten.stats.report import series_from_draft
 from koten.stats.series import (
@@ -63,6 +64,7 @@ from koten.stats.series import (
     SeriesError,
     check_sha,
     fetched_parts,
+    has_app_id,
     load_meta,
     meta_dir_for,
     parse_points,
@@ -209,6 +211,36 @@ _SELECTOR_NOTES = {"different": SELECTOR_CHANGED, "invalid": SELECTOR_NOT_OBJECT
 _REFUSED_STATES = ("different", "unresolved", "invalid", "stale")
 # 部分の重なりを見る状態（R27：新しい系列は全部の部分を、same・growth は数の無い部分を）
 _OVERLAP_STATES = ("new", "same", "growth")
+# stats fetch が e-Stat から台帳に写す欄（R25）。台帳にあって数のある API の系列は、下書きでなく
+# 台帳の値を使う（取る前の下書きの古い値を、カード・鍵・書く行に持ち込まない。N1）
+OFFICIAL_FROM_LEDGER = tuple(OFFICIAL_LABELS)
+# with_series_data が足す欄（下書きの欄ではない）
+_ADDED = ("points", "meta", "selector_state", "selector_overlap", "ledger_status")
+APP_ID_NOTE = (
+    "{fields} に appId が入っている（e-Stat の API の URL は貼らない。dbview?sid= の URL にする）。"
+    "下書きを直す"
+)
+
+
+def app_id_fields(item: dict[str, Any]) -> list[str]:
+    """下書きの系列の欄のうち、appId（API の URL の appId=… や JSON の appId の鍵）が入った欄。
+
+    evidence・check_note・where・note のような文の欄も、url・selector なども見る（S3）。
+    with_series_data が足した欄（点・表の情報など）は見ない。"""
+    out = []
+    for k, v in item.items():
+        if k in _ADDED:
+            continue
+        text = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False, default=str)
+        if has_app_id(text) or has_app_id(f"{k}="):
+            out.append("（欄の名前）" if has_app_id(str(k)) else str(k))
+    return out
+
+
+def _app_id_note(item: dict[str, Any], fields: list[str]) -> str:
+    """appId が入った系列の知らせ（値は出さない。ID の欄に入っていれば ID も出さない）。"""
+    who = "（series_id）" if "series_id" in fields else str(item.get("series_id", "")).strip()
+    return f"{who}：" + APP_ID_NOTE.format(fields="・".join(fields))
 
 
 def _raw_selector_state(raw: Any) -> str:
@@ -249,6 +281,9 @@ def with_series_data(drafts: dict[str, Any], config_dir: Path) -> dict[str, Any]
     selector_overlap に入れる（取り込まない。R27：new は全部の部分、same・growth は数を
     取っていない部分）。ledger_status は台帳の行の status（保留 など）。表の情報は estat_api の
     系列だけ（docs/estat/<series_id>.json。db.py と同じ）。
+    台帳にあって数のある estat_api の系列は、survey・publisher・table_title・unit を台帳の値に
+    する（stats fetch が e-Stat から写した言葉。下書きは取る前のままのことがある。N1）。
+    台帳に無い系列・数がまだ無い系列・estat_file の系列は、下書きのまま。
     """
     drafts = normalize_drafts(drafts)
     rows = read_point_rows(config_dir)
@@ -260,6 +295,15 @@ def with_series_data(drafts: dict[str, Any], config_dir: Path) -> dict[str, Any]
         # 選び方は変えられない（R21）。変えられるのは estat_file の数を取っていない部分（R22・R23）
         s = series_from_draft(item)
         mine = [r for r in rows if r.get("series_id", "").strip() == sid]
+        prev = ledger.get(sid)
+        if (
+            prev is not None
+            and mine
+            and s.source_kind == "estat_api"
+            and str(prev.get("source_kind") or "").strip() == "estat_api"
+        ):
+            # カード・鍵・書く行が、stats fetch の写した台帳の言葉とそろう（N1）
+            item = {**item, **{c: str(prev.get(c) or "") for c in OFFICIAL_FROM_LEDGER}}
         overlap = ""
         state = _raw_selector_state(item.get("selector"))
         if not state and sid not in ledger:
@@ -703,6 +747,9 @@ def page_items(
             }
         out.append(item)
     for d in drafts.get("series") or []:
+        if leak := app_id_fields(d):
+            # appId の入った下書きはページに出さない（値は文に出さない。S3）
+            raise SourcesError(_app_id_note(d, leak))
         out.append(_series_item(d, excerpt))
     keys = [x["k"] for x in out]
     if len(keys) != len(set(keys)):
@@ -883,19 +930,36 @@ def _series_row(
     return row
 
 
-# 部分を足した・直した下書き（growth）から台帳に取る欄（R28）。ほかは台帳の行のまま
-GROWTH_FROM_DRAFT = ("selector", "latest_known", "breaks", "where", "note")
+# 部分を足した・直した下書き（growth）から台帳に取る欄（R28）。ほかは台帳の行のまま。
+# note は置き換えず、台帳の note に足す（保留・「違う」の理由を残す。N2）
+GROWTH_FROM_DRAFT = ("selector", "latest_known", "breaks", "where")
+NOTE_JOIN = " ／ "
+
+
+def _joined_note(old: str, new: str) -> str:
+    """台帳の note に下書きの note を「 ／ 」で足す。どちらかが空なら空でないほう。
+
+    台帳の note がもう下書きの note で終わっている（同じ文・前に足した文）なら足さない。"""
+    old, new = _text(old), _text(new)
+    if not old or not new:
+        return old or new
+    have = [x.strip() for x in old.split("／")]
+    add = [x.strip() for x in new.split("／")]
+    return old if have[-len(add) :] == add else f"{old}{NOTE_JOIN}{new}"
 
 
 def _grown_row(prev: dict[str, str], d: dict[str, Any], *, day: str) -> dict[str, str]:
-    """growth の行：台帳の行に、下書きの selector・latest_known・breaks・where・note だけを当てる。
+    """growth の行：台帳の行に、下書きの selector・latest_known・breaks・where を当て、note を足す。
 
     label（オーナーが直した言い方）・themes・unit・survey・publisher・table_title・period_kind・
-    url・status は台帳のまま。増え方は外し、AI の行にする（数を取ってから確かめ直す）。"""
+    url・status は台帳のまま。note は台帳の note のうしろに下書きの note を足す（N2）。
+    増え方は外し、AI の行にする（数を取ってから確かめ直す）。"""
     row = {col: str(prev.get(col) or "") for col in SERIES_COLUMNS}
     for col in GROWTH_FROM_DRAFT:
         if col in d:
             row[col] = _series_cell(col, d[col])
+    if "note" in d:
+        row["note"] = _joined_note(row["note"], _series_cell("note", d["note"]))
     for col in ("trend", "trend_from", "trend_to", "trend_note"):
         row[col] = ""
     row["checked_by"], row["checked_at"], row["checked_sha"] = AI_CHECKER, day, ""
@@ -979,9 +1043,13 @@ def merge_checks(
     - 人が確かめた行を、AI が確かめた行で上書きしない。ただし統計の系列で部分を足した・直した
       下書き（growth）は、accept_rest のとき人の行も AI の行に戻して入れる（series_downgraded。
       人は前の部分の数だけを確かめたので）。growth で下書きから取るのは selector・
-      latest_known・breaks・where・note だけ（label などは台帳のまま。R28）
+      latest_known・breaks・where だけ。note は台帳の note に足す（label などは台帳のまま。
+      R28・N2）
+    - 台帳にあって数のある API の系列は、調査名・作成機関・表の題・単位を台帳のまま書く
+      （stats fetch が e-Stat から写した言葉。with_series_data。N1）
     - 統計の系列の選び方が台帳と違う・台帳より古い・selector がまだ無い・オブジェクトでない
-      下書きと、部分がほかの部分と重なる下書きは入れない（理由を skipped に）
+      下書きと、部分がほかの部分と重なる下書き、どこかの欄に appId（e-Stat の API の URL）が
+      入った下書きは入れない（理由を skipped に。S3）
     - 台帳にある系列のカード（数が出ていたもの）に「違う」が押されたら、その行を保留にする
       （series_held。メモはオーナーの言葉を足す）
     - どれかの台帳が決まりに合わなくなるなら、どれも書かずに止める（SourcesError）。
@@ -1032,6 +1100,10 @@ def merge_checks(
         name = (
             d.get("stat_id") or d.get("finding_id") or d.get("lead_id") or d.get("series_id") or key
         )
+        if kind == "series" and (leak := app_id_fields(d)):
+            # 下書きの欄に appId：押した結果があっても、その系列は何も書かない（値は出さない。S3）
+            res.skipped.append(_app_id_note(d, leak))
+            continue
         ng = isinstance(c, dict) and c.get("v") == "ng"
         state = d.get("selector_state") if kind == "series" else None
         if state in _REFUSED_STATES and not ng:

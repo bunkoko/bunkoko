@@ -547,9 +547,12 @@ def series_problems(
             out.append(f"{p}value {value!r} を数として読めない")
     for sid, units in bad_units.items():
         got = "・".join(repr(u) for u in units)
+        # 取り込みは、数のある API の系列の単位を台帳から取る（N1）ので、台帳そのものが数と
+        # 食い違っている。その系列を取り直せば、取得が e-Stat の単位を台帳に写す（R25）
         out.append(
             f"{sid}：e-Stat の単位 {got} と unit {api_unit[sid].strip()!r} が違う"
-            "（unit は e-Stat の単位にする。uv run koten stats fetch が写す）"
+            f"（台帳の unit が、取った数の単位と合わない。Mac で uv run koten stats fetch"
+            f" --series {sid} を実行すると、e-Stat の単位を台帳に写す）"
         )
     return out
 

@@ -30,7 +30,7 @@
 ### e-Stat の ID（appId）
 
 - 名前は `KOTEN_ESTAT_APPID`。**Mac の .env にだけ**書きます（.env.example に名前だけあります）。
-- チャット・GitHub・ログには貼りません。プログラムも、取得の記録・キャッシュの名前・エラーの文・docs/estat・CSV に出しません。台帳のどの欄に `appId=` があっても、取り込みと `db init` が断ります。
+- チャット・GitHub・ログには貼りません。プログラムも、取得の記録・キャッシュの名前・エラーの文・docs/estat・CSV に出しません。台帳のどの欄に `appId=` があっても、取り込みと `db init` が断ります。下書きの系列のどの欄（evidence・check_note・where・note・url・selector など）にあっても、`sources page` はページを作らず、`sources merge` はその系列を入れません（どちらも値は出しません）。
 - e-Stat の表を Claude に伝えるときは、API の URL（appId つき）でなく、e-Stat のサイトの表の URL（`https://www.e-stat.go.jp/dbview?sid=…` など）を伝えます。
 - `uv run koten doctor` は「設定済み」か「未設定」だけを出します（値は出しません）。
 - クラウドには ID がありません。API の系列を取るのは Mac だけです。
@@ -65,11 +65,15 @@
 
 ## 流れ
 
-1. **クラウド（Claude）**：e-Stat のサイトで表やファイルを探し、系列の下書きを `docs/research/<日付>-source-drafts.json` の `series` に書きます。別の AI の見直し役が label と変わり目を確かめます。ファイルの系列は、取る前に確かめられます（書きません）：
+1. **クラウド（Claude）**：e-Stat のサイトで表やファイルを探し、系列の下書きを `docs/research/<日付>-source-drafts.json` の `series` に書きます。別の AI の見直し役が label と変わり目を確かめます。ファイルの系列は、取る前に確かめられます（書きません）。最後に下書きを GitHub に入れます（Mac の 2 の `git pull` で届くように）：
 
    ```sh
+   git pull
    export KOTEN_CONTACT=https://claude.com/claude-code
    uv run koten stats fetch --drafts docs/research/<日付>-source-drafts.json
+   git add docs/research/<日付>-source-drafts.json
+   git commit -m "統計の系列の下書き"
+   git push
    ```
 
 2. **Mac（API の系列があるとき）**：分類の名前から符号を決めて、下書きに書き戻します。
@@ -84,13 +88,13 @@
    ```
 
    - 名前が表の分類と合わない系列は、赤で候補の名前を出します。Claude に伝えれば下書きを直します。
-3. **クラウド（Claude）**：下書きを台帳（config/stat_series.csv）に「AI が確かめた行」として入れ、GitHub に入れます。押した結果がまだ無いので、空の結果 `{}` を渡します。
+3. **クラウド（Claude）**：下書きを台帳（config/stat_series.csv）に「AI が確かめた行」として入れ、GitHub に入れます。押した結果がまだ無いので、空の結果 `{}` を渡します。同じ下書きのファイルに統計・研究があれば、config/stats.csv・config/findings.csv にも書かれるので、3つとも入れます。
 
    ```sh
    git pull
    mkdir -p data && echo '{}' > data/no-taps.json
    uv run koten sources merge --from data/no-taps.json --accept-rest --drafts docs/research/<日付>-source-drafts.json
-   git add config/stat_series.csv
+   git add config/stat_series.csv config/stats.csv config/findings.csv
    git commit -m "統計の系列の下書きを台帳に入れる"
    git push
    ```
@@ -109,7 +113,7 @@
    ```
 
    - 系列ごとに、点の数・最新の年・抜けた年・mark・単位が出ます。
-   - 黄色の「…を e-Stat のとおりにする」は、台帳の調査名・作成機関・表の題・単位を、プログラムが e-Stat のとおりに直したという意味です（そのままで大丈夫です）。
+   - 黄色の「…を e-Stat のとおりにする」は、台帳の調査名・作成機関・表の題・単位を、プログラムが e-Stat のとおりに直したという意味です（そのままで大丈夫です）。下書きは直さなくてかまいません。台帳にあって数のある API の系列は、あとの取り込みでもカードでも、台帳の調査名・作成機関・表の題・単位を使います（下書きの古い言葉は使いません）。
    - 赤い行が出たら（`stats fetch` でも `db init` でも）、その行を Claude に伝えます。
 5. **回で使ったとき**：統計・研究と同じに、回ごとにスマホで確かめます（下の「回で使ったとき」）。
 
@@ -224,7 +228,7 @@ uv run koten stats fetch --check
   - 既存の部分の `updated`（公開日）・`label_cells`・`unit_cell` を直す。
 - すでに数を取った部分は動かせません。数をまだ取っていない部分は、あとの下書きで直したり外したりできます。
 - 部分がほかの部分と同じセル・同じ年に当たると、取り込みを断ります（「足した部分が前の部分と重なる」。新しい系列でも同じ）。
-- 部分を足す下書きで台帳に入るのは、選び方（selector）・latest_known・breaks・where・note だけです。label などは台帳のまま（あなたが直した言い方を残す。「ラベルは台帳のまま」と出ます）。
+- 部分を足す下書きで台帳に入るのは、選び方（selector）・latest_known・breaks・where だけです。label などは台帳のまま（あなたが直した言い方を残す。「ラベルは台帳のまま」と出ます）。note は置き換えず、台帳の note のうしろに「 ／ 」で足します（保留の理由や「違う」のメモは消えません）。
 - 増やす手順：
   1. **クラウド（Claude）**：最新を取り込んでから、部分を足した下書きを作り、取れるかを確かめ、取り込んで GitHub に入れます。
 
@@ -234,7 +238,7 @@ uv run koten stats fetch --check
      uv run koten stats fetch --drafts docs/research/<日付>-source-drafts.json
      mkdir -p data && echo '{}' > data/no-taps.json
      uv run koten sources merge --from data/no-taps.json --accept-rest --drafts docs/research/<日付>-source-drafts.json
-     git add config/stat_series.csv docs/research
+     git add config/stat_series.csv config/stats.csv config/findings.csv docs/research
      git commit -m "統計の系列に部分を足す"
      git push
      ```
@@ -260,16 +264,17 @@ uv run koten stats fetch --check
 
 | メッセージ | 意味・すること |
 |---|---|
-| …を e-Stat のとおりにする（黄色） | `stats fetch` が、台帳の調査名・作成機関・表の題・単位を e-Stat のとおりに直した。そのままでよい（確かめ済みの系列は確かめが外れる） |
+| …を e-Stat のとおりにする（黄色） | `stats fetch` が、台帳の調査名・作成機関・表の題・単位を e-Stat のとおりに直した。そのままでよい（下書きを直さなくても、あとの取り込みは台帳の言葉を使う。確かめ済みの系列は確かめが外れる） |
 | オーナーの確かめが外れる | `stats fetch` で、数・名前・単位・表の情報が前の確かめと違った。確かめ済みの系列でも、もう一度確かめが要る |
 | 確かめが外れた（`stats list`） | あなたが確かめたあと、中身が変わった系列。「未」（まだ確かめていない）とは別。回で使うなら、また確かめる |
 | 数の単位が年ごとに違う | e-Stat の数の単位が年でそろっていない。その系列は取らない。Claude に伝える（表章項目か分類の選び方を見直す） |
-| e-Stat の単位 … と unit … が違う | `db init`・取り込みが止まる。台帳の unit が e-Stat の単位と違う（下書きで unit を変えたなど）。Claude が下書きの unit を e-Stat の単位に直す |
-| … が表の情報の … と違う（`db init`・取り込み） | 台帳の調査名・作成機関・表の題が、docs/estat の表の情報と違う。Claude が下書きの名前を表の情報（docs/estat/<ID>.json）のとおりに直して取り込む。Mac の `stats fetch` は e-Stat のとおりに写すので、取り直してもよい |
+| e-Stat の単位 … と unit … が違う | `db init`・取り込みが止まる。台帳の unit が、取った数の単位と違う（台帳を手で書き換えたなど。取り込みは、数のある API の系列の単位を台帳から取るので、下書きの単位では起きない）。Mac で `uv run koten stats fetch --series 系列の ID` を実行すると、e-Stat の単位を台帳に写す（続けて db init と git の add・commit・push） |
+| … が表の情報の … と違う（`db init`・取り込み） | 台帳の調査名・作成機関・表の題が、docs/estat の表の情報と違う。まだ数の無い系列なら、Claude が下書きの名前を表の情報（docs/estat/<ID>.json）のとおりに直して取り込む。数のある API の系列は取り込みが台帳の名前を使うので、Mac で `uv run koten stats fetch --series 系列の ID` を実行して、e-Stat のとおりに写す |
 | 前に数があった年が、取り直すと無い／数が1つも取れなかった | 取り直したら、前に数のあった年が消えた。その系列は書かない（前の数・確かめは残る）。表かセルの位置が変わったかもしれないので、赤い行を Claude に伝える |
 | HTML（エラーやお知らせのページ）が返った／PDF が返った | e-Stat がファイルの代わりに別のものを返した。前のファイルと数は残る。時間をおいて取り直すか、Claude に伝える |
 | 見出しが変わった | 取り直すと、同じ年の見出しのセルの文字が変わった。何の数かが変わったかもしれないので、Claude に伝える |
 | 数字を含む印 | 数として読めなかったセル（△1.5・全角の数字など）。数は抜けている。Claude が CSV の版か別のセルを選ぶ |
+| … に appId が入っている（e-Stat の API の URL は貼らない。dbview?sid= の URL にする） | 台帳か下書きの系列の欄に、API の URL（appId つき）がある。台帳なら `db init`・取り込みが止まる。下書きなら `sources page` はページを作らず、取り込みはその系列を入れない。Claude が e-Stat のサイトの表の URL（dbview?sid=…）に直す |
 | 403（「ID が違うか、使えなくなっている」） | appId が違うか、失効している。.env の KOTEN_ESTAT_APPID を見直す。e-Stat が自分のエラーの文を返したときは、その文を読む |
 | 該当データなし（STATUS 1） | その選び方の数が無い。selector の符号と表の番号を Claude に見直してもらう（次の実行で取り直す） |
 | 保留なので飛ばす | status が 保留 の系列。`--series 系列の ID` で名前を挙げたときだけ取る |
