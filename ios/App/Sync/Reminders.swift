@@ -7,6 +7,11 @@ enum ReminderStep: String, CaseIterable {
 
     var categoryIdentifier: String { "reminder.\(rawValue)" }
 
+    init?(categoryIdentifier: String) {
+        guard let step = ReminderStep.allCases.first(where: { $0.categoryIdentifier == categoryIdentifier }) else { return nil }
+        self = step
+    }
+
     var title: String {
         switch self {
         case .morning: return "おはようございます"
@@ -118,6 +123,34 @@ enum Reminders {
         content.categoryIdentifier = step.categoryIdentifier
         content.userInfo = ["day": day]
         return content
+    }
+
+    // MARK: ボタンの答え
+
+    /// 通知のボタンの答えを記録する。アプリが閉じていても、iPhone のアプリが裏で受け取る（Apple Watch で押した分も）
+    static func handle(_ response: UNNotificationResponse) async {
+        // ［あとで入れる］・通知そのものを押した・閉じたときは、何もしない
+        guard let value = score(fromAction: response.actionIdentifier) else { return }
+        let notice = response.notification.request.content
+        guard let step = ReminderStep(categoryIdentifier: notice.categoryIdentifier), let day = notice.userInfo["day"] as? String else { return }
+        switch step {
+        case .morning:
+            // 体感はその朝のものだけ（前の日の通知を、次の日に押しても記録しない）
+            guard day == Fmt.dateString(Date()) else { return }
+            await Recorder.morningFeeling(value)
+        case .condition:
+            // その日のふり返りに入れる。ストレスがもう入っていれば残す
+            let current = await LogStore.shared.log(id: Recorder.checkinID(day: day))?.data
+            await Recorder.dayCheckin(day: day, condition: value, stress: current?.stress)
+            // 続けてストレスを聞く（もう入っていれば聞かない）
+            if current?.stress == nil {
+                let request = UNNotificationRequest(identifier: "reminder.stress.\(day)", content: content(for: .stress, day: day), trigger: nil)
+                try? await UNUserNotificationCenter.current().add(request)
+            }
+        case .stress:
+            let current = await LogStore.shared.log(id: Recorder.checkinID(day: day))?.data
+            await Recorder.dayCheckin(day: day, condition: current?.condition, stress: value)
+        }
     }
 
     private static func schedule(id: String, at date: Date, content: UNMutableNotificationContent) async {

@@ -47,6 +47,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         print("通知の登録に失敗: \(error.localizedDescription)")
     }
 
+    // 通知のボタンの答え（Apple Watch で押した分も、iPhone のアプリが受け取る）
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        await Reminders.handle(response)
+    }
+
     // アプリを開いているときにも、通知をバナーで出す
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         [.banner, .sound]
