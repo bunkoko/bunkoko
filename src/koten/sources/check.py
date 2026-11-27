@@ -65,8 +65,10 @@ from koten.stats.series import (
     check_sha,
     fetched_parts,
     has_app_id,
+    join_note,
     load_meta,
     meta_dir_for,
+    norm_unit,
     parse_points,
     part_overlaps,
     period_label,
@@ -212,14 +214,14 @@ _REFUSED_STATES = ("different", "unresolved", "invalid", "stale")
 # 部分の重なりを見る状態（R27：新しい系列は全部の部分を、same・growth は数の無い部分を）
 _OVERLAP_STATES = ("new", "same", "growth")
 # stats fetch が e-Stat から台帳に写す欄（R25）。台帳にあって数のある API の系列は、下書きでなく
-# 台帳の値を使う（取る前の下書きの古い値を、カード・鍵・書く行に持ち込まない。N1）
+# 台帳の値を使う（取る前の下書きの古い値を、カード・鍵・書く行に持ち込まない。N1）。unit は、
+# 点に e-Stat の単位があるときだけ（e-Stat が単位を出さない系列は、下書きの unit を使う。I1）
 OFFICIAL_FROM_LEDGER = tuple(OFFICIAL_LABELS)
 # with_series_data が足す欄（下書きの欄ではない）
 _ADDED = ("points", "meta", "selector_state", "selector_overlap", "ledger_status")
-APP_ID_NOTE = (
-    "{fields} に appId が入っている（e-Stat の API の URL は貼らない。dbview?sid= の URL にする）。"
-    "下書きを直す"
-)
+# URL や文を書く欄。ここに appId があれば、API の URL を貼ったので dbview の URL を案内する
+_URL_TEXT_FIELDS = ("url", "evidence", "check_note", "where", "note")
+APP_ID_TIP = "（e-Stat の API の URL は貼らない。dbview?sid= の URL にする）"
 
 
 def app_id_fields(item: dict[str, Any]) -> list[str]:
@@ -237,10 +239,17 @@ def app_id_fields(item: dict[str, Any]) -> list[str]:
     return out
 
 
-def _app_id_note(item: dict[str, Any], fields: list[str]) -> str:
-    """appId が入った系列の知らせ（値は出さない。ID の欄に入っていれば ID も出さない）。"""
+def app_id_note(item: dict[str, Any]) -> str:
+    """appId が入った下書きの系列の知らせ。入っていなければ ""。
+
+    値は出さない（ID の欄に入っていれば ID も出さない）。URL・文の欄なら dbview の URL を
+    案内し、selector などは「下書きを直す」だけ。"""
+    fields = app_id_fields(item)
+    if not fields:
+        return ""
     who = "（series_id）" if "series_id" in fields else str(item.get("series_id", "")).strip()
-    return f"{who}：" + APP_ID_NOTE.format(fields="・".join(fields))
+    tip = APP_ID_TIP if set(fields) & set(_URL_TEXT_FIELDS) else ""
+    return f"{who}：{'・'.join(fields)} に appId が入っている{tip}。下書きを直す"
 
 
 def _raw_selector_state(raw: Any) -> str:
@@ -281,9 +290,11 @@ def with_series_data(drafts: dict[str, Any], config_dir: Path) -> dict[str, Any]
     selector_overlap に入れる（取り込まない。R27：new は全部の部分、same・growth は数を
     取っていない部分）。ledger_status は台帳の行の status（保留 など）。表の情報は estat_api の
     系列だけ（docs/estat/<series_id>.json。db.py と同じ）。
-    台帳にあって数のある estat_api の系列は、survey・publisher・table_title・unit を台帳の値に
-    する（stats fetch が e-Stat から写した言葉。下書きは取る前のままのことがある。N1）。
+    台帳にあって数のある estat_api の系列は、survey・publisher・table_title を台帳の値にする
+    （stats fetch が e-Stat から写した言葉。下書きは取る前のままのことがある。N1）。unit も、点に
+    e-Stat の単位があれば台帳の値（e-Stat が単位を出さない系列は下書きの unit。I1）。
     台帳に無い系列・数がまだ無い系列・estat_file の系列は、下書きのまま。
+    series_id に appId が入った系列は、表の情報を読まない（M2。断るのは page_items・merge_checks）。
     """
     drafts = normalize_drafts(drafts)
     rows = read_point_rows(config_dir)
@@ -302,8 +313,11 @@ def with_series_data(drafts: dict[str, Any], config_dir: Path) -> dict[str, Any]
             and s.source_kind == "estat_api"
             and str(prev.get("source_kind") or "").strip() == "estat_api"
         ):
-            # カード・鍵・書く行が、stats fetch の写した台帳の言葉とそろう（N1）
-            item = {**item, **{c: str(prev.get(c) or "") for c in OFFICIAL_FROM_LEDGER}}
+            # カード・鍵・書く行が、stats fetch の写した台帳の言葉とそろう（N1）。unit は、点に
+            # e-Stat の単位があるときだけ写したもの（無ければ下書きの unit を使う。I1）
+            unit = any(norm_unit(r.get("src_unit", "")) for r in mine)
+            cols = [c for c in OFFICIAL_FROM_LEDGER if c != "unit" or unit]
+            item = {**item, **{c: str(prev.get(c) or "") for c in cols}}
         overlap = ""
         state = _raw_selector_state(item.get("selector"))
         if not state and sid not in ledger:
@@ -319,7 +333,9 @@ def with_series_data(drafts: dict[str, Any], config_dir: Path) -> dict[str, Any]
                 overlap = "、".join(part_overlaps(s.selector, fetched_parts(pts, n), pts))
         shown = sorted(mine, key=lambda r: r.get("period", "")) if state == "same" else []
         meta = None
-        if s.source_kind == "estat_api":
+        # appId の入った series_id は表の情報のファイル名にしない（読めない名前の文に値が出る）。
+        # その系列は page_items・merge_checks が S3 の知らせで断る（M2）
+        if s.source_kind == "estat_api" and not has_app_id(sid):
             try:
                 meta = load_meta(meta_dir, sid)
             except SeriesError as e:
@@ -746,10 +762,10 @@ def page_items(
                 "authors_ja": d.get("authors_ja", ""),
             }
         out.append(item)
+    # appId の入った下書きの系列はページに出さない（値は文に出さない。S3）。全部を一度に出す
+    if leaks := [n for d in drafts.get("series") or [] if (n := app_id_note(d))]:
+        raise SourcesError("、".join(leaks))
     for d in drafts.get("series") or []:
-        if leak := app_id_fields(d):
-            # appId の入った下書きはページに出さない（値は文に出さない。S3）
-            raise SourcesError(_app_id_note(d, leak))
         out.append(_series_item(d, excerpt))
     keys = [x["k"] for x in out]
     if len(keys) != len(set(keys)):
@@ -912,8 +928,9 @@ def _series_row(
     """stat_series.csv の1行。人が確かめた行は、label の直しを当てたあとの check_sha を入れる。
 
     status は台帳の行のまま（保留の系列は、「合っている」でも保留のまま。L9）。
-    note：人が押した行は押したときのメモ（無ければ下書きの note）。AI の行は台帳の note を残し、
-    下書きの note を足す（オーナーの「違う」・保留の理由を消さない。同じ文は1回だけ。N2）。"""
+    note は台帳の note を残し、うしろに足す（人が押した行は押したときのメモ、無ければ下書きの
+    note。AI の行は下書きの note）。オーナーの「違う」・保留の理由を消さない。同じ文は1回だけ
+    （join_note。N2・M1）。"""
     row = {col: _series_cell(col, d.get(col, "")) for col in SERIES_COLUMNS}
     fix = c.get("fix") or {}
     if _text(fix.get("label")):
@@ -928,33 +945,15 @@ def _series_row(
     row["checked_sha"] = (
         check_sha(series_from_draft(row), _points_of(d), d.get("meta")) if human else ""
     )
-    if human:
-        row["note"] = _text(c.get("note", ""))[:200] or row.get("note", "")
-    else:
-        row["note"] = _joined_note((old or {}).get("note", ""), row.get("note", ""))
+    # note は足すだけ：台帳の note のうしろに、押したときのメモ（無ければ下書きの note）を足す
+    new = _text(c.get("note", ""))[:200] or row.get("note", "")
+    row["note"] = join_note((old or {}).get("note", ""), new)
     return row
 
 
 # 部分を足した・直した下書き（growth）から台帳に取る欄（R28）。ほかは台帳の行のまま。
-# note は置き換えず、台帳の note に足す（保留・「違う」の理由を残す。N2）
+# note は置き換えず、台帳の note に足す（保留・「違う」の理由を残す。N2・join_note）
 GROWTH_FROM_DRAFT = ("selector", "latest_known", "breaks", "where")
-NOTE_JOIN = " ／ "
-
-
-def _joined_note(old: str, new: str) -> str:
-    """台帳の note に下書きの note を「 ／ 」で足す。どちらかが空なら空でないほう。
-
-    台帳の note に下書きの note がもう入っている（「／」で区切った並びのどこかに同じ文が続けて
-    ある。最初に下書きから入った文・前に足した文）なら足さない（取り込み直しても1回だけ）。"""
-    old, new = _text(old), _text(new)
-    if not old or not new:
-        return old or new
-    have = [x.strip() for x in old.split("／")]
-    add = [x.strip() for x in new.split("／")]
-    n = len(add)
-    if any(have[i : i + n] == add for i in range(len(have) - n + 1)):
-        return old
-    return f"{old}{NOTE_JOIN}{new}"
 
 
 def _grown_row(prev: dict[str, str], d: dict[str, Any], *, day: str) -> dict[str, str]:
@@ -968,7 +967,7 @@ def _grown_row(prev: dict[str, str], d: dict[str, Any], *, day: str) -> dict[str
         if col in d:
             row[col] = _series_cell(col, d[col])
     if "note" in d:
-        row["note"] = _joined_note(row["note"], _series_cell("note", d["note"]))
+        row["note"] = join_note(row["note"], _series_cell("note", d["note"]))
     for col in ("trend", "trend_from", "trend_to", "trend_note"):
         row[col] = ""
     row["checked_by"], row["checked_at"], row["checked_sha"] = AI_CHECKER, day, ""
@@ -981,7 +980,7 @@ def _held_row(prev: dict[str, str], c: dict[str, Any], *, day: str) -> dict[str,
     row["status"] = "保留"
     note = _text(c.get("note", ""))[:200]
     mark = f"{day} オーナーが「違う」" + (f"：{note}" if note else "")
-    row["note"] = "／".join(x for x in (_text(prev.get("note")), mark) if x)
+    row["note"] = join_note(prev.get("note", ""), mark)  # 区切りは「 ／ 」（M4）
     return row
 
 
@@ -1053,11 +1052,11 @@ def merge_checks(
       下書き（growth）は、accept_rest のとき人の行も AI の行に戻して入れる（series_downgraded。
       人は前の部分の数だけを確かめたので）。growth で下書きから取るのは selector・
       latest_known・breaks・where だけ（label などは台帳のまま。R28）
-    - AI の行として書き直すとき（growth・押していない行の accept_rest）は、台帳の note を残し、
-      下書きの note がまだ無ければ足す（オーナーの「違う」・保留の理由を消さない。N2）。
-      オーナーが押した行の note は押したときのメモ
-    - 台帳にあって数のある API の系列は、調査名・作成機関・表の題・単位を台帳のまま書く
-      （stats fetch が e-Stat から写した言葉。with_series_data。N1）
+    - note は足すだけ（台帳の note を残し、まだ無い文をうしろに「 ／ 」で足す。join_note）：
+      AI の行は下書きの note、オーナーが押した行は押したときのメモ（無ければ下書きの note）。
+      オーナーの「違う」・保留の理由を消さない（N2・M1）
+    - 台帳にあって数のある API の系列は、調査名・作成機関・表の題を台帳のまま書く。単位も、
+      点に e-Stat の単位があれば台帳のまま（stats fetch が写した言葉。with_series_data。N1・I1）
     - 統計の系列の選び方が台帳と違う・台帳より古い・selector がまだ無い・オブジェクトでない
       下書きと、部分がほかの部分と重なる下書き、どこかの欄に appId（e-Stat の API の URL）が
       入った下書きは入れない（理由を skipped に。S3）
@@ -1111,9 +1110,9 @@ def merge_checks(
         name = (
             d.get("stat_id") or d.get("finding_id") or d.get("lead_id") or d.get("series_id") or key
         )
-        if kind == "series" and (leak := app_id_fields(d)):
+        if kind == "series" and (leak := app_id_note(d)):
             # 下書きの欄に appId：押した結果があっても、その系列は何も書かない（値は出さない。S3）
-            res.skipped.append(_app_id_note(d, leak))
+            res.skipped.append(leak)
             continue
         ng = isinstance(c, dict) and c.get("v") == "ng"
         state = d.get("selector_state") if kind == "series" else None

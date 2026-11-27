@@ -1992,7 +1992,9 @@ def test_draft_series_with_an_app_id_is_refused_by_the_page_and_the_merge(sconf,
     fine = {**FILE_SERIES, "series_id": "fine_rate"}
     with pytest.raises(SourcesError, match=f"leak_rate：{col} に appId が入っている") as e:
         page_items(with_series_data(_sdrafts(fine, bad), sconf))
-    assert LEAK not in str(e.value) and "dbview?sid=" in str(e.value)
+    # URL や文の欄なら dbview の案内、selector などは「下書きを直す」だけ（M4）
+    assert LEAK not in str(e.value) and str(e.value).endswith("下書きを直す")
+    assert ("dbview?sid=" in str(e.value)) == (col != "selector")
     res = merge_checks(_sdrafts(bad, fine), {}, sconf, accept_rest=True)
     assert res.series_ai == ["fine_rate"]  # ほかの系列は入る
     (note,) = [x for x in res.skipped if x.startswith("leak_rate：")]
@@ -2071,8 +2073,103 @@ def test_plain_accept_rest_merge_keeps_the_owner_and_hold_notes(sconf):
     for _ in range(2):
         merge_checks(_sdrafts(edited), {}, sconf, accept_rest=True)
         assert _file_row(sconf)["note"] == f"{held} ／ 表1 の計（2020 年は無い）"
-    # オーナーが押した行の書き方は変えない（押したときのメモ）
+    # オーナーが押した行も、note は足すだけ（メモが無ければそのまま・あればうしろに。M1）
+    kept = _file_row(sconf)["note"]
     it = page_items(with_series_data(_sdrafts(edited), sconf))[0]
-    merge_checks(_sdrafts(edited), {it["k"]: {"v": "ok", "at": _at(), "note": "見た"}}, sconf)
+    merge_checks(_sdrafts(edited), {it["k"]: {"v": "ok", "at": _at()}}, sconf)
     row = _file_row(sconf)
-    assert row["checked_by"] == HUMAN_CHECKER and row["note"] == "見た"
+    assert (row["checked_by"], row["note"], row["status"]) == (HUMAN_CHECKER, kept, "保留")
+    merge_checks(_sdrafts(edited), {it["k"]: {"v": "ok", "at": _at(), "note": "見た"}}, sconf)
+    assert _file_row(sconf)["note"] == f"{kept} ／ 見た"
+
+
+def _db_init(config_dir):
+    shutil.copy(DEFAULT_CONFIG_DIR / "sources.yaml", config_dir / "sources.yaml")
+    path = config_dir / "db.toml"
+    path.write_text(f'[paths]\nssd_root = "{config_dir.parent / "ssd"}"\n', "utf-8")
+    return CliRunner().invoke(app, ["db", "init", "--settings", str(path)])
+
+
+def test_unit_stays_from_the_draft_when_e_stat_gives_none(sconf):
+    # sconf の API の系列の数には e-Stat の単位が無い（src_unit が空）。名前は台帳から取る
+    draft = {**API_SERIES, "unit": "人", "table_title": "古い題"}
+    it = page_items(with_series_data(_sdrafts(draft), sconf))[0]
+    assert (it["unit"], it["table_title"]) == ("人", API_META["title"])
+    assert dict(it["source"])["台帳の単位"] == "人"
+    res = merge_checks(_sdrafts(draft), {}, sconf, accept_rest=True)
+    assert res.series_ai == ["work_rate"]
+    (row,) = _series_file(sconf)
+    assert (row["unit"], row["table_title"]) == ("人", API_META["title"])
+    r = _db_init(sconf)
+    assert r.exit_code == 0, r.output
+
+
+def test_series_id_with_an_app_id_is_refused_without_showing_it(sconf, tmp_path):
+    bad = {**API_SERIES, "series_id": f"x_appId={LEAK}"}
+    full = with_series_data(_sdrafts(bad), sconf)  # 表の情報の名前の文で値を出さない（M2）
+    with pytest.raises(SourcesError, match="（series_id）：series_id に appId が入っている") as e:
+        page_items(full)
+    assert LEAK not in str(e.value)
+    res = merge_checks(_sdrafts(bad), {}, sconf, accept_rest=True)
+    assert res.series_ai == [] and _only_ai_row(sconf)
+    assert any(x.startswith("（series_id）：series_id に appId") for x in res.skipped)
+    assert all(LEAK not in x for x in res.skipped)
+    drafts = tmp_path / "d.json"
+    drafts.write_text(json.dumps(_sdrafts(bad), ensure_ascii=False), "utf-8")
+    shutil.copy(DEFAULT_CONFIG_DIR / "sources.yaml", sconf / "sources.yaml")
+    settings = sconf / "s.toml"
+    settings.write_text("[paths]\n", "utf-8")
+    checks = tmp_path / "c.json"
+    checks.write_text("{}", "utf-8")
+    for args in (
+        ["sources", "page", "--drafts", str(drafts), "--out", str(tmp_path / "p.html")],
+        ["sources", "merge", "--drafts", str(drafts), "--from", str(checks), "--accept-rest"],
+    ):
+        r = CliRunner().invoke(app, [*args, "--settings", str(settings)])
+        assert "series_id に appId が入っている" in r.output and LEAK not in r.output, args
+
+
+def test_page_lists_every_series_with_an_app_id(sconf):
+    a = {**FILE_SERIES, "series_id": "leak_a", "evidence": API_URL}
+    b = {**FILE_SERIES, "series_id": "leak_b", "selector": {**FILE_SELECTOR, "appId": LEAK}}
+    with pytest.raises(SourcesError) as e:
+        page_items(with_series_data(_sdrafts(a, FILE_SERIES, b), sconf))
+    msg = str(e.value)
+    assert "leak_a：evidence に appId が入っている" in msg and "leak_b：selector に appId" in msg
+    assert LEAK not in msg
+
+
+def test_notes_use_one_separator_and_old_notes_still_dedupe(sconf):
+    from datetime import date
+
+    _growth_ledger(sconf, AI_CHECKER)
+    rows = _series_file(sconf)
+    for x in rows:
+        if x["series_id"] == "file_rate":
+            x["note"] = "前のメモ"
+    _write_ledger(sconf, read_point_rows(sconf), rows)
+    it = page_items(with_series_data(_sdrafts(FILE_SERIES), sconf))[0]
+    merge_checks(
+        _sdrafts(FILE_SERIES), {it["k"]: {"v": "ng", "at": _at(), "note": "分類が違う"}}, sconf
+    )
+    assert _file_row(sconf)["note"] == "前のメモ ／ 2026-11-21 オーナーが「違う」：分類が違う"
+    shutil.copy(DEFAULT_CONFIG_DIR / "sources.yaml", sconf / "sources.yaml")
+    settings = sconf / "s.toml"
+    settings.write_text("[paths]\n", "utf-8")
+    r = CliRunner().invoke(
+        app, ["stats", "hold", "--series", "file_rate", "--note", "表を待つ",
+              "--settings", str(settings)],
+    )  # fmt: skip
+    assert r.exit_code == 0, r.output
+    assert _file_row(sconf)["note"] == (
+        f"前のメモ ／ 2026-11-21 オーナーが「違う」：分類が違う ／ {date.today()} 保留：表を待つ"
+    )
+    # 前の「／」だけの形で書いた note でも、同じ文は足さない
+    old_form = "表1 の計を読む／2026-11-21 オーナーが「違う」：分類が違う"
+    rows = _series_file(sconf)
+    for x in rows:
+        if x["series_id"] == "file_rate":
+            x["note"] = old_form
+    _write_ledger(sconf, read_point_rows(sconf), rows)
+    merge_checks(_sdrafts({**FILE_SERIES, "note": "表1 の計を読む"}), {}, sconf, accept_rest=True)
+    assert _file_row(sconf)["note"] == old_form

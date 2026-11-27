@@ -4096,8 +4096,13 @@ class _ManifestError(ValueError):
 
 
 def _read_drafts(path: Path) -> dict:
-    """下書き（JSON）を読む。読めない・形が違うときは赤で出して exit 2。"""
+    """下書き（JSON）を読む。読めない・形が違うときは赤で出して exit 2。
+
+    series のどこかの欄に appId（e-Stat の API の URL など）がある下書きも、赤で出して exit 2
+    （値は出さない。e-Stat にも何も聞かない。S3・M3）。"""
     import json
+
+    from koten.sources.check import app_id_note
 
     try:
         data = json.loads(path.read_text("utf-8"))
@@ -4108,6 +4113,11 @@ def _read_drafts(path: Path) -> dict:
     except (OSError, ValueError, AttributeError, TypeError) as e:
         typer.secho(f"下書き {path} を読めない：{type(e).__name__}：{e}", fg="red", err=True)
         raise typer.Exit(2) from e
+    if leaks := [n for i in data.get("series", []) if (n := app_id_note(i))]:
+        for note in leaks:
+            typer.secho(note, fg="red", err=True)
+        typer.secho(f"下書き {path} は使わない（appId を外してから）", fg="red", err=True)
+        raise typer.Exit(2)
     return data
 
 
@@ -4291,7 +4301,6 @@ def stats_fetch(
     違えば、その系列は取らない。--check・--drafts のときは確かめるだけ（何も書かない）。
     台帳の status が 保留 の系列（外した系列）は、--series で名前を挙げたときだけ取る。
     """
-    import json
     from dataclasses import replace
 
     from koten.db import HUMAN_CHECKER
@@ -4319,13 +4328,14 @@ def stats_fetch(
     if drafts:
         typer.echo("下書きの系列は確かめるだけ（台帳には書かない）")
         targets = []
-        try:
-            for d in drafts:
-                items = json.loads(Path(d).read_text("utf-8")).get("series", [])
+        for d in drafts:
+            # 読めない・形が違う・appId が入っている下書きは、ここで赤・exit 2（stats meta と同じ）
+            items = _read_drafts(Path(d)).get("series", [])
+            try:
                 targets += [rp.series_from_draft(i) for i in items]
-        except (OSError, ValueError, AttributeError, TypeError) as e:
-            typer.secho(f"下書きを読めない：{type(e).__name__}：{e}", fg="red", err=True)
-            raise typer.Exit(2) from e
+            except (ValueError, AttributeError, TypeError) as e:
+                typer.secho(f"下書きを読めない：{type(e).__name__}：{e}", fg="red", err=True)
+                raise typer.Exit(2) from e
         where = "・".join(drafts)
     else:
         targets = parse_series(read_series_rows(s.config_dir))
@@ -4472,7 +4482,7 @@ def stats_hold(
     """
     from datetime import date
 
-    from koten.stats.series import has_app_id, read_series_rows, write_series_rows
+    from koten.stats.series import has_app_id, join_note, read_series_rows, write_series_rows
 
     s = _settings(settings)
     sid = series.strip()
@@ -4495,7 +4505,7 @@ def stats_hold(
     row["status"] = want
     if text:
         mark = f"{date.today().isoformat()} {'保留を外した' if release else '保留'}：{text}"
-        row["note"] = "／".join(x for x in ((row.get("note") or "").strip(), mark) if x)
+        row["note"] = join_note(row.get("note") or "", mark)  # 区切りは取り込みと同じ「 ／ 」
     write_series_rows(s.config_dir, rows)
     if release:
         typer.echo(f"{sid}：保留を外した（台本で使え、uv run koten stats fetch も取る）")

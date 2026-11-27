@@ -1006,3 +1006,18 @@ def test_unit_message_names_the_fetch_that_fixes_the_ledger(env, monkeypatch):
     r = stats(env, "fetch", "--series", "age_rate")  # 言われたとおりにすると直る
     assert r.exit_code == 0 and "単位（unit）を e-Stat のとおりにする：'千人' → '%'" in r.output
     assert runner.invoke(app, ["db", "init", "--settings", env.settings]).exit_code == 0
+
+
+def test_drafts_with_an_app_id_are_refused_before_any_request(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    fake = "e" * 40  # SECRET とは別の、下書きに貼られた ID
+    url = f"https://api.e-stat.go.jp/rest/3.0/app/json/getStatsData?appId={fake}&statsDataId={SID}"
+    item_ = {**srow(series_id="leak_rate"), "themes": ["仕事"], "selector": SEL, "evidence": url}
+    path = _drafts_file(env, item_)
+    before = path.read_bytes()
+    for cmd in ("meta", "fetch"):
+        r = stats(env, cmd, "--drafts", str(path))
+        assert r.exit_code == 2, (cmd, r.output)
+        assert "leak_rate：evidence に appId が入っている" in r.output and fake not in r.output
+    assert env.seen == [] and path.read_bytes() == before
+    assert not list(env.docs.glob("*.json"))

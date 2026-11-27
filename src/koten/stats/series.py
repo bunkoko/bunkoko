@@ -83,6 +83,26 @@ def has_app_id(text: str) -> bool:
     return bool(_APPID_RE.search(text or ""))
 
 
+# 台帳の note に足すときの区切り（取り込み・「違う」・stats hold で同じ）
+NOTE_JOIN = " ／ "
+
+
+def join_note(old: str, new: str) -> str:
+    """台帳の note に new を「 ／ 」で足す（note は足すだけで消さない）。片方が空ならもう片方。
+
+    old に new がもう入っている（「／」で区切った並びのどこかに同じ文が続けてある。前の
+    「／」だけの区切りの note でも同じ）なら足さない（何度書き直しても1回だけ）。"""
+    old, new = (re.sub(r"\s+", " ", str(x or "")).strip() for x in (old, new))
+    if not old or not new:
+        return old or new
+    have = [x.strip() for x in old.split("／")]
+    add = [x.strip() for x in new.split("／")]
+    n = len(add)
+    if any(have[i : i + n] == add for i in range(len(have) - n + 1)):
+        return old
+    return f"{old}{NOTE_JOIN}{new}"
+
+
 @dataclass(frozen=True)
 class Break:
     """時系列の区切り。before の年から前とは比べられない。"""
