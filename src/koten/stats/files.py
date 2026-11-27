@@ -7,17 +7,17 @@ e-Stat の統計表は新しい年が Excel・CSV でしか出ないことがあ
 from __future__ import annotations
 
 import csv
+import datetime as dt
 import hashlib
 import io
 import re
 from collections.abc import Callable
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 import openpyxl
 
-from koten.stats.estat import _AVG_RE
-from koten.stats.series import Point, Series, SeriesError, parse_year, to_decimal
+from koten.stats.series import Point, Series, SeriesError, parse_period_name, to_decimal
 
 FILE_URL = "https://www.e-stat.go.jp/stat-search/file-download?statInfId={sid}&fileKind={kind}"
 
@@ -32,15 +32,31 @@ def _decimals(fmt: str) -> int:
     """number_format の最初の区画の小数の桁数（0 や General は 0）。"""
     sec = fmt.split(";")[0]
     sec = re.sub(r'"[^"]*"|\\.|\[[^\]]*\]', "", sec)
-    if "%" in sec or "E" in sec.upper():
+    if "E" in sec.upper():
         return 0
     m = _DECIMALS_RE.search(sec)
     return len(m.group(1)) if m else 0
 
 
+def _is_percent(fmt: str) -> bool:
+    sec = re.sub(r'"[^"]*"|\\.|\[[^\]]*\]', "", fmt.split(";")[0])
+    return "%" in sec
+
+
+class _BoolCell(str):
+    """xlsx の真偽値のセル（値の欄に来たら断る）。"""
+
+
+class _DateCell(str):
+    """xlsx の日付のセル（値の欄・年の欄に来たら断る）。"""
+
+
 def _render_number(v: int | float, fmt: str) -> str:
     d = Decimal(repr(v)) if isinstance(v, float) else Decimal(v)
     n = _decimals(fmt)
+    if _is_percent(fmt):
+        # 表示どおり（0.395 の '0.0%' は 39.5）。Decimal で、float の誤差を出さない
+        return f"{(d * 100).quantize(Decimal(1).scaleb(-n), rounding=ROUND_HALF_UP):f}"
     if n:
         return f"{d:.{n}f}"
     if d == d.to_integral_value():
@@ -53,7 +69,9 @@ def _render_cell(cell) -> str:
     if v is None:
         return ""
     if isinstance(v, bool):
-        return str(v)
+        return _BoolCell(str(v))
+    if isinstance(v, (dt.datetime, dt.date, dt.time)):
+        return _DateCell(str(v))
     if isinstance(v, (int, float)):
         return _render_number(v, cell.number_format or "General")
     return str(v).strip()
@@ -99,7 +117,10 @@ def _grid_from_bytes(data: bytes, sheet: str) -> list[list[str]]:
         return _pad(rows)
     if sheet != "":
         raise SeriesError(f"CSV に sheet は指定できない（\"\" にする）：{sheet!r}")
-    rows = [[c.strip() for c in r] for r in csv.reader(io.StringIO(_decode(data), newline=""))]
+    try:
+        rows = [[c.strip() for c in r] for r in csv.reader(io.StringIO(_decode(data), newline=""))]
+    except csv.Error as e:
+        raise SeriesError(f"CSV を読めない：{e}") from e
     return _pad(rows)
 
 
@@ -135,22 +156,53 @@ def cells(grid: list[list[str]], ref: str) -> list[str]:
 
 
 def _period(text: str, kind: str) -> str:
+    if isinstance(text, _DateCell):
+        raise SeriesError(f"年の欄が日付のセルになっている（{text}）。年の文字か数のセルを指す")
+    if isinstance(text, _BoolCell):
+        raise SeriesError(f"年の欄が真偽値のセルになっている（{text}）")
     t = text.strip()
     if _BARE_YEAR_RE.fullmatch(t):
         return t
-    m = _AVG_RE.fullmatch(t)
-    year, k = parse_year(m["base"] if m else t)
+    year, k = parse_period_name(t)
     if k != kind:
         raise SeriesError(f"時間 {text!r} は{k}だが、系列は{kind}")
     return year
 
 
+def _require(spec: dict, idx: int) -> None:
+    n = idx + 1
+    if not isinstance(spec, dict):
+        raise SeriesError(f"{n} 番目の part がオブジェクトでない")
+    for k in ("statInfId", "fileKind", "values"):
+        if not str(spec.get(k, "")).strip():
+            raise SeriesError(f"{n} 番目の part に {k} が無い")
+    if not (spec.get("periods_cells") or spec.get("periods")):
+        raise SeriesError(f"{n} 番目の part に periods_cells か periods が無い")
+
+
 def _part_points(s: Series, idx: int, spec: dict, fetch) -> list[Point]:
-    sid, kind = str(spec["statInfId"]), str(spec["fileKind"])
+    n = idx + 1
+    _require(spec, idx)
+    sid, kind = str(spec["statInfId"]).strip(), str(spec["fileKind"]).strip()
     path, fetched_at = fetch(FILE_URL.format(sid=sid, kind=kind), f"files/{sid}_{kind}")
     data = Path(path).read_bytes()
-    grid = _grid_from_bytes(data, str(spec.get("sheet", "")))
+    try:
+        grid = _grid_from_bytes(data, str(spec.get("sheet", "")))
+        return _points_from_grid(s, idx, spec, grid, data, fetched_at)
+    except SeriesError as e:
+        if str(e).startswith(f"{n} 番目"):
+            raise
+        raise SeriesError(f"{n} 番目の part（{sid}_{kind}）：{e}") from e
+
+
+def _points_from_grid(s, idx, spec, grid, data, fetched_at) -> list[Point]:
+    n = idx + 1
     vals = cells(grid, spec["values"])
+    for v in vals:
+        if isinstance(v, _BoolCell):
+            raise SeriesError(f"値のセルが真偽値（{v}）。数のセルを指す")
+        if isinstance(v, _DateCell):
+            raise SeriesError(f"値のセルが日付のセル（{v}）。数のセルを指す")
     if spec.get("periods_cells"):
         periods = [_period(t, s.period_kind) for t in cells(grid, spec["periods_cells"])]
     else:
@@ -160,7 +212,7 @@ def _part_points(s: Series, idx: int, spec: dict, fetch) -> list[Point]:
                 raise SeriesError(f"periods は半角 4 桁の年：{p!r}")
     if len(periods) != len(vals):
         raise SeriesError(
-            f"parts[{idx}] の時間の数（{len(periods)}）と値の数（{len(vals)}）が違う"
+            f"{n} 番目の part の時間の数（{len(periods)}）と値の数（{len(vals)}）が違う"
         )
     label = "／".join(t for t in (x.strip() for ref in spec.get("label_cells", [])
                                    for x in cells(grid, ref)) if t)
@@ -184,9 +236,8 @@ def file_points(s: Series, fetch: Callable[[str, str], tuple[Path, str]]) -> lis
     for idx, spec in enumerate(s.selector.get("parts", [])):
         for p in _part_points(s, idx, spec, fetch):
             if p.period in seen:
-                raise SeriesError(
-                    f"{p.period} 年が parts[{seen[p.period]}] と parts[{idx}] で重なっている"
-                )
+                a, b = seen[p.period] + 1, idx + 1
+                raise SeriesError(f"{p.period} 年が {a} 番目と {b} 番目の part で重なっている")
             seen[p.period] = idx
             out.append(p)
     return sorted(out, key=lambda p: p.period)

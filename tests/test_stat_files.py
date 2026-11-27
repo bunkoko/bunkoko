@@ -224,3 +224,76 @@ def test_label_cells_unit_and_sorted(tmp_path):
     pts = file_points(s, fetch_local(p))
     assert [x.period for x in pts] == ["2021", "2023"]
     assert pts[0].src_label == "ラベル" and pts[0].src_unit == "％"
+
+
+# --- 修正 1 回目 ---------------------------------------------------------------
+
+
+def _one(tmp_path, rows, fmts=None, values="B2:B2", periods_cells="B1:B1", **kw):
+    x = write_xlsx(tmp_path / "a.bin", rows, fmts=fmts)
+    s = make_series([part(sheet="表1", values=values, periods_cells=periods_cells, **kw)])
+    return file_points(s, fetch_local(x))
+
+
+def test_percent_format_renders_as_displayed(tmp_path):
+    rows = [["", 2021, 2022, 2023], ["x", 0.395, 0.4, 0.1 + 0.2]]
+    pts = _one(tmp_path, rows, values="B2:D2", periods_cells="B1:D1",
+               fmts={"B2": "0.0%", "C2": "0%", "D2": "0.0%"})
+    assert [p.value for p in pts] == ["39.5", "40", "30.0"]
+
+
+def test_general_non_integral_number(tmp_path):
+    pts = _one(tmp_path, [["", 2021], ["x", 39.5]])
+    assert pts[0].value == "39.5"
+
+
+def test_bool_and_date_value_cells_refused(tmp_path):
+    import datetime
+
+    with pytest.raises(SeriesError, match="真偽値"):
+        _one(tmp_path, [["", 2021], ["x", True]])
+    with pytest.raises(SeriesError, match="日付"):
+        _one(tmp_path, [["", 2021], ["x", datetime.datetime(2021, 1, 1)]])
+
+
+def test_date_period_cell_refused(tmp_path):
+    import datetime
+
+    with pytest.raises(SeriesError, match="年の欄が日付"):
+        rows = [[datetime.datetime(2021, 1, 1)], [1.5]]
+        _one(tmp_path, rows, values="A2:A2", periods_cells="A1:A1")
+
+
+def test_csv_error_and_undecodable_name_the_part(tmp_path):
+    s = make_series([part(values="B2:B2", periods_cells="B1:B1")])
+    bad = tmp_path / "bad"
+    bad.write_bytes(b"\x81\x20\xff\xfe\x80\n")  # utf-8 でも cp932 でも読めない
+    with pytest.raises(SeriesError, match="1 番目の part"):
+        file_points(s, fetch_local(bad))
+    big = tmp_path / "big"
+    big.write_text('a,"' + "x" * 200000 + "\n", encoding="utf-8")  # 閉じない引用＋巨大な欄
+    with pytest.raises(SeriesError):
+        file_points(s, fetch_local(big))
+
+
+@pytest.mark.parametrize("key", ["statInfId", "fileKind", "values", "periods_cells"])
+def test_missing_required_key_is_series_error(tmp_path, key):
+    spec = part(values="B2:B2", periods_cells="B1:B1")
+    spec.pop(key, None)
+    s = make_series([spec])
+    p = write_csv(tmp_path / "a", CSV_ROWS, "utf-8-sig")
+    with pytest.raises(SeriesError, match=f"1 番目の part.*{key}|1 番目の part.*periods"):
+        file_points(s, fetch_local(p))
+
+
+def test_human_messages_count_parts_from_one(tmp_path):
+    s, f = two_parts(tmp_path, year2="2021")
+    with pytest.raises(SeriesError, match="1 番目と 2 番目の part"):
+        file_points(s, f)
+
+
+def test_bom_with_ragged_rows(tmp_path):
+    p = tmp_path / "a"
+    p.write_bytes("﻿,2021,2022\nx,1.5\n".encode())
+    s = make_series([part(values="B2:C2", periods_cells="B1:C1")])
+    assert [(x.period, x.value) for x in file_points(s, fetch_local(p))] == [("2021", "1.5")]

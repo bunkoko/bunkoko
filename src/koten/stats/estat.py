@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from urllib.parse import urlencode
 
 from koten.net import Fetcher
-from koten.stats.series import Point, Series, SeriesError, parse_year, to_decimal
+from koten.stats.series import Point, Series, SeriesError, parse_period_name, to_decimal
 
 API_BASE = "https://api.e-stat.go.jp/rest/3.0/app/json"
 APP_ID_ENV = "KOTEN_ESTAT_APPID"
@@ -295,17 +295,10 @@ def meta_record(meta: TableMeta, selector: dict) -> dict:
 
 # --- 年 -----------------------------------------------------------------------
 
-_AVG_RE = re.compile(r"(?P<base>.*?年度?)\s*(?:年)?平均")
-
-
 def period_of(code: str, name: str) -> tuple[str, str]:
     """時間の符号と名前から (YYYY, 年|年度)。月・四半期は断る。"""
-    text = unicodedata.normalize("NFKC", name or "").strip()
-    # 年度のあとの「平均」も外す（「2013年度平均」は年度の平均として実在する）
-    m = _AVG_RE.fullmatch(text)
-    base = m["base"] if m else text
     try:
-        year, kind = parse_year(base)
+        year, kind = parse_period_name(name)
     except SeriesError as e:
         raise EstatError(f"時間 {code} の名前 {name!r} を年として読めない：{e}") from e
     if code[:4] != year:

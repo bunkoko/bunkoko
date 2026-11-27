@@ -452,6 +452,19 @@ def parse_year(text: str) -> tuple[str, str]:
     return f"{year:04d}", "年度" if fy else "年"
 
 
+_AVG_RE = re.compile(r"(?P<base>.*?年度?)\s*(?:年)?平均")
+
+
+def parse_period_name(text: str) -> tuple[str, str]:
+    """parse_year に、年のあとの「平均」「年平均」を外す規則を足したもの。
+
+    「2013年度平均」は年度の平均として実在する。
+    """
+    t = unicodedata.normalize("NFKC", text or "").strip()
+    m = _AVG_RE.fullmatch(t)
+    return parse_year(m["base"] if m else t)
+
+
 # --- 区切り・比べられるか・傾向 ------------------------------------------------
 
 
