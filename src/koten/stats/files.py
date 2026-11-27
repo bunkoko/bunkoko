@@ -1,0 +1,192 @@
+"""e-Stat のファイル（CSV・xlsx）から年ごとの数を読む（src/koten/stats/files.py）。
+
+e-Stat の統計表は新しい年が Excel・CSV でしか出ないことがある。ファイルの種類は
+拡張子でなく中身の先頭で決める（net.py が拡張子なしで置くため）。
+"""
+
+from __future__ import annotations
+
+import csv
+import hashlib
+import io
+import re
+from collections.abc import Callable
+from decimal import Decimal
+from pathlib import Path
+
+import openpyxl
+
+from koten.stats.estat import _AVG_RE
+from koten.stats.series import Point, Series, SeriesError, parse_year, to_decimal
+
+FILE_URL = "https://www.e-stat.go.jp/stat-search/file-download?statInfId={sid}&fileKind={kind}"
+
+_XLSX_MAGIC = b"PK\x03\x04"
+_XLS_MAGIC = b"\xd0\xcf\x11\xe0"
+_REF_RE = re.compile(r"([A-Za-z]+)([0-9]+)")
+_BARE_YEAR_RE = re.compile(r"[0-9]{4}")
+_DECIMALS_RE = re.compile(r"\.([0#?]+)")
+
+
+def _decimals(fmt: str) -> int:
+    """number_format の最初の区画の小数の桁数（0 や General は 0）。"""
+    sec = fmt.split(";")[0]
+    sec = re.sub(r'"[^"]*"|\\.|\[[^\]]*\]', "", sec)
+    if "%" in sec or "E" in sec.upper():
+        return 0
+    m = _DECIMALS_RE.search(sec)
+    return len(m.group(1)) if m else 0
+
+
+def _render_number(v: int | float, fmt: str) -> str:
+    d = Decimal(repr(v)) if isinstance(v, float) else Decimal(v)
+    n = _decimals(fmt)
+    if n:
+        return f"{d:.{n}f}"
+    if d == d.to_integral_value():
+        return str(int(d))
+    return str(d.normalize()) if "E" not in str(d) else format(d, "f")
+
+
+def _render_cell(cell) -> str:
+    v = cell.value
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return str(v)
+    if isinstance(v, (int, float)):
+        return _render_number(v, cell.number_format or "General")
+    return str(v).strip()
+
+
+def _pad(rows: list[list[str]]) -> list[list[str]]:
+    width = max((len(r) for r in rows), default=0)
+    return [r + [""] * (width - len(r)) for r in rows]
+
+
+def _decode(data: bytes) -> str:
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            return data.decode("cp932")
+        except UnicodeDecodeError as e:
+            raise SeriesError("CSV を utf-8 でも cp932 でも読めない") from e
+
+
+def read_grid(path: Path, sheet: str) -> list[list[str]]:
+    """ファイルを文字の表にする。xlsx は sheet が要り、CSV は sheet が "" でなければならない。"""
+    data = Path(path).read_bytes()
+    return _grid_from_bytes(data, sheet)
+
+
+def _grid_from_bytes(data: bytes, sheet: str) -> list[list[str]]:
+    if data.startswith(_XLS_MAGIC):
+        raise SeriesError(".xls（古い Excel）は扱わない。CSV か .xlsx の版を選ぶ")
+    if data.startswith(_XLSX_MAGIC):
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        except Exception as e:  # noqa: BLE001 - openpyxl は壊れ方ごとに別の例外を出す
+            raise SeriesError(f"xlsx を開けない：{e}") from e
+        try:
+            if sheet not in wb.sheetnames:
+                raise SeriesError(
+                    f"シート {sheet!r} が無い。あるシート：{'・'.join(wb.sheetnames)}"
+                )
+            rows = [[_render_cell(c) for c in row] for row in wb[sheet].iter_rows()]
+        finally:
+            wb.close()
+        return _pad(rows)
+    if sheet != "":
+        raise SeriesError(f"CSV に sheet は指定できない（\"\" にする）：{sheet!r}")
+    rows = [[c.strip() for c in r] for r in csv.reader(io.StringIO(_decode(data), newline=""))]
+    return _pad(rows)
+
+
+def _col(letters: str) -> int:
+    n = 0
+    for ch in letters.upper():
+        n = n * 26 + ord(ch) - 64
+    return n - 1
+
+
+def _ref(ref: str) -> tuple[int, int]:
+    m = _REF_RE.fullmatch(ref.strip())
+    if not m or int(m[2]) < 1:
+        raise SeriesError(f"セルの指定を読めない：{ref!r}")
+    return int(m[2]) - 1, _col(m[1])
+
+
+def cells(grid: list[list[str]], ref: str) -> list[str]:
+    """"A3" か 1 方向の範囲 "D12:R12"・"D5:D20" のセルの文字。表の外は ""。"""
+    a, _, b = ref.partition(":")
+    r1, c1 = _ref(a)
+    r2, c2 = _ref(b) if b else (r1, c1)
+    if r1 != r2 and c1 != c2:
+        raise SeriesError(f"2 次元の範囲は読まない（行か列の一方向だけ）：{ref!r}")
+    if r1 > r2 or c1 > c2:
+        raise SeriesError(f"範囲の向きが逆：{ref!r}")
+    out = []
+    for r in range(r1, r2 + 1):
+        for c in range(c1, c2 + 1):
+            row = grid[r] if r < len(grid) else []
+            out.append(row[c] if c < len(row) else "")
+    return out
+
+
+def _period(text: str, kind: str) -> str:
+    t = text.strip()
+    if _BARE_YEAR_RE.fullmatch(t):
+        return t
+    m = _AVG_RE.fullmatch(t)
+    year, k = parse_year(m["base"] if m else t)
+    if k != kind:
+        raise SeriesError(f"時間 {text!r} は{k}だが、系列は{kind}")
+    return year
+
+
+def _part_points(s: Series, idx: int, spec: dict, fetch) -> list[Point]:
+    sid, kind = str(spec["statInfId"]), str(spec["fileKind"])
+    path, fetched_at = fetch(FILE_URL.format(sid=sid, kind=kind), f"files/{sid}_{kind}")
+    data = Path(path).read_bytes()
+    grid = _grid_from_bytes(data, str(spec.get("sheet", "")))
+    vals = cells(grid, spec["values"])
+    if spec.get("periods_cells"):
+        periods = [_period(t, s.period_kind) for t in cells(grid, spec["periods_cells"])]
+    else:
+        periods = [str(p) for p in spec.get("periods", [])]
+        for p in periods:
+            if not _BARE_YEAR_RE.fullmatch(p):
+                raise SeriesError(f"periods は半角 4 桁の年：{p!r}")
+    if len(periods) != len(vals):
+        raise SeriesError(
+            f"parts[{idx}] の時間の数（{len(periods)}）と値の数（{len(vals)}）が違う"
+        )
+    label = "／".join(t for t in (x.strip() for ref in spec.get("label_cells", [])
+                                   for x in cells(grid, ref)) if t)
+    unit = cells(grid, spec["unit_cell"])[0] if spec.get("unit_cell") else ""
+    sha = hashlib.sha256(data).hexdigest()
+    out = []
+    for period, text in zip(periods, vals, strict=True):
+        text = text.strip()
+        if not text:
+            continue
+        num = to_decimal(text) is not None
+        out.append(Point(s.series_id, period, text if num else "", "" if num else text,
+                         str(idx), label, unit, fetched_at, sha))
+    return out
+
+
+def file_points(s: Series, fetch: Callable[[str, str], tuple[Path, str]]) -> list[Point]:
+    """estat_file の系列の点。fetch(url, rel_path) は (ファイル, 取得日時) を返す。"""
+    seen: dict[str, int] = {}
+    out: list[Point] = []
+    for idx, spec in enumerate(s.selector.get("parts", [])):
+        for p in _part_points(s, idx, spec, fetch):
+            if p.period in seen:
+                raise SeriesError(
+                    f"{p.period} 年が parts[{seen[p.period]}] と parts[{idx}] で重なっている"
+                )
+            seen[p.period] = idx
+            out.append(p)
+    return sorted(out, key=lambda p: p.period)
