@@ -338,6 +338,7 @@ function cardSeries(it) {
   const line = el("p", { class: "line" }, seriesLine(it, f.fix.label));
   const kids = [
     el("div", { class: "kind" }, `統計の系列｜${it.theme}｜${it.id}`),
+    it.held ? el("p", { class: "note" }, "保留中：台帳でこの系列は外してあります（台本で使わず、数も取りません）。「合っている」を押しても保留のままです") : null,
     el("div", {}, el("span", { class: "label" }, "台本に入る文（いちばん新しい数）"), line),
   ];
   const words = el("dl", { class: "words" });

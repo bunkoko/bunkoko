@@ -543,7 +543,8 @@ def load_series(conn: sqlite3.Connection, config_dir: Path, meta_dir: Path) -> t
             meta = metas.get(s.series_id)
         sha = ss.check_sha(s, pts, meta)
         numeric = [p.period for p in pts if ss.value_num(p) is not None]
-        trend_ok = ss.verify_trend(s, pts)[0] if s.trend else False
+        # 増え方を言えるのは、オーナーが確かめたままで、数でも言えるときだけ（L12）
+        trend_ok = bool(s.trend) and ss.owner_ok(s, sha) and ss.verify_trend(s, pts)[0]
         raw = {
             **{c: getattr(s, c) for c in ss.SERIES_COLUMNS},
             "themes": json.dumps(list(s.themes), ensure_ascii=False),

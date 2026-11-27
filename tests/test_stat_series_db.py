@@ -180,23 +180,25 @@ def test_owner_ok_lapses_after_a_refetch(conn, cfg, meta_dir):
 
 
 def test_stale_and_trend_ok(conn, cfg, meta_dir):
-    write_csv(
-        cfg / SERIES_FILE,
-        SERIES_COLUMNS,
-        [
-            srow(
-                latest_known="2023",
-                trend="増加",
-                trend_from="2020",
-                trend_to="2022",
-                trend_note="同じ調査",
-            )
-        ],
+    trend = dict(
+        latest_known="2023", trend="増加", trend_from="2020", trend_to="2022", trend_note="同じ調査"
     )
-    write_csv(cfg / POINTS_FILE, POINTS_COLUMNS, [prow("2020", "1"), prow("2022", "5")])
+    pts = [prow("2020", "1"), prow("2022", "5")]
+    write_csv(cfg / SERIES_FILE, SERIES_COLUMNS, [srow(**trend)])
+    write_csv(cfg / POINTS_FILE, POINTS_COLUMNS, pts)
     load_series(conn, cfg, meta_dir)
     r = conn.execute("SELECT * FROM stat_series").fetchone()
-    assert r["stale"] == 1 and r["latest_period"] == "2022" and r["trend_ok"] == 1
+    # 増え方が数で言えても、オーナーの確かめが無ければ trend_ok にしない（L12）
+    assert r["stale"] == 1 and r["latest_period"] == "2022" and r["trend_ok"] == 0
+    sha = check_sha(parse_series([srow(**trend)])[0], parse_points(pts), META)
+    owner = srow(**trend, checked_by=HUMAN_CHECKER, checked_at="2026-11-20", checked_sha=sha)
+    write_csv(cfg / SERIES_FILE, SERIES_COLUMNS, [owner])
+    load_series(conn, cfg, meta_dir)
+    assert conn.execute("SELECT trend_ok, owner_ok FROM stat_series").fetchone()[:] == (1, 1)
+    # 数が変わって確かめが外れたら、増え方が今も言えても trend_ok にしない
+    write_csv(cfg / POINTS_FILE, POINTS_COLUMNS, [prow("2020", "2"), prow("2022", "5")])
+    load_series(conn, cfg, meta_dir)
+    assert conn.execute("SELECT trend_ok, owner_ok FROM stat_series").fetchone()[:] == (0, 0)
     write_csv(cfg / POINTS_FILE, POINTS_COLUMNS, [prow("2020", "5"), prow("2022", "1")])
     load_series(conn, cfg, meta_dir)
     assert conn.execute("SELECT trend_ok FROM stat_series").fetchone()[0] == 0

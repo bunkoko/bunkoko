@@ -27,6 +27,7 @@ import csv
 import hashlib
 import io
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -140,6 +141,28 @@ def read_drafts(path: Path) -> dict[str, Any]:
     return data
 
 
+# 鍵・照らし合わせに使う ID と種類。下書きでも台帳でも、前後の空白を1回だけ取る（R26）
+_ID_FIELDS = ("series_id", "stat_id", "finding_id", "lead_id", "source_kind", "period_kind")
+
+
+def _strip_ids(d: Any) -> Any:
+    if not isinstance(d, dict):
+        return d
+    return {**d, **{k: d[k].strip() for k in _ID_FIELDS if isinstance(d.get(k), str)}}
+
+
+def normalize_drafts(drafts: dict[str, Any]) -> dict[str, Any]:
+    """下書きの各項目の ID と種類（_ID_FIELDS）の前後の空白を取った写し。
+
+    ページの鍵と取り込みの鍵・台帳との照らし合わせ・書く行が、同じ値になるように。何度でも同じ。
+    """
+    out = dict(drafts)
+    for part in ("stats", "findings", "leads", "series"):
+        if isinstance(drafts.get(part), list):
+            out[part] = [_strip_ids(d) for d in drafts[part]]
+    return out
+
+
 def _finding(d: dict[str, Any], **over: str) -> Finding:
     v = {c: str(d.get(c) or "").strip() for c in FINDING_COLUMNS}
     v.update(over)
@@ -183,6 +206,8 @@ _SELECTOR_NOTES = {"different": SELECTOR_CHANGED, "invalid": SELECTOR_NOT_OBJECT
                    "stale": SELECTOR_STALE, "growth": SELECTOR_GROWTH}  # fmt: skip
 # 台帳に何も書かない選び方の状態（押しても、--accept-rest でも）
 _REFUSED_STATES = ("different", "unresolved", "invalid", "stale")
+# 部分の重なりを見る状態（R27：新しい系列は全部の部分を、same・growth は数の無い部分を）
+_OVERLAP_STATES = ("new", "same", "growth")
 
 
 def _raw_selector_state(raw: Any) -> str:
@@ -207,7 +232,7 @@ def _selector_note(d: dict[str, Any]) -> str:
     state = d.get("selector_state", "")
     if state == "unresolved":
         return SELECTOR_UNRESOLVED.get(str(d.get("source_kind", "")).strip(), SELECTOR_NO_KIND)
-    if state == "growth" and d.get("selector_overlap"):
+    if state in _OVERLAP_STATES and d.get("selector_overlap"):
         return SELECTOR_OVERLAP.format(why=d["selector_overlap"])
     return _SELECTOR_NOTES.get(state, "").format(id=str(d.get("series_id", "")).strip())
 
@@ -216,12 +241,15 @@ def with_series_data(drafts: dict[str, Any], config_dir: Path) -> dict[str, Any]
     """series の各項目に、台帳の点（points）と表の情報（meta）を足した写しを返す。
 
     ページの鍵と取り込みの鍵は、どちらもこの写しから作る（同じデータから鍵を出すため）。
+    ID と種類は前後の空白を取った値にする（normalize_drafts）。
     selector_state は new・same・growth・stale・different・unresolved・invalid。点が付くのは
     same だけ（台帳に無い系列・selector がまだ無い・オブジェクトでない系列・台帳の行と
-    選び方が違う系列は数なし）。growth で、数を取っていない部分がほかの部分と重なれば、
-    その理由を selector_overlap に入れる（取り込まない）。表の情報は estat_api の系列だけ
-    （docs/estat/<series_id>.json。db.py と同じ）。
+    選び方が違う系列は数なし）。estat_file の部分がほかの部分と重なれば、その理由を
+    selector_overlap に入れる（取り込まない。R27：new は全部の部分、same・growth は数を
+    取っていない部分）。ledger_status は台帳の行の status（保留 など）。表の情報は estat_api の
+    系列だけ（docs/estat/<series_id>.json。db.py と同じ）。
     """
+    drafts = normalize_drafts(drafts)
     rows = read_point_rows(config_dir)
     meta_dir = meta_dir_for(config_dir)
     ledger = {r.get("series_id", "").strip(): r for r in read_series_rows(config_dir)}
@@ -235,23 +263,26 @@ def with_series_data(drafts: dict[str, Any], config_dir: Path) -> dict[str, Any]
         state = _raw_selector_state(item.get("selector"))
         if not state and sid not in ledger:
             state = "new"
+            if s.source_kind == "estat_file":
+                overlap = "、".join(part_overlaps(s.selector, set(), []))
         elif not state:
             old = series_from_draft(ledger[sid]).selector
             pts = parse_points(mine)
             state = selection_change(s.source_kind, s.selector, old, points=pts)
-            if state == "growth":
+            if state in _OVERLAP_STATES and s.source_kind == "estat_file":
                 n = len(old["parts"]) if isinstance(old.get("parts"), list) else 0
                 overlap = "、".join(part_overlaps(s.selector, fetched_parts(pts, n), pts))
         shown = sorted(mine, key=lambda r: r.get("period", "")) if state == "same" else []
         meta = None
-        if item.get("source_kind") == "estat_api":
+        if s.source_kind == "estat_api":
             try:
                 meta = load_meta(meta_dir, sid)
             except SeriesError as e:
                 raise SourcesError(str(e)) from e
+        held = str((ledger.get(sid) or {}).get("status") or "").strip()
         out.append({**item, "points": [{c: r.get(c, "") for c in POINT_COLUMNS} for r in shown],
-                    "meta": meta, "selector_state": state,
-                    "selector_overlap": overlap})  # fmt: skip
+                    "meta": meta, "selector_state": state, "selector_overlap": overlap,
+                    "ledger_status": held})  # fmt: skip
     return {**drafts, "series": out}
 
 
@@ -362,7 +393,7 @@ def _source_words(
     pairs: list[list[str]] = []
     chosen: list[str] = []
     link = ""
-    if item.get("source_kind") == "estat_api":
+    if series_from_draft(item).source_kind == "estat_api":
         if not meta:
             pairs.append(["表の情報", "まだ無い（Mac で koten stats meta）"])
         no = f"（{meta['title_no']}）" if meta.get("title_no") else ""
@@ -478,6 +509,7 @@ def _series_item(
         "link": link,
         "selector_state": d.get("selector_state", ""),
         "selector_note": _selector_note(d),
+        "held": d.get("ledger_status") == "保留",
         "has_numbers": _newest_numeric(points) is not None,
         "points": _point_rows(d, points),
         "breaks": [{"before": b.before, "note": b.note} for b in s.breaks],
@@ -498,6 +530,7 @@ def page_items(
     excerpt: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
 ) -> list[dict[str, Any]]:
     """ページに出す1件ずつ。統計・研究は下書きの文、民間の調査・有料の論文は書誌だけ。"""
+    drafts = normalize_drafts(drafts)
     out: list[dict[str, Any]] = []
     for d in drafts["stats"]:
         out.append(
@@ -636,6 +669,10 @@ class MergeResult:
     series_ai: list[str] = field(default_factory=list)
     # 部分を足した・直した系列で、人の行を AI の行に戻した
     series_downgraded: list[str] = field(default_factory=list)
+    # 部分を足した・直した下書きの label が台帳と違った（台帳の label のまま）
+    series_label_kept: list[str] = field(default_factory=list)
+    # 台帳の系列に「違う」が押されて、保留にした
+    series_held: list[str] = field(default_factory=list)
 
 
 def _day(at: Any) -> str:
@@ -727,18 +764,22 @@ def _finding_row(
     return row
 
 
+def _series_cell(col: str, v: Any) -> str:
+    """下書きの値を stat_series.csv の欄の文字にする（selector は JSON のまま）。"""
+    if col == "themes" and isinstance(v, list):
+        v = ";".join(str(x) for x in v)
+    elif isinstance(v, (dict, list)):
+        v = json.dumps(v, ensure_ascii=False)
+    return "" if v is None else _text(v) if col != "selector" else str(v)
+
+
 def _series_row(
     d: dict[str, Any], c: dict[str, Any], *, by: str, day: str, old: dict[str, str] | None
 ) -> dict[str, str]:
-    """stat_series.csv の1行。人が確かめた行は、label の直しを当てたあとの check_sha を入れる。"""
-    row = {}
-    for col in SERIES_COLUMNS:
-        v = d.get(col, "")
-        if col == "themes" and isinstance(v, list):
-            v = ";".join(str(x) for x in v)
-        elif isinstance(v, (dict, list)):
-            v = json.dumps(v, ensure_ascii=False)
-        row[col] = "" if v is None else _text(v) if col != "selector" else str(v)
+    """stat_series.csv の1行。人が確かめた行は、label の直しを当てたあとの check_sha を入れる。
+
+    status は台帳の行のまま（保留の系列は、「合っている」でも保留のまま。L9）。"""
+    row = {col: _series_cell(col, d.get(col, "")) for col in SERIES_COLUMNS}
     fix = c.get("fix") or {}
     if _text(fix.get("label")):
         row["label"] = _text(fix["label"])
@@ -747,12 +788,41 @@ def _series_row(
     if not (human and c.get("trend") and verify_trend(s, _points_of(d))[0]):
         for col in ("trend", "trend_from", "trend_to", "trend_note"):
             row[col] = ""
-    row["status"] = "" if human else (old or {}).get("status", "")
+    row["status"] = str((old or {}).get("status") or "").strip()
     row["checked_by"], row["checked_at"] = by, day
     row["checked_sha"] = (
         check_sha(series_from_draft(row), _points_of(d), d.get("meta")) if human else ""
     )
     row["note"] = _text(c.get("note", ""))[:200] or row.get("note", "")
+    return row
+
+
+# 部分を足した・直した下書き（growth）から台帳に取る欄（R28）。ほかは台帳の行のまま
+GROWTH_FROM_DRAFT = ("selector", "latest_known", "breaks", "where", "note")
+
+
+def _grown_row(prev: dict[str, str], d: dict[str, Any], *, day: str) -> dict[str, str]:
+    """growth の行：台帳の行に、下書きの selector・latest_known・breaks・where・note だけを当てる。
+
+    label（オーナーが直した言い方）・themes・unit・survey・publisher・table_title・period_kind・
+    url・status は台帳のまま。増え方は外し、AI の行にする（数を取ってから確かめ直す）。"""
+    row = {col: str(prev.get(col) or "") for col in SERIES_COLUMNS}
+    for col in GROWTH_FROM_DRAFT:
+        if col in d:
+            row[col] = _series_cell(col, d[col])
+    for col in ("trend", "trend_from", "trend_to", "trend_note"):
+        row[col] = ""
+    row["checked_by"], row["checked_at"], row["checked_sha"] = AI_CHECKER, day, ""
+    return row
+
+
+def _held_row(prev: dict[str, str], c: dict[str, Any], *, day: str) -> dict[str, str]:
+    """台帳の系列に「違う」が押された：保留にして、オーナーのメモを足す（ほかの欄はそのまま）。"""
+    row = dict(prev)
+    row["status"] = "保留"
+    note = _text(c.get("note", ""))[:200]
+    mark = f"{day} オーナーが「違う」" + (f"：{note}" if note else "")
+    row["note"] = "／".join(x for x in (_text(prev.get("note")), mark) if x)
     return row
 
 
@@ -789,6 +859,23 @@ def _series_check(
         raise SourcesError(f"{SERIES_FILE} に問題が出るので書きません：" + "、".join(problems))
 
 
+def _replace_all(writes: list[tuple[Path, str]]) -> None:
+    """台帳を書く：先に全部を一時ファイル（同じ場所の .tmp）に書き、そのあと1つずつ置き換える。
+
+    一時ファイルを書いている途中で止まれば、どの台帳も前のまま（L10）。"""
+    done: list[tuple[Path, Path]] = []
+    try:
+        for path, text in writes:
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(text, encoding="utf-8", newline="")
+            done.append((tmp, path))
+        for tmp, path in done:
+            os.replace(tmp, path)
+    finally:
+        for tmp, _ in done:
+            tmp.unlink(missing_ok=True)
+
+
 def merge_checks(
     drafts: dict[str, Any],
     checks: dict[str, Any],
@@ -805,15 +892,21 @@ def merge_checks(
     - 「違う」「使わない」を押した行は入れない
     - 人が確かめた行を、AI が確かめた行で上書きしない。ただし統計の系列で部分を足した・直した
       下書き（growth）は、accept_rest のとき人の行も AI の行に戻して入れる（series_downgraded。
-      人は前の部分の数だけを確かめたので）
+      人は前の部分の数だけを確かめたので）。growth で下書きから取るのは selector・
+      latest_known・breaks・where・note だけ（label などは台帳のまま。R28）
     - 統計の系列の選び方が台帳と違う・台帳より古い・selector がまだ無い・オブジェクトでない
-      下書きと、足した部分がほかの部分と重なる下書きは入れない（理由を skipped に）
-    - どれかの台帳が決まりに合わなくなるなら、どれも書かずに止める（SourcesError）
+      下書きと、部分がほかの部分と重なる下書きは入れない（理由を skipped に）
+    - 台帳にある系列のカード（数が出ていたもの）に「違う」が押されたら、その行を保留にする
+      （series_held。メモはオーナーの言葉を足す）
+    - どれかの台帳が決まりに合わなくなるなら、どれも書かずに止める（SourcesError）。
+      書くときは3つとも一時ファイルに書いてから置き換える
     - 統計の下書きの replaces に書いた古い行（転載サイトを出典にした行など）は、置き換える行を
       入れたときに外す
+    - ID と種類（series_id・stat_id・finding_id・lead_id・source_kind・period_kind）は、
+      下書きでも台帳でも、前後の空白を取った値で照らし、書く（R26）
     """
     res = MergeResult()
-    drafts = with_series_data(drafts, config_dir)
+    drafts = with_series_data(normalize_drafts(drafts), config_dir)
     themes = _themes(config_dir)
     ai_day = str(drafts.get("made") or date.today().isoformat())
     by_key: dict[str, tuple[str, dict[str, Any]]] = {}
@@ -830,13 +923,15 @@ def merge_checks(
 
     stats_path = config_dir / "stats.csv"
     cols, old = _read_csv(stats_path)
+    old = [_strip_ids(r) for r in old]
     find_path = config_dir / "findings.csv"
     fcols, fold = _read_csv(find_path)
+    fold = [_strip_ids(r) for r in fold]
     if fcols and fcols != FINDING_COLUMNS:
         raise SourcesError(f"{find_path.name} の列が決まりと違うので書きません")
     human_stats = {r["stat_id"] for r in old if (r.get("checked_by") or "").strip() == CHECKER}
     human_findings = {r["finding_id"] for r in fold if (r.get("status") or "") == "verified"}
-    old_series = read_series_rows(config_dir)
+    old_series = [_strip_ids(r) for r in read_series_rows(config_dir)]
     human_series = {
         r["series_id"] for r in old_series if (r.get("checked_by") or "").strip() == CHECKER
     }
@@ -857,21 +952,24 @@ def merge_checks(
             # 台帳の行の選び方は変えない（AI の行も人の行も）。行も数もそのまま
             res.skipped.append(f"{name}：{_selector_note(d)}")
             continue
+        if kind == "series" and d.get("selector_overlap") and not ng:
+            # 部分がほかの部分と重なる（R27）。行も数もそのまま
+            res.skipped.append(f"{name}：{_selector_note(d)}")
+            continue
         if state == "growth" and not ng:
-            if d.get("selector_overlap"):
-                # 足した部分が前の部分と重なる。行も数もそのまま
-                res.skipped.append(f"{name}：{_selector_note(d)}")
-                continue
             if not accept_rest:
                 res.skipped.append(f"{name}：{SELECTOR_GROWTH_SKIP}")
                 continue
-            # 部分を足した・直した行は AI の行（人の行も AI に戻す）。数はそのまま
-            if d["series_id"] in human_series:
-                res.series_downgraded.append(d["series_id"])
-            new_series.append(
-                _series_row(d, {}, by=AI_CHECKER, day=ai_day, old=ledger_series.get(d["series_id"]))
-            )
-            res.series_ai.append(d["series_id"])
+            # 部分を足した・直した行は AI の行（人の行も AI に戻す）。数はそのまま。
+            # 下書きから取るのは選び方などだけ。label（オーナーが直した言い方）は台帳のまま
+            sid = d["series_id"]
+            prev = ledger_series.get(sid) or {}
+            if sid in human_series:
+                res.series_downgraded.append(sid)
+            if "label" in d and _text(d.get("label")) != _text(prev.get("label")):
+                res.series_label_kept.append(sid)
+            new_series.append(_grown_row(prev, d, day=ai_day))
+            res.series_ai.append(sid)
             continue
         if kind == "series" and isinstance(c, dict) and c.get("v") == "ok" and not _has_numbers(d):
             # 数が無い系列の「合っている」は押していないのと同じ（数が入ると鍵も変わる）
@@ -905,7 +1003,7 @@ def merge_checks(
                 new_stats.append(_stat_row(d, {}, from_lead=False, by=AI_CHECKER, day=ai_day))
                 res.stats_ai.append(d["stat_id"])
                 if d.get("replaces"):
-                    removes.add(str(d["replaces"]))
+                    removes.add(str(d["replaces"]).strip())
             else:
                 new_findings.append(
                     _finding_row(d, {}, kind=kind, by=AI_CHECKER, day=ai_day, ai_day=ai_day)
@@ -914,6 +1012,11 @@ def merge_checks(
             continue
         if c.get("v") == "ng":
             res.rejected.append(name)
+            sid = d.get("series_id")
+            if kind == "series" and state == "same" and sid in ledger_series:
+                # 台帳の系列のカード（台帳の数が出ていた）に「違う」：使わず・取らない（L9）
+                new_series.append(_held_row(ledger_series[sid], c, day=_day(c.get("at"))))
+                res.series_held.append(sid)
             continue
         day = _day(c.get("at"))
         if kind == "series":
@@ -923,7 +1026,7 @@ def merge_checks(
         elif kind == "stat":
             new_stats.append(_stat_row(d, c, from_lead=False, by=CHECKER, day=day))
             if d.get("replaces"):
-                removes.add(str(d["replaces"]))
+                removes.add(str(d["replaces"]).strip())
         elif kind == "private_survey":
             entry = c.get("entry") or {}
             if not c.get("terms"):
@@ -996,14 +1099,18 @@ def merge_checks(
             except FindingsError as e:
                 raise SourcesError(f"findings.csv に問題が出るので書きません：{e}") from e
 
+    writes: list[tuple[Path, str]] = []
     if new_stats or res.stats_removed:
-        stats_path.write_text(_csv_text(columns, stats_rows), "utf-8")
+        writes.append((stats_path, _csv_text(columns, stats_rows)))
     if new_findings:
-        find_path.write_text(find_text, "utf-8")
+        writes.append((find_path, find_text))
     if new_series:
-        (config_dir / SERIES_FILE).write_text(_csv_text(SERIES_COLUMNS, series_rows), "utf-8")
-    ai_series = set(res.series_ai)
-    res.series_added = [r["series_id"] for r in new_series if r["series_id"] not in ai_series]
+        writes.append((config_dir / SERIES_FILE, _csv_text(SERIES_COLUMNS, series_rows)))
+    _replace_all(writes)
+    ai_series, held = set(res.series_ai), set(res.series_held)
+    res.series_added = [
+        r["series_id"] for r in new_series if r["series_id"] not in ai_series | held
+    ]
     ai_stats, ai_findings = set(res.stats_ai), set(res.findings_ai)
     res.stats_added = [r["stat_id"] for r in new_stats if r["stat_id"] not in ai_stats]
     res.findings_added = [
@@ -1030,6 +1137,7 @@ def collect_drafts(paths: list[Path]) -> dict[str, Any]:
             ("series", "series_id"),
         ):
             for x in d[part]:
+                x = _strip_ids(x)
                 out[part][x[idk]] = x
     return {**out, **{part: list(out[part].values()) for part in out if part != "made"}}
 
@@ -1040,12 +1148,14 @@ def todo_drafts(drafts: dict[str, Any], todo: dict[str, Any], config_dir: Path) 
     文と数字は今の台帳（動画で言っている形）、元の資料の場所・該当箇所は下書きから取る。
     下書きに無い行（人が台帳に直に書いた行）も、台帳の文と URL で出す。
     """
+    drafts = normalize_drafts(drafts)
     _, stat_rows = _read_csv(config_dir / "stats.csv")
     _, find_rows = _read_csv(config_dir / FINDINGS_FILE)
-    ledger_s = {r["stat_id"]: r for r in stat_rows}
-    ledger_f = {r["finding_id"]: r for r in find_rows}
+    ledger_s = {r["stat_id"]: r for r in map(_strip_ids, stat_rows)}
+    ledger_f = {r["finding_id"]: r for r in map(_strip_ids, find_rows)}
     draft_s = {d["stat_id"]: d for d in drafts["stats"]}
     draft_f = {d["finding_id"]: d for d in drafts["findings"]}
+    todo = {k: [str(x).strip() for x in v] if isinstance(v, list) else v for k, v in todo.items()}
     stats, findings, missing = [], [], []
     for sid in todo.get("stats") or []:
         if sid not in ledger_s:
@@ -1060,7 +1170,7 @@ def todo_drafts(drafts: dict[str, Any], todo: dict[str, Any], config_dir: Path) 
             missing.append(fid)
             continue
         findings.append({**draft_f.get(fid, {}), **ledger_f[fid]})
-    series_rows = read_series_rows(config_dir)
+    series_rows = [_strip_ids(r) for r in read_series_rows(config_dir)]
     ledger_r = {r["series_id"]: r for r in series_rows}
     draft_r = {d["series_id"]: d for d in drafts.get("series") or []}
     series = []

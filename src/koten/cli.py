@@ -2472,6 +2472,14 @@ def sources_merge(
         typer.echo("統計を SSD に入れる：uv run koten db init")
     for sid in res.series_downgraded:
         typer.echo(f"{sid}：部分を足した・直したので AI の行に戻した。数を取ってから確かめ直す")
+    for sid in res.series_label_kept:
+        typer.secho(f"{sid}：ラベルは台帳のまま（オーナーが直した言い方を残す）", fg="yellow")
+    for sid in res.series_held:
+        typer.secho(
+            f"{sid}：「違う」が押されたので保留にした（台本で使わず、数も取らない）。"
+            f"戻すときは uv run koten stats hold --series {sid} --release",
+            fg="yellow",
+        )
     if res.series_added or res.series_ai:
         typer.echo("統計の系列を SSD に入れる：uv run koten db init")
     if res.findings_added or res.findings_ai:

@@ -653,11 +653,13 @@ def test_merge_ok_series_records_owner_and_sha(sconf):
 
 
 def test_merge_ng_series_is_not_written(sconf):
-    before = (sconf / SERIES_FILE).read_bytes()
+    # 台帳の系列に「違う」：中身は書き換えず、保留にするだけ（L9）
     res = merge_checks(_sdrafts(API_SERIES), {_skey(sconf): {"v": "ng", "at": _at()}}, sconf)
-    assert (sconf / SERIES_FILE).read_bytes() == before
     assert res.rejected == ["work_rate"] and res.series_added == [] and res.series_ai == []
-    assert _only_ai_row(sconf)
+    assert _series_file(sconf) == [
+        _srow(API_SERIES, checked_by=AI_CHECKER, checked_at="2026-11-01", status="保留",
+              note="2026-11-21 オーナーが「違う」")
+    ]  # fmt: skip
 
 
 def test_merge_replaces_same_id_keeps_order_and_appends(sconf):
@@ -1572,3 +1574,214 @@ def test_title_with_a_full_width_space_merges(sconf):
     )
     with pytest.raises(SourcesError, match="と違う"):
         merge_checks(_sdrafts(bad), {}, sconf, accept_rest=True)
+
+
+# --- 最後の見直しの直し：ID の空白・重なる部分・growth・保留・書き方（R26〜R28・L9・L10） ---------
+
+
+def _owner_held_ledger(config_dir):
+    """work_rate がオーナーの行で保留。確かめの sha は今の数と表の情報のもの。"""
+    s = series_from_draft(API_SERIES)
+    sha = check_sha(s, parse_points(read_point_rows(config_dir)), API_META)
+    row = _srow(API_SERIES, label="人が直した文", checked_by=HUMAN_CHECKER,
+                checked_at="2026-11-01", checked_sha=sha, status="保留")  # fmt: skip
+    _write_ledger(config_dir, read_point_rows(config_dir), [row])
+    return row
+
+
+@pytest.mark.parametrize("sid", ["work_rate ", "work_rate　", " work_rate"])
+def test_padded_draft_id_never_overwrites_an_owner_row(sconf, sid):
+    _owner_held_ledger(sconf)
+    before = _ledger_bytes(sconf)
+    res = merge_checks(_sdrafts({**API_SERIES, "series_id": sid}), {}, sconf, accept_rest=True)
+    assert res.series_added == [] and res.series_ai == []
+    assert _ledger_bytes(sconf) == before
+
+
+def test_padded_kind_and_id_tap_takes_effect_for_the_stripped_id(sconf, tmp_path):
+    from koten.db import connect, load_series
+
+    item = {**API_SERIES, "series_id": " work_rate", "source_kind": "estat_api "}
+    it = page_items(with_series_data(_sdrafts(item), sconf))[0]
+    assert it["id"] == "work_rate" and dict(it["source"])["統計名"] == "労働力調査"
+    res = merge_checks(_sdrafts(item), {it["k"]: {"v": "ok", "at": _at()}}, sconf)
+    assert res.series_added == ["work_rate"] and res.unknown == []
+    row = _series_file(sconf)[0]
+    assert (row["series_id"], row["source_kind"], row["checked_by"]) == (
+        "work_rate", "estat_api", HUMAN_CHECKER,
+    )  # fmt: skip
+    conn = connect(tmp_path / "ssd")
+    load_series(conn, sconf, sconf.parent / "docs" / "estat")
+    assert conn.execute("SELECT owner_ok FROM stat_series").fetchone()[0] == 1
+
+
+def test_file_series_round_trip_gives_owner_ok(sconf, tmp_path):
+    from koten.db import connect, load_series
+
+    _file_ledger(sconf, AI_CHECKER)
+    item = {**FILE_SERIES, "series_id": "file_rate ", "period_kind": " 年"}
+    it = page_items(with_series_data(_sdrafts(item), sconf))[0]
+    assert it["has_numbers"]
+    res = merge_checks(_sdrafts(item), {it["k"]: {"v": "ok", "at": _at()}}, sconf)
+    assert res.series_added == ["file_rate"]
+    conn = connect(tmp_path / "ssd")
+    load_series(conn, sconf, sconf.parent / "docs" / "estat")
+    got = dict(conn.execute("SELECT series_id, owner_ok FROM stat_series").fetchall())
+    assert got["file_rate"] == 1
+
+
+def test_padded_stat_id_never_overwrites_an_owner_stat(config_dir):
+    owner = {**STAT, "stat_id": "keep_me", "replaces": ""}
+    merge_checks(
+        {**_drafts(), "stats": [owner]}, {stat_key(owner): {"v": "ok", "at": _at()}}, config_dir
+    )
+    assert _stats(config_dir)["keep_me"]["checked_by"] == HUMAN_CHECKER
+    before = (config_dir / "stats.csv").read_bytes()
+    padded = {**owner, "stat_id": "keep_me ", "label": "AI の文"}
+    res = merge_checks({**_drafts(), "stats": [padded]}, {}, config_dir, accept_rest=True)
+    assert res.stats_ai == [] and (config_dir / "stats.csv").read_bytes() == before
+
+
+def test_page_and_merge_keys_agree_for_padded_stat_ids(config_dir):
+    padded = {**STAT, "stat_id": " anzen_r6_amount "}
+    (it,) = [x for x in page_items({**_drafts(), "stats": [padded]}) if x["kind"] == "stat"]
+    res = merge_checks(
+        {**_drafts(), "stats": [padded]}, {it["k"]: {"v": "ok", "at": _at()}}, config_dir
+    )
+    assert res.stats_added == ["anzen_r6_amount"] and res.unknown == []
+
+
+def test_new_file_series_with_a_copied_part_is_refused(sconf):
+    dup = {**EXP0, "periods": ["2021"]}
+    item = {**_exp_item([EXP0, dup]), "series_id": "copy_rate"}
+    it = page_items(with_series_data(_sdrafts(item), sconf))[0]
+    assert it["selector_state"] == "new"
+    assert it["selector_note"].startswith(
+        "足した部分が前の部分と重なる（2 番目の部分は 1 番目と同じセルを読む"
+    )
+    before = _ledger_bytes(sconf)
+    for checks, rest in (({}, True), ({it["k"]: {"v": "ok", "at": _at()}}, True)):
+        res = merge_checks(_sdrafts(item), checks, sconf, accept_rest=rest)
+        assert res.series_ai == [] and res.series_added == []
+        assert any(x.startswith("copy_rate：足した部分が前の部分と重なる") for x in res.skipped)
+        assert _ledger_bytes(sconf) == before
+    # 年ごとに別のファイルなら入る
+    ok = {**_exp_item([EXP0, {**EXP1, "periods": ["2021"]}]), "series_id": "year_rate"}
+    assert merge_checks(_sdrafts(ok), {}, sconf, accept_rest=True).series_ai == ["year_rate"]
+
+
+def test_same_draft_with_an_overlapping_unfetched_part_is_refused(sconf):
+    bad = {**EXP1, "periods": ["2020", "2021"]}
+    _exp_ledger(sconf, [EXP0, bad], [(0, "2019"), (0, "2020")])
+    item = _exp_item([EXP0, bad])
+    it = page_items(with_series_data(_sdrafts(item), sconf))[0]
+    assert it["selector_state"] == "same" and "重なる" in it["selector_note"]
+    before = _ledger_bytes(sconf)
+    res = merge_checks(_sdrafts(item), {}, sconf, accept_rest=True)
+    assert res.series_ai == [] and _ledger_bytes(sconf) == before
+    assert any("重なる" in x for x in res.skipped)
+
+
+def test_growth_keeps_the_ledger_label_and_names_and_says_so(sconf):
+    _growth_ledger(sconf, HUMAN_CHECKER)
+    rows = _series_file(sconf)
+    for r in rows:
+        if r["series_id"] == "file_rate":
+            r.update(
+                label="オーナーが直した文", status="保留", note="人のメモ", url="https://a.jp/"
+            )
+    _write_ledger(sconf, read_point_rows(sconf), rows)
+    item = _grown(label="ファイルの系列の割合", survey="別の調査", url="https://b.jp/",
+                  latest_known="2023", note="")  # fmt: skip
+    res = merge_checks(_sdrafts(item), {}, sconf, accept_rest=True)
+    assert res.series_ai == ["file_rate"] and res.series_downgraded == ["file_rate"]
+    assert res.series_label_kept == ["file_rate"]
+    row = _file_row(sconf)
+    assert row["label"] == "オーナーが直した文" and row["survey"] == FILE_SERIES["survey"]
+    assert row["url"] == "https://a.jp/" and row["status"] == "保留"
+    assert row["latest_known"] == "2023" and row["note"] == ""
+    assert len(json.loads(row["selector"])["parts"]) == 2
+    assert row["checked_by"] == AI_CHECKER and row["checked_sha"] == "" and row["trend"] == ""
+
+
+def test_growth_with_a_padded_id_downgrades_and_keeps_hold(sconf):
+    _growth_ledger(sconf, HUMAN_CHECKER)
+    rows = _series_file(sconf)
+    for r in rows:
+        if r["series_id"] == "file_rate":
+            r["status"] = "保留"
+    _write_ledger(sconf, read_point_rows(sconf), rows)
+    res = merge_checks(_sdrafts(_grown(series_id="file_rate ")), {}, sconf, accept_rest=True)
+    assert res.series_downgraded == ["file_rate"] and res.series_ai == ["file_rate"]
+    assert _file_row(sconf)["status"] == "保留"
+
+
+def test_cli_says_the_label_stays(sconf, tmp_path):
+    _growth_ledger(sconf, HUMAN_CHECKER)
+    drafts = tmp_path / "d.json"
+    drafts.write_text(json.dumps(_sdrafts(_grown(label="別の言い方")), ensure_ascii=False), "utf-8")
+    checks = tmp_path / "c.json"
+    checks.write_text("{}", "utf-8")
+    shutil.copy(DEFAULT_CONFIG_DIR / "sources.yaml", sconf / "sources.yaml")
+    settings = sconf / "s.toml"
+    settings.write_text("[paths]\n", "utf-8")
+    res = CliRunner().invoke(
+        app,
+        ["sources", "merge", "--drafts", str(drafts), "--from", str(checks), "--accept-rest",
+         "--settings", str(settings)],
+    )  # fmt: skip
+    assert res.exit_code == 0, res.output
+    assert "file_rate：ラベルは台帳のまま（オーナーが直した言い方を残す）" in res.output
+
+
+def test_held_series_card_says_so_and_an_ok_keeps_the_hold(sconf):
+    rows = [_srow(API_SERIES, checked_by=AI_CHECKER, checked_at="2026-11-01", status="保留")]
+    _write_ledger(sconf, read_point_rows(sconf), rows)
+    it = page_items(with_series_data(_sdrafts(API_SERIES), sconf))[0]
+    assert it["held"] is True
+    html = build_page(with_series_data(_sdrafts(API_SERIES), sconf))
+    assert "保留中" in html.split("function cardSeries")[1].split("\nfunction ")[0]
+    res = merge_checks(_sdrafts(API_SERIES), {it["k"]: {"v": "ok", "at": _at()}}, sconf)
+    assert res.series_added == ["work_rate"]
+    row = _series_file(sconf)[0]
+    assert row["checked_by"] == HUMAN_CHECKER and row["status"] == "保留"
+    plain = page_items(with_series_data(_sdrafts(FILE_SERIES), sconf))[0]
+    assert plain["held"] is False
+
+
+def test_ng_on_a_ledger_series_puts_it_on_hold_with_the_owner_note(sconf):
+    s = series_from_draft(API_SERIES)
+    sha = check_sha(s, parse_points(read_point_rows(sconf)), API_META)
+    owner = _srow(API_SERIES, checked_by=HUMAN_CHECKER, checked_at="2026-11-01",
+                  checked_sha=sha, note="前のメモ")  # fmt: skip
+    _write_ledger(sconf, read_point_rows(sconf), [owner])
+    it = page_items(with_series_data(_sdrafts(API_SERIES), sconf))[0]
+    res = merge_checks(
+        _sdrafts(API_SERIES), {it["k"]: {"v": "ng", "at": _at(), "note": "分類が違う"}}, sconf
+    )
+    assert res.rejected == ["work_rate"] and res.series_held == ["work_rate"]
+    assert res.series_added == [] and res.series_ai == []
+    row = _series_file(sconf)[0]
+    assert row["status"] == "保留" and row["checked_by"] == HUMAN_CHECKER
+    assert row["note"].startswith("前のメモ") and "分類が違う" in row["note"]
+    assert {k: v for k, v in row.items() if k not in ("status", "note")} == {
+        k: v for k, v in owner.items() if k not in ("status", "note")
+    }
+    # 台帳に無い系列の「違う」は、何も書かない
+    before = _ledger_bytes(sconf)
+    new = {**FILE_SERIES, "series_id": "brand_new"}
+    it = page_items(with_series_data(_sdrafts(new), sconf))[0]
+    res = merge_checks(_sdrafts(new), {it["k"]: {"v": "ng", "at": _at()}}, sconf)
+    assert res.rejected == ["brand_new"] and res.series_held == []
+    assert _ledger_bytes(sconf) == before
+
+
+def test_ledgers_are_written_through_temp_files(sconf, monkeypatch):
+    (sconf / f"{SERIES_FILE}.tmp").mkdir()  # 系列の一時ファイルが書けない
+    before = _ledger_bytes(sconf)
+    drafts = {**_drafts(), "series": [{**FILE_SERIES, "series_id": "brand_new"}]}
+    checks = {stat_key(STAT): {"v": "ok", "at": _at()}}
+    with pytest.raises(OSError):
+        merge_checks(drafts, checks, sconf, accept_rest=True)
+    assert _ledger_bytes(sconf) == before and not (sconf / "findings.csv").exists()
+    assert sorted(p.name for p in sconf.glob("*.tmp")) == [f"{SERIES_FILE}.tmp"]
