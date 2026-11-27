@@ -22,7 +22,11 @@ from koten.stats.series import (
     parse_series,
 )
 
-META = {"stat_name": "労働力調査", "gov_org": "総務省統計局", "title": "就業状態別人口"}
+META = {
+    "stat_name": "労働力調査", "gov_org": "総務省統計局", "title": "就業状態別人口",
+    "stats_data_id": "0003000001",
+    "chosen": [{"class": "区分", "item": "計", "code": "001", "unit": ""}],
+}  # fmt: skip
 SELECTOR = {"statsDataId": "0003000001", "cdCat01": "001"}
 
 

@@ -4011,7 +4011,35 @@ def _estat_failure(label: str, e: Exception) -> str:
     hint = ""
     if isinstance(e, FetchError) and e.status_code == 403:
         hint = "（ID が違うか、使えなくなっている）"
-    return f"{label}：{e or type(e).__name__}{hint}"
+    from koten.net import ApiError
+    from koten.stats.estat import EstatError
+    from koten.stats.series import SeriesError
+
+    text = str(e)
+    if not isinstance(e, (EstatError, ApiError, SeriesError, _ManifestError)):
+        # httpx・JSON の読み違いなど。e-Stat の答えと取り違えないよう、例外の名前を前に付ける
+        text = f"{type(e).__name__}：{text}" if text else type(e).__name__
+    return f"{label}：{text or type(e).__name__}{hint}"
+
+
+class _ManifestError(ValueError):
+    """取得の記録（manifest.jsonl）が読めない。e-Stat の答えの問題ではない。"""
+
+
+def _read_drafts(path: Path) -> dict:
+    """下書き（JSON）を読む。読めない・形が違うときは赤で出して exit 2。"""
+    import json
+
+    try:
+        data = json.loads(path.read_text("utf-8"))
+        if not isinstance(data, dict) or not all(
+            isinstance(i, dict) for i in data.get("series", [])
+        ):
+            raise ValueError("series の並びがオブジェクトの並びでない")
+    except (OSError, ValueError, AttributeError, TypeError) as e:
+        typer.secho(f"下書き {path} を読めない：{type(e).__name__}：{e}", fg="red", err=True)
+        raise typer.Exit(2) from e
+    return data
 
 
 def _estat_failures() -> tuple[type[Exception], ...]:
@@ -4055,7 +4083,14 @@ class _EstatRun:
 
     def fetcher(self) -> Fetcher:
         if self._fetcher is None:
-            self._fetcher = _make_fetcher(self.s, _estat_cache(self.s))
+            cache = _estat_cache(self.s)
+            try:
+                self._fetcher = _make_fetcher(self.s, cache)
+            except (ValueError, TypeError, KeyError) as e:  # manifest.jsonl の読み込みの失敗
+                raise _ManifestError(
+                    f"取得の記録 {cache / 'manifest.jsonl'} が読めない（{type(e).__name__}）。"
+                    "壊れた行を直すか、ファイルを消して取り直す"
+                ) from e
         return self._fetcher
 
     def client(self, app_id: str):
@@ -4083,7 +4118,12 @@ def stats_meta(
     import json
 
     from koten.stats.estat import EstatError, meta_record, resolve_selector
-    from koten.stats.series import meta_dir_for, valid_series_id
+    from koten.stats.series import (
+        meta_dir_for,
+        parse_series,
+        read_series_rows,
+        valid_series_id,
+    )
 
     s = _settings(settings)
     app_id = _estat_app_id()
@@ -4091,9 +4131,13 @@ def stats_meta(
         typer.secho(NO_APP_ID, fg="red", err=True)
         raise typer.Exit(2)
     path = Path(drafts)
-    data = json.loads(path.read_text("utf-8"))
+    data = _read_drafts(path)
     run = _EstatRun(s)
     meta_dir = meta_dir_for(s.config_dir)
+    in_ledger = {
+        r.series_id: str(r.selector.get("statsDataId", ""))
+        for r in parse_series(read_series_rows(s.config_dir))
+    }
     done = failed = 0
     for item in data.get("series", []):
         names = item.get("selector_names")
@@ -4120,6 +4164,12 @@ def stats_meta(
             typer.secho(_estat_failure(label, e), fg="red", err=True)
             failed += 1
             continue
+        if in_ledger.get(sid) and in_ledger[sid] != sel["statsDataId"]:
+            typer.secho(
+                f"{sid}：台帳ではこの系列の表は {in_ledger[sid]}、下書きは {sel['statsDataId']}。"
+                "台帳に入れるときは取り違えに気をつける",
+                fg="yellow",
+            )
         item["selector"] = sel
         _write_json(meta_dir / f"{sid}.json", meta_record(meta, sel))
         typer.echo(f"{sid}：selector を決めた {json.dumps(sel, ensure_ascii=False)}")

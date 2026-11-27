@@ -314,6 +314,25 @@ def series_problems(
                             out.append(
                                 f"{p}{col} {mine!r} が表の情報の {key} {theirs.strip()!r} と違う"
                             )
+                    if meta.get("stats_data_id") != sdid:
+                        out.append(
+                            f"{p}表の情報（{META_DIR}/{sid}.json）は別の表のもの"
+                            f"（{meta.get('stats_data_id')!r}・台帳は {sdid!r}）。"
+                            "uv run koten stats meta か stats fetch をやり直す"
+                        )
+                    chosen = meta.get("chosen")
+                    have = (
+                        sorted(str(c.get("code")) for c in chosen if isinstance(c, dict))
+                        if isinstance(chosen, list)
+                        else None
+                    )
+                    want = sorted(str(v) for k, v in sel.items() if k.startswith("cd"))
+                    if have != want:
+                        out.append(
+                            f"{p}表の情報の選んだ項目の符号 {have} が"
+                            f" selector の符号 {want} と違う。"
+                            "uv run koten stats meta か stats fetch をやり直す"
+                        )
                     for c in meta.get("chosen") or []:
                         if not isinstance(c, dict):
                             continue

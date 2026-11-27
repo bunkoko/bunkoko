@@ -453,6 +453,8 @@ def test_same_table_two_series_keep_their_own_meta_and_owner_check(env, monkeypa
             )
         )
     write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, rows)
+    assert runner.invoke(app, ["db", "init", "--settings", env.settings]).exit_code == 0
+    assert stats(env, "list").output.count("確かめ オーナー") == 2  # 表の情報と選びが合っている
     before_b = (env.docs / "all_rate.json").read_bytes()
     r = stats(env, "fetch", "--series", "age_rate", "--refresh")  # 片方だけ取り直す
     assert r.exit_code == 0 and "all_rate" not in r.output
@@ -460,6 +462,8 @@ def test_same_table_two_series_keep_their_own_meta_and_owner_check(env, monkeypa
     assert (env.docs / "all_rate.json").read_bytes() == before_b
     r = stats(env, "fetch", "--check")  # 両方とも、確かめは残っている
     assert r.exit_code == 0 and "オーナーの確かめが外れる" not in r.output
+    assert runner.invoke(app, ["db", "init", "--settings", env.settings]).exit_code == 0
+    assert stats(env, "list").output.count("確かめ オーナー") == 2  # 取り直したあとも
 
 
 def test_series_option_narrows_the_run(env, monkeypatch):
@@ -518,3 +522,58 @@ def test_list_shows_a_lapsed_owner_check(env, monkeypatch):
     assert "確かめが外れた" in out and "確かめ 未" not in out and "確かめ オーナー" not in out
     out = stats(env, "list", "--theme", "孤独").output
     assert "条件に合う系列がありません" in out and "db init" not in out
+
+
+def test_failure_text_names_the_exception_and_handles_empty_messages():
+    assert cli._estat_failure("x", httpx.HTTPError("")) == "x：HTTPError"
+    assert cli._estat_failure("x", httpx.ReadTimeout("遅い")) == "x：ReadTimeout：遅い"
+    assert cli._estat_failure("x", ValueError("")) == "x：ValueError"
+    assert cli._estat_failure("x", cli._ManifestError("記録が壊れた")) == "x：記録が壊れた"
+
+
+def test_http_failures_carry_the_exception_name(env, monkeypatch):
+    served_files(env)
+    env.state["files"].pop("000001")
+    r = stats(env, "fetch", "--series", "csv_rate")
+    assert r.exit_code == 1 and "csv_rate：HTTPStatusError：" in r.output
+
+
+def test_broken_manifest_is_reported_as_local(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    cache = env.root / "data" / "estat-cache"
+    cache.mkdir(parents=True)
+    (cache / "manifest.jsonl").write_text("{broken\n", encoding="utf-8")
+    r = stats(env, "fetch", "--check")
+    assert r.exit_code == 1 and "manifest.jsonl" in r.output and "取得の記録" in r.output
+    assert "JSONDecodeError：" not in r.output
+
+
+def test_meta_warns_when_the_ledger_has_another_table(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    moved = srow(selector=json.dumps({**SEL, "statsDataId": "0001112223"}))
+    write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, [moved])
+    d = {"series": [{"series_id": "age_rate", "source_kind": "estat_api", "stats_data_id": SID,
+                     "selector_names": {"年齢": "20～29歳"}}]}  # fmt: skip
+    path = env.tmp / "draft.json"
+    path.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    r = stats(env, "meta", "--drafts", str(path))
+    assert r.exit_code == 0 and "0001112223" in r.output and SID in r.output
+
+
+def test_meta_with_non_string_name_value_is_an_item_failure(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    d = {"series": [{"series_id": "age_rate", "source_kind": "estat_api", "stats_data_id": SID,
+                     "selector_names": {"年齢": 20}}]}  # fmt: skip
+    path = env.tmp / "draft.json"
+    path.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    r = stats(env, "meta", "--drafts", str(path))
+    assert r.exit_code == 1 and "age_rate" in r.output and "文字列" in r.output
+
+
+@pytest.mark.parametrize("body", ["これはJSONでない", "[1, 2]", '{"series": [1]}'])
+def test_meta_refuses_a_bad_drafts_file(env, monkeypatch, body):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    path = env.tmp / "draft.json"
+    path.write_text(body, encoding="utf-8")
+    r = stats(env, "meta", "--drafts", str(path))
+    assert r.exit_code == 2 and "下書き" in r.output and "Traceback" not in r.output

@@ -15,3 +15,6 @@ data/
 /tmp*/
 # Mac の Finder が作るファイル
 .DS_Store
+# 書きかけの一時ファイル（net.py の .part、JSON を置き換える前の .tmp）
+*.tmp
+*.part

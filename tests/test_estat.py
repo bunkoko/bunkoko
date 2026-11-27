@@ -709,3 +709,10 @@ def test_points_refresh_true_requests_again(tmp_path):
     assert len(seen) == n
     client.points(make_series(), refresh=True)
     assert len(seen) == n + 2  # 表の情報と値の両方を取り直す
+
+
+def test_resolve_refuses_a_non_string_item_name():
+    meta = parse_meta(meta_json())
+    with pytest.raises(EstatError) as e:
+        resolve_selector(meta, {"年齢": 20})
+    assert "年齢" in str(e.value) and "文字列" in str(e.value)

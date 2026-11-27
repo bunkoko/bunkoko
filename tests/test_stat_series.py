@@ -38,7 +38,11 @@ from koten.stats.series import (
     write_points,
 )
 
-META = {"stat_name": "労働力調査", "gov_org": "総務省統計局", "title": "就業状態別人口"}
+META = {
+    "stat_name": "労働力調査", "gov_org": "総務省統計局", "title": "就業状態別人口",
+    "stats_data_id": "0003000001",
+    "chosen": [{"class": "区分", "item": "計", "code": "001", "unit": ""}],
+}  # fmt: skip
 API_SELECTOR = {"statsDataId": "0003000001", "cdCat01": "001"}
 
 
@@ -390,8 +394,20 @@ def test_meta_is_required_and_must_match_for_api_series(env):
         bad = {**META, key: "別の名前"}
         probs = series_problems([row()], [], **{**env, "metas": {"work_rate": bad}})
         assert any(col in x and "別の名前" in x for x in probs), col
-    padded = {k: f" {v} " for k, v in META.items()}
+    padded = {**META, **{k: f" {META[k]} " for k in ("stat_name", "gov_org", "title")}}
     assert series_problems([row()], [], **{**env, "metas": {"work_rate": padded}}) == []
+
+
+def test_meta_must_belong_to_the_rows_table_and_selection(env):
+    other = {**META, "stats_data_id": "0009999999"}
+    probs = series_problems([row()], [], **{**env, "metas": {"work_rate": other}})
+    assert any("別の表" in x and "0009999999" in x for x in probs)
+    wrong = {**META, "chosen": [{"class": "区分", "item": "男", "code": "002", "unit": ""}]}
+    probs = series_problems([row()], [], **{**env, "metas": {"work_rate": wrong}})
+    assert any("選んだ項目の符号" in x and "002" in x for x in probs)
+    none = {k: v for k, v in META.items() if k != "chosen"}
+    probs = series_problems([row()], [], **{**env, "metas": {"work_rate": none}})
+    assert any("選んだ項目の符号" in x for x in probs)
 
 
 def test_load_meta_refuses_an_unsafe_series_id(tmp_path):

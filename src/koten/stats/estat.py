@@ -221,6 +221,8 @@ def resolve_selector(meta: TableMeta, names: dict[str, str]) -> dict[str, str]:
     want: dict[str, tuple[str, str]] = {}
     for k, val in names.items():
         nk = _norm_name(k)
+        if not isinstance(val, str):
+            raise EstatError(f"分類 {k!r} の項目の名前は文字列にする（{val!r}）")
         if nk not in by_norm:
             have = "／".join(c.name for c in fixed)
             raise EstatError(f"分類の名前 {k!r} が表に無い（ある分類：{have}）")
