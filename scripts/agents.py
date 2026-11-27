@@ -137,6 +137,7 @@ TEXT_HISTORY_WHY = {   # 過去の本文の取得が止まった理由（利用�
     "network": "続けて取れなかった（{why}）。回線かサイトの不調。間をあけながら試したが、だめだった。時間をおいて、まず 1 件だけ試す（--history-max 1）。取れたら同じコマンドで続きから",
     "disk": "取っている間に HDD に書けなくなった（外れた・いっぱいになった）。直して、同じコマンドで続きから",
     "cooling": "{gate}。確かめの 1 件も取らない（毎日の収集を守るため）",
+    "too_early": "{gate}。早めに始められるのは、あと 1 日のときだけ（断られたすぐ後に、たたみかけない）。何も取っていない",
     "no_pdf_part": "PDF を読む部品が足りない（保護つきの PDF を読むには cryptography が要る。無いと、保護つきの書類の本文が空になる）。"
                    "./cfd update で入れてから、同じコマンドで。何も取っていない",
 }
@@ -227,9 +228,14 @@ def _text_history(args, C, df, ir_root) -> None:
           + f"を、新しい順に {C.HISTORY_INTERVAL:g} 秒に 1 件ずつ取る（東証 上場会社情報サービス。同時に 1 本。"
           f"1 日に {C.HISTORY_DAY_MAX:,} 件まで ＝ 全部で {-(-todo // max(C.HISTORY_DAY_MAX, 1)):,} 日ほど。今の速さは ./cfd agents status。毎朝 7:50〜8:45 は休む）", flush=True)
     print("過去の本文: " + C.text_place_line(place) + ("。原本の PDF も、となりの ir_pdf に残す" if keep_pdf else "。原本の PDF は残さない"), flush=True)
+    early = bool(getattr(args, "early", False))
+    gate = C.history_gate(ir_root, datetime.now()) if early else None
+    if gate and len(gate["days"]) >= gate["need"] - C.EARLY_SHORT:
+        print(f"過去の本文: 利用者の頼みで、数えがそろう前に始める（今 {len(gate['days'])} 日。そろうのは {gate['need']} 日）。"
+              "断られたら、すぐ止まって、数えは 0 に戻る（毎日の収集も、しばらくゆっくりになる）", flush=True)
     keep_awake()
     got = C.collect_text_history(df, ir_root, HISTORY_FROM, max_docs=args.history_max or None, keep_pdf=keep_pdf,
-                                 interval=C.HISTORY_INTERVAL, log=lambda s: print(s, flush=True))
+                                 interval=C.HISTORY_INTERVAL, log=lambda s: print(s, flush=True), early=early)
     print(f"過去の本文: 取れた +{got['text']:,}、サイトに無い {got['missing']:,}、取れなかった {got['failed']:,}、残り {got['left']:,}", flush=True)
     if got["stopped"] == "day_done":                            # ふつうの止まり方（1 日に取りに行く数を決めてある）
         print(f"過去の本文: 今日の分（1 日に {C.HISTORY_DAY_MAX:,} 件まで）は取り終えた。続きは明日以降に、同じコマンドで", flush=True)
@@ -2699,6 +2705,8 @@ def main() -> None:
                    help="collect: 過去の開示の本文（2016-10〜）を、新しい順にまとめて取る（10 秒に 1 件・1 日に 2,000 件まで。置き場所は外付けの HDD。止めても続きから）")
     p.add_argument("--text-history-stop", action="store_true",
                    help="collect: 動いている過去の本文の取得（--text-history）を止める（取った分は残る。続きは --text-history で）")
+    p.add_argument("--early", action="store_true",
+                   help="collect --text-history: サイトに断られた後の数えが、あと 1 日のときに、そろう前に始める（利用者がはっきり頼んだときだけ。自動の取得では使わない）")
     p.add_argument("--no-pdf", action="store_true", help="collect --text-history: 原本の PDF を残さない（既定は、本文のとなりの ir_pdf に残す）")
     p.add_argument("--history-max", type=int, default=0, help="collect --text-history: 今回取る数の上限（0 = 全部。試しに少しだけ取るとき）")
     p.add_argument("--max-docs", type=int, default=300, help="collect: 1 回に取る書類の上限")

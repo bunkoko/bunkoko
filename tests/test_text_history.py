@@ -1122,3 +1122,113 @@ def test_morning_collection_looks_back_thirty_days(tmp_path, capsys, monkeypatch
     m.cmd_collect(daily_ns(root, docs_days=m.DOCS_DAYS))
     out = capsys.readouterr().out
     assert "直近 30 日" in out and "本文 +3" in out and (ir / "text" / f"{old:%Y-%m}" / "d0.txt").exists()
+
+
+# --------------------------------------------------------------------------- 利用者の頼みで、数えがそろう前に始める（2026-11-28）
+def two_clean_mornings(root):
+    """11-25 の夜に断られ、26・27 日の朝は無事だった（数えは 2 日。あと 1 日）。"""
+    C.note_refused(root, 503, datetime(2026, 11, 25, 20, 15))
+    for d in (26, 27):
+        written(root / "xbrl" / "2026-11" / f"n{d}.csv", datetime(2026, 11, d, 8, 3))
+    return Clock(datetime(2026, 11, 28, 2, 0))
+
+
+def test_history_may_start_a_day_early_when_the_user_asks(tmp_path):
+    """利用者の頼み（2026-11-28）: 数えがあと 1 日のときは、そろう前に始められる（early）。頼まれなければ、今までどおり待つ。"""
+    root, _ = hdd(tmp_path)
+    clock = two_clean_mornings(root)
+    calls = []
+
+    def get(url):
+        calls.append(url)
+        return _pdf("a")
+
+    assert run(root, get, clock=clock)["stopped"] == "cooling" and calls == []
+    got = run(root, get, clock=clock, early=True)
+    assert got["text"] == 3 and got["stopped"] is None and len(calls) == 3
+
+
+def test_history_does_not_start_early_when_more_than_a_day_is_missing(tmp_path):
+    """早めに始められるのは、あと 1 日のときだけ（断られた直後に、たたみかけない）。"""
+    root, _ = hdd(tmp_path)
+    C.note_refused(root, 503, datetime(2026, 11, 25, 20, 15))
+    written(root / "xbrl" / "2026-11" / "n26.csv", datetime(2026, 11, 26, 8, 3))
+    calls = []
+    got = run(root, lambda url: calls.append(url) or _pdf("a"), clock=Clock(datetime(2026, 11, 27, 2, 0)), early=True)
+    assert got["stopped"] == "too_early" and calls == []
+    assert (got["since"], got["clean"], got["need"], got["left"]) == ("2026-11-25 20:15", 1, 3, 3)
+
+
+def test_an_early_start_stops_when_the_daily_collection_is_refused_meanwhile(tmp_path, monkeypatch):
+    root, _ = hdd(tmp_path)
+    monkeypatch.setattr(C, "HISTORY_CHUNK", 2)
+    clock = two_clean_mornings(root)
+    calls = []
+
+    def get(url):
+        calls.append(url)
+        if len(calls) == 3:
+            C.note_refused(root, 503, clock.t)                                            # このとき、毎日の収集が断られた
+        return _pdf("a")
+
+    got = run(root, get, rows=MANY[:8], clock=clock, early=True)
+    assert got["stopped"] == "cooling" and len(calls) == 4 and got["left"] == 4
+
+
+def test_an_early_start_that_is_refused_sets_the_count_back_to_zero(tmp_path):
+    """早めに始めて断られたら、今までどおりすぐ止まり、数えは 0 に戻る（早めの印を付けても、もう始まらない）。"""
+    root, _ = hdd(tmp_path)
+    clock = two_clean_mornings(root)
+
+    def refuse(url):
+        raise http_error(url, 503)
+
+    assert run(root, refuse, clock=clock, early=True)["stopped"] == "refused"
+    assert C.history_gate(root, clock.t)["days"] == []
+    calls = []
+    again = run(root, lambda url: calls.append(url) or _pdf("a"), clock=clock, early=True)
+    assert again["stopped"] == "too_early" and calls == []
+
+
+def test_early_changes_nothing_when_the_wait_is_already_over(tmp_path):
+    root, _ = hdd(tmp_path)
+    clock = two_clean_mornings(root)
+    written(root / "xbrl" / "2026-11" / "n28.csv", datetime(2026, 11, 28, 1, 0))
+    assert run(root, lambda url: _pdf("a"), clock=clock, early=True)["text"] == 3
+
+
+def test_tool_starts_early_only_when_asked_and_says_so(tmp_path, capsys, monkeypatch, fast):
+    root, ir, _ = world(tmp_path)
+    monkeypatch.setattr(C, "http_get", lambda url, tries=1: _pdf("a"))
+    now = datetime.now()
+    C.note_refused(ir, 503, now - timedelta(days=3))
+    for k in (2, 1):
+        written(ir / "xbrl" / f"{now:%Y-%m}" / f"n{k}.csv", now - timedelta(days=k))
+    with pytest.raises(SystemExit) as stop:
+        load_script().cmd_collect(ns(root))                                               # 頼まれなければ、待つ
+    assert "今 2 日" in str(stop.value)
+    capsys.readouterr()
+    load_script().cmd_collect(ns(root, early=True))
+    out = capsys.readouterr().out
+    assert "利用者の頼みで、数えがそろう前に始める（今 2 日" in out and "断られたら" in out and "取れた +3" in out
+
+
+def test_tool_refuses_an_early_start_right_after_a_refusal(tmp_path, capsys, monkeypatch, fast):
+    root, ir, _ = world(tmp_path)
+    called = []
+    monkeypatch.setattr(C, "http_get", lambda url, tries=1: called.append(url) or _pdf("a"))
+    now = datetime.now()
+    C.note_refused(ir, 503, now - timedelta(days=2))
+    written(ir / "xbrl" / f"{now:%Y-%m}" / "n1.csv", now - timedelta(days=1))
+    with pytest.raises(SystemExit) as stop:
+        load_script().cmd_collect(ns(root, early=True))
+    said = str(stop.value)
+    assert "早めに始められるのは、あと 1 日のときだけ" in said and "今 1 日" in said and called == []
+
+
+def test_tool_says_when_early_was_not_needed(tmp_path, capsys, monkeypatch, fast):
+    root, _, _ = world(tmp_path)
+    monkeypatch.setattr(C, "http_get", lambda url, tries=1: _pdf("a"))
+    load_script().cmd_collect(ns(root, early=True))                                       # 断られたことが無い
+    out = capsys.readouterr().out
+    assert "数えがそろう前に始める" not in out and "取れた +3" in out

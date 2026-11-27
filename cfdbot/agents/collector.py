@@ -92,6 +92,7 @@ REFUSE_WAIT, REFUSE_WAIT_MAX = 60.0, 600.0      # 断られたら待つ秒数（
 GENTLE_FACTOR, GENTLE_DAYS = 10, 14       # 断られてから 14 日は、毎日の収集も間隔を 10 倍にあけて取る（1 秒 → 10 秒に 1 件）
 CLEAN_NEED = 3                            # 断られた後、毎日の収集が断られずに書類を受け取れた日が、これだけそろったら、過去分をまとめて取ってよい
 #                                           （利用者の決め 2026-11-25: 「朝の収集が 3 回続けて無事なら始める」。その前の決まりは「7 日休む」で、根拠の無い見当だった）
+EARLY_SHORT = 1                           # 利用者がはっきり頼んだときに、数えがそろう前に過去分を始めてよいのは、あとこの日数のときだけ（2026-11-28 利用者の頼み）
 CLEAN_LOOK_BACK = 62                      # 無事だった日を数えるときに見る置き場所: 断られた日の 62 日前の月から後（毎日の収集が書く所。古い月は過去分の取得が書く所なので見ない）
 
 
@@ -942,13 +943,15 @@ def _save_history(root: Path, r, blob: bytes, keep_pdf: bool) -> None:
 def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: int | None = None, keep_pdf: bool = True,
                          interval: float = INTERVAL, get: Callable[[str], bytes] | None = None, log: Callable[[str], None] = print,
                          now=None, sleep: Callable[[float], None] = time.sleep, free: Callable[[str], int] | None = None,
-                         day_max: int | None = None) -> dict:
+                         day_max: int | None = None, early: bool = False) -> dict:
     """過去の開示の本文（PDF の最初の数ページを文字にしたもの。毎日の収集と同じ形）を、新しい順にまとめて取る。
 
     決まり: interval 秒に 1 件・同時に 1 本だけ（錠）。毎朝 8:00 の収集の時間（QUIET）は取らず、錠も持たない
     （毎朝の収集は、ほかの取得が動いていると書類を取らずに終わる。決算の数字が抜けると、その日の E1 の記録が傷む）。
     サイトに無かった書類（404）は控えて、次からは取りに行かない。断られたら（REFUSED）すぐ止める。
     断られた後は、毎日の収集が CLEAN_NEED 日、断られずに書類を受け取れるまで取らない（history_gate。取っている間も、区切りごとに確かめる）。
+    early（利用者がはっきり頼んだときだけ。2026-11-28）: その数えがあと EARLY_SHORT 日のときに限り、そろう前に始める。
+    始めた後に新しく断られたら（毎日の収集でも、この取得でも）、今までどおり止まる。数えがもっと足りないときは、取らない（too_early）。
     置き場所は外付けのディスクへのリンクであること（2026-11-20 利用者の決め）。keep_pdf なら原本もそのとなりに残す。
     返すのは、取れた数（text）・サイトに無かった数（missing）・取れなかった数（failed）・残り（left）・止まった理由（stopped）。
     """
@@ -965,10 +968,12 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
     if not place["ready"]:
         return dict(done, stopped="no_text_place")
 
+    ahead = None                                                # 早めに始めたときの「その前に断られた時刻」。これより後に断られたら、止まる
+
     def shut() -> dict | None:
         """断られた後で、まだ取ってはいけない間なら、止まる理由（毎日の収集を守る。確かめの 1 件も取らない）。"""
         gate = history_gate(root, now())
-        if gate is None:
+        if gate is None or (ahead is not None and gate["since"] == ahead):
             return None
         return {"stopped": "cooling", "since": f"{gate['since']:%Y-%m-%d %H:%M}", "clean": len(gate["days"]), "need": gate["need"]}
 
@@ -977,6 +982,10 @@ def collect_text_history(disc: pd.DataFrame, root: Path, since: str, max_docs: i
     if not crypto_ready():                                      # 部品が無いと、保護つきの書類の本文が空になる。取りに行かない
         return dict(done, stopped="no_pdf_part")
     closed = shut()
+    if closed and early:                                        # 利用者の頼みで、数えがそろう前に始める（あと EARLY_SHORT 日のときだけ）
+        if closed["clean"] < closed["need"] - EARLY_SHORT:
+            return {**done, **closed, "stopped": "too_early"}
+        ahead, closed = history_gate(root, now())["since"], None
     if closed:
         return dict(done, **closed)
     todo = len(jobs) if max_docs is None else min(len(jobs), max_docs)
