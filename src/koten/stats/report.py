@@ -46,14 +46,18 @@ def mark_list(points: list[Point]) -> list[str]:
 
 
 def changed_values(old: list[Point], new: list[Point]) -> list[str]:
-    """前の台帳の点から値か mark が変わった（消えた）年。「年: 前 → 今」。新しい年は含めない。"""
+    """前の台帳の点から値か mark が変わった年。「年: 前 → 今」。増えた年・消えた年は含めない。"""
     now = {p.period: p for p in new}
-    out = []
-    for p in sorted(old, key=lambda p: p.period):
-        q = now.get(p.period)
-        if q is None or (q.value, q.mark) != (p.value, p.mark):
-            out.append(f"{p.period}: {_text(p)} → {_text(q)}")
-    return out
+    return [
+        f"{p.period}: {_text(p)} → {_text(now[p.period])}"
+        for p in sorted(old, key=lambda p: p.period)
+        if p.period in now and (now[p.period].value, now[p.period].mark) != (p.value, p.mark)
+    ]
+
+
+def added_removed_years(old: list[Point], new: list[Point]) -> tuple[list[str], list[str]]:
+    a, b = {p.period for p in old}, {p.period for p in new}
+    return sorted(b - a), sorted(a - b)
 
 
 def units_text(points: list[Point], units: set[str]) -> str:
@@ -69,7 +73,9 @@ def report_lines(
     units: set[str],
     diffs: list[str],
     changed: list[str],
-    owner_checked: bool,
+    added: list[str] = (),
+    removed: list[str] = (),
+    lapsed: bool = False,
 ) -> list[str]:
     """系列1つ分の報告。1行目が要約、続きが気をつける点。"""
     seg = segments(s, points)
@@ -85,8 +91,12 @@ def report_lines(
     lines += [f"  台帳との違い：{d}" for d in diffs]
     if changed:
         lines.append("  前から変わった数：" + "、".join(changed))
-        if owner_checked:
-            lines.append("  オーナーの確かめが外れる（取り直した数が前と違う）")
+    if added:
+        lines.append("  増えた年：" + "・".join(added))
+    if removed:
+        lines.append("  消えた年：" + "・".join(removed))
+    if lapsed:
+        lines.append("  オーナーの確かめが外れる（数・名前・表の情報が前の確かめと違う）")
     return lines
 
 

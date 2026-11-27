@@ -4120,6 +4120,7 @@ def stats_fetch(
     from koten.stats.series import (
         POINTS_FILE,
         SeriesError,
+        check_sha,
         meta_dir_for,
         parse_series,
         read_point_rows,
@@ -4182,19 +4183,25 @@ def stats_fetch(
             typer.secho(_estat_failure(t.series_id, e), fg="red", err=True)
             failed += 1
             continue
-        changed = rp.changed_values(rp.stored_points(old_rows, t.series_id), points)
+        old = rp.stored_points(old_rows, t.series_id)
+        changed = rp.changed_values(old, points)
+        added, removed = rp.added_removed_years(old, points)
+        record = meta_record(meta, t.selector) if meta is not None else None
+        lapsed = t.checked_by == HUMAN_CHECKER and check_sha(t, points, record) != t.checked_sha
         for line in rp.report_lines(
             t,
             points,
             units=units,
             diffs=diffs,
             changed=changed,
-            owner_checked=t.checked_by == HUMAN_CHECKER,
+            added=added,
+            removed=removed,
+            lapsed=lapsed,
         ):
             typer.echo(line)
         ok[t.series_id] = points
-        if meta is not None and not only:
-            _write_json(meta_dir / f"{meta.stats_data_id}.json", meta_record(meta, t.selector))
+        if record is not None and not only:
+            _write_json(meta_dir / f"{meta.stats_data_id}.json", record)
     if not only and ok:
         try:
             write_points(s.config_dir, set(ok), [p for ps in ok.values() for p in ps])

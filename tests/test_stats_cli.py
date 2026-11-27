@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import re
 from types import SimpleNamespace
 
 import httpx
+import openpyxl
 import pytest
 from typer.testing import CliRunner
 
@@ -19,14 +21,19 @@ from koten.stats.series import (
     POINTS_FILE,
     SERIES_COLUMNS,
     SERIES_FILE,
+    check_sha,
+    load_meta,
+    parse_points,
+    parse_series,
     read_point_rows,
+    read_series_rows,
 )
-from tests.test_estat import SEL, SID, cls, data_json, item, meta_json, v
+from tests.test_estat import SEL, SID, cls, data_json, item, meta_json, table_inf, v
 
 runner = CliRunner()
 SECRET = "0123456789abcdef0123456789abcdef01234567"
 OTHER_SID = "0009999999"
-TIMES = [item(f"{y}000000", f"{y}年") for y in (2019, 2020, 2021, 2022)]
+TIMES = [item(f"{y}000000", f"{y}年") for y in (2019, 2020, 2021, 2022, 2023)]
 CLASSES = [
     cls("tab", "表章項目", [item("01", "割合", "%")]),
     cls("cat01", "年齢", [item("1", "総数"), item("2", "20～29歳")]),
@@ -69,16 +76,21 @@ def write_csv(path, cols, rows):
         w.writerows(rows)
 
 
-def estat_server(seen):
+def estat_server(seen, state):
     def handler(req: httpx.Request) -> httpx.Response:
         seen.append(req)
+        if "file-download" in req.url.path:
+            return httpx.Response(200, content=state["files"][req.url.params["statInfId"]])
         q = req.url.params
         assert q.get("appId") == SECRET
         if q.get("statsDataId") == OTHER_SID:
             return httpx.Response(403, text="forbidden")
+        table = table_inf(TITLE={"@no": "410101", "$": state["title"]})
         if req.url.path.endswith("getMetaInfo"):
-            return httpx.Response(200, json=meta_json(CLASSES))
-        return httpx.Response(200, json=data_json(VALUES, classes=CLASSES))
+            return httpx.Response(200, json=meta_json(CLASSES, table=table))
+        body = data_json(state["values"], classes=CLASSES)
+        body["GET_STATS_DATA"]["STATISTICAL_DATA"]["TABLE_INF"] = table
+        return httpx.Response(200, json=body)
 
     return handler
 
@@ -107,7 +119,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.delenv("KOTEN_ESTAT_APPID", raising=False)
     monkeypatch.setattr("koten.config.REPO_ROOT", root)  # data/estat-cache を tmp に
     seen: list[httpx.Request] = []
-    client = httpx.Client(transport=httpx.MockTransport(estat_server(seen)))
+    state = {"values": list(VALUES), "title": "年齢別の割合", "files": {}}
+    client = httpx.Client(transport=httpx.MockTransport(estat_server(seen, state)))
     real = cli._make_fetcher
     holder = SimpleNamespace(client=client)
     monkeypatch.setattr(
@@ -115,7 +128,7 @@ def env(tmp_path, monkeypatch):
     )
     return SimpleNamespace(
         root=root, config=cfg, docs=root / "docs" / "estat", settings=str(settings),
-        seen=seen, tmp=tmp_path,
+        seen=seen, tmp=tmp_path, state=state,
     )  # fmt: skip
 
 
@@ -186,14 +199,95 @@ def test_changed_values_report_and_owner_warning(env, monkeypatch):
     r = stats(env, "fetch", "--check")
     assert "2019: 9 → 10" in r.output and "2021:" not in r.output.split("前から")[1]
     assert "オーナーの確かめが外れる" not in r.output
-    owner = srow(checked_by=HUMAN_CHECKER, checked_at="2026-11-01", checked_sha="x")
-    write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, [owner])
-    r = stats(env, "fetch", "--check")
-    assert "オーナーの確かめが外れる" in r.output
-    # 同じ数なら言わない
-    write_csv(env.config / POINTS_FILE, POINTS_COLUMNS, [prow("2019", "10")])
-    r = stats(env, "fetch", "--check")
     assert "オーナーの確かめが外れる" not in r.output
+
+
+def owner_checked(env):
+    """今の取り方で台帳に書いたあと、その数・表の情報に対してオーナーが確かめた形にする。"""
+    assert stats(env, "fetch").exit_code == 0
+    s = parse_series(read_series_rows(env.config))[0]
+    sha = check_sha(s, parse_points(read_point_rows(env.config)), load_meta(env.docs, SID))
+    row = srow(checked_by=HUMAN_CHECKER, checked_at="2026-11-01", checked_sha=sha)
+    write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, [row])
+
+
+def test_owner_note_follows_the_real_lapse_rule(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    owner_checked(env)
+    r = stats(env, "fetch", "--check", "--refresh")  # 何も変わらない
+    assert r.exit_code == 0 and "オーナーの確かめが外れる" not in r.output
+    env.state["values"] = [*VALUES, v(2023, "14")]  # 新しい年だけ
+    r = stats(env, "fetch", "--check", "--refresh")
+    assert "オーナーの確かめが外れる" in r.output and "増えた年：2023" in r.output
+    assert "前から変わった数" not in r.output
+    env.state["values"] = VALUES[:2]  # 年が消える
+    r = stats(env, "fetch", "--check", "--refresh")
+    assert "消えた年：2022" in r.output and "オーナーの確かめが外れる" in r.output
+
+
+def test_owner_note_when_only_the_table_title_changes(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    owner_checked(env)
+    env.state["title"] = "新しい題"
+    r = stats(env, "fetch", "--check", "--refresh")
+    assert "オーナーの確かめが外れる" in r.output and "前から変わった数" not in r.output
+    assert "増えた年" not in r.output
+
+
+def served_files(env):
+    csv_body = "表題,,,\n,2021年,2022年,2023年\n孤独,39.5,40.0,40.1\n".encode()
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "表1"
+    ws.append(["", 2021, 2022])
+    ws.append(["x", 1.5, "-"])
+    buf = io.BytesIO()
+    wb.save(buf)
+    env.state["files"] = {"000001": csv_body, "000002": buf.getvalue()}
+    csv_part = {
+        "statInfId": "000001", "fileKind": "0", "updated": "2026-01-01", "sheet": "",
+        "values": "B3:D3", "periods_cells": "B2:D2", "label_cells": ["A3"],
+    }  # fmt: skip
+    xlsx_part = {
+        "statInfId": "000002", "fileKind": "0", "updated": "2026-01-01", "sheet": "表1",
+        "values": "B2:C2", "periods_cells": "B1:C1",
+    }  # fmt: skip
+    rows = [
+        srow(series_id=sid, source_kind="estat_file", selector=json.dumps({"parts": [part]}))
+        for sid, part in (("csv_rate", csv_part), ("xlsx_rate", xlsx_part))
+    ]
+    write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, rows)
+
+
+def manifest_times(env):
+    path = env.root / "data" / "estat-cache" / "manifest.jsonl"
+    entries = [json.loads(x) for x in path.read_text("utf-8").splitlines() if x.strip()]
+    return {re.search(r"statInfId=(\d+)", e["url"]).group(1): e["fetched_at"] for e in entries}
+
+
+def test_file_series_end_to_end_with_cache_and_refresh(env):  # appId は無くてよい
+    served_files(env)
+    r = stats(env, "fetch")
+    assert r.exit_code == 0, r.output
+    assert (
+        "csv_rate：3 点" in r.output and "xlsx_rate：2 点" in r.output and "mark 2022:-" in r.output
+    )
+    rows = read_point_rows(env.config)
+    assert [(x["series_id"], x["period"], x["value"], x["mark"]) for x in rows] == [
+        ("csv_rate", "2021", "39.5", ""), ("csv_rate", "2022", "40.0", ""),
+        ("csv_rate", "2023", "40.1", ""), ("xlsx_rate", "2021", "1.5", ""),
+        ("xlsx_rate", "2022", "", "-"),
+    ]  # fmt: skip
+    times = manifest_times(env)
+    for x in rows:
+        assert x["fetched_at"] == times["000001" if x["series_id"] == "csv_rate" else "000002"]
+    assert len(env.seen) == 2
+    r = stats(env, "fetch")  # 取り直さない：要求は増えず、取った日時も変わらない
+    assert len(env.seen) == 2 and manifest_times(env) == times
+    assert {x["fetched_at"] for x in read_point_rows(env.config)} == set(times.values())
+    r = stats(env, "fetch", "--refresh")
+    assert r.exit_code == 0 and len(env.seen) == 4
+    assert manifest_times(env) == times  # 中身が同じなら日時は前のまま
 
 
 def test_drafts_are_check_only(env, monkeypatch):
