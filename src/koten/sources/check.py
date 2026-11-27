@@ -911,7 +911,9 @@ def _series_row(
 ) -> dict[str, str]:
     """stat_series.csv の1行。人が確かめた行は、label の直しを当てたあとの check_sha を入れる。
 
-    status は台帳の行のまま（保留の系列は、「合っている」でも保留のまま。L9）。"""
+    status は台帳の行のまま（保留の系列は、「合っている」でも保留のまま。L9）。
+    note：人が押した行は押したときのメモ（無ければ下書きの note）。AI の行は台帳の note を残し、
+    下書きの note を足す（オーナーの「違う」・保留の理由を消さない。同じ文は1回だけ。N2）。"""
     row = {col: _series_cell(col, d.get(col, "")) for col in SERIES_COLUMNS}
     fix = c.get("fix") or {}
     if _text(fix.get("label")):
@@ -926,7 +928,10 @@ def _series_row(
     row["checked_sha"] = (
         check_sha(series_from_draft(row), _points_of(d), d.get("meta")) if human else ""
     )
-    row["note"] = _text(c.get("note", ""))[:200] or row.get("note", "")
+    if human:
+        row["note"] = _text(c.get("note", ""))[:200] or row.get("note", "")
+    else:
+        row["note"] = _joined_note((old or {}).get("note", ""), row.get("note", ""))
     return row
 
 
@@ -939,13 +944,17 @@ NOTE_JOIN = " ／ "
 def _joined_note(old: str, new: str) -> str:
     """台帳の note に下書きの note を「 ／ 」で足す。どちらかが空なら空でないほう。
 
-    台帳の note がもう下書きの note で終わっている（同じ文・前に足した文）なら足さない。"""
+    台帳の note に下書きの note がもう入っている（「／」で区切った並びのどこかに同じ文が続けて
+    ある。最初に下書きから入った文・前に足した文）なら足さない（取り込み直しても1回だけ）。"""
     old, new = _text(old), _text(new)
     if not old or not new:
         return old or new
     have = [x.strip() for x in old.split("／")]
     add = [x.strip() for x in new.split("／")]
-    return old if have[-len(add) :] == add else f"{old}{NOTE_JOIN}{new}"
+    n = len(add)
+    if any(have[i : i + n] == add for i in range(len(have) - n + 1)):
+        return old
+    return f"{old}{NOTE_JOIN}{new}"
 
 
 def _grown_row(prev: dict[str, str], d: dict[str, Any], *, day: str) -> dict[str, str]:
@@ -1043,8 +1052,10 @@ def merge_checks(
     - 人が確かめた行を、AI が確かめた行で上書きしない。ただし統計の系列で部分を足した・直した
       下書き（growth）は、accept_rest のとき人の行も AI の行に戻して入れる（series_downgraded。
       人は前の部分の数だけを確かめたので）。growth で下書きから取るのは selector・
-      latest_known・breaks・where だけ。note は台帳の note に足す（label などは台帳のまま。
-      R28・N2）
+      latest_known・breaks・where だけ（label などは台帳のまま。R28）
+    - AI の行として書き直すとき（growth・押していない行の accept_rest）は、台帳の note を残し、
+      下書きの note がまだ無ければ足す（オーナーの「違う」・保留の理由を消さない。N2）。
+      オーナーが押した行の note は押したときのメモ
     - 台帳にあって数のある API の系列は、調査名・作成機関・表の題・単位を台帳のまま書く
       （stats fetch が e-Stat から写した言葉。with_series_data。N1）
     - 統計の系列の選び方が台帳と違う・台帳より古い・selector がまだ無い・オブジェクトでない

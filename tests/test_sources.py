@@ -2037,3 +2037,42 @@ def test_cli_page_refuses_and_merge_skips_a_draft_with_an_app_id(sconf, tmp_path
     assert res.exit_code == 0, res.output
     assert "入れなかった：leak_rate：evidence に appId が入っている" in res.output
     assert LEAK not in res.output
+
+
+def test_plain_accept_rest_merge_keeps_the_owner_and_hold_notes(sconf):
+    # 下書きから入った AI の行（note は下書きの note）
+    _growth_ledger(sconf, AI_CHECKER)
+    draft = {**FILE_SERIES, "note": "表1 の計を読む"}
+    merge_checks(_sdrafts(draft), {}, sconf, accept_rest=True)
+    assert _file_row(sconf)["note"] == "表1 の計を読む"
+    # オーナーが「違う」→ stats hold --note
+    it = page_items(with_series_data(_sdrafts(draft), sconf))[0]
+    assert it["selector_state"] == "same"
+    merge_checks(_sdrafts(draft), {it["k"]: {"v": "ng", "at": _at(), "note": "分類が違う"}}, sconf)
+    shutil.copy(DEFAULT_CONFIG_DIR / "sources.yaml", sconf / "sources.yaml")
+    settings = sconf / "s.toml"
+    settings.write_text("[paths]\n", "utf-8")
+    r = CliRunner().invoke(
+        app, ["stats", "hold", "--series", "file_rate", "--note", "新しい表を待つ",
+              "--settings", str(settings)],
+    )  # fmt: skip
+    assert r.exit_code == 0, r.output
+    held = _file_row(sconf)["note"]
+    assert "オーナーが「違う」：分類が違う" in held and "保留：新しい表を待つ" in held
+    # 同じ下書きを、ふつうの --accept-rest で何度取り込み直しても、台帳の note は消えない
+    for _ in range(2):
+        res = merge_checks(_sdrafts(draft), {}, sconf, accept_rest=True)
+        assert res.series_ai == ["file_rate"]
+        row = _file_row(sconf)
+        assert row["note"] == held and row["status"] == "保留"
+        assert row["note"].count("表1 の計を読む") == 1
+    # 下書きの note を直したら、うしろに1回だけ足す
+    edited = {**draft, "note": "表1 の計（2020 年は無い）"}
+    for _ in range(2):
+        merge_checks(_sdrafts(edited), {}, sconf, accept_rest=True)
+        assert _file_row(sconf)["note"] == f"{held} ／ 表1 の計（2020 年は無い）"
+    # オーナーが押した行の書き方は変えない（押したときのメモ）
+    it = page_items(with_series_data(_sdrafts(edited), sconf))[0]
+    merge_checks(_sdrafts(edited), {it["k"]: {"v": "ok", "at": _at(), "note": "見た"}}, sconf)
+    row = _file_row(sconf)
+    assert row["checked_by"] == HUMAN_CHECKER and row["note"] == "見た"
