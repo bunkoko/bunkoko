@@ -416,3 +416,136 @@ def test_csv_and_xlsx_bodies_pass_the_check(tmp_path):
     x = write_xlsx(tmp_path / "b.bin", [[1]])
     assert file_problem(csv_p.read_bytes()) is None and file_problem(x.read_bytes()) is None
     assert file_problem("<参考>,2021\nx,1\n".encode()) is None  # 「<」で始まる見出しの CSV
+
+
+# --- xlsx の数を、Excel が見せるとおりに（R31） ------------------------------------------------
+
+
+def _render(value, fmt):
+    from koten.stats.files import _render_number
+
+    return _render_number(value, fmt)
+
+
+ACCOUNTING = '_ * #,##0_ ;_ * \\-#,##0_ ;_ * "-"_ ;_ @_ '
+ACCOUNTING_2 = '_ * #,##0.00_ ;_ * \\-#,##0.00_ ;_ * "-"??_ ;_ @_ '
+
+
+@pytest.mark.parametrize(
+    "value,fmt,want",
+    [
+        # 0 の区画が文字だけ：その文字（印になる。0 にしない）
+        (0, '#,##0;"△"#,##0;"-"', "-"),
+        (0, '0.0%;"△"0.0%;"-"', "-"),
+        (0, '#,##0;"▲ "#,##0;"―"', "―"),
+        (0, '#,##0;-#,##0;"－"', "－"),
+        (0, '#,##0.0;-#,##0.0;"…"', "…"),
+        (0.0, ACCOUNTING, "-"),
+        (0, ACCOUNTING_2, "-"),
+        (0, "#,##0;-#,##0;", ""),  # 0 の区画が空：Excel は何も出さない（点にしない）
+        # 0 の区画に数の桁があれば、数
+        (0, "0.0;-0.0;0.0", "0.0"),
+        (0, "0.0", "0.0"),
+        (0, "General", "0"),
+        (0.0001, '#,##0;-#,##0;"-"', "0"),  # 0 ではない
+        # 正・負の区画の小数の桁は、その区画から
+        (5, '#,##0;"△"#,##0;"-"', "5"),
+        (-1.5, '0.0;"△"0.0;"-"', "-1.5"),
+        (-1.25, '0.0;"△"0.00', "-1.25"),
+        (1.25, '0.0;"△"0.00', "1.3"),
+        (-2.5, "0", "-3"),
+        # 四捨五入は 0 から遠いほうへ（Excel）
+        (0.25, "0.0", "0.3"),
+        (-0.25, "0.0", "-0.3"),
+        (8.85, "0.0", "8.9"),
+        (39.5, "0", "40"),
+        (2.5, "0", "3"),
+        (1234.56, "#,##0", "1235"),
+        (1.005, "0.00", "1.01"),
+        (-0.04, "0.0", "0.0"),
+        # 数の部分の終わりのカンマ1つごとに 1000 で割る
+        (1234567, "#,##0.0,", "1234.6"),
+        (1234567890, "#,##0,,", "1235"),
+        (1500, "0,", "2"),
+        (1234567, '#,##0,"千人"', "1235"),
+        # パーセントは 100 倍
+        (0.395, "0.0%", "39.5"),
+        (0.4, "0%", "40"),
+        (0.1 + 0.2, "0.0%", "30.0"),
+        # 引用の文字・\x・[..] は数に入れない
+        (39.45, '0.0"人"', "39.5"),
+        (39.45, "[Red]0.0", "39.5"),
+        (39.45, "0.0\\人", "39.5"),
+        (1234.5, "[$-411]#,##0", "1235"),
+        (78.85, "#,##0.0_ ", "78.9"),
+        (-78.85, '#,##0.0_ ;[Red]\\-#,##0.0\\ ', "-78.9"),
+        # 文字だけの区画は、正・負でもその文字
+        (12, '"x";"x";"x"', "x"),
+        # 「#」だけの書式の 0 は空（Excel は何も出さない）
+        (0, "#,###", ""),
+        # 決まりの外の書式は General の見せ方
+        (12345, "0.00E+00", "12345"),
+        (1.5, "# ?/?", "1.5"),
+        (39.45, "[>=100]0;0.0", "39.45"),
+        (39.5, "@", "39.5"),
+        (39.5, "General", "39.5"),
+        (40, "General", "40"),
+        (0.1 + 0.2, "General", "0.3"),  # float の誤差を出さない
+        (39.449999999999996, "0.0", "39.5"),
+        (0.39449999999999996, "0.0%", "39.5"),
+        (1.5e40, "#,##0", "15000000000000000000000000000000000000000"),  # 桁があふれない
+    ],
+)  # fmt: skip
+def test_numbers_render_as_excel_shows_them(value, fmt, want):
+    assert _render(value, fmt) == want
+
+
+def _patch_values(path: Path, real: dict[str, str]) -> Path:
+    """保存した xlsx の <v> の文字を差し替える（openpyxl は短い形で書くため）。"""
+    import zipfile
+
+    src = zipfile.ZipFile(path)
+    items = {n: src.read(n) for n in src.namelist()}
+    src.close()
+    xml = items["xl/worksheets/sheet1.xml"].decode()
+    for short, long in real.items():
+        xml = xml.replace(f"<v>{short}</v>", f"<v>{long}</v>")
+    items["xl/worksheets/sheet1.xml"] = xml.encode()
+    with zipfile.ZipFile(path, "w") as z:
+        for n, b in items.items():
+            z.writestr(n, b)
+    return path
+
+
+def test_float_noise_in_the_file_is_removed(tmp_path):
+    x = write_xlsx(
+        tmp_path / "a.bin",
+        [["", 2021, 2022, 2023], ["x", 0.3, 39.45, 0.3945]],
+        fmts={"B2": "General", "C2": "0.0", "D2": "0.0%"},
+    )
+    _patch_values(
+        x, {"0.3": "0.30000000000000004", "39.45": "39.449999999999996",
+            "0.3945": "0.39449999999999996"},
+    )  # fmt: skip
+    s = make_series([part(sheet="表1", values="B2:D2", periods_cells="B1:D1")])
+    assert [p.value for p in file_points(s, fetch_local(x))] == ["0.3", "39.5", "39.5"]
+
+
+def test_a_zero_shown_as_a_dash_is_a_mark_in_the_grid_points_and_trend(tmp_path):
+    from dataclasses import replace
+
+    from koten.stats.series import verify_trend
+
+    dash = '#,##0;"△"#,##0;"-"'
+    x = write_xlsx(
+        tmp_path / "a.bin",
+        [["", 2019, 2020, 2021, 2022], ["x", 0, 120, 340, 560]],
+        fmts={f"{c}2": dash for c in "BCDE"},
+    )
+    assert read_grid(x, "表1")[1] == ["x", "-", "120", "340", "560"]
+    s = make_series([part(sheet="表1", values="B2:E2", periods_cells="B1:E1")])
+    pts = file_points(s, fetch_local(x))
+    assert [(p.period, p.value, p.mark) for p in pts][0] == ("2019", "", "-")
+    trend = replace(s, trend="増加", trend_from="2019", trend_to="2022", trend_note="n")
+    ok, why = verify_trend(trend, pts)
+    assert not ok and "2019" in why

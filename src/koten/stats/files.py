@@ -12,7 +12,7 @@ import hashlib
 import io
 import re
 from collections.abc import Callable
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_EVEN, ROUND_HALF_UP, Decimal, InvalidOperation, localcontext
 from pathlib import Path
 
 import openpyxl
@@ -32,22 +32,9 @@ _XLSX_MAGIC = b"PK\x03\x04"
 _XLS_MAGIC = b"\xd0\xcf\x11\xe0"
 _REF_RE = re.compile(r"([A-Za-z]+)([0-9]+)")
 _BARE_YEAR_RE = re.compile(r"[0-9]{4}")
-_DECIMALS_RE = re.compile(r"\.([0#?]+)")
-
-
-def _decimals(fmt: str) -> int:
-    """number_format の最初の区画の小数の桁数（0 や General は 0）。"""
-    sec = fmt.split(";")[0]
-    sec = re.sub(r'"[^"]*"|\\.|\[[^\]]*\]', "", sec)
-    if "E" in sec.upper():
-        return 0
-    m = _DECIMALS_RE.search(sec)
-    return len(m.group(1)) if m else 0
-
-
-def _is_percent(fmt: str) -> bool:
-    sec = re.sub(r'"[^"]*"|\\.|\[[^\]]*\]', "", fmt.split(";")[0])
-    return "%" in sec
+# number_format の字句：引用の文字・\x・_x（空白）・*x（埋め）・[..]（色・地域・条件）・1字
+_FMT_TOK_RE = re.compile(r'"[^"]*"?|\\.|_.|\*.|\[[^\]]*\]?|.', re.S)
+_SIGNIFICANT = 15  # 表計算ソフトが数として持つ桁（それより下は float の誤差）
 
 
 class _BoolCell(str):
@@ -58,17 +45,109 @@ class _DateCell(str):
     """xlsx の日付のセル（値の欄・年の欄に来たら断る）。"""
 
 
-def _render_number(v: int | float, fmt: str) -> str:
-    d = Decimal(repr(v)) if isinstance(v, float) else Decimal(v)
-    n = _decimals(fmt)
-    if _is_percent(fmt):
-        # 表示どおり（0.395 の '0.0%' は 39.5）。Decimal で、float の誤差を出さない
-        return f"{(d * 100).quantize(Decimal(1).scaleb(-n), rounding=ROUND_HALF_UP):f}"
-    if n:
-        return f"{d:.{n}f}"
+def _noise_free(v: int | float) -> Decimal:
+    """セルの数を Decimal に。float は repr から読み、15 桁より下（float の誤差）を丸める。
+
+    0.1+0.2 は 0.3、39.449999999999996 は 39.45（表計算ソフトが見せる数と同じ）。"""
+    if not isinstance(v, float):
+        return Decimal(v)
+    d = Decimal(repr(v))
+    if d and len(d.as_tuple().digits) > _SIGNIFICANT:
+        d = d.quantize(Decimal(1).scaleb(d.adjusted() - _SIGNIFICANT + 1), rounding=ROUND_HALF_EVEN)
+    return d
+
+
+def _general(d: Decimal) -> str:
+    """General の見せ方：整数なら整数、そうでなければ必要な桁だけ（桁区切りなし）。"""
     if d == d.to_integral_value():
         return str(int(d))
-    return str(d.normalize()) if "E" not in str(d) else format(d, "f")
+    return format(d.normalize(), "f")
+
+
+def _sections(fmt: str) -> list[list[str]]:
+    """number_format を ; で区画に分ける（正;負;0;文字）。区画は字句の並び。"""
+    secs: list[list[str]] = [[]]
+    for tok in _FMT_TOK_RE.findall(fmt):
+        if tok == ";":
+            secs.append([])
+        else:
+            secs[-1].append(tok)
+    return secs
+
+
+def _section_kind(toks: list[str]) -> str:
+    """number（数の桁 0・# がある）・text（文字だけ）・general（General・@・決まりの外）。"""
+    plain = "".join(t for t in toks if len(t) == 1)  # 引用・\x・_x・*x・[..] を除いた字
+    if re.search(r"(?i)general", plain) or "@" in plain:
+        return "general"
+    if re.search(r"[Ee][+-]", plain) or "/" in plain or re.search(r"[A-Za-z]", plain):
+        return "general"  # 指数・分数・日付などは決まりの外
+    return "number" if any(t in ("0", "#") for t in toks) else "text"
+
+
+def _literal(toks: list[str]) -> str:
+    """文字だけの区画が見せる文字（引用を外し、\\x は x、_x・*x・[..]・? は外す）。"""
+    out = ""
+    for t in toks:
+        if t.startswith('"'):
+            out += t[1:].removesuffix('"')
+        elif t.startswith("\\"):
+            out += t[1:]
+        elif t[0] not in "_*[?":
+            out += t
+    return out.strip()
+
+
+def _number_text(d: Decimal, toks: list[str], sign: str) -> str:
+    """数の区画で、正の数 d を見せる文字（桁区切りは付けない。符号は sign）。"""
+    pct = toks.count("%")
+    digits = [i for i, t in enumerate(toks) if t in ("0", "#", "?")]
+    point = next((i for i, t in enumerate(toks) if t == "."), None)
+    decimals = sum(1 for i in digits if point is not None and i > point)
+    commas = 0  # 数の部分の終わりのカンマ：1つごとに 1000 で割る
+    for t in toks[digits[-1] + 1 :]:
+        if t != ",":
+            break
+        commas += 1
+    value = d * Decimal(100) ** pct / Decimal(1000) ** commas
+    shown = value.quantize(Decimal(1).scaleb(-decimals), rounding=ROUND_HALF_UP)
+    if shown == 0:
+        if "0" not in toks:
+            return ""  # 「#」だけの書式の 0 は、Excel は何も出さない
+        return f"{abs(shown):f}"
+    return sign + f"{shown:f}"
+
+
+def _render_number(v: int | float, fmt: str) -> str:
+    """数のセルを、Excel がその number_format で見せるとおりの文字にする（R31）。
+
+    正;負;0 の区画から当てはまる区画を選ぶ。0 の区画が文字だけ（"-" など）ならその文字
+    （数にしない。印になる）。小数の桁はその区画から、丸めは 0 から遠いほうへ、数の部分の
+    終わりのカンマ1つごとに 1000 で割り、% は 100 倍。引用の文字・\\x・[..] は数に入れない。
+    負の数は、負の区画の文字（△ など）でなく - を付ける（数として読めるように）。
+    条件つき・指数・分数・日付などの書式は General の見せ方にする。"""
+    d = _noise_free(v)
+    fmt = fmt or "General"
+    if any(t.startswith("[") and t[1:2] in ("<", ">", "=") for t in _FMT_TOK_RE.findall(fmt)):
+        return _general(d)
+    secs = _sections(fmt)
+    if d == 0 and len(secs) >= 3:
+        toks, sign = secs[2], ""
+    elif d < 0 and len(secs) >= 2:
+        toks, sign = secs[1], "-"
+    else:
+        toks, sign = secs[0], ("-" if d < 0 else "")
+    kind = _section_kind(toks)
+    if kind == "text":
+        return _literal(toks)
+    if kind == "general":
+        return _general(d)
+    try:
+        with localcontext() as ctx:
+            ctx.prec = 60  # 大きな数を丸めても桁があふれない
+            return _number_text(abs(d), toks, sign)
+    except InvalidOperation:
+        return _general(d)
 
 
 def _render_cell(cell) -> str:
