@@ -1,12 +1,14 @@
-"""e-Stat のファイル（CSV・xlsx）から点を読む（src/koten/stats/files.py）。"""
+"""e-Stat のファイル（CSV・xlsx・xls）から点を読む（src/koten/stats/files.py）。"""
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 from pathlib import Path
 
 import openpyxl
 import pytest
+import xlwt
 
 from koten.stats.files import cells, file_points, read_grid
 from koten.stats.series import Series, SeriesError, segments
@@ -73,6 +75,44 @@ def write_xlsx(path: Path, rows: list[list], sheet: str = "表1", fmts: dict | N
     return path
 
 
+def write_xls(
+    path: Path,
+    rows: list[list],
+    sheet: str = "表1",
+    fmts: dict | None = None,
+    merges: list[tuple[int, int, int, int]] | None = None,
+) -> Path:
+    """xlwt で .xls を書く。fmts は {"B2": 書式}。merges は (行1, 行2, 列1, 列2)（0 始まり）。
+    "#N/A" の文字は Excel のエラーのセルにする。"""
+    wb = xlwt.Workbook()
+    ws = wb.add_sheet(sheet)
+    fmts = fmts or {}
+    covered = {
+        (r, c)
+        for r1, r2, c1, c2 in merges or []
+        for r in range(r1, r2 + 1)
+        for c in range(c1, c2 + 1)
+    }
+    for r, row in enumerate(rows):
+        for c, v in enumerate(row):
+            if (r, c) in covered:
+                continue
+            ref = f"{chr(65 + c)}{r + 1}"
+            style = xlwt.easyxf(num_format_str=fmts.get(ref, "General"))
+            if v is None:
+                continue
+            if v == "#N/A":
+                ws.row(r).set_cell_error(c, "#N/A!", style)  # xlwt の名前。読むと #N/A
+            elif isinstance(v, dt.date):
+                ws.write(r, c, v, xlwt.easyxf(num_format_str="yyyy/mm/dd"))
+            else:
+                ws.write(r, c, v, style)
+    for r1, r2, c1, c2 in merges or []:
+        ws.write_merge(r1, r2, c1, c2, rows[r1][c1])
+    wb.save(str(path))
+    return path
+
+
 CSV_ROWS = [
     ["表題", "", "", ""],
     ["", "2021年", "2022年", "2023年"],
@@ -96,9 +136,9 @@ def test_csv_cp932_and_utf8sig(tmp_path):
         key(pa)
         == key(pb)
         == [
-            ("2021", "39.5", "", "孤独感が　ある人"),
-            ("2022", "40.0", "", "孤独感が　ある人"),
-            ("2023", "40.1", "", "孤独感が　ある人"),
+            ("2021", "39.5", "", "孤独感が ある人"),
+            ("2022", "40.0", "", "孤独感が ある人"),
+            ("2023", "40.1", "", "孤独感が ある人"),
         ]
     )
     assert pa[0].fetched_at == FETCHED
@@ -161,11 +201,11 @@ def test_column_range_and_multi_letter_columns(tmp_path):
     assert cells(g, "AA2") == ["7"]
 
 
-def test_xls_signature_refused(tmp_path):
+def test_xls_signature_with_junk_is_refused(tmp_path):
     p = tmp_path / "a.bin"
-    p.write_bytes(b"\xd0\xcf\x11\xe0" + b"\0" * 20)
-    with pytest.raises(SeriesError, match=r"\.xls"):
-        read_grid(p, "")
+    p.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\0" * 20)
+    with pytest.raises(SeriesError, match=r"Excel（\.xls）として開けない"):
+        read_grid(p, "表1")
 
 
 def test_csv_with_sheet_refused(tmp_path):
@@ -228,7 +268,7 @@ def test_periods_list_must_be_four_digits(tmp_path):
         file_points(s, fetch_local(p))
 
 
-def two_parts(tmp_path, label2="孤独感がある人", year2="2022"):
+def two_parts(tmp_path, label2="孤独を感じる人", year2="2022"):
     f1 = write_csv(tmp_path / "f1", [["", "2021"], ["孤独感が　ある人", "39.5"]], "utf-8-sig")
     f2 = write_csv(tmp_path / "f2", [["", year2], [label2, "40.1"]], "utf-8-sig")
     s = make_series(
@@ -245,6 +285,12 @@ def test_two_parts_with_different_label_text_make_a_break(tmp_path):
     pts = file_points(s, f)
     assert [p.part for p in pts] == ["0", "1"]
     assert segments(s, pts) == {"2021": 0, "2022": 1}
+
+
+def test_two_parts_differing_only_in_whitespace_stay_in_one_segment(tmp_path):
+    s, f = two_parts(tmp_path, label2="孤独感がある人")
+    pts = file_points(s, f)
+    assert segments(s, pts) == {"2021": 0, "2022": 0}
 
 
 def test_overlapping_years_between_parts_is_refused(tmp_path):
@@ -556,3 +602,120 @@ def test_period_cells_with_footnote_marks_and_line_breaks(tmp_path):
     p.write_text(',2010 1),平成23年 1),"2013年\n(平成25年)",2014年※\nx,1,2,3,4\n', "utf-8")
     s = make_series([part(values="B2:E2", periods_cells="B1:E1")])
     assert [x.period for x in file_points(s, fetch_local(p))] == ["2010", "2011", "2013", "2014"]
+
+
+# --- .xls（R38） ----------------------------------------------------------------------
+
+
+def _xls_grid(tmp_path, rows, fmts=None, merges=None):
+    return read_grid(write_xls(tmp_path / "a.bin", rows, fmts=fmts, merges=merges), "表1")
+
+
+def test_xls_reads_text_numbers_and_empty_cells(tmp_path):
+    g = _xls_grid(tmp_path, [["", 2021, 2022], [" ラベル ", 1.5, None], [60.0, "x", ""]])
+    assert g == [["", "2021", "2022"], ["ラベル", "1.5", ""], ["60", "x", ""]]
+
+
+@pytest.mark.parametrize(
+    "value,fmt,want",
+    [
+        (39.449999999999996, "0.0", "39.5"),
+        (0, '0.0;-0.0;"-"', "-"),
+        (12345, "#,##0,", "12"),
+        (0.395, "0.0%", "39.5"),
+        (60.0, "General", "60"),
+        (-2.5, "0", "-3"),
+    ],
+)
+def test_xls_number_formats_render_as_displayed(tmp_path, value, fmt, want):
+    g = _xls_grid(tmp_path, [[value]], fmts={"A1": fmt})
+    assert g == [[want]]
+
+
+def test_xls_percent_renders_like_xlsx(tmp_path):
+    g = _xls_grid(tmp_path, [[0.395]], fmts={"A1": "0.0%"})
+    assert g == [[_render(0.395, "0.0%")]]
+
+
+def test_xls_merged_cell_only_top_left_holds_the_value(tmp_path):
+    g = _xls_grid(tmp_path, [["合計", None, None], [1, 2, 3]], merges=[(0, 0, 0, 2)])
+    assert g[0] == ["合計", "", ""] and g[1] == ["1", "2", "3"]
+
+
+def test_xls_bool_date_and_error_cells_are_refused(tmp_path):
+    x = write_xls(tmp_path / "a.bin", [["", 2021, 2022], ["x", True, 2.0]])
+    with pytest.raises(SeriesError, match="真偽値"):
+        file_points(
+            make_series([part(sheet="表1", values="B2:C2", periods_cells="B1:C1")]), fetch_local(x)
+        )
+    d = write_xls(tmp_path / "d.bin", [["", 2021], ["x", dt.date(2021, 1, 2)]])
+    with pytest.raises(SeriesError, match="日付"):
+        file_points(
+            make_series([part(sheet="表1", values="B2:B2", periods_cells="B1:B1")]), fetch_local(d)
+        )
+    e = write_xls(tmp_path / "e.bin", [["", 2021], ["x", "#N/A"]])
+    with pytest.raises(SeriesError, match=r"値のセルが Excel のエラー（#N/A）。数のセルを指す"):
+        file_points(
+            make_series([part(sheet="表1", values="B2:B2", periods_cells="B1:B1")]), fetch_local(e)
+        )
+    f = write_xls(tmp_path / "f.bin", [["#N/A", 1], ["x", 2]])
+    with pytest.raises(SeriesError, match=r"年の欄が Excel のエラー（#N/A）"):
+        file_points(
+            make_series([part(sheet="表1", values="A2:A2", periods_cells="A1:A1")]), fetch_local(f)
+        )
+
+
+def test_xls_sheet_rules(tmp_path):
+    x = write_xls(tmp_path / "a.bin", [[1]], sheet="表1")
+    with pytest.raises(SeriesError, match=r"シート '無い' が無い。あるシート：表1"):
+        read_grid(x, "無い")
+    with pytest.raises(SeriesError, match=r"\.xls は sheet（シートの名前）が要る"):
+        read_grid(x, "")
+
+
+def test_xls_file_problem(tmp_path):
+    from koten.stats.files import file_problem
+
+    x = write_xls(tmp_path / "a.bin", [[1]])
+    assert file_problem(x.read_bytes()) is None
+    why = file_problem(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"junk" * 50)
+    assert why and "Excel（.xls）として開けない" in why
+
+
+def test_xls_and_xlsx_give_the_same_grid(tmp_path):
+    rows = [
+        ["", 2021, 2022, 2023, 2024],
+        ["合計", 0.1 + 0.2, 0, 12345.678, -2.5],
+        ["x", "y", None, 7, 60.0],
+    ]
+    fmts = {"B2": "0.0%", "C2": '0.0;-0.0;"-"', "D2": "#,##0,", "E2": "0", "E3": "General"}
+    a = read_grid(write_xlsx(tmp_path / "a.bin", rows, fmts=fmts), "表1")
+    b = read_grid(write_xls(tmp_path / "b.bin", rows, fmts=fmts), "表1")
+    assert a == b
+
+
+# --- 年の形（R39）・見出しの空白（R41） ----------------------------------------------------
+
+
+def test_csv_with_year_and_era_in_parens(tmp_path):
+    rows = [
+        ["", "1986(昭和61)年", "2019(令和元)年", "2020(令和2)年", "2021(令和3)年"],
+        ["x", "1.5", "2.5", "…", "3.5"],
+    ]
+    p = write_csv(tmp_path / "a", rows, "utf-8-sig")
+    pts = file_points(make_series([part(values="B2:E2", periods_cells="B1:E1")]), fetch_local(p))
+    assert [(x.period, x.value, x.mark) for x in pts] == [
+        ("1986", "1.5", ""), ("2019", "2.5", ""), ("2020", "", "…"), ("2021", "3.5", ""),
+    ]  # fmt: skip
+
+
+def test_label_cell_line_breaks_and_runs_of_space_are_collapsed(tmp_path):
+    x = write_xlsx(
+        tmp_path / "a.bin", [["", 2021], ["強い不安、悩み\nストレス", 1.5], ["（ ％ ）", None]]
+    )
+    s = make_series(
+        [part(sheet="表1", values="B2:B2", periods_cells="B1:B1", label_cells=["A2", "A3"])]
+    )
+    pts = file_points(s, fetch_local(x))
+    assert pts[0].src_label == "強い不安、悩み ストレス／（ ％ ）"
+    assert "\n" not in pts[0].src_label

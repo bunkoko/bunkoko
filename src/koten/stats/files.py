@@ -1,4 +1,4 @@
-"""e-Stat のファイル（CSV・xlsx）から年ごとの数を読む（src/koten/stats/files.py）。
+"""e-Stat のファイル（CSV・xlsx・xls）から年ごとの数を読む（src/koten/stats/files.py）。
 
 e-Stat の統計表は新しい年が Excel・CSV でしか出ないことがある。ファイルの種類は
 拡張子でなく中身の先頭で決める（net.py が拡張子なしで置くため）。
@@ -16,6 +16,7 @@ from decimal import ROUND_HALF_EVEN, ROUND_HALF_UP, Decimal, InvalidOperation, l
 from pathlib import Path
 
 import openpyxl
+import xlrd
 
 from koten.stats.series import (
     Point,
@@ -30,7 +31,7 @@ from koten.stats.series import (
 FILE_URL = "https://www.e-stat.go.jp/stat-search/file-download?statInfId={sid}&fileKind={kind}"
 
 _XLSX_MAGIC = b"PK\x03\x04"
-_XLS_MAGIC = b"\xd0\xcf\x11\xe0"
+_XLS_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"  # OLE2（古い Excel）
 _REF_RE = re.compile(r"([A-Za-z]+)([0-9]+)")
 _BARE_YEAR_RE = re.compile(r"[0-9]{4}")
 # number_format の字句：引用の文字・\x・_x（空白）・*x（埋め）・[..]（色・地域・条件）・1字
@@ -44,6 +45,10 @@ class _BoolCell(str):
 
 class _DateCell(str):
     """xlsx の日付のセル（値の欄・年の欄に来たら断る）。"""
+
+
+class _ErrorCell(str):
+    """.xls の Excel のエラーのセル（#N/A など。値の欄・年の欄に来たら断る）。"""
 
 
 def _noise_free(v: int | float) -> Decimal:
@@ -183,28 +188,69 @@ _HTML_MARKS = (b"<!doctype", b"<html", b"<?xml", b"<head", b"<body", b"<meta", b
 
 
 def file_problem(data: bytes) -> str | None:
-    """e-Stat のファイル（CSV・xlsx）として読めない中身なら、その理由。読めそうなら None。
+    """e-Stat のファイル（CSV・xlsx・xls）として読めない中身なら、その理由。読めそうなら None。
 
-    エラーやお知らせの HTML・PDF・中身の分からない（NUL を含む）もの・空のものを断る
+    エラーやお知らせの HTML・PDF・中身の分からない（NUL を含む）もの・空のものを断る。
+    .xls（OLE2 の先頭）は、xlrd がブックとして開けたときだけ通す
     （net.py の Fetcher.fetch の validate に渡し、前の良いファイルを上書きしない。F7）。"""
     if data.startswith(_XLSX_MAGIC):
         return None
     if data.startswith(_XLS_MAGIC):
-        return ".xls（古い Excel）は扱わない。CSV か .xlsx の版を選ぶ"
+        try:
+            xlrd.open_workbook(file_contents=data, on_demand=True).release_resources()
+        except Exception as e:  # noqa: BLE001 - xlrd は壊れ方ごとに別の例外を出す
+            return f"Excel（.xls）として開けない（{type(e).__name__}：{e}）"
+        return None
     head = data[:4096].lstrip(b"\xef\xbb\xbf \t\r\n").lower()
     if not head:
-        return "中身が空のファイルが返った（CSV・xlsx でない）"
+        return "中身が空のファイルが返った（CSV・xlsx・xls でない）"
     if head.startswith(b"%pdf"):
-        return "PDF が返った（CSV・xlsx でない。CSV か xlsx の版を選ぶ）"
+        return "PDF が返った（CSV・xlsx・xls でない。CSV か Excel の版を選ぶ）"
     if head.startswith(_HTML_MARKS) or b"<html" in head[:1024]:
-        return "HTML（エラーやお知らせのページ）が返った（CSV・xlsx でない）"
+        return "HTML（エラーやお知らせのページ）が返った（CSV・xlsx・xls でない）"
     if b"\x00" in data[:4096]:
-        return "中身の分からないファイルが返った（CSV・xlsx でない）"
+        return "中身の分からないファイルが返った（CSV・xlsx・xls でない）"
     return None
 
 
+def _render_xls_cell(book, cell) -> str:
+    """.xls のセルを、xlsx の _render_cell と同じ文字にする。"""
+    t = cell.ctype
+    if t in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK):
+        return ""
+    if t == xlrd.XL_CELL_TEXT:
+        return str(cell.value).strip()
+    if t == xlrd.XL_CELL_BOOLEAN:
+        return _BoolCell(str(bool(cell.value)))
+    if t == xlrd.XL_CELL_DATE:
+        return _DateCell(str(cell.value))
+    if t == xlrd.XL_CELL_ERROR:
+        return _ErrorCell(xlrd.error_text_from_code.get(cell.value, f"#ERR{cell.value}"))
+    fmt = book.format_map[book.xf_list[cell.xf_index].format_key].format_str
+    return _render_number(cell.value, fmt or "General")
+
+
+def _xls_grid(data: bytes, sheet: str) -> list[list[str]]:
+    if sheet == "":
+        raise SeriesError(".xls は sheet（シートの名前）が要る")
+    try:
+        book = xlrd.open_workbook(file_contents=data, formatting_info=True)
+    except Exception as e:  # noqa: BLE001 - xlrd は壊れ方ごとに別の例外を出す
+        raise SeriesError(f"Excel（.xls）として開けない（{type(e).__name__}：{e}）") from e
+    try:
+        if sheet not in book.sheet_names():
+            raise SeriesError(
+                f"シート {sheet!r} が無い。あるシート：{'・'.join(book.sheet_names())}"
+            )
+        ws = book.sheet_by_name(sheet)
+        rows = [[_render_xls_cell(book, c) for c in ws.row(r)] for r in range(ws.nrows)]
+    finally:
+        book.release_resources()
+    return _pad(rows)
+
+
 def read_grid(path: Path, sheet: str) -> list[list[str]]:
-    """ファイルを文字の表にする。xlsx は sheet が要り、CSV は sheet が "" でなければならない。"""
+    """ファイルを文字の表にする。xlsx・xls は sheet が要り、CSV は "" でなければならない。"""
     data = Path(path).read_bytes()
     return _grid_from_bytes(data, sheet)
 
@@ -226,6 +272,8 @@ def _grid_from_bytes(data: bytes, sheet: str) -> list[list[str]]:
         finally:
             wb.close()
         return _pad(rows)
+    if data.startswith(_XLS_MAGIC):
+        return _xls_grid(data, sheet)
     if sheet != "":
         raise SeriesError(f'CSV に sheet は指定できない（"" にする）：{sheet!r}')
     try:
@@ -276,6 +324,8 @@ def _period(text: str, kind: str) -> str:
         raise SeriesError(f"年の欄が日付のセルになっている（{text}）。年の文字か数のセルを指す")
     if isinstance(text, _BoolCell):
         raise SeriesError(f"年の欄が真偽値のセルになっている（{text}）")
+    if isinstance(text, _ErrorCell):
+        raise SeriesError(f"年の欄が Excel のエラー（{text}）")
     t = strip_period_notes(text)  # 終わりの注の印（1)・※ など）と改行は外す（F10）
     if _BARE_YEAR_RE.fullmatch(t):
         return t
@@ -294,22 +344,30 @@ def _require(spec: dict, idx: int) -> None:
         raise SeriesError("、".join(f"{n} 番目の part {m}" for m in problems))
 
 
-def _part_points(s: Series, idx: int, spec: dict, fetch) -> list[Point]:
+def _part_points(s: Series, idx: int, spec: dict, fetch, grids: dict | None) -> list[Point]:
     n = idx + 1
     _require(spec, idx)
     sid, kind = str(spec["statInfId"]).strip(), str(spec["fileKind"]).strip()
     path, fetched_at = fetch(FILE_URL.format(sid=sid, kind=kind), f"files/{sid}_{kind}")
     data = Path(path).read_bytes()
+    sha = hashlib.sha256(data).hexdigest()
+    sheet = str(spec.get("sheet", ""))
     try:
-        grid = _grid_from_bytes(data, str(spec.get("sheet", "")))
-        return _points_from_grid(s, idx, spec, grid, data, fetched_at)
+        if grids is None:
+            grid = _grid_from_bytes(data, sheet)
+        else:
+            # 同じ（中身・シート）は 1 回だけ読む（R40）
+            if (sha, sheet) not in grids:
+                grids[(sha, sheet)] = _grid_from_bytes(data, sheet)
+            grid = grids[(sha, sheet)]
+        return _points_from_grid(s, idx, spec, grid, sha, fetched_at)
     except SeriesError as e:
         if str(e).startswith(f"{n} 番目"):
             raise
         raise SeriesError(f"{n} 番目の part（{sid}_{kind}）：{e}") from e
 
 
-def _points_from_grid(s, idx, spec, grid, data, fetched_at) -> list[Point]:
+def _points_from_grid(s, idx, spec, grid, sha, fetched_at) -> list[Point]:
     n = idx + 1
     vals = cells(grid, spec["values"])
     for v in vals:
@@ -317,6 +375,8 @@ def _points_from_grid(s, idx, spec, grid, data, fetched_at) -> list[Point]:
             raise SeriesError(f"値のセルが真偽値（{v}）。数のセルを指す")
         if isinstance(v, _DateCell):
             raise SeriesError(f"値のセルが日付のセル（{v}）。数のセルを指す")
+        if isinstance(v, _ErrorCell):
+            raise SeriesError(f"値のセルが Excel のエラー（{v}）。数のセルを指す")
     if spec.get("periods_cells"):
         periods = [_period(t, s.period_kind) for t in cells(grid, spec["periods_cells"])]
     else:
@@ -328,13 +388,17 @@ def _points_from_grid(s, idx, spec, grid, data, fetched_at) -> list[Point]:
         raise SeriesError(
             f"{n} 番目の part の時間の数（{len(periods)}）と値の数（{len(vals)}）が違う"
         )
+    # 見出しは、セルの中の空白の並び（改行も）を 1 つの空白にする（R41）
     label = "／".join(
         t
-        for t in (x.strip() for ref in spec.get("label_cells") or [] for x in cells(grid, ref))
+        for t in (
+            re.sub(r"\s+", " ", x).strip()
+            for ref in spec.get("label_cells") or []
+            for x in cells(grid, ref)
+        )
         if t
     )
     unit = cells(grid, spec["unit_cell"])[0] if spec.get("unit_cell") else ""
-    sha = hashlib.sha256(data).hexdigest()
     out = []
     for period, text in zip(periods, vals, strict=True):
         text = text.strip()
@@ -357,15 +421,21 @@ def _points_from_grid(s, idx, spec, grid, data, fetched_at) -> list[Point]:
     return out
 
 
-def file_points(s: Series, fetch: Callable[[str, str], tuple[Path, str]]) -> list[Point]:
-    """estat_file の系列の点。fetch(url, rel_path) は (ファイル, 取得日時) を返す。"""
+def file_points(
+    s: Series,
+    fetch: Callable[[str, str], tuple[Path, str]],
+    grids: dict | None = None,
+) -> list[Point]:
+    """estat_file の系列の点。fetch(url, rel_path) は (ファイル, 取得日時) を返す。
+
+    grids を渡すと、同じ（中身・シート）の表を 1 回だけ読んで使い回す（R40）。"""
     seen: dict[str, int] = {}
     out: list[Point] = []
     parts = s.selector.get("parts") if isinstance(s.selector, dict) else None
     if not isinstance(parts, list):
         raise SeriesError(f"selector の parts が並びでない（{parts!r}）")
     for idx, spec in enumerate(parts):
-        for p in _part_points(s, idx, spec, fetch):
+        for p in _part_points(s, idx, spec, fetch, grids):
             if p.period in seen:
                 a, b = seen[p.period] + 1, idx + 1
                 raise SeriesError(f"{p.period} 年が {a} 番目と {b} 番目の part で重なっている")

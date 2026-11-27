@@ -4131,16 +4131,31 @@ def _estat_failures() -> tuple[type[Exception], ...]:
     return (EstatError, ApiError, SeriesError, httpx.HTTPError, ValueError)
 
 
-def _file_fetch(fetcher: Fetcher, refresh: bool):
+def _file_fetch(fetcher: Fetcher, refresh: bool, done: dict | None = None):
     """files.file_points に渡す fetch。(ファイル, 取った日時) を返す。
 
-    CSV・xlsx でない応答（エラーの HTML・PDF など）は、前の良いファイルを上書きせずに断る（F7）。"""
+    CSV・xlsx・xls でない応答（エラーの HTML・PDF など）は、前の良いファイルを上書きせずに
+    断る（F7）。done を渡すと、同じ URL は 1 回の実行で 1 回だけ取り、あとは同じ結果
+    （失敗も）を返す（--refresh でも 2 回目からは取り直さない。R40）。"""
     from koten.stats.files import file_problem
 
     def fetch(url: str, rel: str):
-        path = fetcher.fetch(url, rel, refresh=refresh, validate=file_problem)[0]
+        if done is not None and url in done:
+            got = done[url]
+            if isinstance(got, Exception):
+                raise got
+            return got
+        try:
+            path = fetcher.fetch(url, rel, refresh=refresh, validate=file_problem)[0]
+        except Exception as e:
+            if done is not None:
+                done[url] = e
+            raise
         entry = fetcher.manifest.get(url)
-        return path, (entry.fetched_at if entry else "")
+        got = (path, (entry.fetched_at if entry else ""))
+        if done is not None:
+            done[url] = got
+        return got
 
     return fetch
 
@@ -4156,12 +4171,16 @@ def _write_json(path: Path, data) -> None:
 
 
 class _EstatRun:
-    """1回の実行で Fetcher と EstatClient を1つずつ、要るときに作る。"""
+    """1回の実行で Fetcher と EstatClient を1つずつ、要るときに作る。
+
+    取ったファイル・読んだ表も覚える（R40）。"""
 
     def __init__(self, s: Settings):
         self.s = s
         self._fetcher: Fetcher | None = None
         self._client = None
+        self.file_done: dict = {}  # URL → 取ったファイル（1 回の実行で 1 回だけ取る。R40）
+        self.grids: dict = {}  # (中身, シート) → 読んだ表（1 回だけ読む。R40）
 
     def fetcher(self) -> Fetcher:
         if self._fetcher is None:
@@ -4382,7 +4401,9 @@ def stats_fetch(
                     if norm(getattr(t, col)) != norm(new):
                         fix[col] = new
             elif t.source_kind == "estat_file":
-                points = file_points(t, _file_fetch(run.fetcher(), refresh))
+                points = file_points(
+                    t, _file_fetch(run.fetcher(), refresh, run.file_done), run.grids
+                )
                 units = set()
             else:
                 raise SeriesError(

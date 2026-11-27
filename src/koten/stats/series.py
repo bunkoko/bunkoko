@@ -57,6 +57,11 @@ _ERA_BASE = {"明治": 1868, "大正": 1912, "昭和": 1926, "平成": 1989, "�
 _ERA_LAST = {"明治": 45, "大正": 15, "昭和": 64, "平成": 31}  # 令和は終わりが無い
 _ERA_YEAR_RE = re.compile(r"(?P<era>明治|大正|昭和|平成|令和)\s*(?P<en>[0-9]+|元)\s*年(?P<fy>度?)")
 _AD_YEAR_RE = re.compile(r"(?<![0-9])(?P<ad>[0-9]{4})\s*年(?P<fy>度?)")
+# 国民生活基礎調査の「1986(昭和61)年」「2020(令和2)年度」（度は閉じ括弧のあと）
+_AD_ERA_RE = re.compile(
+    r"(?<![0-9])(?P<ad>[0-9]{4})\s*\(\s*(?P<era>明治|大正|昭和|平成|令和)\s*(?P<en>[0-9]+|元)\s*\)"
+    r"\s*年(?P<fy>度?)"
+)
 
 
 class SeriesError(ValueError):
@@ -634,7 +639,8 @@ def period_label(period: str, period_kind: str) -> str:
 
 
 def parse_year(text: str) -> tuple[str, str]:
-    """「2013年」「平成25年度」「令和元年」「2013年（平成25年）」→ ("2013", "年"|"年度")。
+    """「2013年」「平成25年度」「令和元年」「2013年（平成25年）」「1986(昭和61)年」
+    → ("2013", "年"|"年度")。
 
     月・四半期は断る。西暦と和暦が両方あるときは同じ年でなければ断る（括弧の和暦は
     西暦を優先して読む）。元号の最後の年（平成31・昭和64 など）を超える年も断る。
@@ -642,12 +648,12 @@ def parse_year(text: str) -> tuple[str, str]:
     t = unicodedata.normalize("NFKC", text or "").strip()
     if any(w in t for w in ("月", "期")):
         raise SeriesError(f"月・四半期の時間軸は扱わない（年・年度だけ）：{text!r}")
-    ad = _AD_YEAR_RE.search(t)
-    era = _ERA_YEAR_RE.search(t)
+    both = _AD_ERA_RE.search(t)
+    ad = both or _AD_YEAR_RE.search(t)
+    era = both or _ERA_YEAR_RE.search(t)
     rest = t
-    for m in (ad, era):
-        if m:
-            rest = rest.replace(m.group(0), "", 1)
+    for m in {id(x): x for x in (ad, era) if x}.values():
+        rest = rest.replace(m.group(0), "", 1)
     if (not ad and not era) or re.sub(r"\s", "", rest).strip("()") != "":
         raise SeriesError(f"年として読めない：{text!r}")
     era_year = None
@@ -842,6 +848,13 @@ def _by_period(points: list[Point]) -> list[Point]:
     return sorted(points, key=lambda p: p.period)
 
 
+def label_key(text: str) -> str:
+    """見出し（src_label）を比べるための形：NFKC のあと、空白（全角・タブ・改行も）を全部取る。
+
+    「合　計」と「合計」、「（％）」と「(%)」は同じ。言い方の違いは同じにしない（R41）。"""
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text or ""))
+
+
 def segments(s: Series, points: list[Point]) -> dict[str, int]:
     """period → 区切りの番号（0 から）。
 
@@ -856,14 +869,16 @@ def segments(s: Series, points: list[Point]) -> dict[str, int]:
     prev: Point | None = None
     last_label = ""
     for p in _by_period(points):
+        key = label_key(p.src_label)
         if prev is not None:
             crossed = any(prev.period < b.before <= p.period for b in s.breaks)
-            drift = bool(p.src_label and last_label and p.src_label != last_label)
-            unknown = p.part.strip() != prev.part.strip() and not (p.src_label and prev.src_label)
+            drift = bool(key and last_label and key != last_label)
+            prev_key = label_key(prev.src_label)
+            unknown = p.part.strip() != prev.part.strip() and not (key and prev_key)
             if crossed or drift or unknown:
                 cur += 1
-        if p.src_label:
-            last_label = p.src_label
+        if key:
+            last_label = key
         seg[p.period] = cur
         prev = p
     return seg

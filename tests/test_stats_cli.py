@@ -781,10 +781,10 @@ def test_unexpected_type_errors_are_one_series_failures(env, monkeypatch):
     served_files(env)
     real = files.file_points
 
-    def flaky(s, fetch):
+    def flaky(s, fetch, grids=None):
         if s.series_id == "csv_rate":
             raise TypeError("'NoneType' object is not iterable")
-        return real(s, fetch)
+        return real(s, fetch, grids)
 
     monkeypatch.setattr(files, "file_points", flaky)
     r = stats(env, "fetch")
@@ -1021,3 +1021,88 @@ def test_drafts_with_an_app_id_are_refused_before_any_request(env, monkeypatch):
         assert "leak_rate：evidence に appId が入っている" in r.output and fake not in r.output
     assert env.seen == [] and path.read_bytes() == before
     assert not list(env.docs.glob("*.json"))
+
+
+# --- .xls・1 回の実行で 1 回だけ取る・読む（R38・R40） -------------------------------------
+
+
+def xls_bytes(rows):
+    import xlwt
+
+    wb = xlwt.Workbook()
+    ws = wb.add_sheet("表1")
+    for r, row in enumerate(rows):
+        for c, x in enumerate(row):
+            ws.write(r, c, x)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def one_file_series(series_id, parts):
+    return srow(
+        series_id=series_id, source_kind="estat_file", selector=json.dumps({"parts": parts})
+    )
+
+
+def xls_part(col, sid="000003"):
+    return {
+        "statInfId": sid, "fileKind": "4", "updated": "2026-01-01", "sheet": "表1",
+        "values": f"{col}2:{col}2", "periods_cells": f"{col}1:{col}1",
+    }  # fmt: skip
+
+
+def file_requests(env, sid):
+    return [r for r in env.seen if r.url.params.get("statInfId") == sid]
+
+
+def test_xls_file_series_is_read_and_a_broken_xls_keeps_the_cached_file(env):
+    env.state["files"] = {"000003": xls_bytes([["", 2021, 2022], ["x", 1.5, 2.5]])}
+    write_csv(
+        env.config / SERIES_FILE, SERIES_COLUMNS, [one_file_series("xls_rate", [xls_part("B")])]
+    )
+    r = stats(env, "fetch")
+    assert r.exit_code == 0, r.output
+    assert [(x["period"], x["value"]) for x in read_point_rows(env.config)] == [("2021", "1.5")]
+    cached = env.root / "data" / "estat-cache" / "files" / "000003_4"
+    good = cached.read_bytes()
+    points = (env.config / POINTS_FILE).read_bytes()
+    env.state["files"]["000003"] = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"junk" * 50
+    r = stats(env, "fetch", "--refresh")
+    assert (
+        r.exit_code == 1 and "xls_rate：" in r.output and "Excel（.xls）として開けない" in r.output
+    )
+    assert cached.read_bytes() == good and (env.config / POINTS_FILE).read_bytes() == points
+
+
+def test_one_url_is_downloaded_once_per_run_across_parts_and_series(env):
+    env.state["files"] = {"000003": xls_bytes([["", 2021, 2022, 2023], ["x", 1.5, 2.5, 3.5]])}
+    rows = [
+        one_file_series("many_parts", [xls_part("B"), xls_part("C"), xls_part("D")]),
+        one_file_series("same_file", [xls_part("B")]),
+    ]
+    write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, rows)
+    r = stats(env, "fetch", "--refresh")
+    assert r.exit_code == 0, r.output
+    assert len(file_requests(env, "000003")) == 1
+    assert len(read_point_rows(env.config)) == 4
+    r = stats(env, "fetch", "--check", "--refresh")
+    assert r.exit_code == 0 and len(file_requests(env, "000003")) == 2  # 実行ごとに 1 回
+
+
+def test_one_grid_is_parsed_once_per_run(env, monkeypatch):
+    import koten.stats.files as files
+
+    env.state["files"] = {"000003": xls_bytes([["", 2021, 2022, 2023], ["x", 1.5, 2.5, 3.5]])}
+    rows = [
+        one_file_series("many_parts", [xls_part("B"), xls_part("C"), xls_part("D")]),
+        one_file_series("same_file", [xls_part("B")]),
+    ]
+    write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, rows)
+    calls = []
+    real = files._grid_from_bytes
+    monkeypatch.setattr(
+        files, "_grid_from_bytes", lambda data, sheet: calls.append(sheet) or real(data, sheet)
+    )
+    assert stats(env, "fetch").exit_code == 0
+    assert calls == ["表1"]

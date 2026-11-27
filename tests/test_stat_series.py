@@ -256,6 +256,37 @@ def test_label_drift_in_files_is_a_break():
     assert segments(series(), pts) == {"2021": 0, "2022": 0}
 
 
+@pytest.mark.parametrize(
+    "a,b,same",
+    [
+        ("強い不安、悩み\nストレス", "強い不安、悩み ストレス", True),
+        ("合　計", "合計", True),
+        ("（％）", "(%)", True),
+        ("企業規模 計", "企業規模計", True),
+        ("労働組合の有無計", "男女計", False),
+    ],
+)
+def test_labels_are_compared_without_whitespace(a, b, same):
+    pts = [point(period="2021", src_label=a), point(period="2022", src_label=b)]
+    assert segments(series(), pts) == {"2021": 0, "2022": 0 if same else 1}
+
+
+def test_whitespace_only_label_counts_as_empty_at_a_part_boundary():
+    pts = [
+        point(period="2021", src_label="合計", part="0"),
+        point(period="2022", src_label=" \u3000\n", part="1"),
+    ]
+    assert segments(series(), pts) == {"2021": 0, "2022": 1}
+
+
+def test_changed_labels_ignores_whitespace_only_changes():
+    from koten.stats.report import changed_labels
+
+    old = [point(period="2021", src_label="合　計")]
+    assert changed_labels(old, [point(period="2021", src_label="合計")]) == []
+    assert changed_labels(old, [point(period="2021", src_label="男女計")])
+
+
 def test_comparable_missing_period():
     ok, why = comparable(series(), [point(period="2018")], "2018", "2019")
     assert not ok and why
@@ -317,6 +348,11 @@ def test_is_stale():
         ("昭和61年度", ("1986", "年度")),
         ("大正1年", ("1912", "年")),
         ("明治45年", ("1912", "年")),
+        ("1986(昭和61)年", ("1986", "年")),
+        ("1986（昭和61）年", ("1986", "年")),
+        ("2019(令和元)年", ("2019", "年")),
+        ("2020(令和2)年度", ("2020", "年度")),
+        ("2020 ( 令和2 ) 年度", ("2020", "年度")),
     ],
 )
 def test_parse_year(text, want):
@@ -324,8 +360,13 @@ def test_parse_year(text, want):
 
 
 @pytest.mark.parametrize(
-    "text", ["2013年1月", "2013年1-3月期", "2013年度第1四半期", "2013", "", "abc"]
-)
+    "text",
+    [
+        "2013年1月", "2013年1-3月期", "2013年度第1四半期", "2013", "", "abc", "59年",
+        "1986(昭和62)年", "1990(昭和65)年", "2019(令和0)年",
+        "1986(昭和61)年1月", "1986(昭和61)",
+    ],
+)  # fmt: skip
 def test_parse_year_refuses(text):
     with pytest.raises(SeriesError):
         parse_year(text)

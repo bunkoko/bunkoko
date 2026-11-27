@@ -921,3 +921,7 @@ Mac で `koten eval grade --redo --model …`（grader_v4）→ `eval agreement`
   - N2：台帳の note は足すだけ。部分を足す下書き・`--accept-rest` の取り込み直し（AI の行）は下書きの note を、オーナーが押した行は押したときのメモ（無ければ下書きの note）を、まだ無ければうしろに「 ／ 」で1回足す（保留の理由・「違う」のメモを消さない）。「違う」と `stats hold` のメモも同じ区切り。R28 の note はこれに替える。
   - 手順：クラウドの最初の下書きは GitHub に入れてから、Mac で git pull する。取り込みの git add に config/stats.csv・config/findings.csv も入れる（同じ下書きのファイルに統計・研究があれば書かれる）。CLAUDE.md の `stats fetch` の行にクラウドの連絡先（R10）。
   - S3 の続き：下書きの系列のどの欄（evidence・check_note・where・note・url・selector・series_id など）に appId= があっても、`sources page` はページを作らず（あれば全部の系列を一度に出す）、`sources merge` はその系列を入れず、`stats meta --drafts`・`stats fetch --drafts` は e-Stat に聞く前に止まる（どれも値は出さない）。
+
+### 2026-11-27 段1 実データで分かった読み取りの直し（D-039）
+
+- 2026-11-27 段1：最初の下書きを実データで動かして出た読み取りの 4 件を直した。R38：要る表が .xls だけで出ていたので、.xls も xlrd で読む（数の見せ方は xlsx と同じ R31。エラーのセルは値・年の欄で断る。開けない .xls は前の良いファイルを上書きしない）。R39：年の形 `1986(昭和61)年`・`2020(令和2)年度` を読む（西暦と和暦が同じ年のときだけ）。R40：1 回の実行で、同じ URL は 1 回だけ取り（--refresh でも）、同じ（中身・シート）の表は 1 回だけ読む。R41：見出しは空白（全角・改行も）を除いて比べる（`合　計` と `合計`、`（％）` と `(%)` は同じ。言い方の違いは今までどおり区切り）。stat_points.csv の src_label は、セルの中の空白の並びを 1 つの空白にする。

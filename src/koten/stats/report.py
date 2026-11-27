@@ -12,6 +12,7 @@ from koten.stats.series import (
     SERIES_COLUMNS,
     Point,
     Series,
+    label_key,
     parse_points,
     parse_series,
     segments,
@@ -87,7 +88,7 @@ def changed_labels(old: list[Point], new: list[Point]) -> list[str]:
     pairs: dict[tuple[str, str], list[str]] = {}
     for p in sorted(old, key=lambda p: p.period):
         q = now.get(p.period)
-        if q is not None and q.src_label != p.src_label:
+        if q is not None and label_key(q.src_label) != label_key(p.src_label):
             pairs.setdefault((p.src_label, q.src_label), []).append(p.period)
     return [f"{a!r} → {b!r}（{'・'.join(years)}）" for (a, b), years in pairs.items()]
 

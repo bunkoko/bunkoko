@@ -161,7 +161,7 @@ series_id、period（YYYY）、value（元の文字のまま。`,` を除いて�
 - `fetch(…, secret_params={"appId": …})`：秘密の値は送る引数にだけ入れる。マニフェストの URL・キャッシュの名前・エラーの文には出さない。保存する応答の中に同じ文字があれば `***` に置き換える。httpx の例外は秘密を消した文で投げ直す。
 - `fetch_json(…, error_of=…)`：e-Stat の STATUS が 100 以上ならキャッシュを消して止める（今の MediaWiki と同じ形）。
 - 間隔：e-stat.go.jp は 2 秒（settings の rate_limit）。
-- Excel は openpyxl を足す（.xlsx だけ。.xls は要る表が出たときに考える）。CSV があれば CSV を使う。CSV は utf-8-sig、だめなら cp932。
+- Excel は openpyxl を足す（.xlsx だけ。.xls は要る表が出たときに考える）。（2026-11-27：要る表が .xls だけで出ていたので、.xls も xlrd で読む。R38）CSV があれば CSV を使う。CSV は utf-8-sig、だめなら cp932。
 
 ### 5.9 流れ（誰がどこで）
 1. クラウドの Claude：e-Stat のサイトで表とファイルを探し、系列の下書き（docs/research/<日付>-source-drafts.json の series）を作る。DB の表とファイルの新しさを比べ、新しいほうを選ぶ。ファイルの系列は `stats fetch --check` で読めることを確かめる。別の AI の見直し役がページを開き直して label と変わり目を確かめる。
