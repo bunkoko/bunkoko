@@ -389,3 +389,398 @@ def test_unchecked_sources_lists_cited_rows_without_a_human_check():
         findings={"FN-ai": {"status": "ai_checked"}, "FN-human": {"status": "verified"}},
     )
     assert unchecked_sources(SimpleNamespace(script=script, data=data)) == ["s_ai", "FN-ai"]
+
+
+# --- 統計の系列（series） ----------------------------------------------------------
+
+from koten.db import AI_CHECKER, HUMAN_CHECKER  # noqa: E402
+from koten.sources.check import (  # noqa: E402
+    collect_drafts,
+    read_drafts,
+    series_key,
+    series_line,
+    todo_drafts,
+    with_series_data,
+)
+from koten.stats.report import series_from_draft  # noqa: E402
+from koten.stats.series import (  # noqa: E402
+    POINTS_COLUMNS,
+    POINTS_FILE,
+    SERIES_COLUMNS,
+    SERIES_FILE,
+    check_sha,
+    parse_points,
+    read_point_rows,
+    read_series_rows,
+)
+
+API_META = {
+    "stats_data_id": "0003000001",
+    "stat_name": "労働力調査",
+    "gov_org": "総務省統計局",
+    "title": "就業状態別人口",
+    "title_no": "1-1",
+    "survey_date": "2020",
+    "open_date": "2021-02-01",
+    "updated_date": "2021-03-01",
+    "chosen": [{"class": "区分", "item": "計", "code": "001", "unit": ""}],
+    "times": [{"code": "2020000000", "name": "2020年"}],
+}
+API_SERIES = {
+    "series_id": "work_rate",
+    "themes": ["仕事の量"],
+    "label": "就業している人の割合",
+    "unit": "％",
+    "survey": "労働力調査",
+    "publisher": "総務省統計局",
+    "source_kind": "estat_api",
+    "period_kind": "年",
+    "selector": {"statsDataId": "0003000001", "cdCat01": "001"},
+    "selector_names": {"cdCat01": "区分：計"},
+    "table_title": "就業状態別人口",
+    "url": "https://www.e-stat.go.jp/stat-search/files?toukei=1",
+    "latest_known": "",
+    "breaks": [],
+    "trend": "増加",
+    "trend_from": "2019",
+    "trend_to": "2021",
+    "trend_note": "3年続けて増えた",
+    "where": "",
+    "note": "",
+    "evidence": "表 1-1 の計",
+    "check_note": "",
+}
+FILE_SELECTOR = {
+    "parts": [
+        {
+            "statInfId": "000031000001",
+            "fileKind": "0",
+            "sheet": "表1",
+            "values": "D12:F12",
+            "periods_cells": "D5:F5",
+            "label_cells": ["A12"],
+            "unit_cell": "B3",
+        }
+    ]
+}
+FILE_SERIES = {
+    **API_SERIES,
+    "series_id": "file_rate",
+    "label": "ファイルの系列の割合",
+    "source_kind": "estat_file",
+    "selector": FILE_SELECTOR,
+    "selector_names": {},
+    "trend": "",
+    "trend_from": "",
+    "trend_to": "",
+    "trend_note": "",
+    "table_title": "表1",
+}
+
+
+def _prow(sid="work_rate", period="2019", value="10", **kw):
+    row = {c: "" for c in POINTS_COLUMNS}
+    row.update(series_id=sid, period=period, value=value, part="0", src_label="計")
+    row.update(kw)
+    return row
+
+
+def _write_ledger(config_dir, points, series_rows=()):
+    for name, cols, rows in (
+        (POINTS_FILE, POINTS_COLUMNS, points),
+        (SERIES_FILE, SERIES_COLUMNS, series_rows),
+    ):
+        with (config_dir / name).open("w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=cols, lineterminator="\n")
+            w.writeheader()
+            w.writerows(rows)
+
+
+def _srow(item=API_SERIES, **kw):
+    row = {c: "" for c in SERIES_COLUMNS}
+    for c in SERIES_COLUMNS:
+        v = item.get(c, "")
+        if c == "themes":
+            v = ";".join(v)
+        elif isinstance(v, (dict, list)):
+            v = json.dumps(v, ensure_ascii=False)
+        row[c] = v
+    row.update(kw)
+    return row
+
+
+@pytest.fixture
+def sconf(config_dir):
+    shutil.copy(DEFAULT_CONFIG_DIR / "blocked_keywords.yaml", config_dir / "blocked_keywords.yaml")
+    meta_dir = config_dir.parent / "docs" / "estat"
+    meta_dir.mkdir(parents=True)
+    (meta_dir / "work_rate.json").write_text(json.dumps(API_META, ensure_ascii=False), "utf-8")
+    _write_ledger(
+        config_dir,
+        [_prow(period="2019", value="10"), _prow(period="2020", value="11"),
+         _prow(period="2021", value="12")],
+    )  # fmt: skip
+    return config_dir
+
+
+def _sdrafts(*series):
+    return {"made": "2026-11-26", "stats": [], "findings": [], "leads": [], "series": list(series)}
+
+
+def _skey(config_dir, item=API_SERIES):
+    full = with_series_data(_sdrafts(item), config_dir)
+    return series_key(full["series"][0])
+
+
+def _series_file(d):
+    return read_series_rows(d)
+
+
+def test_read_drafts_defaults_series_and_collect_keys_by_series_id(tmp_path):
+    p1, p2 = tmp_path / "a.json", tmp_path / "b.json"
+    p1.write_text(json.dumps({"made": "2026-11-01", "stats": []}), "utf-8")
+    assert read_drafts(p1)["series"] == []
+    p1.write_text(json.dumps(_sdrafts(API_SERIES)), "utf-8")
+    p2.write_text(json.dumps(_sdrafts({**API_SERIES, "label": "あとの文"})), "utf-8")
+    got = collect_drafts([p1, p2])
+    assert [x["label"] for x in got["series"]] == ["あとの文"]
+    assert collect_drafts([])["series"] == []
+
+
+def test_with_series_data_adds_points_and_meta_without_touching_the_input(sconf):
+    drafts = _sdrafts(API_SERIES, FILE_SERIES)
+    full = with_series_data(drafts, sconf)
+    assert "points" not in drafts["series"][0]
+    api, file_ = full["series"]
+    assert [p["period"] for p in api["points"]] == ["2019", "2020", "2021"]
+    assert api["meta"]["title"] == "就業状態別人口"
+    assert file_["points"] == [] and file_["meta"] is None
+
+
+def test_series_card_shows_machine_values_and_only_label_is_editable(sconf):
+    items = page_items(with_series_data(_sdrafts(API_SERIES), sconf))
+    it = items[0]
+    assert it["kind"] == "series" and it["id"] == "work_rate"
+    assert list(it["f"]) == ["label"]
+    assert it["line"] == "就業している人の割合は12％（労働力調査、2021年）"
+    assert [(p["period"], p["value"]) for p in it["points"]] == [
+        ("2019", "10"), ("2020", "11"), ("2021", "12")
+    ]  # fmt: skip
+    assert "区分：計" in it["chosen"]
+    assert dict(it["source"])["統計名"] == "労働力調査"
+    assert it["link"] == "https://www.e-stat.go.jp/dbview?sid=0003000001"
+    assert it["trend"] == "増加" and it["trend_note"] == "3年続けて増えた"
+    html = build_page(with_series_data(_sdrafts(API_SERIES), sconf))
+    body = html.split("function cardSeries")[1].split("\nfunction ")[0]
+    assert '"fix.label"' in body and '"fix.value"' not in body and '"fix.unit"' not in body
+    assert "fix.year" not in body and "fix.survey" not in body
+
+
+def test_series_line_is_the_newest_numeric_point(sconf):
+    pts = parse_points([_prow(period="2021", value="", mark="-"), _prow(period="2020", value="11")])
+    item = {**API_SERIES, "points": [dict(r) for r in [_prow(period="2020", value="11")]]}
+    assert series_line(item, pts[1]) == "就業している人の割合は11％（労働力調査、2020年）"
+    full = with_series_data(_sdrafts(API_SERIES), sconf)
+    assert page_items(full)[0]["line"].endswith("12％（労働力調査、2021年）")
+
+
+def test_points_table_marks_gaps_marks_and_breaks(sconf):
+    _write_ledger(
+        sconf,
+        [_prow(period="2018", value="9", src_label="計"),
+         _prow(period="2020", value="", mark="x", src_label="総数"),
+         _prow(period="2021", value="12", src_label="総数")],
+    )  # fmt: skip
+    pts = page_items(with_series_data(_sdrafts(API_SERIES), sconf))[0]["points"]
+    assert [p["period"] for p in pts] == ["2018", "2019", "2020", "2021"]
+    assert pts[1].get("gap") is True
+    assert pts[2]["mark"] == "x" and pts[2]["brk"] is True and pts[3]["brk"] is False
+    assert pts[0]["segment"] == 0 and pts[2]["segment"] == 1
+
+
+def test_excerpt_provider_is_called_only_for_file_series(sconf):
+    seen = []
+
+    def provider(item):
+        seen.append(item["series_id"])
+        return {"rows": [["a", "b"]], "hl_row": 0, "hl_cols": [1], "label_rows": [0]}
+
+    items = page_items(with_series_data(_sdrafts(API_SERIES, FILE_SERIES), sconf), excerpt=provider)
+    assert seen == ["file_rate"]
+    assert items[0]["excerpt"] is None and items[1]["excerpt"]["hl_cols"] == [1]
+    assert items[1]["link"].startswith("https://www.e-stat.go.jp/stat-search/file-download")
+
+
+def test_draft_key_changes_once_points_exist(sconf):
+    _write_ledger(sconf, [])
+    before = _skey(sconf)
+    _write_ledger(sconf, [_prow(period="2020", value="11")])
+    after = _skey(sconf)
+    assert before != after
+    # 数が変われば、また変わる
+    _write_ledger(sconf, [_prow(period="2020", value="12")])
+    assert _skey(sconf) != after
+
+
+def test_merge_ok_series_records_owner_and_sha(sconf):
+    drafts = _sdrafts(API_SERIES)
+    key = _skey(sconf)
+    res = merge_checks(
+        drafts, {key: {"v": "ok", "at": _at(), "fix": {"label": "働いている人の割合"}}}, sconf
+    )
+    assert res.series_added == ["work_rate"]
+    row = _series_file(sconf)[0]
+    assert list(row) == SERIES_COLUMNS
+    assert row["checked_by"] == HUMAN_CHECKER and row["checked_at"] == "2026-11-21"
+    assert row["label"] == "働いている人の割合" and row["themes"] == "仕事の量"
+    assert json.loads(row["selector"]) == API_SERIES["selector"] and row["breaks"] == "[]"
+    s = series_from_draft({**API_SERIES, "label": "働いている人の割合"})
+    want = check_sha(s, parse_points(read_point_rows(sconf)), API_META)
+    assert row["checked_sha"] == want
+    # 直さなかったときの鍵・sha とは違う（label の直しを当てたあとの sha）
+    plain = check_sha(series_from_draft(API_SERIES), parse_points(read_point_rows(sconf)), API_META)
+    assert want != plain
+
+
+def test_merge_ng_series_is_not_written(sconf):
+    res = merge_checks(_sdrafts(API_SERIES), {_skey(sconf): {"v": "ng", "at": _at()}}, sconf)
+    assert res.rejected == ["work_rate"] and res.series_added == []
+    assert _series_file(sconf) == []
+
+
+def test_merge_replaces_same_id_keeps_order_and_appends(sconf):
+    other = _srow({**FILE_SERIES, "series_id": "zzz_other"})
+    old = _srow(API_SERIES, label="古い", checked_by=AI_CHECKER, checked_at="2026-11-01")
+    _write_ledger(sconf, [_prow()], [other, old])
+    key = _skey(sconf)
+    merge_checks(_sdrafts(API_SERIES), {key: {"v": "ok", "at": _at()}}, sconf)
+    ids = [r["series_id"] for r in _series_file(sconf)]
+    assert ids == ["zzz_other", "work_rate"]
+    assert _series_file(sconf)[1]["label"] == API_SERIES["label"]
+
+
+def test_accept_rest_series_is_ai_and_keeps_human_rows(sconf):
+    file_item = {**FILE_SERIES}
+    _write_ledger(sconf, [_prow(), _prow("file_rate", "2020", "5")])
+    drafts = _sdrafts(API_SERIES, file_item)
+    res = merge_checks(drafts, {}, sconf, accept_rest=True)
+    assert sorted(res.series_ai) == ["file_rate", "work_rate"] and res.series_added == []
+    rows = {r["series_id"]: r for r in _series_file(sconf)}
+    assert rows["work_rate"]["checked_by"] == AI_CHECKER and rows["work_rate"]["checked_sha"] == ""
+    assert rows["work_rate"]["trend"] == ""  # AI だけの行には増え方を入れない
+    # 人が確かめた行は、AI の行で上書きしない
+    human = {
+        **rows["work_rate"],
+        "checked_by": HUMAN_CHECKER,
+        "checked_sha": "abc",
+        "label": "人の文",
+    }
+    others = [r for r in _series_file(sconf) if r["series_id"] != "work_rate"]
+    _write_ledger(sconf, [_prow(), _prow("file_rate", "2020", "5")], [human, *others])
+    res = merge_checks(drafts, {}, sconf, accept_rest=True)
+    assert res.series_ai == [] or "work_rate" not in res.series_ai
+    row = next(r for r in _series_file(sconf) if r["series_id"] == "work_rate")
+    assert row["label"] == "人の文" and row["checked_by"] == HUMAN_CHECKER
+
+
+def test_series_without_points_is_not_taken_in(sconf):
+    _write_ledger(sconf, [])
+    drafts = _sdrafts(API_SERIES)
+    res = merge_checks(drafts, {_skey(sconf): {"v": "ok", "at": _at()}}, sconf)
+    assert res.series_added == [] and any("数がまだ無い" in x for x in res.skipped)
+    res = merge_checks(drafts, {}, sconf, accept_rest=True)
+    assert res.series_ai == [] and _series_file(sconf) == []
+
+
+def test_series_trend_kept_only_when_ticked_and_verified(sconf):
+    key = _skey(sconf)
+    merge_checks(_sdrafts(API_SERIES), {key: {"v": "ok", "at": _at(), "trend": False}}, sconf)
+    assert _series_file(sconf)[0]["trend"] == ""
+    assert _series_file(sconf)[0]["trend_from"] == ""
+    merge_checks(_sdrafts(API_SERIES), {key: {"v": "ok", "at": _at(), "trend": True}}, sconf)
+    row = _series_file(sconf)[0]
+    assert (row["trend"], row["trend_from"], row["trend_to"]) == ("増加", "2019", "2021")
+    assert row["trend_note"] == "3年続けて増えた"
+    # 数が増え続けていないと、印を付けても入らない
+    _write_ledger(sconf, [_prow(period="2019", value="10"), _prow(period="2020", value="9"),
+                          _prow(period="2021", value="12")])  # fmt: skip
+    assert page_items(with_series_data(_sdrafts(API_SERIES), sconf))[0]["trend"] == ""
+    key = _skey(sconf)
+    merge_checks(_sdrafts(API_SERIES), {key: {"v": "ok", "at": _at(), "trend": True}}, sconf)
+    assert _series_file(sconf)[0]["trend"] == ""
+
+
+def test_broken_series_writes_nothing_anywhere(sconf):
+    stats_before = (sconf / "stats.csv").read_text("utf-8")
+    bad = {**API_SERIES, "themes": ["ない主題"]}
+    drafts = {**_drafts(), "series": [bad]}
+    checks = {stat_key(STAT): {"v": "ok", "at": _at()}, _skey(sconf, bad): {"v": "ok", "at": _at()}}
+    with pytest.raises(SourcesError, match="stat_series.csv"):
+        merge_checks(drafts, checks, sconf)
+    assert (sconf / "stats.csv").read_text("utf-8") == stats_before
+    assert not (sconf / "findings.csv").exists()
+    assert _series_file(sconf) == []
+    # 表の情報が無い estat_api の系列も止まる
+    (sconf.parent / "docs" / "estat" / "work_rate.json").unlink()
+    with pytest.raises(SourcesError, match="表の情報"):
+        merge_checks(_sdrafts(API_SERIES), {_skey(sconf): {"v": "ok", "at": _at()}}, sconf)
+
+
+def test_todo_series_comes_from_the_ledger(sconf):
+    _write_ledger(
+        sconf,
+        [_prow()],
+        [_srow(API_SERIES, label="台帳の文", checked_by=AI_CHECKER, checked_at="2026-11-01")],
+    )
+    drafts = _sdrafts({**API_SERIES, "label": "下書きの文", "evidence": "下書きの写し"})
+    out = todo_drafts(drafts, {"episode_id": "E1", "series": ["work_rate"]}, sconf)
+    (it,) = page_items(out)
+    assert it["kind"] == "series" and it["label"] == "台帳の文" and it["evidence"] == "下書きの写し"
+    assert [p["period"] for p in it["points"]] == ["2019"]
+    assert it["source"] and out["made"] == "回 E1"
+    with pytest.raises(SourcesError, match="台帳に無い行"):
+        todo_drafts(drafts, {"series": ["nope"]}, sconf)
+
+
+def test_cli_page_and_merge_with_series(sconf, tmp_path):
+    drafts = tmp_path / "drafts.json"
+    drafts.write_text(json.dumps(_sdrafts(API_SERIES), ensure_ascii=False), "utf-8")
+    shutil.copy(DEFAULT_CONFIG_DIR / "sources.yaml", sconf / "sources.yaml")
+    settings = sconf / "s.toml"
+    settings.write_text("[paths]\n", "utf-8")
+    out = tmp_path / "page.html"
+    res = CliRunner().invoke(
+        app,
+        [
+            "sources",
+            "page",
+            "--drafts",
+            str(drafts),
+            "--out",
+            str(out),
+            "--settings",
+            str(settings),
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    assert "統計の系列 1" in res.output and "work_rate" in out.read_text("utf-8")
+    checks = tmp_path / "checks.json"
+    checks.write_text(json.dumps({_skey(sconf): {"v": "ok", "at": _at()}}), "utf-8")
+    res = CliRunner().invoke(
+        app,
+        ["sources", "merge", "--drafts", str(drafts), "--from", str(checks),
+         "--settings", str(settings)],
+    )  # fmt: skip
+    assert res.exit_code == 0, res.output
+    assert "統計の系列 1" in res.output and "koten db init" in res.output
+
+
+def test_excerpt_from_grid_marks_value_cells_and_label_rows():
+    from koten.sources.check import excerpt_from_grid
+
+    grid = [[f"r{r}c{c}" for c in range(10)] for r in range(20)]
+    x = excerpt_from_grid(FILE_SELECTOR["parts"][0], grid)  # values D12:F12, label A12, unit B3
+    assert x["rows"][x["hl_row"]][x["hl_cols"][0]] == "r11c3"
+    assert len(x["hl_cols"]) == 3 and len(x["rows"][0]) == 7  # 数の列の前後2列
+    assert x["hl_row"] == 3 and len(x["rows"]) == 7  # 数の行の前後3行
+    assert x["label_rows"] == [] or all(i != x["hl_row"] for i in x["label_rows"])

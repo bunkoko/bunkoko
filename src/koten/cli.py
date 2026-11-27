@@ -2312,6 +2312,29 @@ def _source_drafts(drafts: list[str] | None, todo: str | None, s: Settings):
     return data
 
 
+def _series_excerpt(s: Settings):
+    """estat_file の系列の、数のまわりの表を出す関数。ファイルは net.py で取る（要るときだけ。
+    取れない・読めないときはその系列の表を出さない）。KOTEN_CONTACT が要る。"""
+    from koten.sources.check import file_excerpt
+
+    holder: dict[str, Fetcher] = {}
+
+    def provide(item: dict):
+        if "f" not in holder:
+            holder["f"] = _make_fetcher(s, _estat_cache(s))
+        try:
+            return file_excerpt(item, _file_fetch(holder["f"], False))
+        except (*_estat_failures(), OSError, KeyError) as e:
+            typer.secho(
+                f"{item.get('series_id')}：ファイルの抜き出しを作れません（{type(e).__name__}）",
+                fg="yellow",
+                err=True,
+            )
+            return None
+
+    return provide
+
+
 @sources_app.command("page")
 def sources_page(
     drafts: DraftsOpt = None,
@@ -2325,23 +2348,24 @@ def sources_page(
     """
     from pathlib import Path
 
-    from koten.sources.check import SourcesError, build_page, page_items
+    from koten.sources.check import SourcesError, build_page, page_items, with_series_data
 
     s = _settings(settings)
     try:
-        data = _source_drafts(drafts, todo, s)
-        items = page_items(data)
-        html = build_page(data)
+        data = with_series_data(_source_drafts(drafts, todo, s), s.config_dir)
+        items = page_items(data, excerpt=_series_excerpt(s))
+        html = build_page(data, items=items)
     except (OSError, ValueError, KeyError, SourcesError) as e:
         typer.secho(f"下書きを読めません：{e}", fg="red", err=True)
         raise typer.Exit(2) from e
     dest = Path(out)
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(html, "utf-8")
-    kinds = {k: sum(1 for x in items if x["kind"] == k) for k in ("stat", "finding")}
-    leads = len(items) - kinds["stat"] - kinds["finding"]
+    kinds = {k: sum(1 for x in items if x["kind"] == k) for k in ("stat", "finding", "series")}
+    leads = len(items) - sum(kinds.values())
+    series = f"統計の系列 {kinds['series']}・" if kinds["series"] else ""
     typer.echo(
-        f"{dest} に、統計 {kinds['stat']}・研究 {kinds['finding']}・"
+        f"{dest} に、統計 {kinds['stat']}・研究 {kinds['finding']}・{series}"
         f"あなたが読む資料 {leads} 件のページを書きました"
     )
     images = [x["img"] for x in items if x.get("img")]
@@ -2387,8 +2411,10 @@ def sources_merge(
         raise typer.Exit(2) from e
     typer.echo(
         f"人が確かめた行：統計 {len(res.stats_added)}・研究 {len(res.findings_added)}"
+        f"・統計の系列 {len(res.series_added)}"
         + (
             f"／AI が確かめた行：統計 {len(res.stats_ai)}・研究 {len(res.findings_ai)}"
+            f"・統計の系列 {len(res.series_ai)}"
             if accept_rest
             else ""
         )
@@ -2398,6 +2424,8 @@ def sources_merge(
         ("人が確かめた研究", res.findings_added),
         ("AI が確かめた統計", res.stats_ai),
         ("AI が確かめた研究", res.findings_ai),
+        ("人が確かめた統計の系列", res.series_added),
+        ("AI が確かめた統計の系列", res.series_ai),
         ("外した古い統計", res.stats_removed),
         ("違う・使わない", res.rejected),
     ):
@@ -2415,6 +2443,8 @@ def sources_merge(
         )
     if res.stats_added or res.stats_ai or res.stats_removed:
         typer.echo("統計を SSD に入れる：uv run koten db init")
+    if res.series_added or res.series_ai:
+        typer.echo("統計の系列を SSD に入れる：uv run koten db init")
     if res.findings_added or res.findings_ai:
         typer.echo("研究を SSD に入れる：uv run koten findings build")
 

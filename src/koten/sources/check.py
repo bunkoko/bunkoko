@@ -7,7 +7,9 @@
                 where, evidence, trend, trend_note, replaces, check_note}],
      "findings": [{findings.csv の列（status などを除く）, license_evidence, where, check_note}],
      "leads": [{lead_id, kind: private_survey か paid_paper, theme, title, publisher, date, url,
-                terms_url, doi, authors, year, journal, volume, issue, pages, why}]}
+                terms_url, doi, authors, year, journal, volume, issue, pages, why}],
+     "series": [{stat_series.csv の列（status・checked_* を除く）, selector_names, stats_data_id,
+                 evidence, check_note}]}
 
 ページのデータベースの文書（checks/<キー>）の形：
 
@@ -28,6 +30,7 @@ import json
 import re
 import shutil
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -49,6 +52,27 @@ from koten.findings import (
     read_findings,
 )
 from koten.script.placeholders import format_stat
+from koten.stats.files import FILE_URL, read_grid
+from koten.stats.report import series_from_draft
+from koten.stats.series import POINTS_COLUMNS as POINT_COLUMNS
+from koten.stats.series import (
+    SERIES_COLUMNS,
+    SERIES_FILE,
+    Point,
+    SeriesError,
+    check_sha,
+    load_meta,
+    meta_dir_for,
+    parse_points,
+    period_label,
+    read_point_rows,
+    read_series_rows,
+    segments,
+    series_problems,
+    value_num,
+    verify_trend,
+)
+from koten.worries.master import load_blocked_keywords
 
 TEMPLATE = Path(__file__).with_name("page.html")
 ITEMS_MARK = "/*__ITEMS__*/[]"
@@ -105,7 +129,7 @@ def read_drafts(path: Path) -> dict[str, Any]:
     data = json.loads(path.read_text("utf-8"))
     if not isinstance(data, dict):
         raise SourcesError(f"{path} は下書きの形ではありません")
-    for part in ("stats", "findings", "leads"):
+    for part in ("stats", "findings", "leads", "series"):
         data.setdefault(part, [])
         if not isinstance(data[part], list):
             raise SourcesError(f"{path} の {part} が並びではありません")
@@ -130,7 +154,255 @@ def finding_lines(d: dict[str, Any]) -> list[str]:
     return out
 
 
-def page_items(drafts: dict[str, Any]) -> list[dict[str, Any]]:
+# --- 統計の系列（e-Stat の複数年の数） ---------------------------------------------
+
+
+def with_series_data(drafts: dict[str, Any], config_dir: Path) -> dict[str, Any]:
+    """series の各項目に、台帳の点（points）と表の情報（meta）を足した写しを返す。
+
+    ページの鍵と取り込みの鍵は、どちらもこの写しから作る（同じデータから鍵を出すため）。
+    表の情報は estat_api の系列だけ（docs/estat/<series_id>.json。db.py と同じ）。
+    """
+    rows = read_point_rows(config_dir)
+    meta_dir = meta_dir_for(config_dir)
+    out = []
+    for item in drafts.get("series") or []:
+        sid = str(item.get("series_id", "")).strip()
+        pts = sorted(
+            (dict(r) for r in rows if r.get("series_id", "").strip() == sid),
+            key=lambda r: r.get("period", ""),
+        )
+        meta = None
+        if item.get("source_kind") == "estat_api":
+            try:
+                meta = load_meta(meta_dir, sid)
+            except SeriesError as e:
+                raise SourcesError(str(e)) from e
+        out.append({**item, "points": [{c: r.get(c, "") for c in POINT_COLUMNS} for r in pts],
+                    "meta": meta})  # fmt: skip
+    return {**drafts, "series": out}
+
+
+def _points_of(item: dict[str, Any]) -> list[Point]:
+    return parse_points(list(item.get("points") or []))
+
+
+def series_key(item: dict[str, Any]) -> str:
+    """数・名前・区切りのどれかが変われば変わる鍵（check_sha）。数がまだ無いうちは別の鍵。"""
+    sha = check_sha(series_from_draft(item), _points_of(item), item.get("meta"))
+    return _key("r", sha)
+
+
+def _newest_numeric(points: list[Point]) -> Point | None:
+    nums = [p for p in points if value_num(p) is not None]
+    return max(nums, key=lambda p: p.period) if nums else None
+
+
+def series_line(item: dict[str, Any], point: Point | None) -> str:
+    """台本で読む文（段2 で比べる文が足される。今は最新の数の点の文）。"""
+    if point is None:
+        return ""
+    s = series_from_draft(item)
+    return (
+        f"{s.label}は{point.value}{s.unit}"
+        f"（{s.survey}、{period_label(point.period, s.period_kind)}）"
+    )
+
+
+def _newest_part(item: dict[str, Any], points: list[Point]) -> tuple[int, dict[str, Any]] | None:
+    """estat_file の系列の、いちばん新しい点の part（無ければ最後の part）。"""
+    sel = series_from_draft(item).selector
+    parts = sel.get("parts") if isinstance(sel, dict) else None
+    if not isinstance(parts, list) or not parts:
+        return None
+    newest = max(points, key=lambda p: p.period) if points else None
+    idx = len(parts) - 1
+    if newest is not None and newest.part.strip().isdigit() and int(newest.part) < len(parts):
+        idx = int(newest.part)
+    return (idx, parts[idx]) if isinstance(parts[idx], dict) else None
+
+
+_REF = re.compile(r"([A-Za-z]+)([0-9]+)")
+
+
+def _cell(ref: str) -> tuple[int, int]:
+    m = _REF.fullmatch(ref.strip())
+    if not m:
+        raise SourcesError(f"セルの指定を読めない：{ref!r}")
+    col = 0
+    for ch in m[1].upper():
+        col = col * 26 + ord(ch) - 64
+    return int(m[2]) - 1, col - 1
+
+
+def excerpt_from_grid(spec: dict[str, Any], grid: list[list[str]]) -> dict[str, Any]:
+    """数の行の前後3行を、数の列の前後2列で切り出した表。数のセルと見出しの行の位置つき。"""
+    a, _, b = str(spec["values"]).partition(":")
+    r1, c1 = _cell(a)
+    r2, c2 = _cell(b) if b else (r1, c1)
+    top, bottom = max(0, r1 - 3), min(len(grid) - 1, min(r2, r1 + 8) + 3)
+    left, right = max(0, c1 - 2), c2 + 2
+    rows = [
+        [(grid[r][c] if r < len(grid) and c < len(grid[r]) else "") for c in range(left, right + 1)]
+        for r in range(top, bottom + 1)
+    ]
+    label_rows = set()
+    for ref in [
+        *spec.get("label_cells", []),
+        spec.get("unit_cell") or "",
+        spec.get("periods_cells") or "",
+    ]:
+        if ref:
+            r, _ = _cell(str(ref).partition(":")[0])
+            if top <= r <= bottom:
+                label_rows.add(r - top)
+    return {
+        "rows": rows,
+        "hl_row": r1 - top,
+        "hl_cols": list(range(c1 - left, c2 - left + 1)),
+        "label_rows": sorted(label_rows - {r1 - top}),
+    }
+
+
+def file_excerpt(
+    item: dict[str, Any], fetch: Callable[[str, str], tuple[Path, str]]
+) -> dict[str, Any] | None:
+    """estat_file の系列の、いちばん新しい part のファイルから数のまわりを抜き出す。"""
+    part = _newest_part(item, _points_of(item))
+    if part is None:
+        return None
+    spec = part[1]
+    sid, kind = str(spec.get("statInfId", "")).strip(), str(spec.get("fileKind", "")).strip()
+    if not (sid and kind and spec.get("values")):
+        return None
+    path, _ = fetch(FILE_URL.format(sid=sid, kind=kind), f"files/{sid}_{kind}")
+    return excerpt_from_grid(spec, read_grid(Path(path), str(spec.get("sheet", ""))))
+
+
+def _source_words(
+    item: dict[str, Any], points: list[Point]
+) -> tuple[list[list[str]], list[str], str]:
+    """元の資料の言葉（名前と値の並び）・選んだ分類・元の表へのリンク。"""
+    meta = item.get("meta") or {}
+    pairs: list[list[str]] = []
+    chosen: list[str] = []
+    link = ""
+    if item.get("source_kind") == "estat_api":
+        if not meta:
+            pairs.append(["表の情報", "まだ無い（Mac で koten stats meta）"])
+        no = f"（{meta['title_no']}）" if meta.get("title_no") else ""
+        for name, val in (
+            ("統計名", meta.get("stat_name")),
+            ("作った機関", meta.get("gov_org")),
+            ("表の題", f"{meta['title']}{no}" if meta.get("title") else ""),
+            ("調査の年月", meta.get("survey_date")),
+            ("更新日", meta.get("updated_date")),
+            ("公開日", meta.get("open_date")),
+            ("statsDataId", meta.get("stats_data_id")),
+        ):
+            if val not in (None, ""):
+                pairs.append([name, str(val)])
+        chosen = [
+            f"{c.get('class', '')}：{c.get('item', '')}"
+            for c in meta.get("chosen") or []
+            if isinstance(c, dict)
+        ]
+        sdid = str(
+            series_from_draft(item).selector.get("statsDataId") or item.get("stats_data_id") or ""
+        )
+        link = f"https://www.e-stat.go.jp/dbview?sid={sdid}" if sdid else ""
+    else:
+        part = _newest_part(item, points)
+        if part:
+            spec = part[1]
+            pairs += [
+                ["statInfId", str(spec.get("statInfId", ""))],
+                ["シート", str(spec.get("sheet", ""))],
+            ]
+            sid, kind = str(spec.get("statInfId", "")), str(spec.get("fileKind", ""))
+            link = FILE_URL.format(sid=sid, kind=kind) if sid and kind else ""
+            updated = spec.get("updated") or item.get("updated")
+            if updated:
+                pairs.append(["更新日", str(updated)])
+        newest = max(points, key=lambda p: p.period) if points else None
+        if newest is not None:
+            pairs += [["見出しのセル", newest.src_label], ["単位のセル", newest.src_unit]]
+    return [p for p in pairs if p[1] != ""], chosen, link
+
+
+def _point_rows(item: dict[str, Any], points: list[Point]) -> list[dict[str, Any]]:
+    s = series_from_draft(item)
+    seg = segments(s, points)
+    out: list[dict[str, Any]] = []
+    prev: Point | None = None
+    for p in sorted(points, key=lambda p: p.period):
+        if prev is not None and p.period.isdigit() and prev.period.isdigit():
+            for y in range(int(prev.period) + 1, min(int(p.period), int(prev.period) + 200)):
+                out.append({"period": f"{y:04d}", "label": period_label(f"{y:04d}", s.period_kind),
+                            "value": "", "mark": "", "gap": True, "segment": seg[prev.period],
+                            "brk": False})  # fmt: skip
+        out.append(
+            {
+                "period": p.period,
+                "label": period_label(p.period, s.period_kind),
+                "value": p.value,
+                "mark": p.mark,
+                "gap": False,
+                "segment": seg[p.period],
+                "brk": prev is not None and seg[p.period] > seg[prev.period],
+            }
+        )
+        prev = p
+    return out
+
+
+def _series_item(
+    d: dict[str, Any], excerpt: Callable[[dict[str, Any]], dict[str, Any] | None] | None
+) -> dict[str, Any]:
+    s = series_from_draft(d)
+    points = _points_of(d)
+    source, chosen, link = _source_words(d, points)
+    ok_trend = bool(s.trend) and bool(s.trend_note.strip()) and verify_trend(s, points)[0]
+    meta = {k: v for k, v in (d.get("meta") or {}).items() if k != "times"} or None
+    newest = _newest_numeric(points)
+    return {
+        "k": series_key(d),
+        "kind": "series",
+        "id": s.series_id,
+        "theme": "／".join(s.themes),
+        "label": s.label,
+        "unit": s.unit,
+        "survey": s.survey,
+        "publisher": s.publisher,
+        "table_title": s.table_title,
+        "url": s.url,
+        "source_kind": s.source_kind,
+        "period_kind": s.period_kind,
+        "line": series_line(d, newest),
+        # 文の「〇〇は」より後ろ。ページで label を直したときに文を組み直す
+        "tail": series_line(d, newest).removeprefix(f"{s.label}は") if newest else "",
+        "meta": meta,
+        "source": source,
+        "chosen": chosen,
+        "link": link,
+        "points": _point_rows(d, points),
+        "breaks": [{"before": b.before, "note": b.note} for b in s.breaks],
+        "excerpt": excerpt(d) if excerpt and s.source_kind == "estat_file" else None,
+        "trend": s.trend if ok_trend else "",
+        "trend_from": s.trend_from if ok_trend else "",
+        "trend_to": s.trend_to if ok_trend else "",
+        "trend_note": s.trend_note if ok_trend else "",
+        "evidence": d.get("evidence", ""),
+        "check_note": d.get("check_note", ""),
+        "f": {"label": s.label},
+    }
+
+
+def page_items(
+    drafts: dict[str, Any],
+    *,
+    excerpt: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
+) -> list[dict[str, Any]]:
     """ページに出す1件ずつ。統計・研究は下書きの文、民間の調査・有料の論文は書誌だけ。"""
     out: list[dict[str, Any]] = []
     for d in drafts["stats"]:
@@ -217,6 +489,8 @@ def page_items(drafts: dict[str, Any]) -> list[dict[str, Any]]:
                 "authors_ja": d.get("authors_ja", ""),
             }
         out.append(item)
+    for d in drafts.get("series") or []:
+        out.append(_series_item(d, excerpt))
     keys = [x["k"] for x in out]
     if len(keys) != len(set(keys)):
         raise SourcesError("下書きに同じ中身の行が2つあります")
@@ -232,13 +506,19 @@ def _script_json(value: Any) -> str:
     )
 
 
-def build_page(drafts: dict[str, Any]) -> str:
+def build_page(
+    drafts: dict[str, Any],
+    *,
+    excerpt: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
+    items: list[dict[str, Any]] | None = None,
+) -> str:
     html = TEMPLATE.read_text("utf-8")
     if ITEMS_MARK not in html or MADE_MARK not in html:
         raise ValueError(f"{TEMPLATE.name} に差し込む印がない")
-    return html.replace(ITEMS_MARK, _script_json(page_items(drafts))).replace(
-        MADE_MARK, _script_json(str(drafts.get("made", "")))
-    )
+    return html.replace(
+        ITEMS_MARK,
+        _script_json(items if items is not None else page_items(drafts, excerpt=excerpt)),
+    ).replace(MADE_MARK, _script_json(str(drafts.get("made", ""))))
 
 
 # --- 台帳に書く -----------------------------------------------------------------
@@ -258,6 +538,8 @@ class MergeResult:
     # 押していないので、AI が確かめた行として入れた（accept_rest のとき）
     stats_ai: list[str] = field(default_factory=list)
     findings_ai: list[str] = field(default_factory=list)
+    series_added: list[str] = field(default_factory=list)
+    series_ai: list[str] = field(default_factory=list)
 
 
 def _day(at: Any) -> str:
@@ -349,6 +631,64 @@ def _finding_row(
     return row
 
 
+def _series_row(
+    d: dict[str, Any], c: dict[str, Any], *, by: str, day: str, old: dict[str, str] | None
+) -> dict[str, str]:
+    """stat_series.csv の1行。人が確かめた行は、label の直しを当てたあとの check_sha を入れる。"""
+    row = {}
+    for col in SERIES_COLUMNS:
+        v = d.get(col, "")
+        if col == "themes" and isinstance(v, list):
+            v = ";".join(str(x) for x in v)
+        elif isinstance(v, (dict, list)):
+            v = json.dumps(v, ensure_ascii=False)
+        row[col] = "" if v is None else _text(v) if col != "selector" else str(v)
+    fix = c.get("fix") or {}
+    if _text(fix.get("label")):
+        row["label"] = _text(fix["label"])
+    human = by == CHECKER
+    s = series_from_draft(row)
+    if not (human and c.get("trend") and verify_trend(s, _points_of(d))[0]):
+        for col in ("trend", "trend_from", "trend_to", "trend_note"):
+            row[col] = ""
+    row["status"] = "" if human else (old or {}).get("status", "")
+    row["checked_by"], row["checked_at"] = by, day
+    row["checked_sha"] = (
+        check_sha(series_from_draft(row), _points_of(d), d.get("meta")) if human else ""
+    )
+    row["note"] = _text(c.get("note", ""))[:200] or row.get("note", "")
+    return row
+
+
+def _series_check(
+    config_dir: Path,
+    rows: list[dict[str, str]],
+    stats_rows: list[dict[str, str]],
+    themes: set[str],
+) -> None:
+    metas: dict[str, dict] = {}
+    for r in rows:
+        sid = r.get("series_id", "").strip()
+        if r.get("source_kind", "").strip() == "estat_api" and sid and sid not in metas:
+            try:
+                meta = load_meta(meta_dir_for(config_dir), sid)
+            except SeriesError as e:
+                raise SourcesError(f"{SERIES_FILE} に問題が出るので書きません：{e}") from e
+            if meta is not None:
+                metas[sid] = meta
+    blocked_path = config_dir / "blocked_keywords.yaml"
+    problems = series_problems(
+        rows,
+        read_point_rows(config_dir),
+        themes=themes,
+        legacy_ids={(r.get("stat_id") or "").strip() for r in stats_rows},
+        blocked=load_blocked_keywords(config_dir) if blocked_path.exists() else {},
+        metas=metas,
+    )
+    if problems:
+        raise SourcesError(f"{SERIES_FILE} に問題が出るので書きません：" + "、".join(problems))
+
+
 def merge_checks(
     drafts: dict[str, Any],
     checks: dict[str, Any],
@@ -369,6 +709,7 @@ def merge_checks(
       入れたときに外す
     """
     res = MergeResult()
+    drafts = with_series_data(drafts, config_dir)
     themes = _themes(config_dir)
     ai_day = str(drafts.get("made") or date.today().isoformat())
     by_key: dict[str, tuple[str, dict[str, Any]]] = {}
@@ -378,6 +719,8 @@ def merge_checks(
         by_key[finding_key(d)] = ("finding", d)
     for d in drafts["leads"]:
         by_key[lead_key(d)] = (d.get("kind", ""), d)
+    for d in drafts["series"]:
+        by_key[series_key(d)] = ("series", d)
     res.unknown = [k for k in checks if k not in by_key]
     res.unchecked = sum(1 for k in by_key if k not in checks)
 
@@ -389,15 +732,36 @@ def merge_checks(
         raise SourcesError(f"{find_path.name} の列が決まりと違うので書きません")
     human_stats = {r["stat_id"] for r in old if (r.get("checked_by") or "").strip() == CHECKER}
     human_findings = {r["finding_id"] for r in fold if (r.get("status") or "") == "verified"}
+    old_series = read_series_rows(config_dir)
+    human_series = {
+        r["series_id"] for r in old_series if (r.get("checked_by") or "").strip() == CHECKER
+    }
+    new_series: list[dict[str, str]] = []
 
     new_stats: list[dict[str, str]] = []
     new_findings: list[dict[str, str]] = []
     removes: set[str] = set()
+    ledger_series = {r["series_id"]: r for r in old_series}
     for key, (kind, d) in by_key.items():
         c = checks.get(key)
-        name = d.get("stat_id") or d.get("finding_id") or d.get("lead_id") or key
+        name = (
+            d.get("stat_id") or d.get("finding_id") or d.get("lead_id") or d.get("series_id") or key
+        )
         if not isinstance(c, dict) or c.get("v") not in ("ok", "ng"):
-            if not accept_rest or kind not in ("stat", "finding"):
+            if not accept_rest or kind not in ("stat", "finding", "series"):
+                continue
+            if kind == "series":
+                if d["series_id"] in human_series:
+                    continue
+                if not d["points"]:
+                    res.skipped.append(f"{name}：数がまだ無い（koten stats fetch のあとに）")
+                    continue
+                new_series.append(
+                    _series_row(
+                        d, {}, by=AI_CHECKER, day=ai_day, old=ledger_series.get(d["series_id"])
+                    )
+                )
+                res.series_ai.append(d["series_id"])
                 continue
             if kind == "stat" and d["stat_id"] in human_stats:
                 continue
@@ -420,7 +784,14 @@ def merge_checks(
             res.rejected.append(name)
             continue
         day = _day(c.get("at"))
-        if kind == "stat":
+        if kind == "series":
+            if not d["points"]:
+                res.skipped.append(f"{name}：数がまだ無い（koten stats fetch のあとに）")
+                continue
+            new_series.append(
+                _series_row(d, c, by=CHECKER, day=day, old=ledger_series.get(d["series_id"]))
+            )
+        elif kind == "stat":
             new_stats.append(_stat_row(d, c, from_lead=False, by=CHECKER, day=day))
             if d.get("replaces"):
                 removes.add(str(d["replaces"]))
@@ -472,6 +843,13 @@ def merge_checks(
     if problems := stats_problems(stats_rows):
         raise SourcesError("stats.csv に問題が出るので書きません：" + "、".join(problems))
 
+    if new_series:
+        # 同じ series_id の行は同じ場所で入れ替える（並びを変えない）
+        by_new = {r["series_id"]: r for r in new_series}
+        series_rows = [by_new.pop(r.get("series_id"), r) for r in old_series]
+        series_rows += list(by_new.values())
+        _series_check(config_dir, series_rows, stats_rows, themes)
+
     fadded = {r["finding_id"] for r in new_findings}
     find_rows = [r for r in fold if r.get("finding_id") not in fadded] + new_findings
     find_text = _csv_text(FINDING_COLUMNS, find_rows)
@@ -492,6 +870,10 @@ def merge_checks(
         stats_path.write_text(_csv_text(columns, stats_rows), "utf-8")
     if new_findings:
         find_path.write_text(find_text, "utf-8")
+    if new_series:
+        (config_dir / SERIES_FILE).write_text(_csv_text(SERIES_COLUMNS, series_rows), "utf-8")
+    ai_series = set(res.series_ai)
+    res.series_added = [r["series_id"] for r in new_series if r["series_id"] not in ai_series]
     ai_stats, ai_findings = set(res.stats_ai), set(res.findings_ai)
     res.stats_added = [r["stat_id"] for r in new_stats if r["stat_id"] not in ai_stats]
     res.findings_added = [
@@ -507,14 +889,19 @@ DRAFTS_GLOB = "docs/research/*-source-drafts.json"
 
 def collect_drafts(paths: list[Path]) -> dict[str, Any]:
     """下書きのファイルをまとめる。同じ ID は後のファイルを使う（ファイル名の日付の順に渡す）。"""
-    out: dict[str, Any] = {"made": "", "stats": {}, "findings": {}, "leads": {}}
+    out: dict[str, Any] = {"made": "", "stats": {}, "findings": {}, "leads": {}, "series": {}}
     for path in paths:
         d = read_drafts(path)
         out["made"] = str(d.get("made") or out["made"])
-        for part, idk in (("stats", "stat_id"), ("findings", "finding_id"), ("leads", "lead_id")):
+        for part, idk in (
+            ("stats", "stat_id"),
+            ("findings", "finding_id"),
+            ("leads", "lead_id"),
+            ("series", "series_id"),
+        ):
             for x in d[part]:
                 out[part][x[idk]] = x
-    return {**out, **{part: list(out[part].values()) for part in ("stats", "findings", "leads")}}
+    return {**out, **{part: list(out[part].values()) for part in out if part != "made"}}
 
 
 def todo_drafts(drafts: dict[str, Any], todo: dict[str, Any], config_dir: Path) -> dict[str, Any]:
@@ -543,13 +930,33 @@ def todo_drafts(drafts: dict[str, Any], todo: dict[str, Any], config_dir: Path) 
             missing.append(fid)
             continue
         findings.append({**draft_f.get(fid, {}), **ledger_f[fid]})
+    _, series_rows = _read_csv(config_dir / SERIES_FILE)
+    ledger_r = {r["series_id"]: r for r in series_rows}
+    draft_r = {d["series_id"]: d for d in drafts.get("series") or []}
+    series = []
+    for rid in todo.get("series") or []:
+        if rid not in ledger_r:
+            missing.append(rid)
+            continue
+        row = {k: v for k, v in ledger_r[rid].items() if k in SERIES_COLUMNS}
+        row["themes"] = [x.strip() for x in row["themes"].split(";") if x.strip()]
+        keep = {
+            k: v
+            for k, v in draft_r.get(rid, {}).items()
+            if k in ("evidence", "check_note", "selector_names", "stats_data_id", "updated")
+        }
+        series.append({**keep, **row})
     if missing:
         raise SourcesError(
             f"台帳に無い行があります（{'・'.join(missing)}）：git pull してから作り直す"
         )
-    return {
-        "made": f"回 {todo.get('episode_id', '')}",
-        "stats": stats,
-        "findings": findings,
-        "leads": [],
-    }
+    return with_series_data(
+        {
+            "made": f"回 {todo.get('episode_id', '')}",
+            "stats": stats,
+            "findings": findings,
+            "leads": [],
+            "series": series,
+        },
+        config_dir,
+    )
