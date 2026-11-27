@@ -862,6 +862,7 @@ def segments(s: Series, points: list[Point]) -> dict[str, int]:
     空でなく、それまでに見た最後の空でない src_label と違うところで番号を1つ進める
     （間に src_label が空の点があっても食い違いは隠れない）。部分（part）の境で、どちらかの
     部分の src_label が空なら、比べられるか分からないので、そこでも番号を進める（R32）。
+    src_label は label_key（NFKC・空白を除く）で比べる（R41）。
     1つの部分の中は変えない（API の点は part が空で、部分の境が無い）。
     """
     seg: dict[str, int] = {}

@@ -4138,12 +4138,14 @@ def _file_fetch(fetcher: Fetcher, refresh: bool, done: dict | None = None):
     断る（F7）。done を渡すと、同じ URL は 1 回の実行で 1 回だけ取り、あとは同じ結果
     （失敗も）を返す（--refresh でも 2 回目からは取り直さない。R40）。"""
     from koten.stats.files import file_problem
+    from koten.stats.series import SeriesError
 
     def fetch(url: str, rel: str):
         if done is not None and url in done:
             got = done[url]
             if isinstance(got, Exception):
-                raise got
+                why = "この実行で先に失敗したファイル。取り直していない"
+                raise SeriesError(f"{got}（{why}）") from got
             return got
         try:
             path = fetcher.fetch(url, rel, refresh=refresh, validate=file_problem)[0]

@@ -1106,3 +1106,32 @@ def test_one_grid_is_parsed_once_per_run(env, monkeypatch):
     )
     assert stats(env, "fetch").exit_code == 0
     assert calls == ["表1"]
+
+
+def test_a_failed_file_is_not_retried_in_the_same_run_and_says_so(env):
+    rows = [
+        one_file_series("first", [xls_part("B")]),
+        one_file_series("second", [xls_part("B")]),
+    ]
+    write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, rows)  # 000003 は配らない（404）
+    r = stats(env, "fetch")
+    assert r.exit_code == 1
+    assert len(file_requests(env, "000003")) == 1
+    marker = "この実行で先に失敗したファイル。取り直していない"
+    first, _, second = r.output.partition("second：")
+    assert "first：" in first and marker not in first
+    assert marker in second
+
+
+def test_part_name_is_kept_when_the_grid_is_reused_across_series(env):
+    env.state["files"] = {"000003": xls_bytes([["", 2021, 2022], ["x", 1.5, 2.5]])}
+    bad = xls_part("B")
+    worse = {**xls_part("C"), "periods_cells": "A2:A2"}  # 「x」は年として読めない
+    rows = [
+        one_file_series("first", [xls_part("B")]),
+        one_file_series("second", [bad, worse]),
+    ]
+    write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, rows)
+    r = stats(env, "fetch")
+    assert r.exit_code == 1 and len(file_requests(env, "000003")) == 1
+    assert "second：" in r.output and "2 番目の part（000003_4）" in r.output

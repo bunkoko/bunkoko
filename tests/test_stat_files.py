@@ -687,6 +687,7 @@ def test_xls_and_xlsx_give_the_same_grid(tmp_path):
         ["", 2021, 2022, 2023, 2024],
         ["合計", 0.1 + 0.2, 0, 12345.678, -2.5],
         ["x", "y", None, 7, 60.0],
+        [dt.datetime(2021, 1, 2), None, None, None, None],
     ]
     fmts = {"B2": "0.0%", "C2": '0.0;-0.0;"-"', "D2": "#,##0,", "E2": "0", "E3": "General"}
     a = read_grid(write_xlsx(tmp_path / "a.bin", rows, fmts=fmts), "表1")
@@ -719,3 +720,119 @@ def test_label_cell_line_breaks_and_runs_of_space_are_collapsed(tmp_path):
     pts = file_points(s, fetch_local(x))
     assert pts[0].src_label == "強い不安、悩み ストレス／（ ％ ）"
     assert "\n" not in pts[0].src_label
+
+
+# --- 追い直し：xlrd は何も出さない・日付の文・R43 ---------------------------------------
+
+
+def _truncated_xls(tmp_path, cut):
+    x = write_xls(tmp_path / "t.bin", [[i, i * 2.5] for i in range(400)])
+    data = x.read_bytes()
+    p = tmp_path / "cut.bin"
+    p.write_bytes(data[: int(len(data) * cut)])
+    return p
+
+
+@pytest.mark.parametrize("cut", [0.5, 0.95])
+def test_xlrd_prints_nothing_for_a_truncated_xls(tmp_path, capfd, cut):
+    from koten.stats.files import file_problem
+
+    p = _truncated_xls(tmp_path, cut)
+    file_problem(p.read_bytes())
+    try:
+        read_grid(p, "表1")
+    except SeriesError:
+        pass
+    out = capfd.readouterr()
+    assert out.out == "" and out.err == ""
+
+
+def test_xls_date_cell_text_is_the_same_as_xlsx(tmp_path):
+    d = write_xls(tmp_path / "d.bin", [["", 2021], ["x", dt.date(2021, 1, 2)]])
+    with pytest.raises(SeriesError, match=r"日付のセル（2021-01-02 00:00:00）"):
+        file_points(
+            make_series([part(sheet="表1", values="B2:B2", periods_cells="B1:B1")]),
+            fetch_local(d),
+        )
+
+
+def test_whitespace_only_label_inside_one_part_does_not_break():
+    from koten.stats.series import segments as seg
+    from tests.test_stat_series import point, series
+
+    pts = [
+        point(period="2021", src_label="合計", part="0"),
+        point(period="2022", src_label=" 　\n", part="0"),
+        point(period="2023", src_label="合計", part="0"),
+    ]
+    assert seg(series(), pts) == {"2021": 0, "2022": 0, "2023": 0}
+
+
+def test_whitespace_only_label_at_a_part_boundary_then_label_in_the_same_part():
+    from tests.test_stat_series import point, series
+
+    pts = [
+        point(period="2021", src_label="合計", part="0"),
+        point(period="2022", src_label=" 　\n", part="1"),
+        point(period="2023", src_label="合計", part="1"),
+    ]
+    assert segments(series(), pts) == {"2021": 0, "2022": 1, "2023": 1}
+
+
+def test_part_name_survives_a_reused_grid(tmp_path):
+    p = write_csv(tmp_path / "a", [["", "2021", "x"], ["v", "1", "2"]], "utf-8-sig")
+    ok = part(values="B2:B2", periods_cells="B1:B1")
+    bad = part(values="C2:C2", periods_cells="C1:C1")
+    grids: dict = {}
+    s = make_series([ok, bad])
+    with pytest.raises(SeriesError, match=r"2 番目の part（000001_0）："):
+        file_points(s, fetch_local(p, p), grids)
+    assert len(grids) == 1
+    s2 = make_series([bad])
+    with pytest.raises(SeriesError, match=r"1 番目の part（000001_0）："):
+        file_points(s2, fetch_local(p), grids)
+
+
+@pytest.mark.parametrize(
+    "value,fmt,want",
+    [
+        (-5.25, "0.0;@", "-5.3"),
+        (-5.0, "0.0;@", "-5.0"),
+        (-1.25, '"("??0.0")";"(    "@")"', "-1.3"),
+        (0, "0.0;-0.0;@", "0.0"),
+        (5.25, "0.0;-0.0;@", "5.3"),
+        (1.5, "0.0#", "1.5"),
+        (1.256, "0.0#", "1.26"),
+        (1.5, "0.0?", "1.5"),
+        (2, "0.##", "2"),
+        (1.5, "0.00", "1.50"),
+    ],
+)
+def test_r43_text_last_section_and_optional_decimals(tmp_path, value, fmt, want):
+    assert _render(value, fmt) == want
+    fmts = {"A1": fmt}
+    for g in (
+        read_grid(write_xlsx(tmp_path / "a.bin", [[value]], fmts=fmts), "表1"),
+        read_grid(write_xls(tmp_path / "b.bin", [[value]], fmts=fmts), "表1"),
+    ):
+        assert g == [[want]]
+
+
+def test_xlrd_prints_nothing_in_a_fresh_process(tmp_path):
+    """xlrd の logfile は import 時の stdout に結ばれるので、新しいプロセスで確かめる。"""
+    import subprocess
+    import sys
+
+    p = _truncated_xls(tmp_path, 0.5)
+    code = (
+        "import sys\n"
+        "from koten.stats.files import file_problem, read_grid\n"
+        "d = open(sys.argv[1], 'rb').read()\n"
+        "file_problem(d)\n"
+        "try:\n"
+        "    read_grid(sys.argv[1], '表1')\n"
+        "except Exception:\n"
+        "    pass\n"
+    )
+    r = subprocess.run([sys.executable, "-c", code, str(p)], capture_output=True, text=True)
+    assert r.returncode == 0 and r.stdout == "" and r.stderr == ""

@@ -109,7 +109,9 @@ def _number_text(d: Decimal, toks: list[str], sign: str) -> str:
     pct = toks.count("%")
     digits = [i for i, t in enumerate(toks) if t in ("0", "#", "?")]
     point = next((i for i, t in enumerate(toks) if t == "."), None)
-    decimals = sum(1 for i in digits if point is not None and i > point)
+    after = [toks[i] for i in digits if point is not None and i > point]
+    decimals = len(after)  # 0・#・? の桁。丸めはこの桁まで
+    required = after.count("0")  # 0 の桁だけは 0 でも出す。# と ? の桁は末尾の 0 を落とす（R43）
     commas = 0  # 数の部分の終わりのカンマ：1つごとに 1000 で割る
     for t in toks[digits[-1] + 1 :]:
         if t != ",":
@@ -120,8 +122,17 @@ def _number_text(d: Decimal, toks: list[str], sign: str) -> str:
     if shown == 0:
         if "0" not in toks:
             return ""  # 「#」だけの書式の 0 は、Excel は何も出さない
-        return f"{abs(shown):f}"
-    return sign + f"{shown:f}"
+        return _trim_optional(f"{abs(shown):f}", decimals, required)
+    return sign + _trim_optional(f"{shown:f}", decimals, required)
+
+
+def _trim_optional(text: str, decimals: int, required: int) -> str:
+    """# と ? の小数の桁の末尾の 0（と、小数が残らなければ点）を落とす。"""
+    if decimals <= required:
+        return text
+    head, _, frac = text.partition(".")
+    frac = frac.rstrip("0").ljust(required, "0")
+    return f"{head}.{frac}" if frac else head
 
 
 def _render_number(v: int | float, fmt: str) -> str:
@@ -131,12 +142,17 @@ def _render_number(v: int | float, fmt: str) -> str:
     （数にしない。印になる）。小数の桁はその区画から、丸めは 0 から遠いほうへ、数の部分の
     終わりのカンマ1つごとに 1000 で割り、% は 100 倍。引用の文字・\\x・[..] は数に入れない。
     負の数は、負の区画の文字（△ など）でなく - を付ける（数として読めるように）。
-    条件つき・指数・分数・日付などの書式は General の見せ方にする。"""
+    条件つき・指数・分数・日付などの書式は General の見せ方にする。
+    区画が 4 つ未満で最後の区画に @ があれば、それは文字の区画で、数には使わない（R43。
+    「0.0;@」は負の数にも最初の区画）。小数の # と ? の桁は、末尾の 0 を出さない（「0.0#」の
+    1.5 は 1.5）。"""
     d = _noise_free(v)
     fmt = fmt or "General"
     if any(t.startswith("[") and t[1:2] in ("<", ">", "=") for t in _FMT_TOK_RE.findall(fmt)):
         return _general(d)
     secs = _sections(fmt)
+    if 2 <= len(secs) <= 3 and "@" in "".join(t for t in secs[-1] if len(t) == 1):
+        secs = secs[:-1]  # 区画が 4 つ未満で、最後が @ の区画：文字の区画（数には使わない。R43）
     if d == 0 and len(secs) >= 3:
         toks, sign = secs[2], ""
     elif d < 0 and len(secs) >= 2:
@@ -197,7 +213,9 @@ def file_problem(data: bytes) -> str | None:
         return None
     if data.startswith(_XLS_MAGIC):
         try:
-            xlrd.open_workbook(file_contents=data, on_demand=True).release_resources()
+            xlrd.open_workbook(
+                file_contents=data, on_demand=True, logfile=io.StringIO(), verbosity=0
+            ).release_resources()
         except Exception as e:  # noqa: BLE001 - xlrd は壊れ方ごとに別の例外を出す
             return f"Excel（.xls）として開けない（{type(e).__name__}：{e}）"
         return None
@@ -223,7 +241,10 @@ def _render_xls_cell(book, cell) -> str:
     if t == xlrd.XL_CELL_BOOLEAN:
         return _BoolCell(str(bool(cell.value)))
     if t == xlrd.XL_CELL_DATE:
-        return _DateCell(str(cell.value))
+        try:
+            return _DateCell(str(xlrd.xldate_as_datetime(cell.value, book.datemode)))
+        except (xlrd.xldate.XLDateError, ValueError, OverflowError):
+            return _DateCell(str(cell.value))
     if t == xlrd.XL_CELL_ERROR:
         return _ErrorCell(xlrd.error_text_from_code.get(cell.value, f"#ERR{cell.value}"))
     fmt = book.format_map[book.xf_list[cell.xf_index].format_key].format_str
@@ -234,7 +255,9 @@ def _xls_grid(data: bytes, sheet: str) -> list[list[str]]:
     if sheet == "":
         raise SeriesError(".xls は sheet（シートの名前）が要る")
     try:
-        book = xlrd.open_workbook(file_contents=data, formatting_info=True)
+        book = xlrd.open_workbook(
+            file_contents=data, formatting_info=True, logfile=io.StringIO(), verbosity=0
+        )
     except Exception as e:  # noqa: BLE001 - xlrd は壊れ方ごとに別の例外を出す
         raise SeriesError(f"Excel（.xls）として開けない（{type(e).__name__}：{e}）") from e
     try:
