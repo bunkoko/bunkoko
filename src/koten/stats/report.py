@@ -13,6 +13,7 @@ from koten.stats.series import (
     Point,
     Series,
     join_status,
+    label_drifts,
     label_key,
     parse_points,
     parse_series,
@@ -114,7 +115,8 @@ def report_lines(
 ) -> list[str]:
     """系列1つ分の報告。1行目が要約、続きが気をつける点。
 
-    区切りの区間の数は、つないだ境（joins。R44）を当てたあと。使ったつなぎは1つずつ出す。"""
+    区切りの区間の数は、つないだ境（joins。R44）を当てたあと。使ったつなぎは1つずつ出し、
+    joins で消していない見出しの言い方の変化も1つずつ出す（前と後の見出しは台帳の文字のまま）。"""
     seg = segments(s, points)
     head = [
         f"{len(points)} 点",
@@ -142,6 +144,9 @@ def report_lines(
         if not why:
             pair = f"{j.from_label!r} → {j.to_label!r}"
             lines.append(f"  つないだ境（同じ問い）：{j.before}（{pair}）")
+    # 区切った見出しの変化。joins の from・to は、この行の文字を写す
+    for year, before, now in label_drifts(s, points):
+        lines.append(f"  見出しの言い方が変わる境：{year}（{before!r} → {now!r}）")
     if lapsed:
         lines.append("  オーナーの確かめが外れる（数・名前・表の情報が前の確かめと違う）")
     return lines

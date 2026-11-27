@@ -2235,6 +2235,7 @@ def test_owner_ok_with_the_joins_tick_keeps_the_joins_and_their_sha(sconf):
     tap = {"v": "ok", "at": _at(), "trend": True, "joins": True}
     res = merge_checks(_sdrafts(JOINED), {key: tap}, sconf)
     assert res.series_added == ["work_rate"] and res.series_joins_dropped == []
+    assert res.series_trend_dropped == [] and res.series_joins_unused == []
     row = _series_file(sconf)[0]
     assert json.loads(row["joins"]) == JOINS and row["checked_by"] == HUMAN_CHECKER
     # つないだので 2019〜2021 は1つの区切り。増え方も入る
@@ -2250,10 +2251,12 @@ def test_owner_ok_without_the_joins_tick_writes_the_row_without_joins(sconf):
     key = _skey(sconf, JOINED)
     res = merge_checks(_sdrafts(JOINED), {key: {"v": "ok", "at": _at(), "trend": True}}, sconf)
     assert res.series_added == ["work_rate"] and res.series_joins_dropped == ["work_rate"]
+    assert res.series_joins_unused == []
     row = _series_file(sconf)[0]
     assert row["joins"] == "" and row["checked_by"] == HUMAN_CHECKER
-    # つながないと 2021 で区切るので、増え方の印があっても入らない
+    # つながないと 2021 で区切るので、増え方の印があっても入らない。それを知らせる（m3）
     assert row["trend"] == "" and row["trend_from"] == ""
+    assert res.series_trend_dropped == ["work_rate"]
     pts = parse_points(read_point_rows(sconf))
     assert row["checked_sha"] == check_sha(series_from_draft(API_SERIES), pts, API_META)
     assert _owner_ok_in_the_ssd(sconf) == 1
@@ -2318,3 +2321,87 @@ def test_page_marks_the_joined_year_and_asks_for_the_joins_tick():
     assert "j.used" in body  # 使ったつなぎがあるときだけ、印を出す
     answer = html.split("function answer")[1].split("\nfunction ")[0]
     assert "doc.joins = !!f.joins" in answer
+
+
+@pytest.mark.parametrize(
+    "col,value",
+    [
+        (
+            "joins",
+            [{"before": "2021", "from": "計", "to": "総数", "note": f'{{"appId": "{LEAK}"}}'}],
+        ),
+        ("breaks", [{"before": "2020", "note": f'{{"appId": "{LEAK}"}}'}]),
+    ],
+)
+def test_app_id_as_a_json_key_inside_a_draft_note_is_flagged(col, value):
+    """下書きの並びの欄は JSON の文にして見るので、note の中の " は \\" になる（m5）。"""
+    from koten.sources.check import app_id_fields, app_id_note
+
+    item = {**FILE_SERIES, "series_id": "leak_rate", col: value}
+    assert app_id_fields(item) == [col]
+    note = app_id_note(item)
+    assert note.startswith(f"leak_rate：{col} に appId が入っている") and LEAK not in note
+
+
+def test_trend_kept_without_the_joins_is_not_reported_as_dropped(sconf):
+    # 増え方の期間（2019〜2020）は見出しの変わる 2021 より前：つながなくても増え方は言える
+    item = {**JOINED, "trend_to": "2020"}
+    _joined_ledger(sconf)
+    tap = {"v": "ok", "at": _at(), "trend": True}
+    res = merge_checks(_sdrafts(item), {_skey(sconf, item): tap}, sconf)
+    assert res.series_joins_dropped == ["work_rate"] and res.series_trend_dropped == []
+    row = _series_file(sconf)[0]
+    assert (row["joins"], row["trend"], row["trend_to"]) == ("", "増加", "2020")
+    # 増え方に印を付けていなければ、外れた増え方も無い
+    _joined_ledger(sconf)
+    res = merge_checks(_sdrafts(JOINED), {_skey(sconf, JOINED): {"v": "ok", "at": _at()}}, sconf)
+    assert res.series_joins_dropped == ["work_rate"] and res.series_trend_dropped == []
+
+
+def test_joins_that_the_card_did_not_use_are_listed_apart(sconf):
+    # 台帳の見出しは全部「計」：どのつなぎも使われず、カードに印は出なかった（m4）
+    flat = [_prow(period="2019", value="10"), _prow(period="2020", value="11"),
+            _prow(period="2021", value="12")]  # fmt: skip
+    _joined_ledger(sconf, flat)
+    it = page_items(with_series_data(_sdrafts(JOINED), sconf))[0]
+    assert [j["used"] for j in it["joins"]] == [False]
+    res = merge_checks(_sdrafts(JOINED), {it["k"]: {"v": "ok", "at": _at()}}, sconf)
+    assert res.series_joins_unused == ["work_rate"] and res.series_joins_dropped == []
+    assert _series_file(sconf)[0]["joins"] == ""
+    # 1つでも使ったつなぎがあれば、印の無い「合っている」は series_joins_dropped
+    other = {"before": "2020", "from": "計", "to": "別の言い方", "note": "n"}
+    both = {**JOINED, "joins": [*JOINS, other]}
+    _joined_ledger(sconf)
+    res = merge_checks(_sdrafts(both), {_skey(sconf, both): {"v": "ok", "at": _at()}}, sconf)
+    assert res.series_joins_dropped == ["work_rate"] and res.series_joins_unused == []
+
+
+def _cli_merge(config_dir, tmp_path, item, tap):
+    drafts = tmp_path / "d.json"
+    drafts.write_text(json.dumps(_sdrafts(item), ensure_ascii=False), "utf-8")
+    checks = tmp_path / "c.json"
+    checks.write_text(json.dumps({_skey(config_dir, item): {"at": _at(), **tap}}), "utf-8")
+    shutil.copy(DEFAULT_CONFIG_DIR / "sources.yaml", config_dir / "sources.yaml")
+    settings = config_dir / "s.toml"
+    settings.write_text("[paths]\n", "utf-8")
+    return CliRunner().invoke(
+        app,
+        ["sources", "merge", "--drafts", str(drafts), "--from", str(checks),
+         "--settings", str(settings)],
+    )  # fmt: skip
+
+
+def test_cli_merge_says_the_trend_and_unused_joins_were_not_taken_in(sconf, tmp_path):
+    _joined_ledger(sconf)
+    res = _cli_merge(sconf, tmp_path, JOINED, {"v": "ok", "trend": True})
+    assert res.exit_code == 0, res.output
+    assert "つないだ境の「確かめた」に印が無いので、つながずに入れた：work_rate" in res.output
+    assert "つないだ境をつながなかったので、増え方も入れなかった：work_rate" in res.output
+    assert "使われていないつないだ境" not in res.output
+    flat = [_prow(period="2019", value="10"), _prow(period="2020", value="11"),
+            _prow(period="2021", value="12")]  # fmt: skip
+    _joined_ledger(sconf, flat)
+    res = _cli_merge(sconf, tmp_path, JOINED, {"v": "ok"})
+    assert res.exit_code == 0, res.output
+    assert "使われていないつないだ境は入れなかった：work_rate" in res.output
+    assert "印が無いので" not in res.output and "増え方も入れなかった" not in res.output

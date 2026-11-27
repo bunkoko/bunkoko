@@ -24,6 +24,7 @@ from koten.stats.series import (
     comparable,
     is_stale,
     join_status,
+    label_drifts,
     load_meta,
     meta_dir_for,
     owner_ok,
@@ -105,6 +106,15 @@ def test_columns_and_files():
     assert SERIES_COLUMNS.index("joins") == SERIES_COLUMNS.index("breaks") + 1
     assert POINTS_COLUMNS[-1] == "src_sha"
     assert SERIES_FILE == "stat_series.csv" and POINTS_FILE == "stat_points.csv"
+
+
+def test_the_repo_ledgers_have_the_current_columns():
+    """config の台帳の見出しは、決まりの列と同じ（R44 で joins を足した）。"""
+    from koten.config import DEFAULT_CONFIG_DIR
+
+    for name, cols in ((SERIES_FILE, SERIES_COLUMNS), (POINTS_FILE, POINTS_COLUMNS)):
+        with (DEFAULT_CONFIG_DIR / name).open(encoding="utf-8-sig", newline="") as f:
+            assert next(csv.reader(f)) == cols, name
 
 
 def test_good_rows_have_no_problems(env):
@@ -710,6 +720,23 @@ def test_appid_in_any_field_is_refused_without_echoing_it(env):
     assert series_problems([row(note="KOTEN_ESTAT_APPID は Mac だけ")], [], **env) == []
 
 
+@pytest.mark.parametrize(
+    "col,items",
+    [
+        ("joins", [{"before": "2021", "from": "合計注)", "to": "合計", "note": '{"appId": "X"}'}]),
+        ("breaks", [{"before": "2020", "note": '{"appId": "X"}'}]),
+    ],
+)
+def test_appid_as_a_json_key_inside_a_note_is_refused(env, col, items):
+    """JSON の欄（joins・breaks）の note の中の {"appId": …} は、" が \\" になって入る（m5）。"""
+    fake = "f" * 40
+    cell = json.dumps(items, ensure_ascii=False).replace("X", fake)
+    assert '\\"appId\\"' in cell
+    probs = series_problems([row(**{col: cell})], [], **env)
+    assert has(probs, f"{col} に appId が入っている"), probs
+    assert all(fake not in x for x in probs)
+
+
 def test_check_sha_of_a_series_without_joins_is_the_same_as_before():
     """joins の無い系列の sha は、joins を足す前（5e45418）の版で計算した値のまま（R44）。"""
     s = series(breaks=(Break("2020", "郵送に変わった"),), period_kind="年度")
@@ -1083,3 +1110,22 @@ def test_check_sha_covers_the_joins():
     for other in (("2021", OLD, NEW, "根拠"), ("2020", OLD + "。", NEW, "根拠"),
                   ("2020", OLD, NEW + "。", "根拠")):  # fmt: skip
         assert check_sha(joined(other), pts, META) != check_sha(one, pts, META)
+
+
+def test_label_drifts_lists_each_wording_change_that_joins_do_not_cancel():
+    pts = lpts(OLD, OLD, NEW, NEW, "最後の言い方")
+    assert label_drifts(series(), pts) == [("2021", OLD, NEW), ("2023", NEW, "最後の言い方")]
+    assert label_drifts(joined(("2021", OLD, NEW, "n")), pts) == [("2023", NEW, "最後の言い方")]
+    # 区切りの年の見出しの変化も出す（つなげない年でも、言い方が変わったことは分かる）
+    brk = series(breaks=(Break("2021", "郵送に変わった"),))
+    assert label_drifts(brk, pts) == [("2021", OLD, NEW), ("2023", NEW, "最後の言い方")]
+    assert label_drifts(series(), lpts(OLD, OLD)) == []
+
+
+def test_label_drifts_skip_empty_labels_and_show_the_stored_text():
+    # 見出しの空の部分の境（R32）は出さない。前の見出しは、最後の空でない見出しの点のもの
+    pts = lpts("合 計", "", "合 計", "男女 計", parts=["0", "1", "2", "2"])
+    assert label_drifts(series(), pts) == [("2022", "合 計", "男女 計")]
+    # 部分の境で前の点の見出しが空でも、この年の見出しが最後の空でない見出しと違えば出す
+    across = lpts(OLD, "", NEW, parts=["0", "0", "1"])
+    assert label_drifts(series(), across) == [("2021", OLD, NEW)]

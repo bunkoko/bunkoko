@@ -33,7 +33,7 @@ import re
 import shutil
 import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -842,6 +842,10 @@ class MergeResult:
     series_held: list[str] = field(default_factory=list)
     # 人が確かめた系列で、つないだ境の「確かめた」に印が無かった（joins を外して入れた。R44）
     series_joins_dropped: list[str] = field(default_factory=list)
+    # 人が確かめた系列で、どのつなぎもカードの数で使っていなかった（印が出ない。joins を外した）
+    series_joins_unused: list[str] = field(default_factory=list)
+    # 人が増え方に印を付けたが、つないだ境を外したので増え方が言えなくなった（入れなかった）
+    series_trend_dropped: list[str] = field(default_factory=list)
 
 
 def _day(at: Any) -> str:
@@ -946,6 +950,19 @@ def _joins_unticked(d: dict[str, Any], c: dict[str, Any]) -> bool:
     """つないだ境（joins）のある系列で、「つないだ境の根拠も読んで、同じ問いだと確かめた」に
     印が無い（人の行は joins を外して入れる。R44）。"""
     return bool(series_from_draft(d).joins) and not c.get("joins")
+
+
+def _joins_used(d: dict[str, Any]) -> bool:
+    """下書きの joins の1つでも、カードの数で区切りを消した（カードに印が出た）。"""
+    return any(not why for _, why in join_status(series_from_draft(d), _points_of(d)))
+
+
+def _trend_lost(d: dict[str, Any], c: dict[str, Any]) -> bool:
+    """人が増え方に印を付けたが、印の無いつないだ境を外したので、増え方が言えなくなった。"""
+    if not (c.get("trend") and _joins_unticked(d, c)):
+        return False
+    s, points = series_from_draft(d), _points_of(d)
+    return verify_trend(s, points)[0] and not verify_trend(replace(s, joins=()), points)[0]
 
 
 def _series_row(
@@ -1086,7 +1103,9 @@ def merge_checks(
       latest_known・breaks・joins・where だけ（label などは台帳のまま。R28）
     - つないだ境（joins。R44）：人が「合っている」を押した系列は、つないだ境の「確かめた」にも
       印があるときだけ joins を残す。印が無ければ joins を外して入れる（series_joins_dropped。
-      増え方と check_sha も外したあとで決める）。AI の行（accept_rest）は下書きの joins のまま
+      どのつなぎもカードの数で使っていなかった系列は、印が出ないので series_joins_unused）。
+      増え方と check_sha も外したあとで決める。増え方に印があったのに、外したので言えなく
+      なった系列は series_trend_dropped。AI の行（accept_rest）は下書きの joins のまま
     - note は足すだけ（台帳の note を残し、まだ無い文をうしろに「 ／ 」で足す。join_note）：
       AI の行は下書きの note、オーナーが押した行は押したときのメモ（無ければ下書きの note）。
       オーナーの「違う」・保留の理由を消さない（N2・M1）
@@ -1227,7 +1246,11 @@ def merge_checks(
                 _series_row(d, c, by=CHECKER, day=day, old=ledger_series.get(d["series_id"]))
             )
             if _joins_unticked(d, c):  # つないだ境は外して入れた（R44）
-                res.series_joins_dropped.append(d["series_id"])
+                # どのつなぎも使っていなければ、カードに印は出なかった（別に知らせる）
+                lost = res.series_joins_dropped if _joins_used(d) else res.series_joins_unused
+                lost.append(d["series_id"])
+            if _trend_lost(d, c):
+                res.series_trend_dropped.append(d["series_id"])
         elif kind == "stat":
             new_stats.append(_stat_row(d, c, from_lead=False, by=CHECKER, day=day))
             if d.get("replaces"):

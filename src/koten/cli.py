@@ -2488,6 +2488,17 @@ def sources_merge(
             + "、".join(res.series_joins_dropped),
             fg="yellow",
         )
+    if res.series_joins_unused:
+        typer.secho(
+            "使われていないつないだ境は入れなかった：" + "、".join(res.series_joins_unused),
+            fg="yellow",
+        )
+    if res.series_trend_dropped:
+        typer.secho(
+            "つないだ境をつながなかったので、増え方も入れなかった："
+            + "、".join(res.series_trend_dropped),
+            fg="yellow",
+        )
     if res.series_added or res.series_ai:
         typer.echo("統計の系列を SSD に入れる：uv run koten db init")
     if res.findings_added or res.findings_ai:
@@ -4452,7 +4463,8 @@ def stats_fetch(
         ):
             typer.echo(line)
         for j, why in join_status(t, points):
-            # 使われなかったつなぎは失敗にしない（その年は区切ったまま。書くものも同じ。R44）
+            # 使われなかったつなぎは失敗にしない（年の分け方は joins が無いときと同じ。書くものも
+            # 同じ。R44）
             if why:
                 todo = "下書きの joins を直す" if drafts else "この行を Claude に伝える"
                 typer.secho(

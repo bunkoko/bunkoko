@@ -1143,13 +1143,15 @@ OLD_WORDS, NEW_WORDS = "ストレスを感じる事柄がある", "ストレス�
 JOIN = {"before": "2023", "from": OLD_WORDS, "to": NEW_WORDS, "note": "両方の調査票で同じ問い"}
 
 
-def joined_file_series(env, *joins):
-    """1つの CSV の2つの部分：2021・2022 年は前の言い方、2023 年は新しい言い方の見出し。"""
-    env.state["files"] = {
-        "000001": (
-            f"表題,,,\n,2021年,2022年,2023年\n{OLD_WORDS},39.5,40.0,\n{NEW_WORDS},,,40.1\n"
-        ).encode()
-    }
+def joined_file_series(env, *joins, old=OLD_WORDS, new=NEW_WORDS, breaks=""):
+    """1つの CSV の2つの部分：2021・2022 年は前の言い方（old）、2023 年は新しい言い方（new）の
+    見出し。"""
+    buf = io.StringIO()
+    csv.writer(buf, lineterminator="\n").writerows(
+        [["表題", "", "", ""], ["", "2021年", "2022年", "2023年"],
+         [old, "39.5", "40.0", ""], [new, "", "", "40.1"]]
+    )  # fmt: skip
+    env.state["files"] = {"000001": buf.getvalue().encode()}
     parts = [
         {"statInfId": "000001", "fileKind": "0", "sheet": "", "values": "B3:C3",
          "periods_cells": "B2:C2", "label_cells": ["A3"]},
@@ -1158,7 +1160,7 @@ def joined_file_series(env, *joins):
     ]  # fmt: skip
     row = srow(
         series_id="anzen_rate", source_kind="estat_file", selector=json.dumps({"parts": parts}),
-        joins=json.dumps(list(joins), ensure_ascii=False) if joins else "",
+        joins=json.dumps(list(joins), ensure_ascii=False) if joins else "", breaks=breaks,
     )  # fmt: skip
     write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, [row])
     return row
@@ -1224,3 +1226,33 @@ def test_report_lines_list_only_the_used_joins():
     assert "区切り 1 区間" in lines[0]
     used = f"  つないだ境（同じ問い）：2023（'{OLD_WORDS}' → '{NEW_WORDS}'）"
     assert lines[1:] == ["  見出しが変わった：'a' → 'b'（2021）", used]
+
+
+def drift_line(year, old, new):
+    return f"  見出しの言い方が変わる境：{year}（{old!r} → {new!r}）"
+
+
+def test_check_prints_where_the_heading_wording_changes_as_stored(env):
+    # 改行と空白の並びは、台帳（stat_points.csv）には1つの空白で入る。行はその台帳の文字で出す
+    joined_file_series(env, old="ストレスを感じる\n事柄  がある")
+    r = stats(env, "fetch", "--check")
+    assert r.exit_code == 0, r.output
+    want = drift_line("2023", "ストレスを感じる 事柄 がある", NEW_WORDS)
+    assert want in r.output and r.output.count("見出しの言い方が変わる境") == 1
+    assert stats(env, "fetch").exit_code == 0
+    stored = {x["period"]: x["src_label"] for x in read_point_rows(env.config)}
+    assert want == drift_line("2023", stored["2022"], stored["2023"])
+
+
+def test_check_prints_no_wording_change_line_for_a_joined_year(env):
+    joined_file_series(env, JOIN)
+    r = stats(env, "fetch", "--check")
+    assert r.exit_code == 0, r.output
+    assert "つないだ境（同じ問い）：2023" in r.output and "見出しの言い方が変わる境" not in r.output
+
+
+def test_check_prints_the_wording_change_at_a_break_year(env):
+    joined_file_series(env, breaks='[{"before": "2023", "note": "郵送に変わった"}]')
+    r = stats(env, "fetch", "--check")
+    assert r.exit_code == 0, r.output
+    assert drift_line("2023", OLD_WORDS, NEW_WORDS) in r.output and "区切り 2 区間" in r.output

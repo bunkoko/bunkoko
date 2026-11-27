@@ -21,7 +21,7 @@ import unicodedata
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from koten.db import AI_CHECKER, HUMAN_CHECKER, TRENDS
 from koten.worries.master import keyword_block
@@ -79,8 +79,9 @@ def norm_name(text: str) -> str:
     return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text or "")).strip()
 
 
-# e-Stat の API の URL（appId=…）や JSON の appId の鍵。台帳のどの欄にも入れない（値は出さない）
-_APPID_RE = re.compile(r'(?i)appid\s*=|"appid"\s*:')
+# e-Stat の API の URL（appId=…）や JSON の appId の鍵。台帳のどの欄にも入れない（値は出さない）。
+# JSON の欄（joins・breaks など）の文の中の {"appId": …} は " が \" になって入るので、それも見る
+_APPID_RE = re.compile(r'(?i)appid\s*=|\\?"appid\\?"\s*:')
 
 
 def has_app_id(text: str) -> bool:
@@ -918,12 +919,17 @@ def label_key(text: str) -> str:
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text or ""))
 
 
-def _walk(s: Series, points: list[Point]) -> tuple[dict[str, int], list[str]]:
-    """segments と join_status の1回の歩き：(period → 区切りの番号, s.joins ごとの理由)。
+class _Walk(NamedTuple):
+    seg: dict[str, int]  # period → 区切りの番号
+    why: list[str]  # s.joins ごとに、その年の食い違いを消したら ""、消さなかったらそのわけ
+    drifts: list[tuple[str, str, str]]  # joins で消していない食い違い（年, 前の見出し, この年の）
 
-    理由は、その joins がその年の見出しの食い違いを消したら ""、消さなかったらそのわけ。"""
+
+def _walk(s: Series, points: list[Point]) -> _Walk:
+    """segments・join_status・label_drifts の1回の歩き（区切りの決まりはここだけ）。"""
     seg: dict[str, int] = {}
     why = ["その年の点が無い"] * len(s.joins)
+    drifts: list[tuple[str, str, str]] = []
     cur = 0
     prev: Point | None = None
     last_label = last_src = ""  # 最後の空でない見出し（比べる形と、台帳のままの文字）
@@ -953,13 +959,16 @@ def _walk(s: Series, points: list[Point]) -> tuple[dict[str, int], list[str]]:
                     joined = True
                 else:
                     why[i] = f"見出しが from・to と違う（前 {last_src!r}・この年 {p.src_label!r}）"
-            if crossed or unknown or (drift and not joined):
+            label_split = drift and not joined  # joins で消していない見出しの食い違い
+            if label_split:
+                drifts.append((p.period, last_src, p.src_label))
+            if crossed or unknown or label_split:
                 cur += 1
         if key:
             last_label, last_src = key, p.src_label
         seg[p.period] = cur
         prev = p
-    return seg, why
+    return _Walk(seg, why, drifts)
 
 
 def segments(s: Series, points: list[Point]) -> dict[str, int]:
@@ -976,7 +985,7 @@ def segments(s: Series, points: list[Point]) -> dict[str, int]:
     言い方だけの違い）。breaks をまたぐところと R32 のところは、joins があっても進める。
     joins が消すのはその年の食い違いだけ（あとの年の食い違いは今までどおり区切る）。
     """
-    return _walk(s, points)[0]
+    return _walk(s, points).seg
 
 
 def join_status(s: Series, points: list[Point]) -> list[tuple[Join, str]]:
@@ -988,7 +997,17 @@ def join_status(s: Series, points: list[Point]) -> list[tuple[Join, str]]:
     見出しが空か、最後の空でない見出しと同じ）・見出しが from・to と違う（前の見出しは、最後の
     空でない見出しの点の src_label のまま）。segments と同じ1回の歩きで決める。
     """
-    return list(zip(s.joins, _walk(s, points)[1], strict=True))
+    return list(zip(s.joins, _walk(s, points).why, strict=True))
+
+
+def label_drifts(s: Series, points: list[Point]) -> list[tuple[str, str, str]]:
+    """joins で消していない見出しの食い違い：(年, 前の見出し, この年の見出し) の並び（年の順）。
+
+    食い違いは segments と同じ：この点の src_label が空でなく、最後の空でない src_label と違う
+    （label_key で比べる）。breaks の年の食い違いも入る。見出しの空の点（R32 の境など）は
+    入らない。前の見出しは最後の空でない見出しの点の、この年の見出しはこの点の src_label の
+    まま（台帳の stat_points.csv と同じ文字。joins の from・to に写せる）。"""
+    return _walk(s, points).drifts
 
 
 def comparable(s: Series, points: list[Point], a: str, b: str) -> tuple[bool, str]:
