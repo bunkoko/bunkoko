@@ -162,7 +162,9 @@ def test_fetch_writes_points_and_never_prints_the_id(env, monkeypatch):
     )
     assert (
         "uv run koten db init" in r.output
-        and "git add config/stat_points.csv docs/estat" in r.output
+        and "git add config/stat_points.csv config/stat_series.csv docs/estat" in r.output
+        and 'git commit -m "統計の系列の数"' in r.output
+        and "git push" in r.output
     )
     rows = read_point_rows(env.config)
     assert [x["period"] for x in rows] == ["2019", "2021", "2022"]
@@ -193,6 +195,7 @@ def test_403_prints_hint_and_other_series_still_run(env, monkeypatch):
     r = stats(env, "fetch")
     assert r.exit_code == 1
     assert "bad_rate" in r.output and "ID が違うか、使えなくなっている" in r.output
+    assert r.output.rstrip().endswith("1 系列が失敗。赤の行を Claude に伝える")
     assert SECRET not in r.output and SECRET not in tree_text(env)
     assert [x["series_id"] for x in read_point_rows(env.config)] == ["age_rate"] * 3
 
@@ -325,6 +328,7 @@ def test_meta_writes_selector_into_drafts_and_chosen_items_only(env, monkeypatch
     text = (env.docs / "age_rate.json").read_text("utf-8")
     assert "20～29歳" in text and "総数" not in text and text.endswith("\n")
     assert "git add docs/estat docs/research" in r.output
+    assert 'git commit -m "表の情報"' in r.output and "git push" in r.output
     assert SECRET not in r.output and SECRET not in tree_text(env)
 
 
@@ -881,3 +885,37 @@ def test_meta_reads_a_padded_kind(env, monkeypatch):
     r = stats(env, "meta", "--drafts", str(_drafts_file(env, item)))
     assert r.exit_code == 0, r.output
     assert (env.docs / "age_rate.json").exists()
+
+
+# --- stats hold・stats list の保留（L14・UX-12） -----------------------------------------
+
+
+def test_hold_and_release_a_series(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    two_series(env, note="前のメモ")
+    assert stats(env, "fetch").exit_code == 0
+    r = stats(env, "hold", "--series", "age_rate", "--note", "分類を選び直す")
+    assert r.exit_code == 0, r.output
+    rows = {x["series_id"]: x for x in read_series_rows(env.config)}
+    assert rows["age_rate"]["status"] == "保留" and rows["all_rate"]["status"] == ""
+    note = rows["age_rate"]["note"]
+    assert note.startswith("前のメモ") and "分類を選び直す" in note
+    assert not list(env.config.glob("*.tmp"))
+    assert "保留なので飛ばす" in stats(env, "fetch", "--check").output
+    assert runner.invoke(app, ["db", "init", "--settings", env.settings]).exit_code == 0
+    out = stats(env, "list").output
+    assert "age_rate" in out and "[保留]" in out.split("age_rate")[1].splitlines()[0]
+    assert "age_rate" not in stats(env, "list", "--unchecked").output  # 外した系列は出さない
+    assert "all_rate" in stats(env, "list", "--unchecked").output
+    r = stats(env, "hold", "--series", "age_rate", "--release")
+    assert r.exit_code == 0 and read_series_rows(env.config)[0]["status"] == ""
+
+
+def test_hold_refuses_unknown_ids_and_app_id_urls(env):
+    before = (env.config / SERIES_FILE).read_bytes()
+    r = stats(env, "hold", "--series", "nope")
+    assert r.exit_code == 2 and "nope" in r.output
+    fake = "f" * 40
+    r = stats(env, "hold", "--series", "age_rate", "--note", f"https://x/?appId={fake}")
+    assert r.exit_code == 2 and fake not in r.output
+    assert (env.config / SERIES_FILE).read_bytes() == before

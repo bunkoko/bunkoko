@@ -78,6 +78,11 @@ def norm_name(text: str) -> str:
 _APPID_RE = re.compile(r'(?i)appid\s*=|"appid"\s*:')
 
 
+def has_app_id(text: str) -> bool:
+    """文に e-Stat の appId（API の URL の appId=… や JSON の鍵）が入っているか。"""
+    return bool(_APPID_RE.search(text or ""))
+
+
 @dataclass(frozen=True)
 class Break:
     """時系列の区切り。before の年から前とは比べられない。"""
@@ -384,7 +389,7 @@ def series_problems(
     api_unit: dict[str, str] = {}
     for n, r in enumerate(series_rows, 2):
         p = f"{SERIES_FILE} {n}行目："
-        leak = [c for c, v in r.items() if c and _APPID_RE.search(str(v or ""))]
+        leak = [c for c, v in r.items() if c and has_app_id(str(v or ""))]
         if leak:
             # 値を文に出さないよう、この行のほかの確かめはしない
             out += [
@@ -441,8 +446,9 @@ def series_problems(
                 meta = metas.get(sid)
                 if meta is None:
                     out.append(
-                        f"{p}{sid} の表の情報（{META_DIR}/{sid}.json）が無い。"
-                        "Mac で uv run koten stats meta を実行する"
+                        f"{p}{sid} の表の情報（{META_DIR}/{sid}.json）が無い。Mac で "
+                        "uv run koten stats meta --drafts docs/research/<日付>-source-drafts.json"
+                        " を実行する（下書きに selector_names か selector の符号が要る）"
                     )
                 else:
                     for col, key in (

@@ -132,7 +132,7 @@ const ITEMS = /*__ITEMS__*/[];
 const MADE = /*__MADE__*/"";
 const PARTS = [
   ["stat", "統計（国・公的機関）", "画像の赤い枠の数字と、誰のうちの数か・調査の年が、台本に入る文と同じなら「合っている」。"],
-  ["series", "統計の系列（年ごとの数）", "年ごとの数・分類・変わり目・読む文が元の資料のとおりなら「合っている」。数は直せません（違えば「違う」）。"],
+  ["series", "統計の系列（年ごとの数）", "何の数か・分類・変わり目・読む文が元の資料のとおりなら「合っている」。数そのものは見比べません（プログラムが写した数）。違えば「違う」。"],
   ["finding", "研究（誰でも読める論文）", "論文の該当の文で、一文・限界・調べた人を確かめ、取り下げが無いのを見たら「合っている」。"],
   ["private_survey", "民間の調査（あなたが読む）", "引用の決まりを読み、数字を1つ書いたら「入れる」。"],
   ["paid_paper", "有料の論文（あなたが読む）", "本文を読んで、あなたの言葉で一文・限界・調べた人を書いたら「入れる」。"],
@@ -315,7 +315,7 @@ function cardStat(it) {
 
 const webUrl = (u) => (/^https?:\/\//i.test(u || "") ? u : "");
 function seriesLine(it, label) {
-  return it.tail ? `${label || "（何の数か）"}は${it.tail}` : "（数がまだ入っていません。Mac で koten stats fetch のあとに作り直す）";
+  return it.tail ? `${label || "（何の数か）"}は${it.tail}` : "（数がまだ入っていません。Mac で uv run koten stats fetch のあとに作り直す）";
 }
 function pointTable(it) {
   const rows = it.points.map((p) => {

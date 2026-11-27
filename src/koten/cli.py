@@ -1072,7 +1072,8 @@ app.add_typer(db_app, name="db")
 
 @db_app.command("init")
 def db_init(settings: SettingsOpt = None) -> None:
-    """SSD に SQLite を作り（あれば表を足すだけ）、config/stats.csv を読み込む。"""
+    """SSD に SQLite を作り（あれば表を足すだけ）、config/stats.csv と統計の系列
+    （config/stat_series.csv・stat_points.csv）を読み込む。"""
     from koten.db import StatsError, connect, db_path, load_series, load_stats
     from koten.stats.series import meta_dir_for
 
@@ -4260,8 +4261,12 @@ def stats_meta(
     _write_json(path, data)
     typer.echo(f"{done} 系列を決め、{failed} 系列が失敗（{path} を書き直した）")
     if done:
-        typer.echo("次：git add docs/estat docs/research して push")
+        typer.echo("次：")
+        typer.echo("  git add docs/estat docs/research")
+        typer.echo('  git commit -m "表の情報"')
+        typer.echo("  git push")
     if failed:
+        typer.secho(f"{failed} 系列が失敗。赤の行を Claude に伝える", fg="red", err=True)
         raise typer.Exit(1)
 
 
@@ -4437,11 +4442,69 @@ def stats_fetch(
         for sid, record in records.items():  # 点を書けたあとにだけ、系列ごとの表の情報を書く
             _write_json(meta_dir / f"{sid}.json", record)
         if (s.config_dir / POINTS_FILE).stat().st_size > POINTS_WARN_BYTES:
-            typer.secho("config/stat_points.csv が 5MB を超えた。置き方を考え直す", fg="yellow")
-        typer.echo("次：uv run koten db init")
-        typer.echo("    git add config/stat_points.csv docs/estat")
+            typer.secho(
+                "config/stat_points.csv が 5MB を超えた。"
+                "この行を Claude に伝える（置き方を考え直す）",
+                fg="yellow",
+            )
+        typer.echo("次：")
+        typer.echo("  uv run koten db init")
+        typer.echo("  git add config/stat_points.csv config/stat_series.csv docs/estat")
+        typer.echo('  git commit -m "統計の系列の数"')
+        typer.echo("  git push")
     if failed:
+        typer.secho(f"{failed} 系列が失敗。赤の行を Claude に伝える", fg="red", err=True)
         raise typer.Exit(1)
+
+
+@stats_app.command("hold")
+def stats_hold(
+    series: Annotated[str, typer.Option("--series", help="保留にする系列の ID")],
+    note: Annotated[str, typer.Option(help="理由（台帳の note に足す）")] = "",
+    release: Annotated[bool, typer.Option("--release", help="保留を外す")] = False,
+    settings: SettingsOpt = None,
+) -> None:
+    """系列を保留にする（台本で使わず、stats fetch も飛ばす）。--release で外す。
+
+    config/stat_series.csv の status を書き換える（CSV を手で開いて書かない。一時ファイルに
+    書いてから置き換える）。書いたら db init と git の commit・push。
+    """
+    from datetime import date
+
+    from koten.stats.series import has_app_id, read_series_rows, write_series_rows
+
+    s = _settings(settings)
+    sid = series.strip()
+    if has_app_id(note):
+        typer.secho(
+            "note に appId が入っている。e-Stat の API の URL は書かない", fg="red", err=True
+        )
+        raise typer.Exit(2)
+    rows = read_series_rows(s.config_dir)
+    hit = [r for r in rows if r.get("series_id", "").strip() == sid]
+    if not hit:
+        typer.secho(f"系列が無い：{sid}（config/stat_series.csv）", fg="red", err=True)
+        raise typer.Exit(2)
+    want = "" if release else "保留"
+    row = hit[0]
+    text = " ".join(note.split())
+    if (row.get("status") or "").strip() == want and not text:
+        typer.echo(f"{sid}：もう{'保留でない' if release else '保留'}（書き換えない）")
+        return
+    row["status"] = want
+    if text:
+        mark = f"{date.today().isoformat()} {'保留を外した' if release else '保留'}：{text}"
+        row["note"] = "／".join(x for x in ((row.get("note") or "").strip(), mark) if x)
+    write_series_rows(s.config_dir, rows)
+    if release:
+        typer.echo(f"{sid}：保留を外した（台本で使え、uv run koten stats fetch も取る）")
+    else:
+        typer.echo(f"{sid}：保留にした（台本で使わず、uv run koten stats fetch も飛ばす）")
+    typer.echo("次：")
+    typer.echo("  uv run koten db init")
+    typer.echo("  git add config/stat_series.csv")
+    typer.echo(f'  git commit -m "{sid} を{"戻す" if release else "保留にする"}"')
+    typer.echo("  git push")
 
 
 @stats_app.command("list")
@@ -4471,7 +4534,8 @@ def stats_list(
             continue
         if stale and not r["stale"]:
             continue
-        if unchecked and r["owner_ok"]:
+        held = (r["status"] or "").strip() == "保留"
+        if unchecked and (r["owner_ok"] or held):  # 外した系列は確かめなくてよい
             continue
         if r["owner_ok"]:
             mark = "確かめ オーナー"
@@ -4481,7 +4545,7 @@ def stats_list(
             mark = "確かめ AI" if r["checked_by"] == AI_CHECKER else "確かめ 未"
         typer.echo(
             f"{r['series_id']}  {r['label']}  最新 {r['latest_period'] or '-'}  {r['n']} 点  "
-            f"{mark}" + ("  [stale]" if r["stale"] else "")
+            f"{mark}" + ("  [stale]" if r["stale"] else "") + ("  [保留]" if held else "")
         )
         shown += 1
     if not shown and rows:

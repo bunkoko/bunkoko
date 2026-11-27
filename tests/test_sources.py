@@ -14,6 +14,7 @@ from koten.cli import app
 from koten.config import DEFAULT_CONFIG_DIR
 from koten.findings import read_findings
 from koten.sources.check import (
+    SELECTOR_UNRESOLVED,
     SourcesError,
     build_page,
     finding_key,
@@ -1278,7 +1279,8 @@ def test_unresolved_selector_gets_the_meta_instruction(sconf):
     item = {**API_SERIES, "selector": {}, "series_id": "later_rate"}
     it = page_items(with_series_data(_sdrafts(item), sconf))[0]
     assert it["selector_state"] == "unresolved"
-    assert it["selector_note"] == "selector がまだ無い（Mac で uv run koten stats meta）"
+    assert it["selector_note"] == SELECTOR_UNRESOLVED["estat_api"]
+    assert "uv run koten stats meta --drafts <下書き>" in it["selector_note"]
     html = build_page(with_series_data(_sdrafts(item), sconf))
     assert "it.selector_note" in html
     before = (sconf / SERIES_FILE).read_bytes()
@@ -1490,7 +1492,7 @@ def test_unresolved_note_follows_the_source_kind(sconf):
         assert "file_rate：selector（parts）がまだ無い。ファイルの位置を下書きに書く" in res.skipped
     api = {k: v for k, v in API_SERIES.items() if k != "selector"}
     it = page_items(with_series_data(_sdrafts(api), sconf))[0]
-    assert it["selector_note"] == "selector がまだ無い（Mac で uv run koten stats meta）"
+    assert it["selector_note"] == SELECTOR_UNRESOLVED["estat_api"]
 
 
 def test_selector_that_is_not_an_object_is_named_and_writes_nothing(sconf):
@@ -1861,3 +1863,10 @@ def test_page_draws_every_excerpt_table():
     body = html.split("function cardSeries")[1].split("\nfunction ")[0]
     assert "it.excerpt.tables" in body and "caption" in body
     assert "td.lab" in html
+
+
+def test_series_hint_asks_what_the_number_is_not_the_numbers():
+    html = build_page({"made": "", "stats": [], "findings": [], "leads": [], "series": []})
+    hint = next(x for x in html.splitlines() if x.strip().startswith('["series",'))
+    assert "何の数か・分類・変わり目・読む文" in hint and "年ごとの数・分類" not in hint
+    assert "Mac で uv run koten stats fetch のあとに作り直す" in html

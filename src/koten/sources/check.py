@@ -187,18 +187,19 @@ def finding_lines(d: dict[str, Any]) -> list[str]:
 SELECTOR_CHANGED = "台帳の {id} と選び方が違う。新しい series_id で下書きする"
 # selector がまだ無い下書き（生の値が無い・{}）の案内は、source_kind で分ける
 SELECTOR_UNRESOLVED = {
-    "estat_api": "selector がまだ無い（Mac で uv run koten stats meta）",
+    "estat_api": "selector がまだ無い（Mac で uv run koten stats meta --drafts <下書き>）",
     "estat_file": "selector（parts）がまだ無い。ファイルの位置を下書きに書く",
 }
 SELECTOR_NO_KIND = "selector がまだ無い。source_kind を estat_api か estat_file にする"
 SELECTOR_NOT_OBJECT = "selector が JSON のオブジェクトになっていない"
 SELECTOR_STALE = "下書きが台帳より古い（台帳の部分のほうが多い）。下書きを台帳に合わせる"
 SELECTOR_GROWTH = (
-    "部分を足した・直した。先に Mac で uv run koten stats fetch --drafts <下書き> で部分を"
-    "確かめてから merge --accept-rest で入れ、Mac で koten stats fetch で数を取ってから確かめる"
+    "部分を足した・直した。先に uv run koten stats fetch --drafts <下書き> で部分を確かめて"
+    "（ファイルの系列はクラウドでも確かめられる）から merge --accept-rest で入れ、"
+    "Mac で uv run koten stats fetch で数を取ってから確かめる"
 )
 SELECTOR_GROWTH_SKIP = (
-    "部分を足した・直した。先に Mac で uv run koten stats fetch --drafts <下書き> で部分を"
+    "部分を足した・直した。先に uv run koten stats fetch --drafts <下書き> で部分を"
     "確かめてから、AI の行として --accept-rest で取り込む"
 )
 SELECTOR_OVERLAP = "足した部分が前の部分と重なる（{why}）。下書きを直す"
@@ -478,7 +479,9 @@ def _source_words(
     link = ""
     if series_from_draft(item).source_kind == "estat_api":
         if not meta:
-            pairs.append(["表の情報", "まだ無い（Mac で koten stats meta）"])
+            pairs.append(
+                ["表の情報", "まだ無い（Mac で uv run koten stats meta --drafts <下書き>）"]
+            )
         no = f"（{meta['title_no']}）" if meta.get("title_no") else ""
         for name, val in (
             ("統計名", meta.get("stat_name")),
@@ -1057,8 +1060,8 @@ def merge_checks(
         if kind == "series" and isinstance(c, dict) and c.get("v") == "ok" and not _has_numbers(d):
             # 数が無い系列の「合っている」は押していないのと同じ（数が入ると鍵も変わる）
             res.skipped.append(
-                f"{name}：数がまだ無いので、人の確かめには入れなかった（koten stats fetch のあと、"
-                "数が入ってから確かめる）"
+                f"{name}：数がまだ無いので、人の確かめには入れなかった（Mac で uv run koten "
+                "stats fetch のあと、数が入ってから確かめる）"
                 + ("" if accept_rest else "。AI の行として入れるなら --accept-rest で取り込む")
             )
             c = None
