@@ -1136,29 +1136,46 @@ def _grown(**over):
     return {**FILE_SERIES, "selector": {"parts": parts[: over.pop("n", 2)]}, **over}
 
 
+def _pp(*part_years):
+    """file_rate の点。(部分の番号, 年) の並びから。"""
+    return parse_points([_prow("file_rate", y, "5", part=str(i)) for i, y in part_years])
+
+
 def test_selection_change_rules():
     from koten.stats.series import selection_change as sc
 
     one = FILE_SELECTOR
     p0 = one["parts"][0]
-    assert sc("estat_file", one, one) == "same"
-    assert sc("estat_file", {"parts": [p0, PART2]}, one) == "growth"
-    assert sc("estat_file", {"parts": [{**p0, "updated": "2027-01-01"}]}, one) == "growth"
+    got0 = _pp((0, "2019"), (0, "2020"))  # 1 番目の部分は数を取った
+    assert sc("estat_file", one, one, points=got0) == "same"
+    assert sc("estat_file", {"parts": [p0, PART2]}, one, points=got0) == "growth"
+    assert sc("estat_file", {"parts": [{**p0, "updated": "2027-01-01"}]}, one, points=got0) == (
+        "growth"
+    )
     assert (
-        sc("estat_file", {"parts": [{**p0, "label_cells": ["A13"], "unit_cell": "B4"}]}, one)
+        sc(
+            "estat_file",
+            {"parts": [{**p0, "label_cells": ["A13"], "unit_cell": "B4"}]},
+            one,
+            points=got0,
+        )
         == "growth"
     )
-    assert sc("estat_file", {"parts": [{**p0, "values": "D13:F13"}]}, one) == "different"
-    for key in ("statInfId", "fileKind", "sheet", "periods_cells"):
-        assert sc("estat_file", {"parts": [{**p0, key: "9"}]}, one) == "different"
-    assert sc("estat_file", {"parts": []}, one) == "different"  # 外す
-    assert (
-        sc("estat_file", {"parts": [PART2, p0]}, {"parts": [p0, PART2]}) == "different"
-    )  # 並べ替え
-    assert sc("estat_file", {"parts": [PART2]}, {"parts": [p0, PART2]}) == "different"
-    assert (
-        sc("estat_api", {"statsDataId": "1", "cdCat01": "2"}, {"statsDataId": "1"}) == "different"
+    assert sc("estat_file", {"parts": [{**p0, "values": "D13:F13"}]}, one, points=got0) == (
+        "different"
     )
+    for key in ("statInfId", "fileKind", "sheet", "periods_cells"):
+        assert sc("estat_file", {"parts": [{**p0, key: "9"}]}, one, points=got0) == "different"
+    # 数を取った部分を外した下書きは、台帳より古い下書き
+    assert sc("estat_file", {"parts": []}, one, points=got0) == "stale"
+    two = {"parts": [p0, PART2]}
+    assert sc("estat_file", {"parts": [PART2, p0]}, two, points=got0) == "different"  # 並べ替え
+    assert sc("estat_file", {"parts": [PART2]}, two, points=got0) == "different"
+    assert (
+        sc("estat_api", {"statsDataId": "1", "cdCat01": "2"}, {"statsDataId": "1"}, points=[])
+        == "different"
+    )
+    assert sc("estat_api", {"statsDataId": "1"}, {"statsDataId": "1"}, points=[]) == "same"
 
 
 def _growth_ledger(config_dir, by):
@@ -1174,8 +1191,12 @@ def test_growth_card_is_pointless_and_refuses_ok(sconf):
     _growth_ledger(sconf, HUMAN_CHECKER)
     it = page_items(with_series_data(_sdrafts(_grown()), sconf))[0]
     assert it["selector_state"] == "growth" and it["points"] == [] and not it["has_numbers"]
-    assert it["selector_note"].startswith("新しく足した部分の数を取ってから確かめる")
-    assert "merge --accept-rest のあと Mac で koten stats fetch" in it["selector_note"]
+    note = it["selector_note"]
+    assert note.startswith("部分を足した・直した")
+    # 先に Mac の確かめるだけの取得で部分を確かめ、そのあと取り込んで数を取る
+    a = note.index("uv run koten stats fetch --drafts <下書き>")
+    b = note.index("merge --accept-rest")
+    assert a < b and "koten stats fetch で数を取ってから確かめる" in note[b:]
 
 
 def test_growth_merge_downgrades_an_owner_row_and_keeps_the_points(sconf):
@@ -1187,7 +1208,11 @@ def test_growth_merge_downgrades_an_owner_row_and_keeps_the_points(sconf):
     before = (sconf / SERIES_FILE).read_bytes()
     res = merge_checks(_sdrafts(item), {it["k"]: {"v": "ok", "at": _at()}}, sconf)
     assert res.series_ai == [] and (sconf / SERIES_FILE).read_bytes() == before
-    assert any("--accept-rest" in x for x in res.skipped)
+    assert any(
+        x.startswith("file_rate：部分を足した・直した")
+        and x.index("uv run koten stats fetch --drafts <下書き>") < x.index("--accept-rest")
+        for x in res.skipped
+    ), res.skipped
     res = merge_checks(_sdrafts(item), {it["k"]: {"v": "ok", "at": _at()}}, sconf, accept_rest=True)
     assert res.series_ai == ["file_rate"] and res.series_downgraded == ["file_rate"]
     assert res.series_added == []
@@ -1217,14 +1242,16 @@ def test_growth_merge_on_an_ai_row_is_not_a_downgrade_and_cli_prints_it(sconf, t
          "--settings", str(settings)],
     )  # fmt: skip
     assert res.exit_code == 0, res.output
-    assert "file_rate：部分が増えたので AI の行に戻した。数を取ってから確かめ直す" in res.output
+    assert "file_rate：部分を足した・直したので AI の行に戻した。数を取ってから確かめ直す" in (
+        res.output
+    )
 
 
 def test_updated_only_is_growth_and_identity_changes_are_different(sconf):
     _growth_ledger(sconf, AI_CHECKER)
     upd = _grown(n=1, first={"updated": "2027-01-01"})
     assert page_items(with_series_data(_sdrafts(upd), sconf))[0]["selector_state"] == "growth"
-    for item in (_grown(n=1, first={"values": "D13:F13"}), {**_grown(), "selector": {"parts": []}},
+    for item in (_grown(n=1, first={"values": "D13:F13"}),
                  {**FILE_SERIES, "selector": {"parts": [PART2]}}):  # fmt: skip
         full = with_series_data(_sdrafts(item), sconf)
         got = page_items(full)[0]
@@ -1250,3 +1277,224 @@ def test_unresolved_selector_gets_the_meta_instruction(sconf):
     ledger_item = {**API_SERIES, "selector": {}}
     it = page_items(with_series_data(_sdrafts(ledger_item), sconf))[0]
     assert it["selector_state"] == "unresolved" and "選び方が違う" not in it["selector_note"]
+
+
+# --- 数を取った部分だけが変えられない（R23）・重なる部分・古い下書き・selector の形 -------------
+
+EXP0 = {"statInfId": "000031000001", "fileKind": "0", "sheet": "表1", "values": "D12:E12",
+        "periods": ["2019", "2020"], "label_cells": ["A12"]}  # fmt: skip
+EXP1 = {**EXP0, "statInfId": "000031000002", "periods": ["2021"]}
+
+
+def _exp_item(parts):
+    return {**FILE_SERIES, "selector": {"parts": parts}}
+
+
+def _exp_ledger(config_dir, parts, part_years, by=AI_CHECKER):
+    """file_rate（部分は parts）と work_rate が台帳にある。file_rate の点は (部分の番号, 年)。"""
+    sha = "abc" if by == HUMAN_CHECKER else ""
+    _write_ledger(
+        config_dir,
+        [_prow(), *(_prow("file_rate", y, "5", part=str(i)) for i, y in part_years)],
+        [_srow(API_SERIES),
+         _srow(_exp_item(parts), checked_by=by, checked_at="2026-11-01", checked_sha=sha)],
+    )  # fmt: skip
+
+
+def _ledger_bytes(config_dir):
+    return [(config_dir / f).read_bytes() for f in (SERIES_FILE, POINTS_FILE, "stats.csv")]
+
+
+def _file_row(config_dir):
+    return {r["series_id"]: r for r in _series_file(config_dir)}["file_rate"]
+
+
+def test_selection_change_freezes_only_the_parts_with_points():
+    from koten.stats.series import selection_change as sc
+
+    ledger = {"parts": [EXP0, EXP1]}
+    only0 = _pp((0, "2019"), (0, "2020"))  # 2 番目の部分はまだ数を取っていない
+    fixed1 = {**EXP1, "values": "D13:E13"}
+    assert sc("estat_file", {"parts": [EXP0, fixed1]}, ledger, points=only0) == "growth"
+    assert sc("estat_file", {"parts": [EXP0]}, ledger, points=only0) == "growth"  # 外す
+    moved0 = {**EXP0, "values": "D13:E13"}
+    assert sc("estat_file", {"parts": [moved0, EXP1]}, ledger, points=only0) == "different"
+    # 数がまだ1つも無い系列は、どの部分を変えても growth。同じなら same
+    other = {"parts": [{**EXP0, "statInfId": "000031000009"}]}
+    assert sc("estat_file", other, ledger, points=[]) == "growth"
+    assert sc("estat_file", ledger, ledger, points=[]) == "same"
+    # 両方の部分に数がある：前の部分だけの下書きは台帳より古い。2 番目を変えるのは different
+    both = _pp((0, "2019"), (1, "2021"))
+    assert sc("estat_file", {"parts": [EXP0]}, ledger, points=both) == "stale"
+    assert sc("estat_file", {"parts": [EXP0, fixed1]}, ledger, points=both) == "different"
+    assert sc("estat_file", {"parts": [EXP0, fixed1, EXP1]}, ledger, points=both) == "different"
+    # 番号の間の数の無い部分は直せる（数のある部分の番号は動かせない）
+    three = {"parts": [EXP0, EXP1, {**EXP1, "statInfId": "000031000003"}]}
+    gap = _pp((0, "2019"), (2, "2022"))
+    assert sc("estat_file", {"parts": [EXP0, fixed1, three["parts"][2]]}, three, points=gap) == (
+        "growth"
+    )
+    assert sc("estat_file", {"parts": [EXP0, three["parts"][2]]}, three, points=gap) == "different"
+    # どの部分の数か分からない点があれば、台帳の部分は全部変えられない
+    odd = parse_points([_prow("file_rate", "2019", "5", part="")])
+    assert sc("estat_file", {"parts": [EXP0, fixed1]}, ledger, points=odd) == "different"
+    assert sc("estat_file", {"parts": [EXP0]}, ledger, points=odd) == "stale"
+
+
+def test_selection_change_normalizes_the_values_it_compares():
+    from koten.stats.series import selection_change as sc
+
+    p0 = FILE_SELECTOR["parts"][0]
+    got0 = _pp((0, "2019"))
+    one = {"parts": [p0]}
+    # periods の [] と null と書いていない、statInfId の前後の空白は同じ
+    for draft in ({**p0, "periods": []}, {**p0, "periods": None},
+                  {**p0, "statInfId": " 000031000001 ", "values": "D12:F12 "}):  # fmt: skip
+        assert sc("estat_file", {"parts": [draft]}, one, points=got0) == "same", draft
+        assert sc("estat_file", {"parts": [draft, PART2]}, one, points=got0) == "growth", draft
+    assert sc("estat_file", {"parts": [{**EXP0, "periods": [2019, 2020]}]}, {"parts": [EXP0]},
+              points=got0) == "same"  # fmt: skip
+    # sheet の "" は CSV。書いていないのとは違う
+    csv0 = {**p0, "sheet": ""}
+    no_sheet = {k: v for k, v in p0.items() if k != "sheet"}
+    assert sc("estat_file", {"parts": [no_sheet]}, {"parts": [csv0]}, points=got0) == "different"
+
+
+def test_normalized_same_selector_keeps_the_points_on_the_card(sconf):
+    _growth_ledger(sconf, AI_CHECKER)
+    spaced = {**FILE_SELECTOR["parts"][0], "statInfId": " 000031000001", "periods": []}
+    it = page_items(with_series_data(_sdrafts(_exp_item([spaced])), sconf))[0]
+    assert it["selector_state"] == "same" and it["has_numbers"] and it["selector_note"] == ""
+
+
+def test_stale_draft_is_told_to_follow_the_ledger_and_writes_nothing(sconf):
+    note = "下書きが台帳より古い（台帳の部分のほうが多い）。下書きを台帳に合わせる"
+    _exp_ledger(sconf, [EXP0, EXP1], [(0, "2019"), (0, "2020"), (1, "2021")])
+    item = _exp_item([EXP0])
+    it = page_items(with_series_data(_sdrafts(item), sconf))[0]
+    assert it["selector_state"] == "stale" and not it["has_numbers"]
+    assert it["selector_note"] == note
+    before = _ledger_bytes(sconf)
+    for checks, rest in (({it["k"]: {"v": "ok", "at": _at()}}, False), ({}, True)):
+        res = merge_checks(_sdrafts(item), checks, sconf, accept_rest=rest)
+        assert res.series_ai == [] and res.series_added == []
+        assert f"file_rate：{note}" in res.skipped
+        assert _ledger_bytes(sconf) == before
+
+
+def test_growth_part_that_hits_a_fetched_year_is_refused(sconf):
+    _exp_ledger(sconf, [EXP0], [(0, "2019"), (0, "2020")], by=HUMAN_CHECKER)
+    bad = {**EXP1, "periods": ["2020", "2021"]}  # 新しい年のファイルに前の年も載っている
+    item = _exp_item([EXP0, bad])
+    it = page_items(with_series_data(_sdrafts(item), sconf))[0]
+    assert it["selector_state"] == "growth" and not it["has_numbers"]
+    assert it["selector_note"] == (
+        "足した部分が前の部分と重なる（2 番目の部分の 2020 年はもう数がある）。下書きを直す"
+    )
+    before = _ledger_bytes(sconf)
+    for checks, rest in (({}, True), ({it["k"]: {"v": "ok", "at": _at()}}, True), ({}, False)):
+        res = merge_checks(_sdrafts(item), checks, sconf, accept_rest=rest)
+        assert res.series_ai == [] and res.series_downgraded == [] and res.series_added == []
+        assert (
+            "file_rate：足した部分が前の部分と重なる（2 番目の部分の 2020 年はもう数がある）。"
+            "下書きを直す"
+        ) in res.skipped, res.skipped
+        assert _ledger_bytes(sconf) == before
+
+
+def test_growth_parts_whose_periods_meet_each_other_are_refused(sconf):
+    _exp_ledger(sconf, [EXP0], [(0, "2019"), (0, "2020")])
+    twin = {**EXP1, "statInfId": "000031000003", "periods": ["2021", "2022"]}
+    item = _exp_item([EXP0, EXP1, twin])
+    before = _ledger_bytes(sconf)
+    res = merge_checks(_sdrafts(item), {}, sconf, accept_rest=True)
+    assert res.series_ai == [] and _ledger_bytes(sconf) == before
+    assert (
+        "file_rate：足した部分が前の部分と重なる（3 番目の部分の 2021 年は 2 番目の部分にもある）。"
+        "下書きを直す"
+    ) in res.skipped, res.skipped
+
+
+def test_growth_part_that_repeats_another_part_is_refused(sconf):
+    _exp_ledger(sconf, [EXP0], [(0, "2019"), (0, "2020")])
+    # 同じ表の同じセルを、別の年として読む（ファイルの取得では見つからない）
+    dup = {**EXP0, "statInfId": " 000031000001", "periods": ["2021", "2022"]}
+    item = _exp_item([EXP0, dup])
+    assert page_items(with_series_data(_sdrafts(item), sconf))[0]["selector_note"].startswith(
+        "足した部分が前の部分と重なる（2 番目の部分は 1 番目と同じセルを読む"
+    )
+    before = _ledger_bytes(sconf)
+    res = merge_checks(_sdrafts(item), {}, sconf, accept_rest=True)
+    assert res.series_ai == [] and _ledger_bytes(sconf) == before
+    assert any(
+        x.startswith("file_rate：足した部分が前の部分と重なる（2 番目の部分は 1 番目と同じセル")
+        for x in res.skipped
+    ), res.skipped
+
+
+def test_unfetched_part_can_be_fixed_or_removed_by_a_later_draft(sconf):
+    fixed = [EXP0, {**EXP1, "values": "D13:E13"}]
+    for parts in (fixed, [EXP0]):
+        _exp_ledger(sconf, [EXP0, EXP1], [(0, "2019"), (0, "2020")], by=HUMAN_CHECKER)
+        item = _exp_item(parts)
+        assert with_series_data(_sdrafts(item), sconf)["series"][0]["selector_state"] == "growth"
+        points = (sconf / POINTS_FILE).read_bytes()
+        res = merge_checks(_sdrafts(item), {}, sconf, accept_rest=True)
+        assert res.series_ai == ["file_rate"] and res.series_downgraded == ["file_rate"]
+        row = _file_row(sconf)
+        assert json.loads(row["selector"])["parts"] == parts and row["checked_by"] == AI_CHECKER
+        assert (sconf / POINTS_FILE).read_bytes() == points
+    # 数を取った部分を変えるのは、今までどおり different
+    _exp_ledger(sconf, [EXP0, EXP1], [(0, "2019"), (0, "2020")])
+    moved = _exp_item([{**EXP0, "values": "D13:E13"}, EXP1])
+    assert with_series_data(_sdrafts(moved), sconf)["series"][0]["selector_state"] == "different"
+    res = merge_checks(_sdrafts(moved), {}, sconf, accept_rest=True)
+    assert res.series_ai == [] and any("新しい series_id で下書きする" in x for x in res.skipped)
+
+
+def test_overlapping_part_from_before_has_a_working_repair_path(sconf):
+    # オーナーの行：1 番目の部分は 2019・2020 年。2020・2021 年の部分を足す下書きは入らない
+    _exp_ledger(sconf, [EXP0], [(0, "2019"), (0, "2020")], by=HUMAN_CHECKER)
+    bad = {**EXP1, "periods": ["2020", "2021"]}
+    res = merge_checks(_sdrafts(_exp_item([EXP0, bad])), {}, sconf, accept_rest=True)
+    assert res.series_ai == [] and any("重なる" in x for x in res.skipped)
+    # 前の決まりで、重なる部分が台帳に入ってしまった形（取れないので 2 番目の部分に数は無い）
+    for parts in ([EXP0, {**bad, "periods": ["2021"]}], [EXP0]):
+        _exp_ledger(sconf, [EXP0, bad], [(0, "2019"), (0, "2020")])
+        res = merge_checks(_sdrafts(_exp_item(parts)), {}, sconf, accept_rest=True)
+        assert res.series_ai == ["file_rate"], res.skipped
+        assert json.loads(_file_row(sconf)["selector"])["parts"] == parts
+
+
+def test_unresolved_note_follows_the_source_kind(sconf):
+    file_item = {k: v for k, v in FILE_SERIES.items() if k != "selector"}
+    for item in (file_item, {**FILE_SERIES, "selector": {}}, {**FILE_SERIES, "selector": ""}):
+        it = page_items(with_series_data(_sdrafts(item), sconf))[0]
+        assert it["selector_state"] == "unresolved"
+        assert it["selector_note"] == "selector（parts）がまだ無い。ファイルの位置を下書きに書く"
+        before = _ledger_bytes(sconf)
+        res = merge_checks(_sdrafts(item), {}, sconf, accept_rest=True)
+        assert res.series_ai == [] and _ledger_bytes(sconf) == before
+        assert "file_rate：selector（parts）がまだ無い。ファイルの位置を下書きに書く" in res.skipped
+    api = {k: v for k, v in API_SERIES.items() if k != "selector"}
+    it = page_items(with_series_data(_sdrafts(api), sconf))[0]
+    assert it["selector_note"] == "selector がまだ無い（Mac で uv run koten stats meta）"
+
+
+def test_selector_that_is_not_an_object_is_named_and_writes_nothing(sconf):
+    note = "selector が JSON のオブジェクトになっていない"
+    for bad in ("oops", [1, 2], 5, True, "[]", '"x"'):
+        for base in (API_SERIES, FILE_SERIES):
+            item = {**base, "series_id": "bad_sel", "selector": bad}
+            it = page_items(with_series_data(_sdrafts(item), sconf))[0]
+            assert it["selector_state"] == "invalid" and it["selector_note"] == note, bad
+            assert not it["has_numbers"]
+            before = _ledger_bytes(sconf)
+            res = merge_checks(_sdrafts(item), {}, sconf, accept_rest=True)
+            assert res.series_ai == [] and f"bad_sel：{note}" in res.skipped
+            assert _ledger_bytes(sconf) == before
+    # JSON の文字列で書いたオブジェクトは読む（台帳の行から作る todo の形）
+    as_text = {**API_SERIES, "selector": json.dumps(API_SERIES["selector"])}
+    assert with_series_data(_sdrafts(as_text), sconf)["series"][0]["selector_state"] == "same"
+    out = todo_drafts(_sdrafts(API_SERIES), {"series": ["work_rate"]}, sconf)
+    assert out["series"][0]["selector_state"] == "same"

@@ -611,3 +611,26 @@ def test_meta_refuses_a_bad_drafts_file(env, monkeypatch, body):
     path.write_text(body, encoding="utf-8")
     r = stats(env, "meta", "--drafts", str(path))
     assert r.exit_code == 2 and "下書き" in r.output and "Traceback" not in r.output
+
+
+def test_fetch_skips_held_rows_unless_named(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    # 外した系列（保留）は表が取れない形のまま
+    held = srow(
+        series_id="held_rate", status="保留", selector=json.dumps({**SEL, "statsDataId": OTHER_SID})
+    )
+    write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, [srow(), held])
+    r = stats(env, "fetch")
+    assert r.exit_code == 0, r.output
+    assert r.output.count("held_rate：保留なので飛ばす") == 1
+    assert all(req.url.params.get("statsDataId") != OTHER_SID for req in env.seen)
+    assert [x["series_id"] for x in read_point_rows(env.config)] == ["age_rate"] * 3
+    # 名前を挙げれば取りに行く（ここでは表が無いので失敗する）
+    r = stats(env, "fetch", "--series", "held_rate")
+    assert r.exit_code == 1 and "held_rate：" in r.output and "保留なので飛ばす" not in r.output
+    assert any(req.url.params.get("statsDataId") == OTHER_SID for req in env.seen)
+    # 全部が保留なら、取る系列は無い
+    write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, [held])
+    r = stats(env, "fetch", "--check")
+    assert r.exit_code == 0 and "held_rate：保留なので飛ばす" in r.output
+    assert "取る系列がありません（保留でない系列が無い）" in r.output

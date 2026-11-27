@@ -42,7 +42,8 @@ META_DIR = "docs/estat"  # REPO_ROOT から。config_dir があるときは meta
 _ID_RE = re.compile(r"[a-z0-9][a-z0-9_]*")
 _YEAR_RE = re.compile(r"[0-9]{4}")  # \d は全角などの数字にも当たるので使わない
 _DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
-DIGITS_RE = re.compile(r"[0-9]+")  # 半角の数字だけ（statInfId・fileKind）
+# 半角の数字だけ（statInfId・fileKind・statsDataId・点の part の番号）
+DIGITS_RE = re.compile(r"[0-9]+")
 # label に年を入れない（年度も「年」に当たる）。NFKC で全角数字を半角にしてから当てる。
 # 4桁の数だけ（従業員2000人以上）は許す。漢数字の年（二〇二〇年・平成二十五年）も断る。
 _KANJI_NUM = "〇一二三四五六七八九"
@@ -498,34 +499,147 @@ def parse_period_name(text: str) -> tuple[str, str]:
 
 # --- 選び方（selector）の変更 --------------------------------------------------
 
-_PART_IDENTITY = ("statInfId", "fileKind", "sheet", "values", "periods_cells", "periods")
+_PART_PLACE = ("statInfId", "fileKind", "sheet", "values")  # 部分が読むセル
+_PART_IDENTITY = (*_PART_PLACE, "periods_cells", "periods")
 
 
-def selection_change(kind: str, draft: dict, ledger: dict) -> str:
-    """台帳の行の選び方と下書きの選び方の比べ方：same・growth・different。
+def _norm(v: Any) -> Any:
+    """比べるための値：文字は前後の空白を取り、数は文字にする。空（None・""・[]）は None。"""
+    if isinstance(v, bool) or v is None:
+        return v
+    if isinstance(v, (int, float)):
+        v = str(v)
+    if isinstance(v, str):
+        return v.strip() or None
+    if isinstance(v, list):
+        return [_norm(x) for x in v] or None
+    if isinstance(v, dict):
+        return {k: n for k, x in v.items() if (n := _norm(x)) is not None} or None
+    return v
 
-    estat_api は、少しでも違えば different。estat_file は、parts が台帳の parts と同じ並びで、
-    あとに部分を足しただけ（既存の部分の statInfId・fileKind・sheet・values・
-    periods_cells・periods が同じ。updated・label_cells・unit_cell の変更は許す）なら growth。
-    部分を外す・並べ替える・既存の部分の上の鍵を変えるのは different。
+
+def _norm_part(part: Any) -> Any:
+    """部分の比べる形。空の値は書いていないのと同じ。ただし sheet の "" は CSV の印なので残す。"""
+    if not isinstance(part, dict):
+        return part
+    out = {k: n for k, v in part.items() if k != "sheet" and (n := _norm(v)) is not None}
+    if "sheet" in part:
+        sheet = part["sheet"]
+        out["sheet"] = sheet.strip() if isinstance(sheet, str) else _norm(sheet)
+    return out
+
+
+def _norm_selector(sel: dict) -> dict:
+    out = {k: n for k, v in sel.items() if k != "parts" and (n := _norm(v)) is not None}
+    parts = sel.get("parts")
+    out["parts"] = [_norm_part(p) for p in parts] if isinstance(parts, list) else parts
+    return out
+
+
+def _keys_of(part: dict, keys: tuple[str, ...]) -> tuple:
+    n = _norm_part(part)
+    return tuple(n.get(k) for k in keys)
+
+
+def fetched_parts(points: list[Point], n_parts: int) -> set[int]:
+    """数を取った部分の番号（点の part。0 から）。この部分は選び方を変えられない（R23）。
+
+    part が台帳の部分（n_parts 個）の番号として読めない点があれば、どの部分の数か分からない
+    ので、台帳の部分を全部とする。
     """
-    if draft == ledger:
-        return "same"
+    out: set[int] = set()
+    for p in points:
+        t = p.part.strip()
+        if not (DIGITS_RE.fullmatch(t) and int(t) < n_parts):
+            return set(range(n_parts))
+        out.add(int(t))
+    return out
+
+
+def selection_change(kind: str, draft: dict, ledger: dict, *, points: list[Point]) -> str:
+    """台帳の行の選び方と下書きの選び方の比べ方：same・growth・stale・different。
+
+    points は台帳のその系列の点（stat_points.csv）。estat_api は、少しでも違えば different。
+    estat_file で変えられないのは、数を取った部分（fetched_parts の番号）だけ：その番号の部分の
+    statInfId・fileKind・sheet・values・periods_cells・periods が台帳と同じなら growth
+    （数の無い部分を直す・外す・足すのも、数を取った部分の updated・label_cells・unit_cell を
+    直すのも growth。数が1つも無い系列は、どう変えても growth）。数を取った部分を変える・
+    動かすのは different。台帳の部分の並びの頭だけで、数を取った部分が足りない下書きは stale
+    （下書きが台帳より古い）。値は前後の空白を取り、periods・periods_cells の空（None・[]）は
+    書いていないのと同じにして比べる（same もこの比べ方）。
+    """
     if kind != "estat_file":
-        return "different"
+        return "same" if draft == ledger else "different"
+    nd, nl = _norm_selector(draft), _norm_selector(ledger)
+    if nd == nl:
+        return "same"
     dp, lp = draft.get("parts"), ledger.get("parts")
-    if not (isinstance(dp, list) and isinstance(lp, list)) or len(dp) < len(lp):
+    if not (isinstance(dp, list) and isinstance(lp, list)):
         return "different"
-    if {k: v for k, v in draft.items() if k != "parts"} != {
-        k: v for k, v in ledger.items() if k != "parts"
+    if {k: v for k, v in nd.items() if k != "parts"} != {
+        k: v for k, v in nl.items() if k != "parts"
     }:
         return "different"
-    for new, old in zip(dp, lp, strict=False):
-        if not (isinstance(new, dict) and isinstance(old, dict)):
-            return "different"
-        if any(new.get(k) != old.get(k) for k in _PART_IDENTITY):
+
+    def same_part(new: Any, old: Any) -> bool:
+        return (
+            isinstance(new, dict)
+            and isinstance(old, dict)
+            and _keys_of(new, _PART_IDENTITY) == _keys_of(old, _PART_IDENTITY)
+        )
+
+    for i in sorted(fetched_parts(points, len(lp))):  # 小さい番号から：下書きにある部分を先に見る
+        if i >= len(dp):
+            prefix = all(same_part(a, b) for a, b in zip(dp, lp, strict=False))
+            return "stale" if prefix else "different"
+        if not same_part(dp[i], lp[i]):
             return "different"
     return "growth"
+
+
+def _explicit_periods(part: dict) -> set[str]:
+    """部分の periods の年（periods_cells があればファイルの年を使うので、空）。"""
+    if _norm(part.get("periods_cells")) is not None:
+        return set()
+    periods = part.get("periods")
+    if not isinstance(periods, list):
+        return set()
+    return {str(p).strip() for p in periods if str(p).strip()}
+
+
+def part_overlaps(draft: dict, frozen: set[int], points: list[Point]) -> list[str]:
+    """数を取っていない部分（frozen に無い番号）が、ほかの部分と重なる理由。重ならなければ空。
+
+    重なるのは：ほかの部分と同じセル（statInfId・fileKind・sheet・values）を読む、periods の
+    年にもう数がある（points）、periods の年がほかの部分の periods にもある。部分は 1 から数える。
+    periods_cells の年はファイルを読まないと分からない（Mac の koten stats fetch --drafts）。
+    """
+    parts = draft.get("parts")
+    if not isinstance(parts, list):
+        return []
+    have = {p.period for p in points}
+    out: list[str] = []
+    for i, part in enumerate(parts):
+        if i in frozen or not isinstance(part, dict):
+            continue
+        # 組は1回だけ言う：前の部分か、数を取った部分と比べる
+        others = [
+            (j, o)
+            for j, o in enumerate(parts)
+            if j != i and isinstance(o, dict) and (j < i or j in frozen)
+        ]
+        place = _keys_of(part, _PART_PLACE)
+        same = [j for j, o in others if _keys_of(o, _PART_PLACE) == place]
+        if same:
+            out.append(f"{i + 1} 番目の部分は {same[0] + 1} 番目と同じセルを読む")
+        years = _explicit_periods(part)
+        if hit := sorted(years & have):
+            out.append(f"{i + 1} 番目の部分の {'・'.join(hit)} 年はもう数がある")
+        for j, o in others:
+            if both := sorted((years & _explicit_periods(o)) - have):
+                y = "・".join(both)
+                out.append(f"{i + 1} 番目の部分の {y} 年は {j + 1} 番目の部分にもある")
+    return out
 
 
 # --- 区切り・比べられるか・傾向 ------------------------------------------------

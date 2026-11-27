@@ -61,9 +61,11 @@ from koten.stats.series import (
     Point,
     SeriesError,
     check_sha,
+    fetched_parts,
     load_meta,
     meta_dir_for,
     parse_points,
+    part_overlaps,
     period_label,
     read_point_rows,
     read_series_rows,
@@ -160,22 +162,65 @@ def finding_lines(d: dict[str, Any]) -> list[str]:
 
 
 SELECTOR_CHANGED = "台帳の {id} と選び方が違う。新しい series_id で下書きする"
-SELECTOR_UNRESOLVED = "selector がまだ無い（Mac で uv run koten stats meta）"
+# selector がまだ無い下書き（生の値が無い・{}）の案内は、source_kind で分ける
+SELECTOR_UNRESOLVED = {
+    "estat_api": "selector がまだ無い（Mac で uv run koten stats meta）",
+    "estat_file": "selector（parts）がまだ無い。ファイルの位置を下書きに書く",
+}
+SELECTOR_NO_KIND = "selector がまだ無い。source_kind を estat_api か estat_file にする"
+SELECTOR_NOT_OBJECT = "selector が JSON のオブジェクトになっていない"
+SELECTOR_STALE = "下書きが台帳より古い（台帳の部分のほうが多い）。下書きを台帳に合わせる"
 SELECTOR_GROWTH = (
-    "新しく足した部分の数を取ってから確かめる"
-    "（merge --accept-rest のあと Mac で koten stats fetch）"
+    "部分を足した・直した。先に Mac で uv run koten stats fetch --drafts <下書き> で部分を"
+    "確かめてから merge --accept-rest で入れ、Mac で koten stats fetch で数を取ってから確かめる"
 )
-_SELECTOR_NOTES = {"different": SELECTOR_CHANGED, "unresolved": SELECTOR_UNRESOLVED,
-                   "growth": SELECTOR_GROWTH}  # fmt: skip
+SELECTOR_GROWTH_SKIP = (
+    "部分を足した・直した。先に Mac で uv run koten stats fetch --drafts <下書き> で部分を"
+    "確かめてから、AI の行として --accept-rest で取り込む"
+)
+SELECTOR_OVERLAP = "足した部分が前の部分と重なる（{why}）。下書きを直す"
+_SELECTOR_NOTES = {"different": SELECTOR_CHANGED, "invalid": SELECTOR_NOT_OBJECT,
+                   "stale": SELECTOR_STALE, "growth": SELECTOR_GROWTH}  # fmt: skip
+# 台帳に何も書かない選び方の状態（押しても、--accept-rest でも）
+_REFUSED_STATES = ("different", "unresolved", "invalid", "stale")
+
+
+def _raw_selector_state(raw: Any) -> str:
+    """下書きの selector の生の値：まだ無い（unresolved）・オブジェクトでない（invalid）・ある。
+
+    あるときは ""。まだ無いのは、無い・null・空の文字・{} だけ。JSON の文字列で書いた
+    オブジェクトは読む（台帳の行から作る todo の形）。"""
+    if isinstance(raw, str):
+        if not raw.strip():
+            return "unresolved"
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return "invalid"
+    if raw is None or raw == {}:
+        return "unresolved"
+    return "" if isinstance(raw, dict) else "invalid"
+
+
+def _selector_note(d: dict[str, Any]) -> str:
+    """系列の選び方の状態の注記（カードと取り込みで同じ文）。無ければ ""。"""
+    state = d.get("selector_state", "")
+    if state == "unresolved":
+        return SELECTOR_UNRESOLVED.get(str(d.get("source_kind", "")).strip(), SELECTOR_NO_KIND)
+    if state == "growth" and d.get("selector_overlap"):
+        return SELECTOR_OVERLAP.format(why=d["selector_overlap"])
+    return _SELECTOR_NOTES.get(state, "").format(id=str(d.get("series_id", "")).strip())
 
 
 def with_series_data(drafts: dict[str, Any], config_dir: Path) -> dict[str, Any]:
     """series の各項目に、台帳の点（points）と表の情報（meta）を足した写しを返す。
 
     ページの鍵と取り込みの鍵は、どちらもこの写しから作る（同じデータから鍵を出すため）。
-    台帳に無い系列・selector が空の系列・台帳の行と選び方が違う系列（部分を足しただけの
-    growth も）は数なし。selector_state は new・same・growth・different・unresolved。
-    表の情報は estat_api の系列だけ（docs/estat/<series_id>.json。db.py と同じ）。
+    selector_state は new・same・growth・stale・different・unresolved・invalid。点が付くのは
+    same だけ（台帳に無い系列・selector がまだ無い・オブジェクトでない系列・台帳の行と
+    選び方が違う系列は数なし）。growth で、数を取っていない部分がほかの部分と重なれば、
+    その理由を selector_overlap に入れる（取り込まない）。表の情報は estat_api の系列だけ
+    （docs/estat/<series_id>.json。db.py と同じ）。
     """
     rows = read_point_rows(config_dir)
     meta_dir = meta_dir_for(config_dir)
@@ -183,32 +228,30 @@ def with_series_data(drafts: dict[str, Any], config_dir: Path) -> dict[str, Any]
     out = []
     for item in drafts.get("series") or []:
         sid = str(item.get("series_id", "")).strip()
-        # 選び方は変えられない（R21）。足せるのは estat_file の部分だけ（R22）
+        # 選び方は変えられない（R21）。変えられるのは estat_file の数を取っていない部分（R22・R23）
         s = series_from_draft(item)
-        if not s.selector:
-            state = "unresolved"
-        elif sid not in ledger:
+        mine = [r for r in rows if r.get("series_id", "").strip() == sid]
+        overlap = ""
+        state = _raw_selector_state(item.get("selector"))
+        if not state and sid not in ledger:
             state = "new"
-        else:
-            state = selection_change(
-                s.source_kind, s.selector, series_from_draft(ledger[sid]).selector
-            )
-        pts = (
-            sorted(
-                (dict(r) for r in rows if r.get("series_id", "").strip() == sid),
-                key=lambda r: r.get("period", ""),
-            )
-            if state == "same"
-            else []
-        )
+        elif not state:
+            old = series_from_draft(ledger[sid]).selector
+            pts = parse_points(mine)
+            state = selection_change(s.source_kind, s.selector, old, points=pts)
+            if state == "growth":
+                n = len(old["parts"]) if isinstance(old.get("parts"), list) else 0
+                overlap = "、".join(part_overlaps(s.selector, fetched_parts(pts, n), pts))
+        shown = sorted(mine, key=lambda r: r.get("period", "")) if state == "same" else []
         meta = None
         if item.get("source_kind") == "estat_api":
             try:
                 meta = load_meta(meta_dir, sid)
             except SeriesError as e:
                 raise SourcesError(str(e)) from e
-        out.append({**item, "points": [{c: r.get(c, "") for c in POINT_COLUMNS} for r in pts],
-                    "meta": meta, "selector_state": state})  # fmt: skip
+        out.append({**item, "points": [{c: r.get(c, "") for c in POINT_COLUMNS} for r in shown],
+                    "meta": meta, "selector_state": state,
+                    "selector_overlap": overlap})  # fmt: skip
     return {**drafts, "series": out}
 
 
@@ -418,9 +461,7 @@ def _series_item(
         "chosen": chosen,
         "link": link,
         "selector_state": d.get("selector_state", ""),
-        "selector_note": _SELECTOR_NOTES.get(d.get("selector_state", ""), "").format(
-            id=s.series_id
-        ),
+        "selector_note": _selector_note(d),
         "has_numbers": _newest_numeric(points) is not None,
         "points": _point_rows(d, points),
         "breaks": [{"before": b.before, "note": b.note} for b in s.breaks],
@@ -577,7 +618,8 @@ class MergeResult:
     findings_ai: list[str] = field(default_factory=list)
     series_added: list[str] = field(default_factory=list)
     series_ai: list[str] = field(default_factory=list)
-    series_downgraded: list[str] = field(default_factory=list)  # 部分が増えて AI の行に戻した
+    # 部分を足した・直した系列で、人の行を AI の行に戻した
+    series_downgraded: list[str] = field(default_factory=list)
 
 
 def _day(at: Any) -> str:
@@ -738,15 +780,19 @@ def merge_checks(
     *,
     accept_rest: bool = False,
 ) -> MergeResult:
-    """押した結果を、stats.csv と findings.csv に書く。
+    """押した結果を、stats.csv・findings.csv・stat_series.csv（統計の系列）に書く。
 
     - 人が「合っている」「入れる」を押した行：人が確かめた行（checked_by オーナー・verified）
-    - accept_rest のとき、統計と CC BY の研究で押していない行：AI が確かめた行（checked_by AI・
-      ai_checked）。台本で使えるが、回で使ったら承認の前に人が確かめる。民間の調査と有料の論文は
-      人が数字や一文を書くまで入れない
+    - accept_rest のとき、統計と CC BY の研究と統計の系列で押していない行：AI が確かめた行
+      （checked_by AI・ai_checked）。台本で使えるが、回で使ったら承認の前に人が確かめる。
+      民間の調査と有料の論文は人が数字や一文を書くまで入れない
     - 「違う」「使わない」を押した行は入れない
-    - 人が確かめた行を、AI が確かめた行で上書きしない
-    - どちらかの台帳が決まりに合わなくなるなら、どちらも書かずに止める（SourcesError）
+    - 人が確かめた行を、AI が確かめた行で上書きしない。ただし統計の系列で部分を足した・直した
+      下書き（growth）は、accept_rest のとき人の行も AI の行に戻して入れる（series_downgraded。
+      人は前の部分の数だけを確かめたので）
+    - 統計の系列の選び方が台帳と違う・台帳より古い・selector がまだ無い・オブジェクトでない
+      下書きと、足した部分がほかの部分と重なる下書きは入れない（理由を skipped に）
+    - どれかの台帳が決まりに合わなくなるなら、どれも書かずに止める（SourcesError）
     - 統計の下書きの replaces に書いた古い行（転載サイトを出典にした行など）は、置き換える行を
       入れたときに外す
     """
@@ -791,17 +837,19 @@ def merge_checks(
         )
         ng = isinstance(c, dict) and c.get("v") == "ng"
         state = d.get("selector_state") if kind == "series" else None
-        if state in ("different", "unresolved") and not ng:
+        if state in _REFUSED_STATES and not ng:
             # 台帳の行の選び方は変えない（AI の行も人の行も）。行も数もそのまま
-            res.skipped.append(f"{name}：" + _SELECTOR_NOTES[state].format(id=name))
+            res.skipped.append(f"{name}：{_selector_note(d)}")
             continue
         if state == "growth" and not ng:
-            if not accept_rest:
-                res.skipped.append(
-                    f"{name}：部分が増えた。AI の行として入れるなら --accept-rest で取り込む"
-                )
+            if d.get("selector_overlap"):
+                # 足した部分が前の部分と重なる。行も数もそのまま
+                res.skipped.append(f"{name}：{_selector_note(d)}")
                 continue
-            # 部分を足した行は AI の行（人の行も AI に戻す）。数はそのまま
+            if not accept_rest:
+                res.skipped.append(f"{name}：{SELECTOR_GROWTH_SKIP}")
+                continue
+            # 部分を足した・直した行は AI の行（人の行も AI に戻す）。数はそのまま
             if d["series_id"] in human_series:
                 res.series_downgraded.append(d["series_id"])
             new_series.append(

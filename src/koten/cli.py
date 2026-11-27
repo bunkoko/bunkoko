@@ -2471,7 +2471,7 @@ def sources_merge(
     if res.stats_added or res.stats_ai or res.stats_removed:
         typer.echo("統計を SSD に入れる：uv run koten db init")
     for sid in res.series_downgraded:
-        typer.echo(f"{sid}：部分が増えたので AI の行に戻した。数を取ってから確かめ直す")
+        typer.echo(f"{sid}：部分を足した・直したので AI の行に戻した。数を取ってから確かめ直す")
     if res.series_added or res.series_ai:
         typer.echo("統計の系列を SSD に入れる：uv run koten db init")
     if res.findings_added or res.findings_ai:
@@ -4221,7 +4221,10 @@ def stats_meta(
             typer.secho(_estat_failure(label, e), fg="red", err=True)
             failed += 1
             continue
-        if sid in in_ledger and selection_change("estat_api", sel, in_ledger[sid]) != "same":
+        # API の系列だけを見るので、部分の数（points）は要らない
+        if sid in in_ledger and selection_change("estat_api", sel, in_ledger[sid], points=[]) != (
+            "same"
+        ):
             # 台帳の系列の選び方は変えない（変えるなら別の系列）。表の情報も下書きも書き換えない
             typer.secho(f"{sid}：台帳の {sid} と選び方が違う。新しい series_id で下書きする",
                         fg="red", err=True)  # fmt: skip
@@ -4254,7 +4257,8 @@ def stats_fetch(
 ) -> None:
     """系列の数を e-Stat（API・ファイル）から取り、config/stat_points.csv に書く。
 
-    --drafts のときは確かめるだけ（下書きは台帳に書かない）。
+    --drafts のときは確かめるだけ（下書きは台帳に書かない）。台帳の status が 保留 の系列
+    （外した系列）は、--series で名前を挙げたときだけ取る。
     """
     import json
 
@@ -4291,14 +4295,22 @@ def stats_fetch(
     else:
         targets = parse_series(read_series_rows(s.config_dir))
         where = f"config/{SERIES_FILE}"
+    held = []
     if series:
         known = {t.series_id for t in targets}
         if unknown := [x for x in series if x not in known]:
             typer.secho(f"系列が無い：{'・'.join(unknown)}", fg="red", err=True)
             raise typer.Exit(2)
         targets = [t for t in targets if t.series_id in set(series)]
+    elif not drafts:
+        # 外した系列（status 保留）は取らない。--series で名前を挙げたときだけ取る
+        held = [t for t in targets if t.status == "保留"]
+        for t in held:
+            typer.secho(f"{t.series_id}：保留なので飛ばす", fg="yellow")
+        targets = [t for t in targets if t.status != "保留"]
     if not targets:
-        typer.echo(f"取る系列がありません（{where} に系列が無い）")
+        why = "保留でない系列が無い" if held else f"{where} に系列が無い"
+        typer.echo(f"取る系列がありません（{why}）")
         return
     app_id = _estat_app_id()
     old_rows = read_point_rows(s.config_dir)
