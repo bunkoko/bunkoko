@@ -74,6 +74,7 @@ figcaption { font-size: 13px; color: var(--muted); }
 .ptable th, .ptable td { border-bottom: 1px solid var(--rule); padding: 3px 6px; text-align: left; }
 .ptable tr.gap td { color: var(--muted); background: var(--soft); }
 .ptable tr.brk td { border-top: 2px solid var(--warn); }
+.ptable tr.join td { border-top: 1px dashed var(--warn); }
 .ptable .tag { color: var(--warn); font-size: 12px; }
 .scroll { overflow: auto; max-height: 18em; border: 1px solid var(--rule); border-radius: 8px; -webkit-overflow-scrolling: touch; }
 .excerpt { border-collapse: collapse; font-size: 12px; white-space: nowrap; }
@@ -184,7 +185,7 @@ function form(it) {
     const prev = local[it.k] || {};
     forms[it.k] = {
       fix: { ...(it.f || {}), ...(prev.fix || {}), ...(prev.entry || {}) },
-      trend: !!prev.trend, read: !!prev.read, retr: !!prev.retr, terms: !!prev.terms,
+      trend: !!prev.trend, joins: !!prev.joins, read: !!prev.read, retr: !!prev.retr, terms: !!prev.terms,
       note: prev.note || "",
     };
   }
@@ -320,8 +321,9 @@ function seriesLine(it, label) {
 function pointTable(it) {
   const rows = it.points.map((p) => {
     const val = p.gap ? "（抜け）" : p.mark ? `印 ${p.mark}（数ではない）` : p.value;
-    return el("tr", { class: (p.gap ? "gap " : "") + (p.brk ? "brk" : "") }, el("td", {}, p.label),
-      el("td", {}, val, p.brk ? el("div", { class: "tag" }, "▼ここから前と調べ方が変わる") : null));
+    return el("tr", { class: (p.gap ? "gap " : "") + (p.brk ? "brk" : p.join ? "join" : "") }, el("td", {}, p.label),
+      el("td", {}, val, p.brk ? el("div", { class: "tag" }, "▼ここから前と調べ方が変わる")
+        : p.join ? el("div", { class: "tag" }, "▲ここから見出しの言い方が変わる（同じ問いとしてつないだ）") : null));
   });
   return el("div", { class: "scroll" }, el("table", { class: "ptable" },
     el("tr", {}, el("th", {}, it.period_kind === "年度" ? "年度" : "年"), el("th", {}, `数（${it.unit}）`)), ...rows));
@@ -348,6 +350,13 @@ function cardSeries(it) {
     ...(it.chosen || []).map((c) => el("p", { class: "small" }, `選んだ分類｜${c}`))));
   kids.push(el("div", {}, el("span", { class: "label" }, `年ごとの数（${it.points.filter((p) => !p.gap).length} 件。抜けた年・数でない印・調べ方の変わり目に印）`), pointTable(it)));
   if ((it.breaks || []).length) kids.push(el("p", { class: "small" }, "決めた区切り：" + it.breaks.map((b) => `${b.before}年から（${b.note}）`).join("、")));
+  if ((it.joins || []).length) {
+    kids.push(el("div", {}, el("span", { class: "label" }, "同じ問いとしてつないだ境（見出しの言い方だけが違う年）"),
+      ...it.joins.map((j) => el("div", {},
+        el("p", { class: "small" }, `${j.before}年から：「${j.from}」→「${j.to}」`),
+        el("p", { class: "small" }, `根拠：${j.note}`),
+        j.used ? null : el("p", { class: "note" }, `（使っていない：${j.why}）`)))));
+  }
   if (it.excerpt) {
     const tables = it.excerpt.tables || [it.excerpt];
     kids.push(el("div", {}, el("span", { class: "label" }, "元のファイルの該当のまわり（赤が数、黄色が見出し・年・単位）"),
@@ -359,6 +368,7 @@ function cardSeries(it) {
   if (it.selector_note) kids.push(el("p", { class: "note" }, it.selector_note));
   kids.push(el("p", { class: "small" }, "数はプログラムが e-Stat から写した。確かめるのは、何の数か・分類・変わり目・読む文"));
   if (it.trend) kids.push(tick(it, "trend", `増え方（${it.trend}：${it.trend_from}〜${it.trend_to}年）も確かめた：${it.trend_note}`));
+  if ((it.joins || []).some((j) => j.used)) kids.push(tick(it, "joins", "つないだ境の根拠も読んで、同じ問いだと確かめた"));
   kids.push(el("details", {}, el("summary", {}, "言い方を直す"), el("div", {},
     input(it, "fix.label", "何の数か（誰のうちの、何の割合か。年と数は入れない）", { long: true, onInput: () => (line.textContent = seriesLine(it, form(it).fix.label)) }),
     input(it, "note", "メモ（任意）"),
@@ -553,6 +563,7 @@ function answer(v) {
   }
   if (lead) doc.entry = changed; else doc.fix = changed;
   if (it.kind === "stat" || it.kind === "series") doc.trend = !!f.trend;
+  if (it.kind === "series") doc.joins = !!f.joins;
   if (it.kind === "finding" || it.kind === "paid_paper") { doc.read = !!f.read; doc.retr = !!f.retr; }
   if (it.kind === "private_survey") doc.terms = !!f.terms;
   local[it.k] = doc; pending[it.k] = doc;

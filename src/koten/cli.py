@@ -2482,6 +2482,12 @@ def sources_merge(
             f"戻すときは uv run koten stats hold --series {sid} --release",
             fg="yellow",
         )
+    if res.series_joins_dropped:
+        typer.secho(
+            "つないだ境の「確かめた」に印が無いので、つながずに入れた："
+            + "、".join(res.series_joins_dropped),
+            fg="yellow",
+        )
     if res.series_added or res.series_ai:
         typer.echo("統計の系列を SSD に入れる：uv run koten db init")
     if res.findings_added or res.findings_ai:
@@ -4321,6 +4327,7 @@ def stats_fetch(
     config/stat_series.csv に写す（違っていた欄は黄色で出す。R25）。数の単位が年ごとに
     違えば、その系列は取らない。--check・--drafts のときは確かめるだけ（何も書かない）。
     台帳の status が 保留 の系列（外した系列）は、--series で名前を挙げたときだけ取る。
+    つないだ境（joins。R44）のうち使われなかったものは、黄色で出す（失敗にしない）。
     """
     from dataclasses import replace
 
@@ -4333,6 +4340,7 @@ def stats_fetch(
         SERIES_FILE,
         SeriesError,
         check_sha,
+        join_status,
         meta_dir_for,
         norm_name,
         norm_unit,
@@ -4443,6 +4451,14 @@ def stats_fetch(
             labels=rp.changed_labels(old, points),
         ):
             typer.echo(line)
+        for j, why in join_status(t, points):
+            # 使われなかったつなぎは失敗にしない（その年は区切ったまま。書くものも同じ。R44）
+            if why:
+                todo = "下書きの joins を直す" if drafts else "この行を Claude に伝える"
+                typer.secho(
+                    f"{t.series_id}：つないだ境 {j.before} は使われていない（{why}）。{todo}",
+                    fg="yellow",
+                )
         for col, new in fix.items():
             name = f"{OFFICIAL_LABELS[col]}（{col}）"
             if drafts:

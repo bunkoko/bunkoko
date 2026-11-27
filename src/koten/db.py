@@ -318,6 +318,7 @@ CREATE TABLE IF NOT EXISTS stat_series (
     url TEXT,
     latest_known TEXT,
     breaks TEXT,                         -- JSON
+    joins TEXT,                          -- JSON（見出しの言い方だけが違う年の境。R44）
     trend TEXT,
     trend_from TEXT,
     trend_to TEXT,
@@ -376,6 +377,7 @@ def connect(ssd_root: Path) -> sqlite3.Connection:
         },
     )
     _add_missing_columns(conn, "checks", {"shiyaku_id": "TEXT"})
+    _add_missing_columns(conn, "stat_series", {"joins": "TEXT"})
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)", (SCHEMA_VERSION,)
     )
@@ -551,6 +553,13 @@ def load_series(conn: sqlite3.Connection, config_dir: Path, meta_dir: Path) -> t
             "selector": json.dumps(s.selector, ensure_ascii=False),
             "breaks": json.dumps(
                 [{"before": b.before, "note": b.note} for b in s.breaks], ensure_ascii=False
+            ),
+            "joins": json.dumps(
+                [
+                    {"before": j.before, "from": j.from_label, "to": j.to_label, "note": j.note}
+                    for j in s.joins
+                ],
+                ensure_ascii=False,
             ),
         }
         series_out.append(

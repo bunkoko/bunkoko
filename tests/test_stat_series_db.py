@@ -257,3 +257,74 @@ def test_db_init_exits_2_on_a_bad_ledger(cli_env, cfg):
     write_csv(cfg / SERIES_FILE, SERIES_COLUMNS, [srow(series_id="Bad Id")])
     r = CliRunner().invoke(app, ["db", "init", "--settings", str(cli_env)])
     assert r.exit_code == 2
+
+
+# --- 見出しの言い方だけが違う年の境（joins。R44） ----------------------------------------------
+
+JOIN = {"before": "2022", "from": "A", "to": "B", "note": "両方の年の調査票で問いが同じ"}
+LABELED = [
+    prow("2020", "10", src_label="A"),
+    prow("2021", mark="…", src_label="A"),
+    prow("2022", "1,230", src_label="B"),
+]
+
+
+def segment_numbers(conn):
+    return [r[0] for r in conn.execute("SELECT segment FROM stat_points ORDER BY period")]
+
+
+def test_load_series_stores_the_joins_and_the_segments_use_them(conn, cfg, meta_dir):
+    write_csv(cfg / POINTS_FILE, POINTS_COLUMNS, LABELED)
+    joined = srow(joins=json.dumps([JOIN], ensure_ascii=False))
+    write_csv(cfg / SERIES_FILE, SERIES_COLUMNS, [joined])
+    load_series(conn, cfg, meta_dir)
+    assert json.loads(conn.execute("SELECT joins FROM stat_series").fetchone()[0]) == [JOIN]
+    assert segment_numbers(conn) == [0, 0, 0]
+    # joins の無い系列は [] で、見出しの変わる 2022 で区切る
+    write_csv(cfg / SERIES_FILE, SERIES_COLUMNS, [srow()])
+    load_series(conn, cfg, meta_dir)
+    assert json.loads(conn.execute("SELECT joins FROM stat_series").fetchone()[0]) == []
+    assert segment_numbers(conn) == [0, 0, 1]
+
+
+def test_check_sha_in_the_ssd_includes_the_joins(conn, cfg, meta_dir):
+    write_csv(cfg / POINTS_FILE, POINTS_COLUMNS, LABELED)
+    joined = srow(joins=json.dumps([JOIN], ensure_ascii=False))
+    s = parse_series([joined])[0]
+    sha = check_sha(s, parse_points(LABELED), load_meta(meta_dir, "work_rate"))
+    owner = srow(joins=joined["joins"], checked_by=HUMAN_CHECKER, checked_at="2026-11-27",
+                 checked_sha=sha)  # fmt: skip
+    write_csv(cfg / SERIES_FILE, SERIES_COLUMNS, [owner])
+    load_series(conn, cfg, meta_dir)
+    assert conn.execute("SELECT check_sha, owner_ok FROM stat_series").fetchone()[:] == (sha, 1)
+    # 根拠（note）だけを変えても、確かめは外れる
+    other = json.dumps([{**JOIN, "note": "別の根拠"}], ensure_ascii=False)
+    write_csv(cfg / SERIES_FILE, SERIES_COLUMNS, [{**owner, "joins": other}])
+    load_series(conn, cfg, meta_dir)
+    assert conn.execute("SELECT owner_ok FROM stat_series").fetchone()[0] == 0
+
+
+OLD_STAT_SERIES = """CREATE TABLE stat_series (
+    series_id TEXT PRIMARY KEY, themes TEXT NOT NULL, label TEXT NOT NULL, unit TEXT,
+    survey TEXT, publisher TEXT, source_kind TEXT, period_kind TEXT, selector TEXT,
+    table_title TEXT, url TEXT, latest_known TEXT, breaks TEXT, trend TEXT, trend_from TEXT,
+    trend_to TEXT, trend_note TEXT, status TEXT, checked_by TEXT, checked_at TEXT,
+    checked_sha TEXT, "where" TEXT, note TEXT, check_sha TEXT, owner_ok INTEGER,
+    latest_period TEXT, stale INTEGER, trend_ok INTEGER
+)"""
+
+
+def test_an_older_db_without_the_joins_column_gets_it(tmp_path, cfg, meta_dir):
+    import sqlite3
+
+    from koten.db import db_path
+
+    path = db_path(tmp_path / "old")
+    path.parent.mkdir(parents=True)
+    with sqlite3.connect(path) as old:  # joins の列が無い、前の版の stat_series 表
+        old.execute(OLD_STAT_SERIES)
+    conn = connect(tmp_path / "old")
+    assert "joins" in [r[1] for r in conn.execute("PRAGMA table_info(stat_series)")]
+    write_csv(cfg / SERIES_FILE, SERIES_COLUMNS, [srow(joins=json.dumps([JOIN]))])
+    assert load_series(conn, cfg, meta_dir) == (1, 3)
+    assert json.loads(conn.execute("SELECT joins FROM stat_series").fetchone()[0]) == [JOIN]

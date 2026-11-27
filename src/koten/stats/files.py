@@ -82,13 +82,13 @@ def _sections(fmt: str) -> list[list[str]]:
 
 
 def _section_kind(toks: list[str]) -> str:
-    """number（数の桁 0・# がある）・text（文字だけ）・general（General・@・決まりの外）。"""
+    """number（数の桁 0・#・? がある）・text（文字だけ）・general（General・@・決まりの外）。"""
     plain = "".join(t for t in toks if len(t) == 1)  # 引用・\x・_x・*x・[..] を除いた字
     if re.search(r"(?i)general", plain) or "@" in plain:
         return "general"
     if re.search(r"[Ee][+-]", plain) or "/" in plain or re.search(r"[A-Za-z]", plain):
         return "general"  # 指数・分数・日付などは決まりの外
-    return "number" if any(t in ("0", "#") for t in toks) else "text"
+    return "number" if any(t in ("0", "#", "?") for t in toks) else "text"
 
 
 def _literal(toks: list[str]) -> str:
@@ -121,7 +121,10 @@ def _number_text(d: Decimal, toks: list[str], sign: str) -> str:
     shown = value.quantize(Decimal(1).scaleb(-decimals), rounding=ROUND_HALF_UP)
     if shown == 0:
         if "0" not in toks:
-            return ""  # 「#」だけの書式の 0 は、Excel は何も出さない
+            # 「#」の桁がある書式の 0 は何も出さない（今までどおり）。桁が「?」だけなら桁は空白に
+            # なり、まわりの文字だけが見える（会計の書式の 0 の区画「"-"??」は -、「???」は空。
+            # 「?」を数の桁にする前の、文字の区画としての見せ方と同じ）
+            return "" if "#" in toks else _literal(toks)
         return _trim_optional(f"{abs(shown):f}", decimals, required)
     return sign + _trim_optional(f"{shown:f}", decimals, required)
 
@@ -145,7 +148,7 @@ def _render_number(v: int | float, fmt: str) -> str:
     条件つき・指数・分数・日付などの書式は General の見せ方にする。
     区画が 4 つ未満で最後の区画に @ があれば、それは文字の区画で、数には使わない（R43。
     「0.0;@」は負の数にも最初の区画）。小数の # と ? の桁は、末尾の 0 を出さない（「0.0#」の
-    1.5 は 1.5）。"""
+    1.5 は 1.5）。数の桁は 0・#・? で、? だけの区画も数として読む（「???」の 12 は 12）。"""
     d = _noise_free(v)
     fmt = fmt or "General"
     if any(t.startswith("[") and t[1:2] in ("<", ">", "=") for t in _FMT_TOK_RE.findall(fmt)):

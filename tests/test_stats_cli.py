@@ -1135,3 +1135,92 @@ def test_part_name_is_kept_when_the_grid_is_reused_across_series(env):
     r = stats(env, "fetch")
     assert r.exit_code == 1 and len(file_requests(env, "000003")) == 1
     assert "second：" in r.output and "2 番目の part（000003_4）" in r.output
+
+
+# --- 見出しの言い方だけが違う年の境（joins。R44） ----------------------------------------------
+
+OLD_WORDS, NEW_WORDS = "ストレスを感じる事柄がある", "ストレスとなっていると感じる事柄がある"
+JOIN = {"before": "2023", "from": OLD_WORDS, "to": NEW_WORDS, "note": "両方の調査票で同じ問い"}
+
+
+def joined_file_series(env, *joins):
+    """1つの CSV の2つの部分：2021・2022 年は前の言い方、2023 年は新しい言い方の見出し。"""
+    env.state["files"] = {
+        "000001": (
+            f"表題,,,\n,2021年,2022年,2023年\n{OLD_WORDS},39.5,40.0,\n{NEW_WORDS},,,40.1\n"
+        ).encode()
+    }
+    parts = [
+        {"statInfId": "000001", "fileKind": "0", "sheet": "", "values": "B3:C3",
+         "periods_cells": "B2:C2", "label_cells": ["A3"]},
+        {"statInfId": "000001", "fileKind": "0", "sheet": "", "values": "D4:D4",
+         "periods_cells": "D2:D2", "label_cells": ["A4"]},
+    ]  # fmt: skip
+    row = srow(
+        series_id="anzen_rate", source_kind="estat_file", selector=json.dumps({"parts": parts}),
+        joins=json.dumps(list(joins), ensure_ascii=False) if joins else "",
+    )  # fmt: skip
+    write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, [row])
+    return row
+
+
+def test_check_prints_the_used_join_and_counts_one_segment(env):
+    joined_file_series(env)
+    r = stats(env, "fetch", "--check")
+    assert r.exit_code == 0, r.output
+    assert "anzen_rate：3 点" in r.output and "区切り 2 区間" in r.output
+    joined_file_series(env, JOIN)
+    r = stats(env, "fetch", "--check")
+    assert r.exit_code == 0, r.output
+    assert "区切り 1 区間" in r.output
+    assert f"  つないだ境（同じ問い）：2023（'{OLD_WORDS}' → '{NEW_WORDS}'）" in r.output
+    assert "使われていない" not in r.output
+
+
+UNUSED = (
+    f"anzen_rate：つないだ境 2023 は使われていない（見出しが from・to と違う"
+    f"（前 '{OLD_WORDS}'・この年 '{NEW_WORDS}'））。"
+)
+
+
+def test_an_unused_join_is_a_yellow_line_not_a_failure(env):
+    joined_file_series(env, {**JOIN, "to": "別の言い方"})
+    for args in (["--check"], []):
+        r = stats(env, "fetch", *args)
+        assert r.exit_code == 0, r.output
+        assert UNUSED + "この行を Claude に伝える" in r.output, args
+        assert "区切り 2 区間" in r.output and "つないだ境（同じ問い）" not in r.output
+    # 書くものは変わらない（つながなくても、数は書く）
+    assert [x["period"] for x in read_point_rows(env.config)] == ["2021", "2022", "2023"]
+    colored = runner.invoke(app, ["stats", "fetch", "--check", "--settings", env.settings],
+                            color=True)  # fmt: skip
+    assert f"\x1b[33m{UNUSED}" in colored.output  # 黄色
+
+
+def test_an_unused_join_in_a_draft_says_to_fix_the_draft(env):
+    row = joined_file_series(env)
+    item = {**row, "themes": ["仕事"], "selector": json.loads(row["selector"]),
+            "joins": [{**JOIN, "to": "別の言い方"}]}  # fmt: skip
+    path = env.tmp / "draft.json"
+    path.write_text(json.dumps({"series": [item]}, ensure_ascii=False), encoding="utf-8")
+    r = stats(env, "fetch", "--drafts", str(path))
+    assert r.exit_code == 0, r.output
+    assert UNUSED + "下書きの joins を直す" in r.output
+    assert "この行を Claude に伝える" not in r.output
+
+
+def test_report_lines_list_only_the_used_joins():
+    from koten.stats import report as rp
+    from koten.stats.series import Point
+
+    joins = [JOIN, {**JOIN, "before": "2030"}]
+    s = parse_series([srow(source_kind="estat_file", joins=json.dumps(joins))])[0]
+    pts = [
+        Point("age_rate", y, "1", "", part, lab, "", "", "")
+        for y, part, lab in (("2021", "0", OLD_WORDS), ("2022", "0", OLD_WORDS),
+                             ("2023", "1", NEW_WORDS))
+    ]  # fmt: skip
+    lines = rp.report_lines(s, pts, units=set(), diffs=[], changed=[], labels=["'a' → 'b'（2021）"])
+    assert "区切り 1 区間" in lines[0]
+    used = f"  つないだ境（同じ問い）：2023（'{OLD_WORDS}' → '{NEW_WORDS}'）"
+    assert lines[1:] == ["  見出しが変わった：'a' → 'b'（2021）", used]

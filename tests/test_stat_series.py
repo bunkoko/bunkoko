@@ -16,12 +16,14 @@ from koten.stats.series import (
     SERIES_COLUMNS,
     SERIES_FILE,
     Break,
+    Join,
     Point,
     Series,
     SeriesError,
     check_sha,
     comparable,
     is_stale,
+    join_status,
     load_meta,
     meta_dir_for,
     owner_ok,
@@ -99,7 +101,8 @@ def env():
 
 
 def test_columns_and_files():
-    assert SERIES_COLUMNS[0] == "series_id" and len(SERIES_COLUMNS) == 23
+    assert SERIES_COLUMNS[0] == "series_id" and len(SERIES_COLUMNS) == 24
+    assert SERIES_COLUMNS.index("joins") == SERIES_COLUMNS.index("breaks") + 1
     assert POINTS_COLUMNS[-1] == "src_sha"
     assert SERIES_FILE == "stat_series.csv" and POINTS_FILE == "stat_points.csv"
 
@@ -707,6 +710,18 @@ def test_appid_in_any_field_is_refused_without_echoing_it(env):
     assert series_problems([row(note="KOTEN_ESTAT_APPID は Mac だけ")], [], **env) == []
 
 
+def test_check_sha_of_a_series_without_joins_is_the_same_as_before():
+    """joins の無い系列の sha は、joins を足す前（5e45418）の版で計算した値のまま（R44）。"""
+    s = series(breaks=(Break("2020", "郵送に変わった"),), period_kind="年度")
+    pts = [
+        point(period="2019", value="1,234", src_label="合計", src_unit="千人"),
+        point(period="2020", value="", mark="…", src_label="合計"),
+        point(period="2021", value="12.5", src_label="合 計", src_unit="千人"),
+    ]
+    assert check_sha(s, pts, META) == "1f734bbfab5dbcf6"
+    assert check_sha(s, pts, None) == "276d75dc10f59ebe"
+
+
 def test_check_sha_covers_period_kind_survey_publisher_and_src_unit():
     s = series()
     base = check_sha(s, [point(value="10")], None)
@@ -838,3 +853,233 @@ def test_other_leftovers_are_still_refused(text):
 
     with pytest.raises(SeriesError):
         parse_period_name(text)
+
+
+# --- 見出しの言い方だけが違う年の境（joins。R44） ----------------------------------------------
+
+OLD = "強い不安、悩み、ストレスを感じる事柄がある"
+NEW = "強い不安、悩み、ストレスとなっていると感じる事柄がある"
+
+
+def lpts(*labels, parts=None):
+    """2019 年からの年ごとの点。labels は src_label、parts は part（省くと全部 "0"）。"""
+    parts = parts or ["0"] * len(labels)
+    return [
+        point(period=str(2019 + i), src_label=lab, part=pt)
+        for i, (lab, pt) in enumerate(zip(labels, parts, strict=True))
+    ]
+
+
+def joined(*joins, **kw):
+    return series(joins=tuple(Join(*j) for j in joins), **kw)
+
+
+def test_a_join_keeps_one_segment_where_only_the_wording_changes():
+    pts = lpts(OLD, OLD, NEW, NEW)
+    assert segments(series(), pts) == {"2019": 0, "2020": 0, "2021": 1, "2022": 1}
+    s = joined(("2021", OLD, NEW, "両方の年の調査票で問いが同じ"))
+    assert segments(s, pts) == {"2019": 0, "2020": 0, "2021": 0, "2022": 0}
+    assert comparable(s, pts, "2019", "2022") == (True, "")
+
+
+def test_a_join_whose_to_does_not_match_still_splits():
+    pts = lpts(OLD, OLD, NEW, NEW)
+    s = joined(("2021", OLD, "別の言い方", "n"))
+    assert segments(s, pts) == {"2019": 0, "2020": 0, "2021": 1, "2022": 1}
+    s = joined(("2021", "別の言い方", NEW, "n"))
+    assert segments(s, pts) == {"2019": 0, "2020": 0, "2021": 1, "2022": 1}
+
+
+def test_a_join_never_cancels_a_crossed_break():
+    # 2020 の点が無く、2020 の区切りを 2021 の点でまたぐ
+    pts = [point(period="2019", src_label=OLD), point(period="2021", src_label=NEW)]
+    s = joined(("2021", OLD, NEW, "n"), breaks=(Break("2020", "郵送に変わった"),))
+    assert segments(s, pts) == {"2019": 0, "2021": 1}
+
+
+def test_a_join_never_cancels_an_unknown_part_boundary():
+    # 2021 は部分の境で、前の点の見出しが空（R32）。from・to は合っている
+    pts = lpts(OLD, "", NEW, parts=["0", "0", "1"])
+    s = joined(("2021", OLD, NEW, "n"))
+    assert segments(s, pts) == segments(series(), pts) == {"2019": 0, "2020": 0, "2021": 1}
+
+
+def test_a_join_cancels_only_its_own_year():
+    pts = lpts(OLD, NEW, NEW, "もっと別の言い方")
+    s = joined(("2020", OLD, NEW, "n"))
+    assert segments(s, pts) == {"2019": 0, "2020": 0, "2021": 0, "2022": 1}
+    # 境の年が違えば、つながない（before は、新しい言い方の最初の年そのもの）
+    assert segments(joined(("2021", OLD, NEW, "n")), pts) == {
+        "2019": 0, "2020": 1, "2021": 1, "2022": 2,
+    }  # fmt: skip
+
+
+def test_join_labels_are_compared_without_whitespace_and_width():
+    pts = [point(period="2020", src_label="合計注)"), point(period="2021", src_label="合　計")]
+    s = joined(("2021", "合計 注）", "合計", "注の印だけが違う"))
+    assert segments(s, pts) == {"2020": 0, "2021": 0}
+
+
+def test_join_from_is_the_last_non_empty_label():
+    # 間に見出しの空の点があっても、from は最後の空でない見出しと比べる（R32 でない、同じ部分）
+    pts = lpts(OLD, "", NEW)
+    s = joined(("2021", OLD, NEW, "n"))
+    assert segments(s, pts) == {"2019": 0, "2020": 0, "2021": 0}
+    assert join_status(s, pts) == [(s.joins[0], "")]
+
+
+def test_join_status_gives_each_reason_in_order():
+    def why(s, pts):
+        ((_, w),) = join_status(s, pts)
+        return w
+
+    pts = lpts(OLD, OLD, NEW, NEW)
+    assert why(joined(("2021", OLD, NEW, "n")), pts) == ""
+    assert why(joined(("2030", OLD, NEW, "n")), pts) == "その年の点が無い"
+    assert why(joined(("2019", OLD, NEW, "n")), pts) == "その年より前に点が無い"
+    gap = [point(period="2019", src_label=OLD), point(period="2021", src_label=NEW)]
+    brk = joined(("2021", OLD, NEW, "n"), breaks=(Break("2020", "x"),))
+    assert why(brk, gap) == "その年の前に区切り（breaks）がある"
+    # 区切りが先：from・to が違っていても区切りの理由
+    brk_bad = joined(("2021", "別", "別の2", "n"), breaks=(Break("2020", "x"),))
+    assert why(brk_bad, gap) == "その年の前に区切り（breaks）がある"
+    unknown = lpts(OLD, "", NEW, parts=["0", "0", "1"])
+    assert why(joined(("2021", OLD, NEW, "n")), unknown) == "見出しの分からない部分の境（R32）"
+    # 部分の境で、この年の見出しが空：R32 が先
+    empty_at_part = lpts(OLD, "", parts=["0", "1"])
+    r32 = "見出しの分からない部分の境（R32）"
+    assert why(joined(("2020", OLD, NEW, "n")), empty_at_part) == r32
+    assert why(joined(("2020", OLD, NEW, "n")), pts) == "見出しが変わっていない"
+    assert why(joined(("2020", OLD, NEW, "n")), lpts(OLD, "", NEW)) == "見出しが変わっていない"
+    # 前の見出しは、最後に空でない見出しを持っていた点の src_label のまま（label_key にしない）
+    stored = lpts("合 計 注)", "男女計")
+    assert why(joined(("2020", OLD, NEW, "n")), stored) == (
+        "見出しが from・to と違う（前 '合 計 注)'・この年 '男女計'）"
+    )
+    skipped = lpts("合 計", "", "男女計")
+    assert why(joined(("2021", OLD, NEW, "n")), skipped) == (
+        "見出しが from・to と違う（前 '合 計'・この年 '男女計'）"
+    )
+    # 前に空でない見出しが1つも無い（同じ部分）：区切らないが、つないでもいない
+    no_label_before = lpts("", NEW)
+    assert segments(joined(("2020", OLD, NEW, "n")), no_label_before) == {"2019": 0, "2020": 0}
+    assert why(joined(("2020", OLD, NEW, "n")), no_label_before) == (
+        f"見出しが from・to と違う（前 ''・この年 '{NEW}'）"
+    )
+
+
+def test_join_status_lists_every_join_in_order_and_agrees_with_segments():
+    pts = lpts(OLD, OLD, NEW, NEW, "最後の言い方")
+    s = joined(
+        ("2021", OLD, NEW, "a"), ("2022", OLD, NEW, "b"), ("2023", NEW, "最後の言い方", "c"),
+        ("1999", OLD, NEW, "d"),
+    )  # fmt: skip
+    got = join_status(s, pts)
+    assert [j.note for j, _ in got] == ["a", "b", "c", "d"]
+    assert [w for _, w in got] == ["", "見出しが変わっていない", "", "その年の点が無い"]
+    plain, seg = segments(series(), pts), segments(s, pts)
+    years = sorted(plain)
+    for j, w in got:
+        if j.before not in plain or j.before == years[0]:
+            continue
+        before = years[years.index(j.before) - 1]
+        cancelled = plain[j.before] > plain[before] and seg[j.before] == seg[before]
+        assert cancelled == (w == ""), j
+
+
+def test_join_status_without_joins_is_empty():
+    assert join_status(series(), lpts(OLD, NEW)) == []
+
+
+def jrow(joins, **kw):
+    text = joins if isinstance(joins, str) else json.dumps(joins, ensure_ascii=False)
+    return row(joins=text, **kw)
+
+
+GOOD_JOIN = {"before": "2021", "from": OLD, "to": NEW, "note": "両方の年の調査票で問いが同じ"}
+
+
+def test_good_joins_have_no_problems(env):
+    assert series_problems([jrow([GOOD_JOIN])], [], **env) == []
+    assert series_problems([jrow("")], [], **env) == []
+    assert series_problems([jrow("[]")], [], **env) == []
+    two = [GOOD_JOIN, {**GOOD_JOIN, "before": "2023", "from": NEW, "to": "最後の言い方"}]
+    assert series_problems([jrow(two, breaks='[{"before":"2020","note":"x"}]')], [], **env) == []
+
+
+@pytest.mark.parametrize("bad", ["oops", '{"before": "2021"}', '"2021"'])
+def test_joins_must_be_a_json_list(env, bad):
+    probs = series_problems([jrow(bad)], [], **env)
+    assert probs == [
+        'stat_series.csv 2行目：joins は [{"before":"YYYY","from":"…","to":"…","note":"…"}] の JSON'
+    ]
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        "2021", None, ["2021"],
+        {**GOOD_JOIN, "before": "21"}, {**GOOD_JOIN, "before": "２０２１"},
+        {k: v for k, v in GOOD_JOIN.items() if k != "before"},
+        {**GOOD_JOIN, "from": ""}, {**GOOD_JOIN, "to": " 　"}, {**GOOD_JOIN, "note": " "},
+        {k: v for k, v in GOOD_JOIN.items() if k != "note"},
+        {**GOOD_JOIN, "from": None}, {**GOOD_JOIN, "note": 5},
+    ],
+)  # fmt: skip
+def test_each_join_needs_a_year_and_non_empty_texts(env, item):
+    probs = series_problems([jrow([GOOD_JOIN, item, item])], [], **env)
+    want = (
+        "stat_series.csv 2行目：joins の各項目は before（YYYY）と、空でない from・to・note が要る"
+    )
+    assert probs.count(want) == 1, probs  # 1行に1回
+
+
+def test_join_problems_same_wording_twice_and_on_a_break(env):
+    same = {**GOOD_JOIN, "from": "合　計", "to": "合計"}
+    probs = series_problems([jrow([same])], [], **env)
+    assert probs == [
+        "stat_series.csv 2行目：joins の 2021 は from と to が同じ"
+        "（空白と全角・半角の違いは、つながなくても同じ見出し。R41）"
+    ]
+    width = {**GOOD_JOIN, "from": "(%)", "to": "（％）"}
+    assert has(series_problems([jrow([width])], [], **env), "joins の 2021 は from と to が同じ")
+    twice = [GOOD_JOIN, {**GOOD_JOIN, "from": NEW, "to": OLD}, GOOD_JOIN]
+    probs = series_problems([jrow(twice)], [], **env)
+    assert probs == ["stat_series.csv 2行目：joins の 2021 が2つある"]
+    on_break = jrow([GOOD_JOIN], breaks='[{"before":"2021","note":"郵送に変わった"}]')
+    assert series_problems([on_break], [], **env) == [
+        "stat_series.csv 2行目：joins の 2021 は breaks にもある（区切りの年はつながない）"
+    ]
+
+
+def test_parse_reads_joins_leniently():
+    s = parse_series([jrow([GOOD_JOIN, "x", 3, {"before": "2022"}])])[0]
+    good = Join("2021", OLD, NEW, "両方の年の調査票で問いが同じ")
+    assert s.joins == (good, Join("2022", "", "", ""))
+    assert parse_series([jrow("oops")])[0].joins == ()
+    assert parse_series([jrow("")])[0].joins == ()
+    no_column = {k: v for k, v in row().items() if k != "joins"}
+    assert parse_series([no_column])[0].joins == ()
+
+
+def test_series_from_draft_passes_the_joins_list_on():
+    from koten.stats.report import series_from_draft
+
+    item = {**row(), "themes": ["仕事"], "selector": API_SELECTOR, "joins": [GOOD_JOIN]}
+    assert series_from_draft(item).joins == (
+        Join("2021", OLD, NEW, "両方の年の調査票で問いが同じ"),
+    )
+    assert series_from_draft({**item, "joins": []}).joins == ()
+    assert series_from_draft({k: v for k, v in item.items() if k != "joins"}).joins == ()
+
+
+def test_check_sha_covers_the_joins():
+    pts = lpts(OLD, NEW)
+    base = check_sha(series(), pts, META)
+    one = joined(("2020", OLD, NEW, "根拠"))
+    assert check_sha(one, pts, META) != base
+    note = joined(("2020", OLD, NEW, "別の根拠"))
+    assert check_sha(note, pts, META) != check_sha(one, pts, META)
+    for other in (("2021", OLD, NEW, "根拠"), ("2020", OLD + "。", NEW, "根拠"),
+                  ("2020", OLD, NEW + "。", "根拠")):  # fmt: skip
+        assert check_sha(joined(other), pts, META) != check_sha(one, pts, META)

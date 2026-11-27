@@ -28,7 +28,7 @@ from koten.worries.master import keyword_block
 
 SERIES_COLUMNS = [
     "series_id", "themes", "label", "unit", "survey", "publisher", "source_kind",
-    "period_kind", "selector", "table_title", "url", "latest_known", "breaks",
+    "period_kind", "selector", "table_title", "url", "latest_known", "breaks", "joins",
     "trend", "trend_from", "trend_to", "trend_note", "status", "checked_by",
     "checked_at", "checked_sha", "where", "note",
 ]  # fmt: skip
@@ -117,6 +117,17 @@ class Break:
 
 
 @dataclass(frozen=True)
+class Join:
+    """見出しの言い方だけが違う年の境（R44）。before の年で、見出しが from から to に変わっても、
+    同じ問いなので区切らない。note は同じ問いである根拠。"""
+
+    before: str
+    from_label: str
+    to_label: str
+    note: str
+
+
+@dataclass(frozen=True)
 class Series:
     series_id: str
     themes: tuple[str, ...]
@@ -131,6 +142,7 @@ class Series:
     url: str
     latest_known: str
     breaks: tuple[Break, ...]
+    joins: tuple[Join, ...]
     trend: str
     trend_from: str
     trend_to: str
@@ -390,6 +402,48 @@ def _selector_problems(kind: str, sel: Any) -> list[str]:
     return out
 
 
+_JOIN_TEXTS = ("from", "to", "note")  # joins の項目の、空でない文字が要る鍵
+
+
+def _join_problems(cell: str, breaks_cell: str) -> list[str]:
+    """joins の欄（JSON）の問題（R44）。文の前に行の名前を付けて使う。
+
+    形の問題（オブジェクトでない・before が YYYY でない・from・to・note が空か文字でない）は
+    1行に1回。from と to が同じ見出し（label_key）・同じ before が2つ・breaks と同じ年は年ごと。"""
+    items = _json_or_none(cell)
+    if not isinstance(items, list):
+        return ['joins は [{"before":"YYYY","from":"…","to":"…","note":"…"}] の JSON']
+    br = _json_or_none(breaks_cell)
+    br = br if isinstance(br, list) else []
+    break_years = {str(b.get("before", "")) for b in br if isinstance(b, dict)}
+    out: list[str] = []
+    bad_shape = False
+    seen: set[str] = set()
+    twice: set[str] = set()
+    for j in items:
+        if not (
+            isinstance(j, dict)
+            and _YEAR_RE.fullmatch(str(j.get("before", "")))
+            and all(isinstance(j.get(k), str) and j[k].strip() for k in _JOIN_TEXTS)
+        ):
+            bad_shape = True
+            continue
+        before = str(j["before"])
+        if label_key(j["from"]) == label_key(j["to"]):
+            out.append(
+                f"joins の {before} は from と to が同じ"
+                "（空白と全角・半角の違いは、つながなくても同じ見出し。R41）"
+            )
+        if before in seen and before not in twice:
+            twice.add(before)
+            out.append(f"joins の {before} が2つある")
+        seen.add(before)
+        if before in break_years:
+            out.append(f"joins の {before} は breaks にもある（区切りの年はつながない）")
+    shape = "joins の各項目は before（YYYY）と、空でない from・to・note が要る"
+    return [shape, *out] if bad_shape else out
+
+
 def series_problems(
     series_rows: list[dict[str, str]],
     point_rows: list[dict[str, str]],
@@ -528,6 +582,8 @@ def series_problems(
                     if not ok or not str(b.get("note", "")).strip():
                         out.append(f"{p}breaks の各項目は before（YYYY）と空でない note が要る")
                         break
+        if r.get("joins", "").strip():
+            out += [f"{p}{m}" for m in _join_problems(r["joins"], r.get("breaks", ""))]
         trend = r.get("trend", "").strip()
         if trend:
             if trend not in TRENDS:
@@ -595,10 +651,17 @@ def parse_series(rows: list[dict[str, str]]) -> list[Series]:
             for b in br:
                 if isinstance(b, dict):
                     breaks.append(Break(str(b.get("before", "")), str(b.get("note", ""))))
+        jn = _json_or_none(r.get("joins", ""))
+        joins: list[Join] = []
+        if isinstance(jn, list):  # breaks と同じに寛容に（オブジェクトでない項目は飛ばす）
+            for j in jn:
+                if isinstance(j, dict):
+                    joins.append(Join(*(str(j.get(k, "")) for k in ("before", *_JOIN_TEXTS))))
         vals: dict[str, Any] = {c: r.get(c, "").strip() for c in SERIES_COLUMNS}
         vals["themes"] = tuple(t.strip() for t in r.get("themes", "").split(";") if t.strip())
         vals["selector"] = sel if isinstance(sel, dict) else {}
         vals["breaks"] = tuple(breaks)
+        vals["joins"] = tuple(joins)
         out.append(Series(**vals))
     return out
 
@@ -855,6 +918,50 @@ def label_key(text: str) -> str:
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text or ""))
 
 
+def _walk(s: Series, points: list[Point]) -> tuple[dict[str, int], list[str]]:
+    """segments と join_status の1回の歩き：(period → 区切りの番号, s.joins ごとの理由)。
+
+    理由は、その joins がその年の見出しの食い違いを消したら ""、消さなかったらそのわけ。"""
+    seg: dict[str, int] = {}
+    why = ["その年の点が無い"] * len(s.joins)
+    cur = 0
+    prev: Point | None = None
+    last_label = last_src = ""  # 最後の空でない見出し（比べる形と、台帳のままの文字）
+    for p in _by_period(points):
+        key = label_key(p.src_label)
+        mine = [i for i, j in enumerate(s.joins) if j.before == p.period]
+        if prev is None:
+            for i in mine:
+                why[i] = "その年より前に点が無い"
+        else:
+            crossed = any(prev.period < b.before <= p.period for b in s.breaks)
+            drift = bool(key and last_label and key != last_label)
+            prev_key = label_key(prev.src_label)
+            unknown = p.part.strip() != prev.part.strip() and not (key and prev_key)
+            joined = False
+            for i in mine:
+                j = s.joins[i]
+                pair = (label_key(j.from_label), label_key(j.to_label))
+                if crossed:
+                    why[i] = "その年の前に区切り（breaks）がある"
+                elif unknown:
+                    why[i] = "見出しの分からない部分の境（R32）"
+                elif not key or key == last_label:
+                    why[i] = "見出しが変わっていない"
+                elif drift and pair == (last_label, key):
+                    why[i] = ""
+                    joined = True
+                else:
+                    why[i] = f"見出しが from・to と違う（前 {last_src!r}・この年 {p.src_label!r}）"
+            if crossed or unknown or (drift and not joined):
+                cur += 1
+        if key:
+            last_label, last_src = key, p.src_label
+        seg[p.period] = cur
+        prev = p
+    return seg, why
+
+
 def segments(s: Series, points: list[Point]) -> dict[str, int]:
     """period → 区切りの番号（0 から）。
 
@@ -864,25 +971,24 @@ def segments(s: Series, points: list[Point]) -> dict[str, int]:
     部分の src_label が空なら、比べられるか分からないので、そこでも番号を進める（R32）。
     src_label は label_key（NFKC・空白を除く）で比べる（R41）。
     1つの部分の中は変えない（API の点は part が空で、部分の境が無い）。
+    joins（R44）：before がこの点の年で、from が最後の空でない src_label と、to がこの点の
+    src_label と同じ（label_key）joins があれば、その見出しの食い違いでは進めない（同じ問いの
+    言い方だけの違い）。breaks をまたぐところと R32 のところは、joins があっても進める。
+    joins が消すのはその年の食い違いだけ（あとの年の食い違いは今までどおり区切る）。
     """
-    seg: dict[str, int] = {}
-    cur = 0
-    prev: Point | None = None
-    last_label = ""
-    for p in _by_period(points):
-        key = label_key(p.src_label)
-        if prev is not None:
-            crossed = any(prev.period < b.before <= p.period for b in s.breaks)
-            drift = bool(key and last_label and key != last_label)
-            prev_key = label_key(prev.src_label)
-            unknown = p.part.strip() != prev.part.strip() and not (key and prev_key)
-            if crossed or drift or unknown:
-                cur += 1
-        if key:
-            last_label = key
-        seg[p.period] = cur
-        prev = p
-    return seg
+    return _walk(s, points)[0]
+
+
+def join_status(s: Series, points: list[Point]) -> list[tuple[Join, str]]:
+    """s.joins の1つずつに、segments でその年の見出しの食い違いを消したら ""、消さなかったら
+    そのわけ（R44。並びは s.joins のまま）。
+
+    わけは次の順に、最初に当たったもの：その年の点が無い・その年より前に点が無い・その年の前に
+    区切り（breaks）がある・見出しの分からない部分の境（R32）・見出しが変わっていない（この年の
+    見出しが空か、最後の空でない見出しと同じ）・見出しが from・to と違う（前の見出しは、最後の
+    空でない見出しの点の src_label のまま）。segments と同じ1回の歩きで決める。
+    """
+    return list(zip(s.joins, _walk(s, points)[1], strict=True))
 
 
 def comparable(s: Series, points: list[Point], a: str, b: str) -> tuple[bool, str]:
@@ -955,27 +1061,27 @@ def is_stale(s: Series, points: list[Point]) -> bool:
 
 
 def check_sha(s: Series, points: list[Point], meta: dict | None) -> str:
-    """人が確かめた内容の指紋。数・名前・区切り・単位のどれかが変われば変わる。
+    """人が確かめた内容の指紋。数・名前・区切り・単位・つないだ境のどれかが変われば変わる。
 
     カードに出る年か年度か（period_kind）・調査名・作成機関・点の単位（src_unit）も入れる。
+    joins（R44）は、あるときだけ入れる（joins の無い系列の指紋は、joins を足す前と同じ）。
     """
     meta_names = [meta.get("title"), meta.get("chosen")] if meta is not None else None
-    body = json.dumps(
-        [
-            s.label,
-            s.unit,
-            s.selector,
-            meta_names,
-            sorted((p.period, p.value, p.mark, p.src_label, p.src_unit) for p in points),
-            [(b.before, b.note) for b in s.breaks],
-            s.period_kind,
-            s.survey,
-            s.publisher,
-        ],
-        ensure_ascii=False,
-        sort_keys=True,
-    )
-    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+    body: list[Any] = [
+        s.label,
+        s.unit,
+        s.selector,
+        meta_names,
+        sorted((p.period, p.value, p.mark, p.src_label, p.src_unit) for p in points),
+        [(b.before, b.note) for b in s.breaks],
+        s.period_kind,
+        s.survey,
+        s.publisher,
+    ]
+    if s.joins:
+        body.append([(j.before, j.from_label, j.to_label, j.note) for j in s.joins])
+    text = json.dumps(body, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def owner_ok(s: Series, sha: str) -> bool:

@@ -15,6 +15,7 @@
 
     {k, kind, v: "ok" か "ng", at（押した時刻。ミリ秒）, note,
      fix: {人が直した列}, trend: 増え方も確かめたか,
+     joins: つないだ境（統計の系列）の根拠も読んで、同じ問いだと確かめたか,
      read: 本文の結果の節で確かめたか, retr: 取り下げ・訂正を確かめたか,
      terms: 引用の決まりを読んだか, entry: {人が書いた列}}
 
@@ -66,6 +67,7 @@ from koten.stats.series import (
     fetched_parts,
     has_app_id,
     join_note,
+    join_status,
     load_meta,
     meta_dir_for,
     norm_unit,
@@ -599,8 +601,11 @@ def _source_words(
 
 
 def _point_rows(item: dict[str, Any], points: list[Point]) -> list[dict[str, Any]]:
+    """年ごとの数の行。gap は抜けた年、brk は区切りの始まり、join はつないだ境の年（R44。
+    見出しの言い方だけが違い、区切らない）。"""
     s = series_from_draft(item)
     seg = segments(s, points)
+    joined = {j.before for j, why in join_status(s, points) if not why}
     out: list[dict[str, Any]] = []
     prev: Point | None = None
     for p in sorted(points, key=lambda p: p.period):
@@ -608,7 +613,7 @@ def _point_rows(item: dict[str, Any], points: list[Point]) -> list[dict[str, Any
             for y in range(int(prev.period) + 1, min(int(p.period), int(prev.period) + 200)):
                 out.append({"period": f"{y:04d}", "label": period_label(f"{y:04d}", s.period_kind),
                             "value": "", "mark": "", "gap": True, "segment": seg[prev.period],
-                            "brk": False})  # fmt: skip
+                            "brk": False, "join": False})  # fmt: skip
         out.append(
             {
                 "period": p.period,
@@ -618,6 +623,7 @@ def _point_rows(item: dict[str, Any], points: list[Point]) -> list[dict[str, Any
                 "gap": False,
                 "segment": seg[p.period],
                 "brk": prev is not None and seg[p.period] > seg[prev.period],
+                "join": p.period in joined,
             }
         )
         prev = p
@@ -659,6 +665,18 @@ def _series_item(
         "has_numbers": _newest_numeric(points) is not None,
         "points": _point_rows(d, points),
         "breaks": [{"before": b.before, "note": b.note} for b in s.breaks],
+        # つないだ境（R44）。used はカードの数で区切りを消したか、why は消さなかったわけ
+        "joins": [
+            {
+                "before": j.before,
+                "from": j.from_label,
+                "to": j.to_label,
+                "note": j.note,
+                "used": not why,
+                "why": why,
+            }
+            for j, why in join_status(s, points)
+        ],
         "excerpt": excerpt(d) if excerpt and s.source_kind == "estat_file" else None,
         "trend": s.trend if ok_trend else "",
         "trend_from": s.trend_from if ok_trend else "",
@@ -822,6 +840,8 @@ class MergeResult:
     series_label_kept: list[str] = field(default_factory=list)
     # 台帳の系列に「違う」が押されて、保留にした
     series_held: list[str] = field(default_factory=list)
+    # 人が確かめた系列で、つないだ境の「確かめた」に印が無かった（joins を外して入れた。R44）
+    series_joins_dropped: list[str] = field(default_factory=list)
 
 
 def _day(at: Any) -> str:
@@ -922,6 +942,12 @@ def _series_cell(col: str, v: Any) -> str:
     return "" if v is None else _text(v) if col != "selector" else str(v)
 
 
+def _joins_unticked(d: dict[str, Any], c: dict[str, Any]) -> bool:
+    """つないだ境（joins）のある系列で、「つないだ境の根拠も読んで、同じ問いだと確かめた」に
+    印が無い（人の行は joins を外して入れる。R44）。"""
+    return bool(series_from_draft(d).joins) and not c.get("joins")
+
+
 def _series_row(
     d: dict[str, Any], c: dict[str, Any], *, by: str, day: str, old: dict[str, str] | None
 ) -> dict[str, str]:
@@ -930,12 +956,17 @@ def _series_row(
     status は台帳の行のまま（保留の系列は、「合っている」でも保留のまま。L9）。
     note は台帳の note を残し、うしろに足す（人が押した行は押したときのメモ、無ければ下書きの
     note。AI の行は下書きの note）。オーナーの「違う」・保留の理由を消さない。同じ文は1回だけ
-    （join_note。N2・M1）。"""
+    （join_note。N2・M1）。
+    つないだ境（joins）は、人の行では、つないだ境の「確かめた」に印があるときだけ残す（無ければ
+    つながずに入れ、増え方と check_sha も joins を外したあとで決める）。AI の行は下書きのまま
+    （R44）。"""
     row = {col: _series_cell(col, d.get(col, "")) for col in SERIES_COLUMNS}
     fix = c.get("fix") or {}
     if _text(fix.get("label")):
         row["label"] = _text(fix["label"])
     human = by == CHECKER
+    if human and _joins_unticked(d, c):
+        row["joins"] = ""
     s = series_from_draft(row)
     if not (human and c.get("trend") and verify_trend(s, _points_of(d))[0]):
         for col in ("trend", "trend_from", "trend_to", "trend_note"):
@@ -951,13 +982,14 @@ def _series_row(
     return row
 
 
-# 部分を足した・直した下書き（growth）から台帳に取る欄（R28）。ほかは台帳の行のまま。
+# 部分を足した・直した下書き（growth）から台帳に取る欄（R28・R44）。ほかは台帳の行のまま。
 # note は置き換えず、台帳の note に足す（保留・「違う」の理由を残す。N2・join_note）
-GROWTH_FROM_DRAFT = ("selector", "latest_known", "breaks", "where")
+GROWTH_FROM_DRAFT = ("selector", "latest_known", "breaks", "joins", "where")
 
 
 def _grown_row(prev: dict[str, str], d: dict[str, Any], *, day: str) -> dict[str, str]:
-    """growth の行：台帳の行に、下書きの selector・latest_known・breaks・where を当て、note を足す。
+    """growth の行：台帳の行に、下書きの selector・latest_known・breaks・joins・where を当て、
+    note を足す。
 
     label（オーナーが直した言い方）・themes・unit・survey・publisher・table_title・period_kind・
     url・status は台帳のまま。note は台帳の note のうしろに下書きの note を足す（N2）。
@@ -1051,7 +1083,10 @@ def merge_checks(
     - 人が確かめた行を、AI が確かめた行で上書きしない。ただし統計の系列で部分を足した・直した
       下書き（growth）は、accept_rest のとき人の行も AI の行に戻して入れる（series_downgraded。
       人は前の部分の数だけを確かめたので）。growth で下書きから取るのは selector・
-      latest_known・breaks・where だけ（label などは台帳のまま。R28）
+      latest_known・breaks・joins・where だけ（label などは台帳のまま。R28）
+    - つないだ境（joins。R44）：人が「合っている」を押した系列は、つないだ境の「確かめた」にも
+      印があるときだけ joins を残す。印が無ければ joins を外して入れる（series_joins_dropped。
+      増え方と check_sha も外したあとで決める）。AI の行（accept_rest）は下書きの joins のまま
     - note は足すだけ（台帳の note を残し、まだ無い文をうしろに「 ／ 」で足す。join_note）：
       AI の行は下書きの note、オーナーが押した行は押したときのメモ（無ければ下書きの note）。
       オーナーの「違う」・保留の理由を消さない（N2・M1）
@@ -1191,6 +1226,8 @@ def merge_checks(
             new_series.append(
                 _series_row(d, c, by=CHECKER, day=day, old=ledger_series.get(d["series_id"]))
             )
+            if _joins_unticked(d, c):  # つないだ境は外して入れた（R44）
+                res.series_joins_dropped.append(d["series_id"])
         elif kind == "stat":
             new_stats.append(_stat_row(d, c, from_lead=False, by=CHECKER, day=day))
             if d.get("replaces"):

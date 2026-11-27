@@ -2173,3 +2173,148 @@ def test_notes_use_one_separator_and_old_notes_still_dedupe(sconf):
     _write_ledger(sconf, read_point_rows(sconf), rows)
     merge_checks(_sdrafts({**FILE_SERIES, "note": "表1 の計を読む"}), {}, sconf, accept_rest=True)
     assert _file_row(sconf)["note"] == old_form
+
+
+# --- 見出しの言い方だけが違う年の境（joins。R44） ----------------------------------------------
+
+JOINS = [{"before": "2021", "from": "計", "to": "総数", "note": "両方の年の調査票で問いが同じ"}]
+JOINED = {**API_SERIES, "joins": JOINS}
+
+
+def _joined_ledger(config_dir, points=None, **kw):
+    """2021 年から見出しが「計」→「総数」に変わる。台帳の行は AI の行（joins つき）。"""
+    if points is None:
+        points = [_prow(period="2019", value="10"), _prow(period="2020", value="11"),
+                  _prow(period="2021", value="12", src_label="総数")]  # fmt: skip
+    _write_ledger(
+        config_dir, points, [_srow(JOINED, checked_by=AI_CHECKER, checked_at="2026-11-01", **kw)]
+    )
+
+
+def _owner_ok_in_the_ssd(config_dir):
+    from koten.db import connect, load_series
+
+    conn = connect(config_dir.parent / "ssd")
+    load_series(conn, config_dir, config_dir.parent / "docs" / "estat")
+    return conn.execute("SELECT owner_ok FROM stat_series").fetchone()[0]
+
+
+def test_series_card_lists_the_joins_and_marks_the_joined_year(sconf):
+    _joined_ledger(sconf)
+    other = {"before": "2020", "from": "計", "to": "別の言い方", "note": "n"}
+    it = page_items(with_series_data(_sdrafts({**JOINED, "joins": [*JOINS, other]}), sconf))[0]
+    assert it["joins"] == [
+        {**JOINS[0], "used": True, "why": ""},
+        {**other, "used": False, "why": "見出しが変わっていない"},
+    ]
+    assert [(p["period"], p["join"], p["brk"]) for p in it["points"]] == [
+        ("2019", False, False), ("2020", False, False), ("2021", True, False),
+    ]  # fmt: skip
+    # つながない下書きでは、2021 は区切り（brk）で、join ではない
+    plain = page_items(with_series_data(_sdrafts(API_SERIES), sconf))[0]
+    assert plain["joins"] == [] and (plain["points"][-1]["join"], plain["points"][-1]["brk"]) == (
+        False, True,
+    )  # fmt: skip
+    # 抜けた年の行は join でも brk でもない
+    _joined_ledger(sconf, [_prow(period="2019"), _prow(period="2021", src_label="総数")])
+    rows = page_items(with_series_data(_sdrafts(JOINED), sconf))[0]["points"]
+    assert [(p["period"], p["gap"], p["join"], p["brk"]) for p in rows] == [
+        ("2019", False, False, False), ("2020", True, False, False), ("2021", False, True, False),
+    ]  # fmt: skip
+
+
+def test_card_of_a_series_without_points_says_the_year_has_no_point(sconf):
+    item = {**JOINED, "series_id": "new_rate"}
+    it = page_items(with_series_data(_sdrafts(item), sconf))[0]
+    assert it["joins"] == [{**JOINS[0], "used": False, "why": "その年の点が無い"}]
+
+
+def test_owner_ok_with_the_joins_tick_keeps_the_joins_and_their_sha(sconf):
+    _joined_ledger(sconf)
+    key = _skey(sconf, JOINED)
+    tap = {"v": "ok", "at": _at(), "trend": True, "joins": True}
+    res = merge_checks(_sdrafts(JOINED), {key: tap}, sconf)
+    assert res.series_added == ["work_rate"] and res.series_joins_dropped == []
+    row = _series_file(sconf)[0]
+    assert json.loads(row["joins"]) == JOINS and row["checked_by"] == HUMAN_CHECKER
+    # つないだので 2019〜2021 は1つの区切り。増え方も入る
+    assert (row["trend"], row["trend_from"], row["trend_to"]) == ("増加", "2019", "2021")
+    pts = parse_points(read_point_rows(sconf))
+    want = check_sha(series_from_draft(JOINED), pts, API_META)
+    assert row["checked_sha"] == want != check_sha(series_from_draft(API_SERIES), pts, API_META)
+    assert _owner_ok_in_the_ssd(sconf) == 1
+
+
+def test_owner_ok_without_the_joins_tick_writes_the_row_without_joins(sconf):
+    _joined_ledger(sconf)
+    key = _skey(sconf, JOINED)
+    res = merge_checks(_sdrafts(JOINED), {key: {"v": "ok", "at": _at(), "trend": True}}, sconf)
+    assert res.series_added == ["work_rate"] and res.series_joins_dropped == ["work_rate"]
+    row = _series_file(sconf)[0]
+    assert row["joins"] == "" and row["checked_by"] == HUMAN_CHECKER
+    # つながないと 2021 で区切るので、増え方の印があっても入らない
+    assert row["trend"] == "" and row["trend_from"] == ""
+    pts = parse_points(read_point_rows(sconf))
+    assert row["checked_sha"] == check_sha(series_from_draft(API_SERIES), pts, API_META)
+    assert _owner_ok_in_the_ssd(sconf) == 1
+
+
+def test_ai_rows_keep_the_draft_joins(sconf):
+    res = merge_checks(_sdrafts(JOINED), {}, sconf, accept_rest=True)
+    assert res.series_ai == ["work_rate"] and res.series_joins_dropped == []
+    row = _series_file(sconf)[0]
+    assert json.loads(row["joins"]) == JOINS and row["checked_by"] == AI_CHECKER
+
+
+def test_growth_takes_the_joins_from_the_draft(sconf):
+    joins = [{"before": "2020", "from": "計", "to": "総数", "note": "n"}]
+    _growth_ledger(sconf, HUMAN_CHECKER)
+    res = merge_checks(_sdrafts(_grown(joins=joins)), {}, sconf, accept_rest=True)
+    assert res.series_ai == ["file_rate"] and res.series_downgraded == ["file_rate"]
+    assert json.loads(_file_row(sconf)["joins"]) == joins
+
+
+def test_todo_merge_drops_or_keeps_the_ledger_joins_by_the_tick(sconf):
+    todo = {"episode_id": "E1", "series": ["work_rate"]}
+    for tap, dropped in (({}, ["work_rate"]), ({"joins": True}, [])):
+        _joined_ledger(sconf)
+        it = page_items(todo_drafts(_sdrafts(), todo, sconf))[0]
+        assert it["joins"][0]["used"] is True
+        checks = {it["k"]: {"v": "ok", "at": _at(), **tap}}
+        res = merge_checks(todo_drafts(_sdrafts(), todo, sconf), checks, sconf)
+        assert res.series_added == ["work_rate"] and res.series_joins_dropped == dropped
+        row = _series_file(sconf)[0]
+        assert (json.loads(row["joins"]) if row["joins"] else []) == ([] if dropped else JOINS)
+        assert _owner_ok_in_the_ssd(sconf) == 1
+
+
+def test_cli_merge_says_the_joins_were_not_taken_in(sconf, tmp_path):
+    _joined_ledger(sconf)
+    drafts = tmp_path / "d.json"
+    drafts.write_text(json.dumps(_sdrafts(JOINED), ensure_ascii=False), "utf-8")
+    checks = tmp_path / "c.json"
+    checks.write_text(json.dumps({_skey(sconf, JOINED): {"v": "ok", "at": _at()}}), "utf-8")
+    shutil.copy(DEFAULT_CONFIG_DIR / "sources.yaml", sconf / "sources.yaml")
+    settings = sconf / "s.toml"
+    settings.write_text("[paths]\n", "utf-8")
+    res = CliRunner().invoke(
+        app,
+        ["sources", "merge", "--drafts", str(drafts), "--from", str(checks),
+         "--settings", str(settings)],
+    )  # fmt: skip
+    assert res.exit_code == 0, res.output
+    assert "つないだ境の「確かめた」に印が無いので、つながずに入れた：work_rate" in res.output
+
+
+def test_page_marks_the_joined_year_and_asks_for_the_joins_tick():
+    html = build_page({"made": "", "stats": [], "findings": [], "leads": [], "series": []})
+    table = html.split("function pointTable")[1].split("\nfunction ")[0]
+    assert "▲ここから見出しの言い方が変わる（同じ問いとしてつないだ）" in table
+    assert ".ptable tr.join td" in html
+    body = html.split("function cardSeries")[1].split("\nfunction ")[0]
+    assert "同じ問いとしてつないだ境（見出しの言い方だけが違う年）" in body
+    assert "根拠：" in body and "使っていない：" in body
+    assert 'tick(it, "joins", "つないだ境の根拠も読んで、同じ問いだと確かめた")' in body
+    assert "j.used" in body  # 使ったつなぎがあるときだけ、印を出す
+    answer = html.split("function answer")[1].split("\nfunction ")[0]
+    assert "doc.joins = !!f.joins" in answer

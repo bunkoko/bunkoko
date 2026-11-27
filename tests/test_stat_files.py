@@ -31,6 +31,7 @@ def make_series(parts: list[dict], period_kind: str = "年") -> Series:
         url="",
         latest_known="",
         breaks=(),
+        joins=(),
         trend="",
         trend_from="",
         trend_to="",
@@ -809,6 +810,29 @@ def test_part_name_survives_a_reused_grid(tmp_path):
     ],
 )
 def test_r43_text_last_section_and_optional_decimals(tmp_path, value, fmt, want):
+    assert _render(value, fmt) == want
+    fmts = {"A1": fmt}
+    for g in (
+        read_grid(write_xlsx(tmp_path / "a.bin", [[value]], fmts=fmts), "表1"),
+        read_grid(write_xls(tmp_path / "b.bin", [[value]], fmts=fmts), "表1"),
+    ):
+        assert g == [[want]]
+
+
+@pytest.mark.parametrize(
+    "value,fmt,want",
+    [
+        # 「?」も数の桁（0・# と同じ）。「?」だけの区画も数として読む（読めずに点が抜けない）
+        (12, "???", "12"),
+        (-5, "0;(???)", "-5"),
+        (-2.25, "??.?;@", "-2.3"),
+        # 0 は今までどおり：「???」は何も出さない（「###」と同じ）。会計の書式の 0 の区画
+        # 「"-"??」は、桁が空白になり - だけが見える（印になる）
+        (0, "???", ""),
+        (0, ACCOUNTING_2, "-"),
+    ],
+)
+def test_question_mark_is_a_digit_placeholder(tmp_path, value, fmt, want):
     assert _render(value, fmt) == want
     fmts = {"A1": fmt}
     for g in (

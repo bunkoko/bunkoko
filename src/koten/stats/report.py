@@ -12,6 +12,7 @@ from koten.stats.series import (
     SERIES_COLUMNS,
     Point,
     Series,
+    join_status,
     label_key,
     parse_points,
     parse_series,
@@ -111,7 +112,9 @@ def report_lines(
     lapsed: bool = False,
     labels: list[str] | None = None,
 ) -> list[str]:
-    """系列1つ分の報告。1行目が要約、続きが気をつける点。"""
+    """系列1つ分の報告。1行目が要約、続きが気をつける点。
+
+    区切りの区間の数は、つないだ境（joins。R44）を当てたあと。使ったつなぎは1つずつ出す。"""
     seg = segments(s, points)
     head = [
         f"{len(points)} 点",
@@ -135,6 +138,10 @@ def report_lines(
         lines.append("  消えた年：" + "・".join(removed))
     for x in labels or []:
         lines.append(f"  見出しが変わった：{x}")
+    for j, why in join_status(s, points):  # 使われなかった境は、CLI が黄色で出す
+        if not why:
+            pair = f"{j.from_label!r} → {j.to_label!r}"
+            lines.append(f"  つないだ境（同じ問い）：{j.before}（{pair}）")
     if lapsed:
         lines.append("  オーナーの確かめが外れる（数・名前・表の情報が前の確かめと違う）")
     return lines
@@ -143,7 +150,7 @@ def report_lines(
 def series_from_draft(item: Mapping[str, Any]) -> Series:
     """下書きの series の1件を、台帳の1行と同じ形にして Series にする。
 
-    下書きでは themes が配列、selector・breaks が JSON の値のままでもよい。
+    下書きでは themes が配列、selector・breaks・joins が JSON の値のままでもよい。
     """
     row: dict[str, str] = {}
     for c in SERIES_COLUMNS:

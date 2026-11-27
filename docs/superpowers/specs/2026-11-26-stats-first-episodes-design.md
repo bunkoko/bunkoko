@@ -127,6 +127,7 @@ series_id、period（YYYY）、value（元の文字のまま。`,` を除いて�
 
 ### 5.5 SSD で計算する値（db init）
 - segment：比べてよい区切り。breaks の年と、ファイルの見出しの文字が前の年と違う年で区切る。
+  （2026-11-27：オーナーの決め。見出しの言い方だけが違う年の境は、下書きの joins に両方の言い方と同じ問いである根拠を書けば区切らない。区切り（breaks）と見出しの分からない部分の境は今までどおり。見直し役が根拠を確かめ、オーナーがカードで確かめる。R44）
 - value_num：数（mark のときは NULL。0 にしない）。period_label：「2004年」「2004年度」。
 - latest_period、stale（latest_period が latest_known より古い）。
 - check_sha：label・unit・selector・表の情報と分類の名前・数と mark・breaks から作る。owner_ok：checked_by が「オーナー」かつ checked_sha が今の check_sha と同じ。取り直して何かが変わると、オーナーの確かめは自動で外れる。

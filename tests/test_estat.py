@@ -124,7 +124,7 @@ def make_series(**kw):
         series_id="age_rate", themes=("仕事",), label="割合", unit="%", survey="就業構造基本調査",
         publisher="総務省", source_kind="estat_api", period_kind="年", selector=dict(SEL),
         table_title="年齢別の割合", url="https://www.e-stat.go.jp/", latest_known="", breaks=(),
-        trend="", trend_from="", trend_to="", trend_note="", status="", checked_by="",
+        joins=(), trend="", trend_from="", trend_to="", trend_note="", status="", checked_by="",
         checked_at="", checked_sha="", where="", note="",
     )  # fmt: skip
     base.update(kw)
