@@ -14,16 +14,20 @@ enum Recorder {
         await sendSoon()
     }
 
-    /// 1日のふり返り。ふり返る日ごとに1つ（入れ直したら上書き）。入れなかった項目は nil
-    static func dayCheckin(day: String, condition: Int?, stress: Int?) async {
-        guard condition != nil || stress != nil else { return }
-        await LogStore.shared.add(
-            .dayCheckin,
-            data: LogData(day: day, condition: condition, stress: stress),
-            id: checkinID(day: day)
-        )
-        await Reminders.refresh()
+    /// 1日のふり返り。ふり返る日ごとに1つ。入れた項目だけ書き換え、nil の項目は今の値を残す。書き換えたあとの値を返す
+    @discardableResult
+    static func dayCheckin(day: String, condition: Int?, stress: Int?) async -> LogData? {
+        let data = await saveDayCheckin(day: day, condition: condition, stress: stress)
         await sendSoon()
+        return data
+    }
+
+    /// 1日のふり返りを端末に保存し、リマインダーを予約し直す（送るのは sendSoon。通知から続けて聞くとき、送るのを待たないため）
+    static func saveDayCheckin(day: String, condition: Int?, stress: Int?) async -> LogData? {
+        guard condition != nil || stress != nil else { return nil }
+        let data = await LogStore.shared.updateCheckin(day: day, id: checkinID(day: day), condition: condition, stress: stress)
+        await Reminders.refresh()
+        return data
     }
 
     static func feelingID(day: String) -> String { "feeling-\(day)" }
@@ -57,7 +61,7 @@ enum Recorder {
     }
 
     /// 送れなければ端末に残り、次の同期で送られる
-    private static func sendSoon() async {
+    static func sendSoon() async {
         try? await LogStore.shared.flush()
     }
 }

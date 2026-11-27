@@ -48,6 +48,16 @@ actor LogStore {
         return log
     }
 
+    /// 1日のふり返りを、入れた項目だけ書き換える（nil の項目は今の値を残す）。書き換えたあとの値を返す。
+    /// アプリの画面と通知のボタンの両方から入れるので、読んで書くまでを、この中で一度に行う
+    @discardableResult
+    func updateCheckin(day: String, id: String, condition: Int?, stress: Int?) -> LogData {
+        let current = log(id: id)?.data
+        let data = LogData(day: day, condition: condition ?? current?.condition, stress: stress ?? current?.stress)
+        add(.dayCheckin, data: data, id: id)
+        return data
+    }
+
     func delete(id: String) {
         guard let index = logs.firstIndex(where: { $0.id == id }) else { return }
         logs[index].deleted = true
@@ -78,8 +88,9 @@ actor LogStore {
             }
             batch.deleted = part.filter(\.deleted).map(\.id)
             try await APIClient.shared.uploadLogs(batch)
-            let sentIDs = Set(part.map(\.id))
-            for index in logs.indices where sentIDs.contains(logs[index].id) {
+            // 送っている間に書き換わった記録（同じ id の新しい値）は、まだ送っていないものとして残す
+            let sent = Set(part)
+            for index in logs.indices where sent.contains(logs[index]) {
                 logs[index].uploaded = true
             }
             save()

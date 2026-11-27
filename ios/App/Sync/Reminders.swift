@@ -54,7 +54,9 @@ enum Reminders {
     static func refresh() async {
         let center = UNUserNotificationCenter.current()
         let pending = await center.pendingNotificationRequests()
-        center.removePendingNotificationRequests(withIdentifiers: pending.map(\.identifier).filter { $0.hasPrefix(prefix) })
+        // 予約し直すのは、ここで予約する朝と夜のお知らせだけ（通知から続けて出したストレスの質問は消さない）
+        let scheduled = pending.map(\.identifier).filter { $0.hasPrefix("\(prefix)morning.") || $0.hasPrefix("\(prefix)evening.") }
+        center.removePendingNotificationRequests(withIdentifiers: scheduled)
         guard isEnabled else { return }
         let status = await center.notificationSettings().authorizationStatus
         guard status == .authorized || status == .provisional || status == .ephemeral else { return }
@@ -139,17 +141,17 @@ enum Reminders {
             guard day == Fmt.dateString(Date()) else { return }
             await Recorder.morningFeeling(value)
         case .condition:
-            // その日のふり返りに入れる。ストレスがもう入っていれば残す
-            let current = await LogStore.shared.log(id: Recorder.checkinID(day: day))?.data
-            await Recorder.dayCheckin(day: day, condition: value, stress: current?.stress)
-            // 続けてストレスを聞く（もう入っていれば聞かない）
-            if current?.stress == nil {
+            // その日のふり返りの調子だけを書き換える（ストレスがもう入っていれば残る）。
+            // 端末に保存したら、送るのを待たずにストレスを聞き（もう入っていれば聞かない）、最後に送る
+            let data = await Recorder.saveDayCheckin(day: day, condition: value, stress: nil)
+            if data?.stress == nil {
                 let request = UNNotificationRequest(identifier: "reminder.stress.\(day)", content: content(for: .stress, day: day), trigger: nil)
                 try? await UNUserNotificationCenter.current().add(request)
             }
+            await Recorder.sendSoon()
         case .stress:
-            let current = await LogStore.shared.log(id: Recorder.checkinID(day: day))?.data
-            await Recorder.dayCheckin(day: day, condition: current?.condition, stress: value)
+            // ストレスだけを書き換える（調子は残る）
+            await Recorder.dayCheckin(day: day, condition: nil, stress: value)
         }
     }
 

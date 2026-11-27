@@ -43,15 +43,20 @@ struct DayCheckinForm: View {
 
     @State private var condition: Int?
     @State private var stress: Int?
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         let word = DayKey.label(day)
         VStack(spacing: 12) {
-            ScoreRow(title: "\(word)の調子", low: "悪い", high: "よい", value: $condition) { _ in save() }
+            ScoreRow(title: "\(word)の調子", low: "悪い", high: "よい", value: $condition) { score in save(condition: score) }
             Divider()
-            ScoreRow(title: "ストレス", low: "なかった", high: "とても強かった", value: $stress) { _ in save() }
+            ScoreRow(title: "ストレス", low: "なかった", high: "とても強かった", value: $stress) { score in save(stress: score) }
         }
         .task(id: day) { await load() }
+        // 通知のボタン（Apple Watch など）で入れた分も、アプリに戻ったときに出す
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await load() } }
+        }
     }
 
     private func load() async {
@@ -60,10 +65,10 @@ struct DayCheckinForm: View {
         stress = data?.stress
     }
 
-    private func save() {
-        let values = (condition, stress)
+    /// 押した項目だけを保存する（画面に古い値が残っていても、通知で入れたもう片方を消さない）
+    private func save(condition: Int? = nil, stress: Int? = nil) {
         Task {
-            await Recorder.dayCheckin(day: day, condition: values.0, stress: values.1)
+            await Recorder.dayCheckin(day: day, condition: condition, stress: stress)
             onSaved()
         }
     }
