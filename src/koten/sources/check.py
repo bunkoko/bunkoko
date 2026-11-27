@@ -236,11 +236,14 @@ def _cell(ref: str) -> tuple[int, int]:
 
 
 def excerpt_from_grid(spec: dict[str, Any], grid: list[list[str]]) -> dict[str, Any]:
-    """数の行の前後3行を、数の列の前後2列で切り出した表。数のセルと見出しの行の位置つき。"""
+    """数のセルの前後3行・前後2列で切り出した表。数のセル全部（hl）と見出しの行の位置つき。
+
+    縦の範囲は先頭の 12 セルまでを印にする（窓も、そこまで）。"""
     a, _, b = str(spec["values"]).partition(":")
     r1, c1 = _cell(a)
     r2, c2 = _cell(b) if b else (r1, c1)
-    top, bottom = max(0, r1 - 3), min(len(grid) - 1, min(r2, r1 + 8) + 3)
+    rend = min(r2, r1 + 11)
+    top, bottom = max(0, r1 - 3), min(len(grid) - 1, rend + 3)
     left, right = max(0, c1 - 2), c2 + 2
     rows = [
         [(grid[r][c] if r < len(grid) and c < len(grid[r]) else "") for c in range(left, right + 1)]
@@ -258,9 +261,8 @@ def excerpt_from_grid(spec: dict[str, Any], grid: list[list[str]]) -> dict[str, 
                 label_rows.add(r - top)
     return {
         "rows": rows,
-        "hl_row": r1 - top,
-        "hl_cols": list(range(c1 - left, c2 - left + 1)),
-        "label_rows": sorted(label_rows - {r1 - top}),
+        "hl": [[r - top, c - left] for r in range(r1, rend + 1) for c in range(c1, c2 + 1)],
+        "label_rows": sorted(label_rows - set(range(r1 - top, rend - top + 1))),
     }
 
 
@@ -753,9 +755,7 @@ def merge_checks(
             if kind == "series":
                 if d["series_id"] in human_series:
                     continue
-                if not d["points"]:
-                    res.skipped.append(f"{name}：数がまだ無い（koten stats fetch のあとに）")
-                    continue
+                # 数がまだ無くても AI の行として入れる（koten stats fetch は台帳の系列だけ取る）
                 new_series.append(
                     _series_row(
                         d, {}, by=AI_CHECKER, day=ai_day, old=ledger_series.get(d["series_id"])
@@ -786,7 +786,10 @@ def merge_checks(
         day = _day(c.get("at"))
         if kind == "series":
             if not d["points"]:
-                res.skipped.append(f"{name}：数がまだ無い（koten stats fetch のあとに）")
+                res.skipped.append(
+                    f"{name}：数がまだ無いので入れなかった（koten stats fetch のあと、"
+                    "数が入ってから確かめる）"
+                )
                 continue
             new_series.append(
                 _series_row(d, c, by=CHECKER, day=day, old=ledger_series.get(d["series_id"]))

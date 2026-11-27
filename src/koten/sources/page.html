@@ -326,9 +326,9 @@ function pointTable(it) {
     el("tr", {}, el("th", {}, it.period_kind === "年度" ? "年度" : "年"), el("th", {}, `数（${it.unit}）`)), ...rows));
 }
 function excerptTable(x) {
-  const hlCols = new Set(x.hl_cols || []), labRows = new Set(x.label_rows || []);
+  const hl = new Set((x.hl || []).map(([r, c]) => `${r},${c}`)), labRows = new Set(x.label_rows || []);
   const rows = (x.rows || []).map((r, i) => el("tr", { class: labRows.has(i) ? "lab" : "" },
-    ...r.map((c, j) => el("td", { class: i === x.hl_row && hlCols.has(j) ? "hl" : "" }, c))));
+    ...r.map((c, j) => el("td", { class: hl.has(`${i},${j}`) ? "hl" : "" }, c))));
   return el("div", { class: "scroll" }, el("table", { class: "excerpt" }, ...rows));
 }
 

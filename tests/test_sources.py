@@ -603,11 +603,11 @@ def test_excerpt_provider_is_called_only_for_file_series(sconf):
 
     def provider(item):
         seen.append(item["series_id"])
-        return {"rows": [["a", "b"]], "hl_row": 0, "hl_cols": [1], "label_rows": [0]}
+        return {"rows": [["a", "b"]], "hl": [[0, 1]], "label_rows": [0]}
 
     items = page_items(with_series_data(_sdrafts(API_SERIES, FILE_SERIES), sconf), excerpt=provider)
     assert seen == ["file_rate"]
-    assert items[0]["excerpt"] is None and items[1]["excerpt"]["hl_cols"] == [1]
+    assert items[0]["excerpt"] is None and items[1]["excerpt"]["hl"] == [[0, 1]]
     assert items[1]["link"].startswith("https://www.e-stat.go.jp/stat-search/file-download")
 
 
@@ -683,13 +683,14 @@ def test_accept_rest_series_is_ai_and_keeps_human_rows(sconf):
     assert row["label"] == "人の文" and row["checked_by"] == HUMAN_CHECKER
 
 
-def test_series_without_points_is_not_taken_in(sconf):
+def test_owner_ok_on_a_series_without_points_is_skipped(sconf):
     _write_ledger(sconf, [])
     drafts = _sdrafts(API_SERIES)
     res = merge_checks(drafts, {_skey(sconf): {"v": "ok", "at": _at()}}, sconf)
-    assert res.series_added == [] and any("数がまだ無い" in x for x in res.skipped)
-    res = merge_checks(drafts, {}, sconf, accept_rest=True)
-    assert res.series_ai == [] and _series_file(sconf) == []
+    assert res.series_added == [] and any(
+        "数がまだ無い" in x and "koten stats fetch" in x for x in res.skipped
+    )
+    assert _series_file(sconf) == []
 
 
 def test_series_trend_kept_only_when_ticked_and_verified(sconf):
@@ -778,9 +779,43 @@ def test_cli_page_and_merge_with_series(sconf, tmp_path):
 def test_excerpt_from_grid_marks_value_cells_and_label_rows():
     from koten.sources.check import excerpt_from_grid
 
-    grid = [[f"r{r}c{c}" for c in range(10)] for r in range(20)]
+    grid = [[f"r{r}c{c}" for c in range(10)] for r in range(30)]
     x = excerpt_from_grid(FILE_SELECTOR["parts"][0], grid)  # values D12:F12, label A12, unit B3
-    assert x["rows"][x["hl_row"]][x["hl_cols"][0]] == "r11c3"
-    assert len(x["hl_cols"]) == 3 and len(x["rows"][0]) == 7  # 数の列の前後2列
-    assert x["hl_row"] == 3 and len(x["rows"]) == 7  # 数の行の前後3行
-    assert x["label_rows"] == [] or all(i != x["hl_row"] for i in x["label_rows"])
+    assert [x["rows"][r][c] for r, c in x["hl"]] == ["r11c3", "r11c4", "r11c5"]
+    assert len(x["rows"][0]) == 7 and len(x["rows"]) == 7  # 数の前後 2 列・3 行
+    assert all(i != x["hl"][0][0] for i in x["label_rows"])
+
+
+def test_excerpt_from_grid_marks_every_cell_of_a_vertical_range():
+    from koten.sources.check import excerpt_from_grid
+
+    grid = [[f"r{r}c{c}" for c in range(10)] for r in range(30)]
+    spec = {
+        **FILE_SELECTOR["parts"][0],
+        "values": "D5:D9",
+        "label_cells": ["A6"],
+        "unit_cell": "B2",
+    }
+    x = excerpt_from_grid(spec, grid)
+    assert [x["rows"][r][c] for r, c in x["hl"]] == [f"r{r}c3" for r in range(4, 9)]
+    # 数の列の中にある見出しの行（A6）は黄色にしない。窓の中の単位の行（B2）は黄色
+    assert x["label_rows"] == [0]
+
+
+def test_accept_rest_takes_in_a_series_without_points_as_ai(sconf):
+    _write_ledger(sconf, [])
+    res = merge_checks(_sdrafts(API_SERIES), {}, sconf, accept_rest=True)
+    assert res.series_ai == ["work_rate"]
+    row = _series_file(sconf)[0]
+    assert row["checked_by"] == AI_CHECKER and row["checked_sha"] == ""
+
+
+def test_series_without_points_loads_into_the_ssd(sconf, tmp_path):
+    from koten.db import connect, load_series
+
+    _write_ledger(sconf, [])
+    merge_checks(_sdrafts({**API_SERIES, "latest_known": "2023"}), {}, sconf, accept_rest=True)
+    conn = connect(tmp_path / "ssd")
+    assert load_series(conn, sconf, sconf.parent / "docs" / "estat")[0] == 1
+    r = conn.execute("SELECT latest_period, stale FROM stat_series").fetchone()
+    assert r["latest_period"] is None and r["stale"] == 1  # 数が無いので、今の数としては使えない
