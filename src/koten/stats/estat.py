@@ -457,9 +457,15 @@ class EstatClient:
         data = self.fetcher.fetch_json(
             url, SUBDIR, secret_params=self._secret, error_of=status_error, refresh=refresh
         )
-        if _status_of(data) == 1:
-            raise EstatNoData(f"{endpoint}：該当データなし（STATUS 1）")
         entry = self.fetcher.manifest.get(url)
+        if _status_of(data) == 1:
+            # 控えを消す（e-Stat が数を出したあと、--refresh なしの次の実行でも取り直す）
+            if entry is not None:
+                (self.fetcher.raw_dir / entry.path).unlink(missing_ok=True)
+            raise EstatNoData(
+                f"{endpoint}：該当データなし（STATUS 1）。selector の符号（cd…）と"
+                "表の番号（statsDataId）が表のとおりか確かめる"
+            )
         return data, (entry.fetched_at if entry else "")  # type: ignore[return-value]
 
     def meta(self, stats_data_id: str, *, refresh: bool = False) -> TableMeta:

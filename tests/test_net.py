@@ -152,3 +152,49 @@ def test_error_of_raising_drops_the_cache(tmp_path):
             f.fetch_json("https://api.e-stat.go.jp/x", "estat", error_of=lambda d: d["S"])
         assert not list((tmp_path / "estat").glob("*.json"))
         assert len(calls) == n
+
+
+# --- 最後の見直しの直し（F7・S1） -------------------------------------------------------
+
+
+def test_validate_refuses_a_bad_body_and_keeps_the_good_file(tmp_path):
+    bodies = [b"a,b\n1,2\n", b"<!DOCTYPE html><html>maintenance</html>"]
+
+    def server(req):
+        return httpx.Response(200, content=bodies[0])
+
+    f = make_fetcher(tmp_path, server)
+
+    def check(body):
+        return "HTML が返った" if body.lstrip().startswith(b"<") else None
+
+    url = "https://www.e-stat.go.jp/stat-search/file-download?statInfId=1&fileKind=0"
+    path, got = f.fetch(url, "files/1_0", validate=check)
+    assert got and path.read_bytes() == bodies[0]
+    entry = f.manifest.get(url)
+    bodies[0] = bodies[1]
+    with pytest.raises(ApiError, match="HTML が返った"):
+        f.fetch(url, "files/1_0", refresh=True, validate=check)
+    assert path.read_bytes() == b"a,b\n1,2\n" and f.manifest.get(url) == entry
+    assert not list(tmp_path.rglob("*.part"))
+    # はじめての取得でも、だめな中身は置かない
+    with pytest.raises(ApiError):
+        f.fetch(url + "&x=1", "files/2_0", validate=check)
+    assert not (tmp_path / "files" / "2_0").exists()
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["httpcore", "httpcore.connection", "httpcore.http11", "httpcore.http2", "httpcore.proxy",
+     "httpcore.socks"],
+)  # fmt: skip
+def test_httpcore_logs_are_redacted(tmp_path, caplog, name):
+    f = make_fetcher(tmp_path, lambda req: httpx.Response(200, json={"ok": 1}))
+    f.fetch_json("https://api.e-stat.go.jp/x?y=1", "estat", secret_params={"appId": SECRET})
+    with caplog.at_level(logging.DEBUG, logger=name):
+        logging.getLogger(name).debug(
+            "receive_response_headers.complete return_value=%s",
+            [(b"Location", f"/b?appId={SECRET}".encode())],
+        )
+    assert caplog.records and SECRET not in caplog.text
+    assert all(SECRET not in r.getMessage() for r in caplog.records)

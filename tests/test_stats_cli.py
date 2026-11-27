@@ -225,9 +225,10 @@ def test_owner_note_follows_the_real_lapse_rule(env, monkeypatch):
     r = stats(env, "fetch", "--check", "--refresh")
     assert "オーナーの確かめが外れる" in r.output and "増えた年：2023" in r.output
     assert "前から変わった数" not in r.output
-    env.state["values"] = VALUES[:2]  # 年が消える
+    env.state["values"] = VALUES[:2]  # 数のあった年が消える：その系列は失敗（R29）
     r = stats(env, "fetch", "--check", "--refresh")
-    assert "消えた年：2022" in r.output and "オーナーの確かめが外れる" in r.output
+    assert r.exit_code == 1 and "age_rate：" in r.output and "2022" in r.output
+    assert "前の数は残す" in r.output and "オーナーの確かめが外れる" not in r.output
 
 
 def test_owner_note_when_only_the_table_title_changes(env, monkeypatch):
@@ -712,3 +713,98 @@ def test_unit_edited_after_fetch_stops_db_init(env, monkeypatch):
     write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, [srow(unit="千人")])
     r = runner.invoke(app, ["db", "init", "--settings", env.settings])
     assert r.exit_code == 2 and "e-Stat の単位 '%' と unit '千人' が違う" in r.output
+
+
+# --- 最後の見直しの直し：取り直しで数が減る・部分の型・応答（R29・R30・F7・L13） -----
+
+
+def test_refetch_that_loses_a_numbered_year_fails_and_keeps_the_points(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    assert stats(env, "fetch").exit_code == 0
+    before = [(env.config / POINTS_FILE).read_bytes(), (env.docs / "age_rate.json").read_bytes()]
+    env.state["values"] = VALUES[:2]
+    r = stats(env, "fetch", "--refresh")
+    assert r.exit_code == 1, r.output
+    assert "age_rate：前に数があった年が、取り直すと無い（2022）" in r.output
+    assert "表か、セルの位置（selector）" in r.output and "前の数は残す" in r.output
+    assert [(env.config / POINTS_FILE).read_bytes(), (env.docs / "age_rate.json").read_bytes()] == (
+        before
+    )
+
+
+def test_file_series_that_yields_nothing_on_refetch_fails(env):
+    served_files(env)
+    assert stats(env, "fetch").exit_code == 0
+    before = [x for x in read_point_rows(env.config) if x["series_id"] == "csv_rate"]
+    env.state["files"]["000001"] = "表題,,,\n,2021年,2022年,2023年\n孤独,,,\n".encode()
+    r = stats(env, "fetch", "--refresh")
+    assert r.exit_code == 1 and "csv_rate：数が1つも取れなかった（前は 3 点）" in r.output
+    assert [x for x in read_point_rows(env.config) if x["series_id"] == "csv_rate"] == before
+    assert any(x["series_id"] == "xlsx_rate" for x in read_point_rows(env.config))
+
+
+def test_html_answer_for_a_file_never_replaces_the_cached_file(env):
+    served_files(env)
+    assert stats(env, "fetch").exit_code == 0
+    cached = env.root / "data" / "estat-cache" / "files" / "000001_0"
+    good = cached.read_bytes()
+    points = (env.config / POINTS_FILE).read_bytes()
+    env.state["files"]["000001"] = b"<!DOCTYPE html><html><body>maintenance</body></html>"
+    r = stats(env, "fetch", "--refresh")
+    assert r.exit_code == 1 and "csv_rate：" in r.output and "HTML" in r.output
+    assert cached.read_bytes() == good and (env.config / POINTS_FILE).read_bytes() == points
+
+
+def test_mistyped_file_part_fails_only_its_series(env, monkeypatch):
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+    served_files(env)
+    rows = read_series_rows(env.config)
+    for r_ in rows:
+        if r_["series_id"] == "xlsx_rate":
+            sel = json.loads(r_["selector"])
+            sel["parts"][0]["values"] = ["B2:C2"]
+            r_["selector"] = json.dumps(sel, ensure_ascii=False)
+    write_csv(env.config / SERIES_FILE, SERIES_COLUMNS, [*rows, srow()])
+    r = stats(env, "fetch")
+    assert r.exit_code == 1 and "xlsx_rate：" in r.output and "values" in r.output
+    assert "Traceback" not in r.output
+    assert {x["series_id"] for x in read_point_rows(env.config)} == {"age_rate", "csv_rate"}
+
+
+def test_unexpected_type_errors_are_one_series_failures(env, monkeypatch):
+    import koten.stats.files as files
+
+    served_files(env)
+    real = files.file_points
+
+    def flaky(s, fetch):
+        if s.series_id == "csv_rate":
+            raise TypeError("'NoneType' object is not iterable")
+        return real(s, fetch)
+
+    monkeypatch.setattr(files, "file_points", flaky)
+    r = stats(env, "fetch")
+    assert r.exit_code == 1 and "csv_rate：TypeError：" in r.output
+    assert [x["series_id"] for x in read_point_rows(env.config)] == ["xlsx_rate"] * 2
+
+
+def test_meta_type_errors_are_item_failures(env, monkeypatch):
+    import koten.stats.estat as estat
+
+    monkeypatch.setenv("KOTEN_ESTAT_APPID", SECRET)
+
+    def broken(meta, names):
+        raise AttributeError("'int' object has no attribute 'strip'")
+
+    monkeypatch.setattr(estat, "resolve_selector", broken)
+    r = stats(env, "meta", "--drafts", str(_meta_draft(env)))
+    assert r.exit_code == 1 and "age_rate：AttributeError：" in r.output
+
+
+def test_fetch_reports_a_changed_heading(env):
+    served_files(env)
+    assert stats(env, "fetch").exit_code == 0
+    env.state["files"]["000001"] = "表題,,,\n,2021年,2022年,2023年\n孤立,39.5,40.0,40.1\n".encode()
+    r = stats(env, "fetch", "--refresh", "--series", "csv_rate")
+    assert r.exit_code == 0, r.output
+    assert "見出しが変わった：'孤独' → '孤立'（2021・2022・2023）" in r.output

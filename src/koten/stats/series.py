@@ -232,6 +232,105 @@ def _json_or_none(text: str) -> Any:
         return None
 
 
+_CELL_RE = re.compile(r"([A-Za-z]+)([1-9][0-9]*)")
+
+
+def _cell_of(text: str) -> tuple[int, int] | None:
+    m = _CELL_RE.fullmatch(text.strip())
+    if not m:
+        return None
+    col = 0
+    for ch in m[1].upper():
+        col = col * 26 + ord(ch) - 64
+    return int(m[2]) - 1, col - 1
+
+
+def cell_range(ref: Any) -> tuple[tuple[int, int], tuple[int, int]] | None:
+    """ "D12" か 1 方向の範囲 "D12:R12"・"D5:D20" → ((行, 列), (行, 列))（0 始まり）。
+
+    文字でない・セルの形でない・2 次元・向きが逆の範囲は None。"""
+    if not isinstance(ref, str):
+        return None
+    a, sep, b = ref.partition(":")
+    start, end = _cell_of(a), _cell_of(b) if sep else _cell_of(a)
+    if start is None or end is None:
+        return None
+    if start[0] != end[0] and start[1] != end[1]:
+        return None
+    if start[0] > end[0] or start[1] > end[1]:
+        return None
+    return start, end
+
+
+def _lined_up(values: tuple, periods: tuple) -> bool:
+    """年のセルが値のセルと並んでいるか（行の範囲は同じ列、列の範囲は同じ行。F8）。"""
+    (r1, c1), (r2, c2) = values
+    (p1, q1), (p2, q2) = periods
+    if (r1, c1) == (r2, c2):  # 値が1つ：年のセルも1つで、同じ列か同じ行
+        return (p1, q1) == (p2, q2) and (q1 == c1 or p1 == r1)
+    if r1 == r2:  # 行の範囲
+        return p1 == p2 and (q1, q2) == (c1, c2)
+    return q1 == q2 and (p1, p2) == (r1, r2)  # 列の範囲
+
+
+def part_problems(part: dict) -> list[str]:
+    """estat_file の部分1つの欄の形（JSON の型・セルの形・年のセルの並び）の問題（R30・F8）。
+
+    文は「に … が無い」「の … は …」の形（前に部分の名前を付けて使う）。書いていない欄と
+    空の文字は無いのと同じ。書いた欄が null や違う型なら問題。"""
+    out: list[str] = []
+
+    def given(k: str) -> bool:
+        return k in part and part[k] != ""
+
+    for k in ("statInfId", "fileKind"):
+        v = part.get(k)
+        if not given(k):
+            out.append(f"に {k} が無い")
+        elif not isinstance(v, str):
+            out.append(f"の {k} は半角の数字だけの文字列（{v!r}）")
+        elif not DIGITS_RE.fullmatch(v.strip()):
+            out.append(f"の {k} は半角の数字だけ（{v!r}）")
+    if "sheet" not in part:
+        out.append('に sheet が無い（CSV は ""）')
+    elif not isinstance(part["sheet"], str):
+        out.append(f'の sheet は文字（CSV は ""）（{part["sheet"]!r}）')
+    values = cell_range(part.get("values"))
+    if not given("values"):
+        out.append("に values が無い")
+    elif values is None:
+        out.append(f'の values はセルの文字（例 "D12:R12"。行か列の一方向）（{part["values"]!r}）')
+    periods = None
+    if given("periods_cells"):
+        periods = cell_range(part["periods_cells"])
+        if periods is None:
+            out.append(f'の periods_cells はセルの文字（例 "D5:R5"）（{part["periods_cells"]!r}）')
+        elif values is not None and not _lined_up(values, periods):
+            out.append(
+                f"の periods_cells（{part['periods_cells']!r}）が values（{part['values']!r}）と"
+                "並んでいない（行の範囲なら同じ列、列の範囲なら同じ行。ずれるなら periods で書く）"
+            )
+    if "periods" in part:
+        ps = part["periods"]
+        if not (
+            isinstance(ps, list) and all(isinstance(x, str) and _YEAR_RE.fullmatch(x) for x in ps)
+        ):
+            out.append(f'の periods は半角 4 桁の年の文字の並び（例 ["2021"]）（{ps!r}）')
+    if not (given("periods_cells") or (isinstance(part.get("periods"), list) and part["periods"])):
+        out.append("に periods_cells か periods が無い")
+    if "label_cells" in part:
+        lc = part["label_cells"]
+        if not (isinstance(lc, list) and all(cell_range(x) is not None for x in lc)):
+            out.append(f'の label_cells は見出しのセルの並び（例 ["A12", "D6"]）（{lc!r}）')
+    for k in ("unit_cell", "updated"):
+        if k in part and not isinstance(part[k], str):
+            out.append(f"の {k} は文字（{part[k]!r}）")
+    if isinstance(part.get("unit_cell"), str) and part["unit_cell"].strip():
+        if cell_range(part["unit_cell"]) is None:
+            out.append(f'の unit_cell はセルの文字（例 "A3"）（{part["unit_cell"]!r}）')
+    return out
+
+
 def _selector_problems(kind: str, sel: Any) -> list[str]:
     if isinstance(sel, dict) and not sel:
         return ["selector が空（{}）"]
@@ -257,17 +356,7 @@ def _selector_problems(kind: str, sel: Any) -> list[str]:
             if not isinstance(part, dict):
                 out.append(f"selector の parts[{i}] がオブジェクトでない")
                 continue
-            for k in ("statInfId", "fileKind", "values"):
-                if not str(part.get(k, "")).strip():
-                    out.append(f"selector の parts[{i}] に {k} が無い")
-            for k in ("statInfId", "fileKind"):
-                v = str(part.get(k, "")).strip()
-                if v and not DIGITS_RE.fullmatch(v):
-                    out.append(f"selector の parts[{i}] の {k} は半角の数字だけ（{v!r}）")
-            if "sheet" not in part:
-                out.append(f'selector の parts[{i}] に sheet が無い（CSV は ""）')
-            if not (part.get("periods_cells") or part.get("periods")):
-                out.append(f"selector の parts[{i}] に periods_cells か periods が無い")
+            out += [f"selector の parts[{i}] {m}" for m in part_problems(part)]
     return out
 
 

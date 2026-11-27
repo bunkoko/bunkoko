@@ -1042,7 +1042,7 @@ class _FakeFetcher:
     def __init__(self, path=None, error=None):
         self.path, self.error, self.manifest, self.calls = path, error, {}, []
 
-    def fetch(self, url, rel, refresh=False):
+    def fetch(self, url, rel, refresh=False, validate=None):
         self.calls.append(rel)
         if self.error:
             raise self.error

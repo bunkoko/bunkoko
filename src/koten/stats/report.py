@@ -60,6 +60,27 @@ def added_removed_years(old: list[Point], new: list[Point]) -> tuple[list[str], 
     return sorted(b - a), sorted(a - b)
 
 
+def shrink_problem(old: list[Point], new: list[Point]) -> str:
+    """取り直しで数が減ったなら、その文（R29）。前に点があったのに1つも取れない、または
+    前に数があった年が無い。減っていなければ ""。"""
+    if old and not new:
+        return f"数が1つも取れなかった（前は {len(old)} 点）"
+    now = {p.period for p in new}
+    lost = sorted(p.period for p in old if value_num(p) is not None and p.period not in now)
+    return f"前に数があった年が、取り直すと無い（{'・'.join(lost)}）" if lost else ""
+
+
+def changed_labels(old: list[Point], new: list[Point]) -> list[str]:
+    """同じ年の見出し（src_label）が前の台帳から変わったところ。「'前' → '今'（年）」（L13）。"""
+    now = {p.period: p for p in new}
+    pairs: dict[tuple[str, str], list[str]] = {}
+    for p in sorted(old, key=lambda p: p.period):
+        q = now.get(p.period)
+        if q is not None and q.src_label != p.src_label:
+            pairs.setdefault((p.src_label, q.src_label), []).append(p.period)
+    return [f"{a!r} → {b!r}（{'・'.join(years)}）" for (a, b), years in pairs.items()]
+
+
 def units_text(points: list[Point], units: set[str]) -> str:
     return (
         "・".join(sorted({*units, *(p.src_unit for p in points if p.src_unit.strip())})) or "なし"
@@ -76,6 +97,7 @@ def report_lines(
     added: list[str] | None = None,
     removed: list[str] | None = None,
     lapsed: bool = False,
+    labels: list[str] | None = None,
 ) -> list[str]:
     """系列1つ分の報告。1行目が要約、続きが気をつける点。"""
     seg = segments(s, points)
@@ -95,6 +117,8 @@ def report_lines(
         lines.append("  増えた年：" + "・".join(added))
     if removed:
         lines.append("  消えた年：" + "・".join(removed))
+    for x in labels or []:
+        lines.append(f"  見出しが変わった：{x}")
     if lapsed:
         lines.append("  オーナーの確かめが外れる（数・名前・表の情報が前の確かめと違う）")
     return lines

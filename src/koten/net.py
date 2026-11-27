@@ -43,7 +43,19 @@ class _RedactFilter(logging.Filter):
 
 
 _redact = _RedactFilter()
-logging.getLogger("httpx").addFilter(_redact)
+# Filter は記録を作った logger にだけ効く（親の logger の Filter は子の記録を見ない）。
+# httpcore は子の logger（connection・http11 など）で記録し、応答の見出し（Location など）も出す
+_REDACTED_LOGGERS = (
+    "httpx",
+    "httpcore",
+    "httpcore.connection",
+    "httpcore.http11",
+    "httpcore.http2",
+    "httpcore.proxy",
+    "httpcore.socks",
+)
+for _name in _REDACTED_LOGGERS:
+    logging.getLogger(_name).addFilter(_redact)
 
 
 class RateLimiter:
@@ -147,11 +159,14 @@ class Fetcher:
         license: str | None = None,
         refresh: bool = False,
         secret_params: dict[str, str] | None = None,
+        validate: Callable[[bytes], str | None] | None = None,
     ) -> tuple[Path, bool]:
         """URLを raw_dir/rel_path に保存する。戻り値は（保存先, 今回取得したか）。
 
         secret_params（例：e-Stat の appId）は送る URL にだけ足す。マニフェスト・保存先・
         保存する本文・例外の文には残さない（本文の中の同じ値は *** に置き換える）。
+        validate が文を返したら、何も書かずに ApiError にする（前に取った良いファイルを、
+        エラーのページなどで上書きしない）。
         """
         dest = self.raw_dir / rel_path
         known = self.manifest.get(url)
@@ -181,6 +196,8 @@ class Fetcher:
             text = _scrub_text(f"{type(e).__name__}：{e}", secrets, send_url, url)
             raise FetchError(text, status_code=status) from None
         body = _scrub_bytes(resp.content, secrets)
+        if validate is not None and (problem := validate(body)):
+            raise ApiError(f"{url}：{problem}")
         sha = hashlib.sha256(body).hexdigest()
         if known and dest.exists() and known.sha256 == sha:
             return dest, False

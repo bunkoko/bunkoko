@@ -749,3 +749,24 @@ def test_cross_check_compares_names_like_the_gate():
     m = parse_meta(meta_json(table=table_inf(TITLE={"@no": "1", "$": "年齢別の　割合"})))
     assert cross_check(make_series(table_title="年齢別の 割合"), m, {"%"}) == []
     assert cross_check(make_series(table_title="年齢別の割合"), m, {"%"})
+
+
+def test_status_1_drops_the_cached_answer_and_names_the_selector(tmp_path):
+    state = {"status": 1}
+
+    def responder(req):
+        if req.url.path.endswith("getMetaInfo"):
+            return httpx.Response(200, json=meta_json())
+        if state["status"] == 1:
+            return httpx.Response(200, json=data_json([], status=1))
+        return httpx.Response(200, json=data_json([v("2013", "1")]))
+
+    client, seen, fetcher = make_client(tmp_path, responder)
+    with pytest.raises(EstatNoData, match="selector"):
+        client.points(make_series())
+    cached = [p.read_text("utf-8") for p in (fetcher.raw_dir / "estat").glob("*.json")]
+    assert cached and all("GET_STATS_DATA" not in c for c in cached)  # 表の情報の控えだけ
+    state["status"] = 0
+    points, _ = client.points(make_series())  # --refresh なしでも、次は取り直す
+    assert [p.period for p in points] == ["2013"]
+    assert len([r for r in seen if r.url.path.endswith("getStatsData")]) == 2

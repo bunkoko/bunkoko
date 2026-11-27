@@ -18,11 +18,11 @@ from pathlib import Path
 import openpyxl
 
 from koten.stats.series import (
-    DIGITS_RE,
     Point,
     Series,
     SeriesError,
     parse_period_name,
+    part_problems,
     to_decimal,
 )
 
@@ -99,6 +99,30 @@ def _decode(data: bytes) -> str:
             raise SeriesError("CSV を utf-8 でも cp932 でも読めない") from e
 
 
+_HTML_MARKS = (b"<!doctype", b"<html", b"<?xml", b"<head", b"<body", b"<meta", b"<title")
+
+
+def file_problem(data: bytes) -> str | None:
+    """e-Stat のファイル（CSV・xlsx）として読めない中身なら、その理由。読めそうなら None。
+
+    エラーやお知らせの HTML・PDF・中身の分からない（NUL を含む）もの・空のものを断る
+    （net.py の Fetcher.fetch の validate に渡し、前の良いファイルを上書きしない。F7）。"""
+    if data.startswith(_XLSX_MAGIC):
+        return None
+    if data.startswith(_XLS_MAGIC):
+        return ".xls（古い Excel）は扱わない。CSV か .xlsx の版を選ぶ"
+    head = data[:4096].lstrip(b"\xef\xbb\xbf \t\r\n").lower()
+    if not head:
+        return "中身が空のファイルが返った（CSV・xlsx でない）"
+    if head.startswith(b"%pdf"):
+        return "PDF が返った（CSV・xlsx でない。CSV か xlsx の版を選ぶ）"
+    if head.startswith(_HTML_MARKS) or b"<html" in head[:1024]:
+        return "HTML（エラーやお知らせのページ）が返った（CSV・xlsx でない）"
+    if b"\x00" in data[:4096]:
+        return "中身の分からないファイルが返った（CSV・xlsx でない）"
+    return None
+
+
 def read_grid(path: Path, sheet: str) -> list[list[str]]:
     """ファイルを文字の表にする。xlsx は sheet が要り、CSV は sheet が "" でなければならない。"""
     data = Path(path).read_bytes()
@@ -106,8 +130,8 @@ def read_grid(path: Path, sheet: str) -> list[list[str]]:
 
 
 def _grid_from_bytes(data: bytes, sheet: str) -> list[list[str]]:
-    if data.startswith(_XLS_MAGIC):
-        raise SeriesError(".xls（古い Excel）は扱わない。CSV か .xlsx の版を選ぶ")
+    if (problem := file_problem(data)) is not None:
+        raise SeriesError(problem)
     if data.startswith(_XLSX_MAGIC):
         try:
             wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
@@ -182,17 +206,12 @@ def _period(text: str, kind: str) -> str:
 
 
 def _require(spec: dict, idx: int) -> None:
+    """部分の欄の形を、取る前に確かめる（series_problems と同じ決まり。R30）。"""
     n = idx + 1
     if not isinstance(spec, dict):
         raise SeriesError(f"{n} 番目の part がオブジェクトでない")
-    for k in ("statInfId", "fileKind", "values"):
-        if not str(spec.get(k, "")).strip():
-            raise SeriesError(f"{n} 番目の part に {k} が無い")
-    for k in ("statInfId", "fileKind"):
-        if not DIGITS_RE.fullmatch(str(spec[k]).strip()):
-            raise SeriesError(f"{n} 番目の part の {k} は半角の数字だけ（{spec[k]!r}）")
-    if not (spec.get("periods_cells") or spec.get("periods")):
-        raise SeriesError(f"{n} 番目の part に periods_cells か periods が無い")
+    if problems := part_problems(spec):
+        raise SeriesError("、".join(f"{n} 番目の part {m}" for m in problems))
 
 
 def _part_points(s: Series, idx: int, spec: dict, fetch) -> list[Point]:
@@ -230,7 +249,9 @@ def _points_from_grid(s, idx, spec, grid, data, fetched_at) -> list[Point]:
             f"{n} 番目の part の時間の数（{len(periods)}）と値の数（{len(vals)}）が違う"
         )
     label = "／".join(
-        t for t in (x.strip() for ref in spec.get("label_cells", []) for x in cells(grid, ref)) if t
+        t
+        for t in (x.strip() for ref in spec.get("label_cells") or [] for x in cells(grid, ref))
+        if t
     )
     unit = cells(grid, spec["unit_cell"])[0] if spec.get("unit_cell") else ""
     sha = hashlib.sha256(data).hexdigest()
@@ -260,7 +281,10 @@ def file_points(s: Series, fetch: Callable[[str, str], tuple[Path, str]]) -> lis
     """estat_file の系列の点。fetch(url, rel_path) は (ファイル, 取得日時) を返す。"""
     seen: dict[str, int] = {}
     out: list[Point] = []
-    for idx, spec in enumerate(s.selector.get("parts", [])):
+    parts = s.selector.get("parts") if isinstance(s.selector, dict) else None
+    if not isinstance(parts, list):
+        raise SeriesError(f"selector の parts が並びでない（{parts!r}）")
+    for idx, spec in enumerate(parts):
         for p in _part_points(s, idx, spec, fetch):
             if p.period in seen:
                 a, b = seen[p.period] + 1, idx + 1

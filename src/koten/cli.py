@@ -4120,10 +4120,13 @@ def _estat_failures() -> tuple[type[Exception], ...]:
 
 
 def _file_fetch(fetcher: Fetcher, refresh: bool):
-    """files.file_points に渡す fetch。(ファイル, 取った日時) を返す。"""
+    """files.file_points に渡す fetch。(ファイル, 取った日時) を返す。
+
+    CSV・xlsx でない応答（エラーの HTML・PDF など）は、前の良いファイルを上書きせずに断る（F7）。"""
+    from koten.stats.files import file_problem
 
     def fetch(url: str, rel: str):
-        path = fetcher.fetch(url, rel, refresh=refresh)[0]
+        path = fetcher.fetch(url, rel, refresh=refresh, validate=file_problem)[0]
         entry = fetcher.manifest.get(url)
         return path, (entry.fetched_at if entry else "")
 
@@ -4225,7 +4228,8 @@ def stats_meta(
                 raise EstatError("stats_data_id（表の番号）が無い")
             meta = run.client(app_id).meta(sdid, refresh=refresh)
             sel = resolve_selector(meta, names)
-        except _estat_failures() as e:
+        except (*_estat_failures(), TypeError, AttributeError) as e:
+            # TypeError・AttributeError も、その項目の失敗（型の名前を前に付ける。R30）
             typer.secho(_estat_failure(label, e), fg="red", err=True)
             failed += 1
             continue
@@ -4357,11 +4361,22 @@ def stats_fetch(
                 raise SeriesError(
                     f"source_kind {t.source_kind!r} は取れない（estat_api か estat_file）"
                 )
-        except _estat_failures() as e:
+        except (*_estat_failures(), TypeError, AttributeError) as e:
+            # TypeError・AttributeError も、その系列の失敗（型の名前を前に付ける。R30）
             typer.secho(_estat_failure(t.series_id, e), fg="red", err=True)
             failed += 1
             continue
         old = rp.stored_points(old_rows, t.series_id)
+        if lost := rp.shrink_problem(old, points):
+            # 取り直すと数が減った：その系列は書かない（前の数・表の情報・確かめを残す。R29）
+            typer.secho(
+                f"{t.series_id}：{lost}。表か、セルの位置（selector）が変わっていないか確かめる。"
+                "前の数は残す（この赤い行を Claude に伝える）",
+                fg="red",
+                err=True,
+            )
+            failed += 1
+            continue
         changed = rp.changed_values(old, points)
         added, removed = rp.added_removed_years(old, points)
         now = replace(t, **fix)  # 公の言葉を写したあとの台帳の行
@@ -4375,6 +4390,7 @@ def stats_fetch(
             added=added,
             removed=removed,
             lapsed=lapsed,
+            labels=rp.changed_labels(old, points),
         ):
             typer.echo(line)
         for col, new in fix.items():

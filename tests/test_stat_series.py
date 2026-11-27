@@ -673,3 +673,66 @@ def test_check_sha_covers_period_kind_survey_publisher_and_src_unit():
     assert check_sha(replace(s, survey="別の調査"), [point(value="10")], None) != base
     assert check_sha(replace(s, publisher="別の機関"), [point(value="10")], None) != base
     assert check_sha(s, [point(value="10", src_unit="千人")], None) != base
+
+
+# --- ファイルの部分の欄の型（R30・F8） ------------------------------------------------------
+
+GOOD_PART = {
+    "statInfId": "000001", "fileKind": "0", "sheet": "", "values": "B3:D3",
+    "periods_cells": "B2:D2", "label_cells": ["A3"], "unit_cell": "A1", "updated": "2026-01-01",
+}  # fmt: skip
+
+
+def file_row(part):
+    return row(source_kind="estat_file", selector=json.dumps({"parts": [part]}), table_title="")
+
+
+def file_probs(env, part):
+    return series_problems([file_row(part)], [], **{**env, "metas": {}})
+
+
+def test_good_file_part_and_optional_keys(env):
+    assert file_probs(env, GOOD_PART) == []
+    for key in ("label_cells", "unit_cell", "updated"):
+        assert file_probs(env, {k: v for k, v in GOOD_PART.items() if k != key}) == [], key
+    explicit = {k: v for k, v in GOOD_PART.items() if k != "periods_cells"}
+    assert file_probs(env, {**explicit, "periods": ["2021", "2022", "2023"]}) == []
+    assert file_probs(env, {**GOOD_PART, "label_cells": ["A3", "B1:D1"], "sheet": "表1"}) == []
+
+
+@pytest.mark.parametrize(
+    "key,bad",
+    [
+        ("label_cells", None), ("label_cells", "A3"), ("label_cells", [3]), ("label_cells", ["A0"]),
+        ("values", None), ("values", 5), ("values", ["B3:D3"]), ("values", "B3:D4"),
+        ("values", "東京"), ("periods_cells", None), ("periods_cells", ["B2:D2"]),
+        ("periods_cells", 5), ("unit_cell", None), ("unit_cell", 5), ("unit_cell", ["A1"]),
+        ("updated", None), ("updated", 20260101), ("sheet", None), ("sheet", 1),
+        ("statInfId", 1), ("fileKind", 0), ("statInfId", None),
+    ],
+)  # fmt: skip
+def test_file_part_fields_of_the_wrong_type_are_problems(env, key, bad):
+    probs = file_probs(env, {**GOOD_PART, key: bad})
+    assert has(probs, "parts[1]", key), probs
+
+
+@pytest.mark.parametrize("bad", [2021, [2021], ["21"], None, "2021", [None]])
+def test_explicit_periods_must_be_four_digit_strings(env, bad):
+    part = {k: v for k, v in GOOD_PART.items() if k != "periods_cells"} | {"periods": bad}
+    assert has(file_probs(env, part), "parts[1]", "periods"), bad
+
+
+@pytest.mark.parametrize(
+    "values,periods_cells,ok",
+    [
+        ("B3:D3", "B2:D2", True), ("B3:D3", "B9:D9", True), ("B3:D3", "C2:E2", False),
+        ("B3:D3", "B2:C2", False), ("B3:D3", "A3:A5", False), ("B3:B5", "A3:A5", True),
+        ("B3:B5", "A4:A6", False), ("B3:B5", "C3:E3", False), ("B3", "B2", True),
+        ("B3", "A3", True), ("B3", "A1", False), ("B3", "B1:B2", False),
+    ],
+)  # fmt: skip
+def test_periods_cells_must_line_up_with_the_values(env, values, periods_cells, ok):
+    probs = file_probs(env, {**GOOD_PART, "values": values, "periods_cells": periods_cells})
+    assert (probs == []) is ok, probs
+    if not ok:
+        assert has(probs, "periods_cells", "並んでいない")

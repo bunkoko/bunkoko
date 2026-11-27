@@ -353,7 +353,7 @@ def excerpt_from_grid(spec: dict[str, Any], grid: list[list[str]]) -> dict[str, 
     ]
     label_rows = set()
     for ref in [
-        *spec.get("label_cells", []),
+        *(spec.get("label_cells") or []),
         spec.get("unit_cell") or "",
         spec.get("periods_cells") or "",
     ]:

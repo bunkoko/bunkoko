@@ -204,9 +204,15 @@ def test_period_kind_mismatch(tmp_path):
 
 def test_count_mismatch(tmp_path):
     p = write_csv(tmp_path / "a", CSV_ROWS, "utf-8-sig")
-    s = make_series([part(values="B3:D3", periods_cells="B2:C2")])
+    s = make_series([part(values="B3:D3", periods=["2021", "2022"])])
     with pytest.raises(SeriesError, match="数"):
         file_points(s, fetch_local(p))
+
+
+def test_periods_cells_that_do_not_line_up_are_refused_before_any_fetch():
+    s = make_series([part(values="B3:D3", periods_cells="B2:C2")])
+    with pytest.raises(SeriesError, match="1 番目の part の periods_cells.*並んでいない"):
+        file_points(s, lambda url, rel: pytest.fail("取りに行かない"))
 
 
 def test_wareki_period_cells_and_average(tmp_path):
@@ -349,3 +355,64 @@ def test_part_ids_must_be_digits_before_any_fetch():
     with pytest.raises(SeriesError, match="半角の数字だけ"):
         file_points(s, lambda url, rel: calls.append(rel))
     assert calls == []
+
+
+# --- 最後の見直しの直し：部分の欄の型・ファイルでない応答（R30・F7） -------------------------
+
+
+@pytest.mark.parametrize(
+    "key,bad",
+    [
+        ("label_cells", None), ("label_cells", [3]), ("label_cells", "A3"), ("values", None),
+        ("values", ["B2:C2"]), ("values", 5), ("periods_cells", ["B1:C1"]), ("periods_cells", 5),
+        ("unit_cell", 5), ("unit_cell", None), ("sheet", None), ("statInfId", 1),
+    ],
+)  # fmt: skip
+def test_wrong_types_are_series_errors_before_any_fetch(key, bad):
+    spec = part(values="B2:C2", periods_cells="B1:C1", label_cells=["A2"]) | {key: bad}
+    with pytest.raises(SeriesError, match=f"1 番目の part.*{key}"):
+        file_points(make_series([spec]), lambda url, rel: pytest.fail("取りに行かない"))
+
+
+@pytest.mark.parametrize("bad", [2021, [2021], None])
+def test_explicit_periods_of_the_wrong_type_are_series_errors(bad):
+    spec = part(values="B2:B2", periods=bad)
+    with pytest.raises(SeriesError, match="1 番目の part.*periods"):
+        file_points(make_series([spec]), lambda url, rel: pytest.fail("取りに行かない"))
+
+
+@pytest.mark.parametrize("parts", [None, "x", 5])
+def test_parts_that_are_not_a_list_are_a_series_error(parts):
+    s = make_series([])
+    s = Series(**{**s.__dict__, "selector": {"parts": parts}})
+    with pytest.raises(SeriesError, match="parts"):
+        file_points(s, lambda url, rel: pytest.fail("取りに行かない"))
+
+
+@pytest.mark.parametrize(
+    "body,why",
+    [
+        (b"<!DOCTYPE html><html><body>maintenance</body></html>", "HTML"),
+        (b"\xef\xbb\xbf  <html lang='ja'>x</html>", "HTML"),
+        (b"%PDF-1.7 ...", "PDF"),
+        (b"\x00\x01\x02binary", "中身の分からない"),
+        (b"", "空"),
+    ],
+)  # fmt: skip
+def test_bodies_that_are_not_csv_or_xlsx_are_refused(tmp_path, body, why):
+    from koten.stats.files import file_problem
+
+    assert why in (file_problem(body) or "")
+    p = tmp_path / "a"
+    p.write_bytes(body)
+    with pytest.raises(SeriesError, match=why):
+        read_grid(p, "")
+
+
+def test_csv_and_xlsx_bodies_pass_the_check(tmp_path):
+    from koten.stats.files import file_problem
+
+    csv_p = write_csv(tmp_path / "a", CSV_ROWS, "cp932")
+    x = write_xlsx(tmp_path / "b.bin", [[1]])
+    assert file_problem(csv_p.read_bytes()) is None and file_problem(x.read_bytes()) is None
+    assert file_problem("<参考>,2021\nx,1\n".encode()) is None  # 「<」で始まる見出しの CSV
