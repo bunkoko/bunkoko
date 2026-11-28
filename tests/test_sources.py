@@ -2323,6 +2323,19 @@ def test_page_marks_the_joined_year_and_asks_for_the_joins_tick():
     assert "doc.joins = !!f.joins" in answer
 
 
+def test_page_lets_pressed_cards_be_reopened_after_everything_is_pressed():
+    # 開き直したページで全部押してあると「全部押しました」から始まり、「戻る」の行き先が無い。
+    # その画面に1件ずつ開き直すボタンを並べ、開いた1件から「戻る」で一覧に戻れるようにする
+    html = build_page({"made": "", "stats": [], "findings": [], "leads": [], "series": []})
+    render = html.split("function render()")[1].split("\nfunction ")[0]
+    done = render.split("if (cur < 0)")[1].split("return;")[0]
+    assert "reopenList()" in done
+    reopen = html.split("function reopenList()")[1].split("\nfunction ")[0]
+    assert "押したものを開き直す（押し直せます）" in reopen
+    assert "history.push(-1); cur = i; render();" in reopen  # 「戻る」で一覧（cur = -1）に戻る
+    assert 'lastIndexOf("のうち、")' in reopen  # 系列は「何の数か」の所を出す
+
+
 @pytest.mark.parametrize(
     "col,value",
     [

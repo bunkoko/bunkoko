@@ -103,6 +103,8 @@ button:disabled { opacity: .45; cursor: default; }
 .chosen { outline: 3px solid var(--ink); outline-offset: 2px; }
 .why { font-size: 13px; color: var(--no); text-align: center; margin: 0; min-height: 1em; }
 .done { text-align: center; padding: 24px 8px; }
+.reopen { display: grid; gap: 8px; text-align: left; margin-top: 8px; }
+.reopen button { text-align: left; min-height: 44px; overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: no-preference) { .bar > i { transition: width .2s; } }
 </style>
 </head>
@@ -478,6 +480,25 @@ function updateButtons() {
   $("why").textContent = why;
 }
 
+// 全部押したあとも、押したものを開き直して押し直せるように、この種類の1件ずつを並べる
+// （開くと「戻る」でこの一覧に戻る）
+function reopenList() {
+  const list = inPart();
+  if (!list.length) return null;
+  const words = { ok: "合っている", ng: "違う" };
+  return el("div", { class: "reopen" },
+    el("span", { class: "label" }, "押したものを開き直す（押し直せます）"),
+    ...list.map((i) => {
+      const it = ITEMS[i], v = verdict(it);
+      let name = String(it.label || it.line || it.title || it.id || it.k);
+      const cut = name.lastIndexOf("のうち、");  // 系列の label は「誰のうち、何の数か」：何の数かの所を出す
+      if (it.kind === "series" && cut >= 0) name = name.slice(cut + 4);
+      const b = el("button", { type: "button" }, `${words[v] || "まだ"}｜${name.length > 70 ? name.slice(0, 70) + "…" : name}`);
+      b.addEventListener("click", () => { history.push(-1); cur = i; render(); });
+      return b;
+    }));
+}
+
 function render() {
   renderSelect(); renderCounts();
   const main = $("main");
@@ -487,6 +508,7 @@ function render() {
       el("p", { class: "line" }, part ? "この種類は全部押しました" : "全部押しました"),
       left ? el("p", {}, `ほかの種類に、まだ押していないものが ${left} 件あります。上の一覧から選べます。`) : null,
       el("p", {}, "押し終わったら、Claude のこの会話で「確かめた結果を取り込んで」と伝えてください。"),
+      reopenList(),
     ));
     for (const id of ["yes", "no", "skip"]) $(id).disabled = true;
     $("why").textContent = "";
